@@ -8,7 +8,16 @@ export default tseslint.config(
   {
     rules: {
       '@typescript-eslint/consistent-type-imports': 'error',
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          // Отбрасывание ключей через деструктуризацию с остатком — законный
+          // приём: так из документа убирается обвязка перед подстановкой.
+          ignoreRestSiblings: true,
+        },
+      ],
     },
   },
   {
