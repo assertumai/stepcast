@@ -16,6 +16,10 @@ params:
 
 workspace: worktree
 
+context:
+  - openspec/changes/${params.change}/proposal.md
+  - openspec/changes/${params.change}/design.md
+
 budget:
   tokens: 900k
   wallclock: 45m

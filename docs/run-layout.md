@@ -40,6 +40,7 @@
         steps/
           01-plan/
             step.json     # ключ, статус, попытки, usage
+            context.json  # что вошло в контекст, откуда и сколько токенов
             prompt.txt    # ровно то, что ушло бэкенду
             stdout.log
             stderr.log
@@ -57,6 +58,11 @@
 
 `prompt.txt` хранится всегда и целиком. Это единственный способ потом понять,
 почему шаг повёл себя так, а не иначе, и без него дифф прогонов бесполезен.
+
+`context.json` разбирает это начало по источникам — какая запись пришла из
+пайплайна, какая из работы, какая из шага, чем передана и во сколько токенов
+обошлась. Дифф двух прогонов по этому файлу отвечает на вопрос «во втором
+заходе агент видел не то же самое — что именно изменилось».
 
 ## Ключ шага и инвалидация
 
@@ -225,6 +231,7 @@ scarp run <pipeline> [--input k=v] [--dry-run]
 scarp status [--run <id>]
 scarp resume <run-id> [--from <job|step>] [--set k=v]
 scarp diff <run-a> <run-b>
+scarp context [--job <job>] [--step <step>]
 scarp logs <run-id> [<job>/<step>]
 scarp usage <run-id>
 scarp gc [--older-than 30d]
