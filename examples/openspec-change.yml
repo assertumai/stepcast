@@ -1,6 +1,7 @@
 # Реализация OpenSpec change: план -> реализация до зелёных тестов -> ревью ->
 # архивация. Отказ уводит в разбор, а не в слепой повтор.
 #
+#   scarp lint --budget examples/openspec-change.yml
 #   scarp run examples/openspec-change.yml --input change=add-oauth-e2e-tests
 
 version: 1
@@ -21,6 +22,8 @@ defaults:
 budget:
   tokens: 1.5M
   wallclock: 90m
+  rate_limit_pct: 80
+  on_exceed: pause
 
 concurrency: 2
 
@@ -28,8 +31,6 @@ jobs:
 
   plan:
     description: Разобрать change и составить план работ
-    inputs:
-      - openspec/changes/${inputs.change}/**
     outputs:
       plan: reports/plan.json
     budget:
@@ -51,10 +52,7 @@ jobs:
 
   implement:
     description: Реализовать задачи до зелёной сборки и тестов
-    inputs:
-      - openspec/changes/${inputs.change}/tasks.md
-      - reports/plan.json
-      - src/**
+    needs: [plan]
     outputs:
       patch: ${run.job_dir}/diff.patch
     budget:
@@ -86,8 +84,7 @@ jobs:
 
   typecheck:
     description: Статические проверки
-    inputs:
-      - src/**
+    needs: [implement]
     steps:
       - id: tsc
         run: npx tsc --noEmit
@@ -100,8 +97,8 @@ jobs:
 
   review:
     description: Ревью получившегося диффа
-    inputs:
-      - src/**
+    needs: [typecheck]
+    when: "not inputs.skip_review"
     outputs:
       findings: reports/review.json
     budget:
@@ -118,8 +115,24 @@ jobs:
           - judge: "Нет незакрытых замечаний уровня high"
             hard: true
 
+  archive:
+    description: Синхронизировать спеки и заархивировать change
+    needs: [review]
+    when: all_ok
+    steps:
+      - id: sync
+        run: npx openspec sync ${inputs.change}
+        expect:
+          - exit_code: 0
+      - id: archive
+        run: npx openspec archive ${inputs.change}
+        expect:
+          - exit_code: 0
+
   triage:
     description: Разбор отказа — что именно не сошлось и почему
+    needs: all
+    when: any_failed
     outputs:
       analysis: reports/triage.md
     budget:
@@ -132,37 +145,3 @@ jobs:
           - ${run.dir}/status.json
         expect:
           - file_exists: reports/triage.md
-
-  archive:
-    description: Синхронизировать спеки и заархивировать change
-    steps:
-      - id: sync
-        run: npx openspec sync ${inputs.change}
-        expect:
-          - exit_code: 0
-      - id: archive
-        run: npx openspec archive ${inputs.change}
-        expect:
-          - exit_code: 0
-
-flow:
-
-  plan:
-
-  implement:
-    after: [plan]
-
-  typecheck:
-    after: [implement]
-
-  review:
-    after: [implement, typecheck]
-    when: "not inputs.skip_review"
-
-  archive:
-    after: [review, typecheck]
-    when: "all_ok()"
-
-  triage:
-    after: [implement, typecheck, review]
-    when: "any_failed()"
