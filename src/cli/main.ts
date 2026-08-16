@@ -4,9 +4,18 @@ import { reportError } from './output.js';
 import { runConfigCommand } from './commands/config.js';
 import { runLintCommand } from './commands/lint.js';
 import { runLogsCommand } from './commands/logs.js';
+import { runRunCommand } from './commands/run.js';
 import { runStatusCommand } from './commands/status.js';
 
 export const COMMANDS: Record<string, CommandSpec> = {
+  run: {
+    description: 'выполнить пайплайн',
+    positional: ['pipeline'],
+    flags: {
+      input: { kind: 'keyValue', description: 'значение входа пайплайна: --input имя=значение' },
+      'dry-run': { kind: 'boolean', description: 'только проверить, не запуская работы' },
+    },
+  },
   lint: {
     description: 'статически проверить пайплайн, ничего не запуская',
     positional: ['pipeline'],
@@ -46,6 +55,8 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
   try {
     const args = parseArgs(argv, COMMANDS);
     switch (args.command) {
+      case 'run':
+        return await runRunCommand(args, io.out, io.cwd);
       case 'lint':
         return runLintCommand(args, io.out, io.cwd);
       case 'status':

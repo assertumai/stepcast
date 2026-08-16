@@ -76,3 +76,5 @@ export { buildStepEnv, injectedVariables, parseEnvFile, type BuiltEnv, type EnvL
 export { runProcess, DEFAULT_GRACE_MS, type ProcessOptions, type ProcessResult } from './exec/process.js';
 export { planAttempt, runAttempts, type AttemptPlan } from './exec/attempts.js';
 export { executeRunStep, evaluateExitCode, type RunStepOptions, type RunStepResult } from './exec/runStep.js';
+export { schedule, overallStatus, type JobOutcome, type SettledJob } from './run/scheduler.js';
+export { runPipeline, type RunOptions, type RunResult } from './run/runner.js';

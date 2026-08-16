@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { buildStepEnv, injectedVariables, parseEnvFile } from '../src/core/exec/env.js';
+import { BUILTIN_CONFIG } from '../src/core/config/defaults.js';
 import { runProcess } from '../src/core/exec/process.js';
 import { planAttempt, runAttempts } from '../src/core/exec/attempts.js';
 import { executeRunStep } from '../src/core/exec/runStep.js';
@@ -62,6 +63,25 @@ describe('step-execution: окружение', () => {
     });
     assert.equal(env.JAVA_HOME, '/opt/java');
     assert.equal(env.SSH_AUTH_SOCK, '/tmp/agent.sock');
+  });
+
+  it('умолчания запретов не ломают git по ssh', () => {
+    // Шаблон SSH_* выглядел осторожным, но вычёркивал адрес сокета агента, и
+    // первый же шаг с git по ssh переставал работать.
+    const { env } = buildStepEnv({
+      base: { SSH_AUTH_SOCK: '/tmp/agent.sock', SSH_AGENT_PID: '42', MY_PRIVATE_KEY: 'секрет' },
+      envFiles: [],
+      pipeline: {},
+      job: {},
+      step: {},
+      injected: {},
+      deny: BUILTIN_CONFIG.env_deny ?? [],
+      cwd: '/tmp',
+    });
+
+    assert.equal(env.SSH_AUTH_SOCK, '/tmp/agent.sock');
+    assert.equal(env.SSH_AGENT_PID, '42');
+    assert.equal(env.MY_PRIVATE_KEY, undefined, 'ключи по-прежнему вычёркиваются');
   });
 
   // Сценарий: «Запрет применяется последним»

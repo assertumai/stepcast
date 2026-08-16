@@ -37,9 +37,9 @@ limits:                        # потолки, которые пайплайн
   attempts: 5
   iterations: 10
 
-env_deny:
-  - "AWS_*"
-  - "*_PRIVATE_KEY"
+env_deny:                      # SSH_* здесь нет: он ловит SSH_AUTH_SOCK
+  - "AWS_*"                    # и ломает git по ssh, а ключи ловит *_KEY
+  - "*_KEY"
   - "KUBECONFIG"
 
 context:

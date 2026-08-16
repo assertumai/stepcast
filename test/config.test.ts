@@ -186,8 +186,8 @@ describe('scarp-configuration', () => {
     const box = sandbox({ project: 'env_deny: ["FOO_*", "BAR_*"]\n' });
     const line = renderConfigReport(resolveIn(box)).find((item) => item.startsWith('env_deny'));
     assert.ok(line !== undefined);
-    assert.match(line, /11 шаблонов/);
-    assert.match(line, /встроенное умолчание \(9\)/);
+    assert.match(line, /9 шаблонов/);
+    assert.match(line, /встроенное умолчание \(7\)/);
     assert.match(line, new RegExp(`${box.projectPath.replace(/[/\\]/g, '\\$&')} \\(2\\)`));
   });
 });
