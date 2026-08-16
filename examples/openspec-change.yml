@@ -22,8 +22,10 @@ inputs:
 env:
   NODE_ENV: test
 env_inherit: minimal
-env_passthrough: [GH_TOKEN]
 
+# GH_TOKEN не пробрасывается через env_passthrough: он попадает под запрет
+# "*_TOKEN" из конфига, и запреты не отменяются снизу. Учётные данные идут
+# через secrets — там маскирование в логах и точечная выдача работам.
 secrets:
   GITHUB_TOKEN: ${host.GH_TOKEN}
 
@@ -32,7 +34,6 @@ defaults:
   workspace: worktree
 
 budget:
-  cost: $25
   tokens: 1.5M
   wallclock: 90m
   rate_limit_pct: 80
