@@ -1,0 +1,49 @@
+# Работа: реализовать задачи из плана до зелёной сборки и тестов.
+# Ничего не знает о том, кто её запускает и что будет после неё.
+
+version: 1
+kind: job
+name: implement
+description: Реализовать задачи из плана до зелёной сборки и тестов
+
+params:
+  change:
+    type: string
+    required: true
+  max_iterations:
+    type: int
+    default: 4
+
+workspace: worktree
+
+budget:
+  tokens: 900k
+  wallclock: 45m
+
+until:
+  max_iterations: ${params.max_iterations}
+  check:
+    - cmd: npm run build
+    - cmd: npm test
+
+outputs:
+  patch: ${run.job_dir}/diff.patch
+
+steps:
+  - id: write-code
+    agent: claude
+    prompt: file:../prompts/implement.md
+    context:
+      - reports/plan.json
+      - openspec/changes/${params.change}/tasks.md
+    expect:
+      - changed_only:
+          - src/**
+          - test/**
+          - openspec/changes/${params.change}/tasks.md
+    attempts:
+      max: 3
+      escalation:
+        - include_failure: true
+        - include_failure: true
+          model: opus

@@ -3,8 +3,12 @@
 #
 #   scarp lint --budget examples/openspec-change.yml
 #   scarp run examples/openspec-change.yml --input change=add-oauth-e2e-tests
+#
+# Работы implement и review вынесены в отдельные файлы и переиспользуемы;
+# остальные описаны на месте. Связи и условия живут только здесь.
 
 version: 1
+kind: pipeline
 name: openspec-change
 
 inputs:
@@ -15,11 +19,20 @@ inputs:
     type: bool
     default: false
 
+env:
+  NODE_ENV: test
+env_inherit: minimal
+env_passthrough: [GH_TOKEN]
+
+secrets:
+  GITHUB_TOKEN: ${host.GH_TOKEN}
+
 defaults:
   agent: claude
   workspace: worktree
 
 budget:
+  cost: $25
   tokens: 1.5M
   wallclock: 90m
   rate_limit_pct: 80
@@ -31,10 +44,10 @@ jobs:
 
   plan:
     description: Разобрать change и составить план работ
-    outputs:
-      plan: reports/plan.json
     budget:
       tokens: 80k
+    outputs:
+      plan: reports/plan.json
     steps:
       - id: read-change
         agent: claude
@@ -51,36 +64,11 @@ jobs:
           - schema: ./schemas/plan.json
 
   implement:
-    description: Реализовать задачи до зелёной сборки и тестов
-    needs: [plan]
-    outputs:
-      patch: ${run.job_dir}/diff.patch
-    budget:
-      tokens: 900k
-      wallclock: 45m
-    until:
+    uses: ./jobs/implement.yml
+    with:
+      change: ${inputs.change}
       max_iterations: 4
-      check:
-        - cmd: npm run build
-        - cmd: npm test
-    steps:
-      - id: write-code
-        agent: claude
-        prompt: file:./prompts/implement.md
-        context:
-          - reports/plan.json
-          - openspec/changes/${inputs.change}/tasks.md
-        expect:
-          - changed_only:
-              - src/**
-              - test/**
-              - openspec/changes/${inputs.change}/tasks.md
-        attempts:
-          max: 3
-          escalation:
-            - include_failure: true
-            - include_failure: true
-              model: opus
+    needs: [plan]
 
   typecheck:
     description: Статические проверки
@@ -96,29 +84,17 @@ jobs:
           - exit_code: 0
 
   review:
-    description: Ревью получившегося диффа
+    uses: ./jobs/review.yml
+    with:
+      severity_gate: high
     needs: [typecheck]
     when: "not inputs.skip_review"
-    outputs:
-      findings: reports/review.json
-    budget:
-      tokens: 200k
-    steps:
-      - id: review-diff
-        agent: claude
-        prompt: file:./prompts/review.md
-        output:
-          file: reports/review.json
-          schema: ./schemas/review.json
-        expect:
-          - schema: ./schemas/review.json
-          - judge: "Нет незакрытых замечаний уровня high"
-            hard: true
 
   archive:
     description: Синхронизировать спеки и заархивировать change
     needs: [review]
     when: all_ok
+    secrets: [GITHUB_TOKEN]
     steps:
       - id: sync
         run: npx openspec sync ${inputs.change}
@@ -133,10 +109,10 @@ jobs:
     description: Разбор отказа — что именно не сошлось и почему
     needs: all
     when: any_failed
-    outputs:
-      analysis: reports/triage.md
     budget:
       tokens: 120k
+    outputs:
+      analysis: reports/triage.md
     steps:
       - id: analyze
         agent: claude
