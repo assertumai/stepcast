@@ -1,0 +1,168 @@
+# Реализация OpenSpec change: план -> реализация до зелёных тестов -> ревью ->
+# архивация. Отказ уводит в разбор, а не в слепой повтор.
+#
+#   scarp run examples/openspec-change.yml --input change=add-oauth-e2e-tests
+
+version: 1
+name: openspec-change
+
+inputs:
+  change:
+    type: string
+    required: true
+  skip_review:
+    type: bool
+    default: false
+
+defaults:
+  agent: claude
+  workspace: worktree
+
+budget:
+  tokens: 1.5M
+  wallclock: 90m
+
+concurrency: 2
+
+jobs:
+
+  plan:
+    description: Разобрать change и составить план работ
+    inputs:
+      - openspec/changes/${inputs.change}/**
+    outputs:
+      plan: reports/plan.json
+    budget:
+      tokens: 80k
+    steps:
+      - id: read-change
+        agent: claude
+        prompt: file:./prompts/read-change.md
+        context:
+          - openspec/changes/${inputs.change}/proposal.md
+          - openspec/changes/${inputs.change}/design.md
+          - openspec/changes/${inputs.change}/tasks.md
+        output:
+          file: reports/plan.json
+          schema: ./schemas/plan.json
+        expect:
+          - file_exists: reports/plan.json
+          - schema: ./schemas/plan.json
+
+  implement:
+    description: Реализовать задачи до зелёной сборки и тестов
+    inputs:
+      - openspec/changes/${inputs.change}/tasks.md
+      - reports/plan.json
+      - src/**
+    outputs:
+      patch: ${run.job_dir}/diff.patch
+    budget:
+      tokens: 900k
+      wallclock: 45m
+    until:
+      max_iterations: 4
+      check:
+        - cmd: npm run build
+        - cmd: npm test
+    steps:
+      - id: write-code
+        agent: claude
+        prompt: file:./prompts/implement.md
+        context:
+          - reports/plan.json
+          - openspec/changes/${inputs.change}/tasks.md
+        expect:
+          - changed_only:
+              - src/**
+              - test/**
+              - openspec/changes/${inputs.change}/tasks.md
+        attempts:
+          max: 3
+          escalation:
+            - include_failure: true
+            - include_failure: true
+              model: opus
+
+  typecheck:
+    description: Статические проверки
+    inputs:
+      - src/**
+    steps:
+      - id: tsc
+        run: npx tsc --noEmit
+        expect:
+          - exit_code: 0
+      - id: lint
+        run: npm run lint
+        expect:
+          - exit_code: 0
+
+  review:
+    description: Ревью получившегося диффа
+    inputs:
+      - src/**
+    outputs:
+      findings: reports/review.json
+    budget:
+      tokens: 200k
+    steps:
+      - id: review-diff
+        agent: claude
+        prompt: file:./prompts/review.md
+        output:
+          file: reports/review.json
+          schema: ./schemas/review.json
+        expect:
+          - schema: ./schemas/review.json
+          - judge: "Нет незакрытых замечаний уровня high"
+            hard: true
+
+  triage:
+    description: Разбор отказа — что именно не сошлось и почему
+    outputs:
+      analysis: reports/triage.md
+    budget:
+      tokens: 120k
+    steps:
+      - id: analyze
+        agent: claude
+        prompt: file:./prompts/triage.md
+        context:
+          - ${run.dir}/status.json
+        expect:
+          - file_exists: reports/triage.md
+
+  archive:
+    description: Синхронизировать спеки и заархивировать change
+    steps:
+      - id: sync
+        run: npx openspec sync ${inputs.change}
+        expect:
+          - exit_code: 0
+      - id: archive
+        run: npx openspec archive ${inputs.change}
+        expect:
+          - exit_code: 0
+
+flow:
+
+  plan:
+
+  implement:
+    after: [plan]
+
+  typecheck:
+    after: [implement]
+
+  review:
+    after: [implement, typecheck]
+    when: "not inputs.skip_review"
+
+  archive:
+    after: [review, typecheck]
+    when: "all_ok()"
+
+  triage:
+    after: [implement, typecheck, review]
+    when: "any_failed()"
