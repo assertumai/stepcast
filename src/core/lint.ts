@@ -261,6 +261,20 @@ function checkStep(
     }
   }
 
+  for (const predicate of step.expect) {
+    if (predicate.kind !== 'changed_only' && predicate.kind !== 'judge') continue;
+    push({
+      severity: 'error',
+      message: `Предикат ${predicate.kind} ещё не реализован`,
+      file: job.source,
+      at: `${at}.expect`,
+      hint:
+        predicate.kind === 'changed_only'
+          ? 'Ему нужен якорь рабочего дерева, который появится вместе с worktree и resume'
+          : 'Судья требует отдельного агентского вызова и появится отдельным изменением',
+    });
+  }
+
   const structural = step.expect.filter((predicate) => predicate.kind !== 'judge' || predicate.hard);
   if (step.expect.length > 0 && structural.length === 0) {
     push({

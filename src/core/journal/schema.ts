@@ -235,5 +235,6 @@ export type StepRecord = z.infer<typeof StepRecordSchema>;
 export type AttemptRecord = z.infer<typeof AttemptRecordSchema>;
 export type UsageReport = z.infer<typeof UsageReportSchema>;
 export type ContextReport = z.infer<typeof ContextReportSchema>;
+export type ContextEntryReport = z.infer<typeof ContextEntryReportSchema>;
 export type ExpectReport = z.infer<typeof ExpectReportSchema>;
 export type PredicateResult = z.infer<typeof PredicateResultSchema>;
