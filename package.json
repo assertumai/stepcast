@@ -14,14 +14,16 @@
     ".": "./dist/src/core/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "schema"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src test",
     "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
-    "check": "npm run typecheck && npm run lint && npm test"
+    "check": "npm run typecheck && npm run lint && npm test",
+    "schema": "npm run build && node dist/scripts/generate-schema.js"
   },
   "dependencies": {
     "ajv": "^8.20.0",

@@ -235,6 +235,11 @@ async function executeJob(job: Job, context: RunContext): Promise<JobOutcome> {
   });
 
   const sessions = createSessionRegistry();
+  // Сессии, в которые уже отправлен унаследованный контекст. Отслеживание
+  // живёт в работе, а не в шаге: иначе каждый шаг общей сессии заново
+  // получает свод правил, который агент уже прочитал, и весь смысл общей
+  // сессии теряется.
+  const contextSent = new Set<string>();
   const steps: StepRecord[] = [];
   let lastAgentStructured: unknown;
   let outputFromStep: unknown;
@@ -260,7 +265,7 @@ async function executeJob(job: Job, context: RunContext): Promise<JobOutcome> {
     const outcome =
       step.kind === 'run'
         ? await runCommandStep(step, job, context, stepDirPath, sessions, budgetScopes)
-        : await runAgentStep(step, job, context, stepDirPath, sessions, budgetScopes);
+        : await runAgentStep(step, job, context, stepDirPath, sessions, contextSent, budgetScopes);
 
     exceeded = outcome.exceeded ?? exceeded;
 
@@ -394,15 +399,13 @@ async function runAgentStep(
   context: RunContext,
   stepDirPath: string,
   sessions: ReturnType<typeof createSessionRegistry>,
+  contextSent: Set<string>,
   budgetScopes: () => BudgetScope[],
 ): Promise<StepOutcome> {
   const { journal, config } = context;
   const { pipeline } = context.expanded;
   const adapter = adapterOf(step.agent, context);
 
-  // Унаследованный контекст уходит в первое сообщение сессии: повторять
-  // агенту то, что он уже прочитал в этой же сессии, незачем.
-  const sessionStarted = new Set<string>();
   let exceeded: ReturnType<UsageAccumulator['check']>;
 
   const result = await executeAgentStep({
@@ -415,8 +418,10 @@ async function runAgentStep(
     ...(context.signal === undefined ? {} : { signal: context.signal }),
     env: (plan) => stepEnv(step, job, plan.attempt, context, stepDirPath),
     buildPrompt: (_plan, previousFailure) => {
-      const first = !sessionStarted.has(step.session);
-      sessionStarted.add(step.session);
+      // Унаследованный контекст уходит в первое сообщение сессии: повторять
+      // агенту то, что он уже прочитал в этой же сессии, незачем.
+      const first = !contextSent.has(step.session);
+      contextSent.add(step.session);
 
       const assembled = assembleContext({
         workspace: context.cwd,
@@ -450,14 +455,33 @@ async function runAgentStep(
         .filter((part) => part !== undefined && part !== '')
         .join('\n\n');
     },
-    evaluate: (target, outcome) =>
-      evaluatePredicates(target.expect, {
+    evaluate: (target, outcome) => {
+      // Ненулевой код возврата означает, что бэкенд не отработал, и жалобы
+      // предикатов на отсутствующий вывод только уводят от причины. Настоящую
+      // причину бэкенд написал в stderr — её и показываем первой.
+      if (outcome.process.exitCode !== 0) {
+        const detail = outcome.process.stderr.trim().split('\n').slice(-3).join('\n');
+        return [
+          {
+            predicate: 'backend',
+            passed: false,
+            hard: true,
+            actual: outcome.process.exitCode,
+            detail:
+              detail === ''
+                ? `бэкенд завершился кодом ${outcome.process.exitCode ?? 'нет'}`
+                : detail,
+          },
+        ];
+      }
+      return evaluatePredicates(target.expect, {
         exitCode: outcome.process.exitCode,
         text: outcome.text ?? '',
         structured: outcome.structured,
         cwd: context.cwd,
         env: stepEnv(step, job, 1, context, stepDirPath),
-      }),
+      });
+    },
     onUsage: (current) => {
       context.usage.record(job.id, step.id, 1, current);
       exceeded ??= context.usage.check(budgetScopes(), current);

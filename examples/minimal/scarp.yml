@@ -1,0 +1,71 @@
+# Пример, который запускается текущим срезом движка целиком.
+#
+#   scarp lint examples/minimal/scarp.yml
+#   scarp run  examples/minimal/scarp.yml --input topic=сессии
+#
+# Показывает: общую сессию агентских шагов, структурированный выход работы,
+# автоматическую передачу выхода в контекст следующей работы, предикаты и
+# разбор отказа.
+
+version: 1
+kind: pipeline
+name: minimal
+
+inputs:
+  topic: { type: string, required: true }
+
+workspace:
+  mode: cwd
+
+budget:
+  tokens: 200k
+  wallclock: 15m
+
+context:
+  - text: |
+      Отвечай кратко и по-русски. Ничего не записывай на диск без прямой просьбы.
+
+defaults:
+  agent: claude
+  session: shared
+
+jobs:
+
+  research:
+    description: Разобрать тему и отдать структурированный итог
+    budget: { tokens: 120k }
+    output:
+      from: summarize
+      schema: ./schemas/notes.json
+    steps:
+      - id: collect
+        agent: claude
+        prompt: "Назови три ключевых факта про: ${inputs.topic}. Просто перечисли."
+        timeout: 3m
+
+      # Второй шаг в той же сессии: он видит ответ первого и не получает
+      # контекст пайплайна повторно.
+      - id: summarize
+        agent: claude
+        prompt: file:./prompts/summarize.md
+        output_schema: ./schemas/notes.json
+        timeout: 3m
+        expect:
+          - schema: ./schemas/notes.json
+
+  verify:
+    description: Проверить, что выход работы пригоден к использованию
+    needs: [research]
+    steps:
+      - id: check
+        run: [sh, -c, 'test -s "$SCARP_ARTIFACTS/research.json"']
+        expect: [{ exit_code: 0 }]
+
+  triage:
+    description: Разбор отказа
+    needs: all
+    on: failure
+    steps:
+      - id: explain
+        run: [sh, -c, 'echo "прогон $SCARP_RUN_ID завершился отказом, см. status.json"']
+        expect: [{ exit_code: 0 }]

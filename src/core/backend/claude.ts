@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import type { BackendConfig } from '../config/resolve.js';
+import { ScarpError } from '../errors.js';
 import type { AgentInvocation, BackendAdapter, BackendEvent, LaunchSpec } from './types.js';
 
 /**
@@ -30,7 +31,7 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
       }
 
       if (invocation.outputSchemaPath !== undefined && config.structuredOutput) {
-        command.push('--json-schema', readFileSync(invocation.outputSchemaPath, 'utf8'));
+        command.push('--json-schema', prepareSchema(invocation.outputSchemaPath));
       }
 
       const permissions = invocation.permissions ?? config.permissions;
@@ -97,6 +98,29 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
       return { kind: 'ignored' };
     },
   };
+}
+
+/**
+ * Подготовить схему к передаче бэкенду.
+ *
+ * Поле `$schema` — метаданные для редакторов, а не ограничение, и валидатор
+ * Claude Code отклоняет ссылку на мета-схему 2020-12. Убираем его здесь:
+ * причуды конкретного CLI — забота адаптера, а не автора пайплайна, который
+ * пишет схему по общему стандарту.
+ */
+function prepareSchema(path: string): string {
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+  } catch (error) {
+    throw new ScarpError(`Схема вывода не разбирается как JSON: ${(error as Error).message}`, {
+      file: path,
+      cause: error,
+    });
+  }
+
+  const { $schema: _meta, ...rest } = parsed;
+  return JSON.stringify(rest);
 }
 
 function firstToolUse(message: Record<string, unknown> | undefined): BackendEvent | undefined {

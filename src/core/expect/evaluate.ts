@@ -1,7 +1,10 @@
 import { execaSync } from 'execa';
 import { existsSync, readFileSync } from 'node:fs';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
-import { Ajv, type ErrorObject } from 'ajv';
+// Сборка для draft 2020-12: схемы пишутся по актуальному стандарту, а
+// обычный экспорт ajv знает только draft-07 и отклоняет ссылку на мета-схему.
+import { Ajv2020 } from 'ajv/dist/2020.js';
+import type { ErrorObject, ValidateFunction } from 'ajv';
 
 import { ScarpError } from '../errors.js';
 import type { Predicate } from '../pipeline/model.js';
@@ -24,7 +27,7 @@ export interface EvaluationInput {
   readonly env: Readonly<Record<string, string>>;
 }
 
-const ajv = new Ajv({ allErrors: true, strict: false });
+const ajv = new Ajv2020({ allErrors: true, strict: false });
 
 export function evaluatePredicates(
   predicates: readonly Predicate[],
@@ -153,7 +156,18 @@ function evaluateSchema(path: string, input: EvaluationInput): PredicateResult {
     });
   }
 
-  const validate = ajv.compile(schema as object);
+  let validate: ValidateFunction;
+  try {
+    validate = ajv.compile(schema as object);
+  } catch (error) {
+    // Схему писал пользователь: её дефект — ошибка конфигурации с указанием
+    // файла, а не внутренний сбой движка со стеком.
+    throw new ScarpError(`Схема ${path} некорректна: ${(error as Error).message}`, {
+      file: path,
+      cause: error,
+    });
+  }
+
   const passed = validate(input.structured) === true;
 
   return {

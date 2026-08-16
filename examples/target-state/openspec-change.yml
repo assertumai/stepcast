@@ -1,4 +1,7 @@
 # Реализация OpenSpec change: план -> реализация до зелёных тестов -> ревью ->
+
+# ВНИМАНИЕ: этот пример НЕ запускается текущим срезом — он использует until
+# и on_exceed: wait. Запускаемый пример лежит в examples/minimal/.
 # архивация. Отказ уводит в разбор.
 #
 #   scarp lint --budget examples/openspec-change.yml
