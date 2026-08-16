@@ -34,3 +34,6 @@ export type {
   Substitution,
   SubstitutionMap,
 } from './pipeline/model.js';
+export { lintPipeline, hasErrors, compileNameGlob, type Diagnostic, type Severity } from './lint.js';
+export { buildGraph, type Graph, type GraphProblem } from './graph.js';
+export { parseExpression, evaluate, references, type Expr } from './expr/parse.js';
