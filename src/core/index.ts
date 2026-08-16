@@ -72,3 +72,7 @@ export {
   type ExpectReport,
   type Event,
 } from './journal/schema.js';
+export { buildStepEnv, injectedVariables, parseEnvFile, type BuiltEnv, type EnvLayers } from './exec/env.js';
+export { runProcess, DEFAULT_GRACE_MS, type ProcessOptions, type ProcessResult } from './exec/process.js';
+export { planAttempt, runAttempts, type AttemptPlan } from './exec/attempts.js';
+export { executeRunStep, evaluateExitCode, type RunStepOptions, type RunStepResult } from './exec/runStep.js';
