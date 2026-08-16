@@ -37,3 +37,38 @@ export type {
 export { lintPipeline, hasErrors, compileNameGlob, type Diagnostic, type Severity } from './lint.js';
 export { buildGraph, type Graph, type GraphProblem } from './graph.js';
 export { parseExpression, evaluate, references, type Expr } from './expr/parse.js';
+export { RunJournal, atomicWrite } from './journal/writer.js';
+export {
+  listRuns,
+  resolveRun,
+  readStatus,
+  readUsage,
+  readEvents,
+  findStepDir,
+  follow,
+} from './journal/reader.js';
+export {
+  findProjectRoot,
+  projectKey,
+  makeRunId,
+  shortRunId,
+  runPaths,
+  stepDir,
+  stepDirName,
+  parseStepDirName,
+  type RunPaths,
+} from './journal/paths.js';
+export {
+  isFailure,
+  type StatusValue,
+  type RunManifest,
+  type RunStatus,
+  type JobRecord,
+  type StepRecord,
+  type AttemptRecord,
+  type Usage,
+  type UsageReport,
+  type ContextReport,
+  type ExpectReport,
+  type Event,
+} from './journal/schema.js';

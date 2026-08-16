@@ -3,6 +3,8 @@ import { parseArgs, type CommandSpec } from './args.js';
 import { reportError } from './output.js';
 import { runConfigCommand } from './commands/config.js';
 import { runLintCommand } from './commands/lint.js';
+import { runLogsCommand } from './commands/logs.js';
+import { runStatusCommand } from './commands/status.js';
 
 export const COMMANDS: Record<string, CommandSpec> = {
   lint: {
@@ -10,6 +12,19 @@ export const COMMANDS: Record<string, CommandSpec> = {
     positional: ['pipeline'],
     flags: {
       input: { kind: 'keyValue', description: 'значение входа пайплайна: --input имя=значение' },
+    },
+  },
+  status: {
+    description: 'показать состояние прогона',
+    flags: {
+      run: { kind: 'string', description: 'идентификатор прогона, по умолчанию последний' },
+    },
+  },
+  logs: {
+    description: 'показать логи прогона или шага',
+    positional: ['run', 'job/step'],
+    flags: {
+      follow: { kind: 'boolean', description: 'продолжать показывать вывод по мере записи' },
     },
   },
   config: {
@@ -27,12 +42,16 @@ export interface CliIo {
   readonly cwd: string;
 }
 
-export function run(argv: readonly string[], io: CliIo): ExitCodeValue {
+export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeValue> {
   try {
     const args = parseArgs(argv, COMMANDS);
     switch (args.command) {
       case 'lint':
         return runLintCommand(args, io.out, io.cwd);
+      case 'status':
+        return runStatusCommand(args, io.out, io.cwd);
+      case 'logs':
+        return await runLogsCommand(args, io.out, io.cwd);
       case 'config':
         return runConfigCommand(args, io.out, io.cwd);
       default:
