@@ -1,4 +1,4 @@
-# Работа: ревью получившегося диффа.
+# Работа: ревью изменений против плана.
 
 version: 1
 kind: job
@@ -6,23 +6,25 @@ name: review
 description: Ревью изменений против плана
 
 params:
-  severity_gate:
-    type: string
-    default: high
+  severity_gate: { type: string, default: high }
+
+session: per_step
+
+output:
+  from: review-diff
+  schema: ../schemas/review.json
 
 budget:
   tokens: 200k
-
-outputs:
-  findings: reports/review.json
 
 steps:
   - id: review-diff
     agent: claude
     prompt: file:../prompts/review.md
-    output:
-      file: reports/review.json
-      schema: ../schemas/review.json
+    permissions:
+      allow: ["Read", "Bash(git diff*)", "Bash(git log*)"]
+    output_schema: ../schemas/review.json
+    timeout: 15m
     expect:
       - schema: ../schemas/review.json
       - judge: "Нет незакрытых замечаний уровня ${params.severity_gate}"

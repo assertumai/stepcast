@@ -1,62 +1,53 @@
 # Реализация OpenSpec change: план -> реализация до зелёных тестов -> ревью ->
-# архивация. Отказ уводит в разбор, а не в слепой повтор.
+# архивация. Отказ уводит в разбор.
 #
 #   scarp lint --budget examples/openspec-change.yml
 #   scarp run examples/openspec-change.yml --input change=add-oauth-e2e-tests
-#
-# Работы implement и review вынесены в отдельные файлы и переиспользуемы;
-# остальные описаны на месте. Связи и условия живут только здесь.
 
 version: 1
 kind: pipeline
 name: openspec-change
 
 inputs:
-  change:
-    type: string
-    required: true
-  skip_review:
-    type: bool
-    default: false
+  change: { type: string, required: true }
+  skip_review: { type: bool, default: false }
+
+# cwd — результат остаётся в текущем дереве, возвращать нечего.
+# Для параллельного прогона нескольких работ ставь worktree и concurrency > 1.
+workspace:
+  mode: cwd
 
 env:
   NODE_ENV: test
-env_inherit: minimal
 
-# Видят все агентские шаги прогона. Идёт началом промпта, одинаковым для всех
-# шагов, — на этом и держатся попадания в кеш.
+# Видят все агентские шаги прогона.
 context:
   - AGENTS.md
   - text: |
-      Монорепозиторий. Сгенерированные файлы в build/ не трогать.
-      Тесты запускаются только через npm test, напрямую раннер не звать.
-
-# GH_TOKEN не пробрасывается через env_passthrough: он попадает под запрет
-# "*_TOKEN" из конфига, и запреты не отменяются снизу. Учётные данные идут
-# через secrets — там маскирование в логах и точечная выдача работам.
-secrets:
-  GITHUB_TOKEN: ${host.GH_TOKEN}
+      Сгенерированные файлы в build/ не трогать.
+      Тесты запускаются только через npm test.
 
 defaults:
   agent: claude
-  workspace: worktree
+  session: shared
 
 budget:
   tokens: 1.5M
   wallclock: 90m
   rate_limit_pct: 80
-  on_exceed: pause
+  on_exceed: wait
 
-concurrency: 2
+concurrency: 1
+fail_fast: true
 
 jobs:
 
   plan:
     description: Разобрать change и составить план работ
-    budget:
-      tokens: 80k
-    outputs:
-      plan: reports/plan.json
+    budget: { tokens: 80k }
+    output:
+      from: read-change
+      schema: ./schemas/plan.json
     steps:
       - id: read-change
         agent: claude
@@ -65,13 +56,13 @@ jobs:
           - openspec/changes/${inputs.change}/proposal.md
           - openspec/changes/${inputs.change}/design.md
           - openspec/changes/${inputs.change}/tasks.md
-        output:
-          file: reports/plan.json
-          schema: ./schemas/plan.json
+        output_schema: ./schemas/plan.json
+        timeout: 15m
         expect:
-          - file_exists: reports/plan.json
           - schema: ./schemas/plan.json
 
+  # Выход plan попадает в контекст автоматически — передавать его руками
+  # через with или context не нужно.
   implement:
     uses: ./jobs/implement.yml
     with:
@@ -84,49 +75,50 @@ jobs:
     needs: [implement]
     steps:
       - id: tsc
-        run: npx tsc --noEmit
-        expect:
-          - exit_code: 0
+        run: [npx, tsc, --noEmit]
+        timeout: 5m
+        expect: [{ exit_code: 0 }]
       - id: lint
-        run: npm run lint
-        expect:
-          - exit_code: 0
+        run: [npm, run, lint]
+        timeout: 5m
+        expect: [{ exit_code: 0 }]
 
   review:
     uses: ./jobs/review.yml
-    with:
-      severity_gate: high
+    with: { severity_gate: high }
     needs: [typecheck]
-    when: "not inputs.skip_review"
+    if: "not inputs.skip_review"
 
+  # on: success не блокируется пропущенным review — пропуск не отказ.
   archive:
     description: Синхронизировать спеки и заархивировать change
     needs: [review]
-    when: all_ok
-    secrets: [GITHUB_TOKEN]
     steps:
       - id: sync
-        run: npx openspec sync ${inputs.change}
-        expect:
-          - exit_code: 0
+        run: [npx, openspec, sync, "${inputs.change}"]
+        timeout: 3m
+        expect: [{ exit_code: 0 }]
       - id: archive
-        run: npx openspec archive ${inputs.change}
-        expect:
-          - exit_code: 0
+        run: [npx, openspec, archive, "${inputs.change}"]
+        timeout: 3m
+        expect: [{ exit_code: 0 }]
 
   triage:
     description: Разбор отказа — что именно не сошлось и почему
     needs: all
-    when: any_failed
-    budget:
-      tokens: 120k
-    outputs:
-      analysis: reports/triage.md
+    on: failure
+    budget: { tokens: 120k }
+    output:
+      from: analyze
+      schema: ./schemas/triage.json
     steps:
       - id: analyze
         agent: claude
         prompt: file:./prompts/triage.md
         context:
-          - ${run.dir}/status.json
+          - path: ${run.dir}/status.json
+            mode: inline
+        output_schema: ./schemas/triage.json
+        timeout: 10m
         expect:
-          - file_exists: reports/triage.md
+          - schema: ./schemas/triage.json

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["failed_at", "category", "hypothesis", "next_action"],
+  "additionalProperties": false,
+  "properties": {
+    "failed_at": { "type": "string" },
+    "category": { "enum": ["implementation", "spec", "prompt", "environment"] },
+    "hypothesis": { "type": "string" },
+    "next_action": { "type": "string" }
+  }
+}

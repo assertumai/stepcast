@@ -7,18 +7,18 @@ name: implement
 description: Реализовать задачи из плана до зелёной сборки и тестов
 
 params:
-  change:
-    type: string
-    required: true
-  max_iterations:
-    type: int
-    default: 4
+  change: { type: string, required: true }
+  max_iterations: { type: int, default: 4 }
 
-workspace: worktree
+# Оба агентских шага идут в одной сессии: review-self видит, что делал write-code.
+session: shared
 
 context:
-  - openspec/changes/${params.change}/proposal.md
-  - openspec/changes/${params.change}/design.md
+  - openspec/changes/${params.change}/tasks.md
+
+output:
+  from: review-self
+  schema: ../schemas/implement.json
 
 budget:
   tokens: 900k
@@ -30,24 +30,32 @@ until:
     - cmd: npm run build
     - cmd: npm test
 
-outputs:
-  patch: ${run.job_dir}/diff.patch
-
 steps:
   - id: write-code
     agent: claude
     prompt: file:../prompts/implement.md
-    context:
-      - reports/plan.json
-      - openspec/changes/${params.change}/tasks.md
+    permissions:
+      allow: ["Edit", "Read", "Bash(npm *)", "Bash(git diff*)"]
+    timeout: 25m
+    budget: { tokens: 180k }
     expect:
       - changed_only:
           - src/**
           - test/**
           - openspec/changes/${params.change}/tasks.md
+      - cmd: npx tsc --noEmit
     attempts:
       max: 3
       escalation:
         - include_failure: true
         - include_failure: true
           model: opus
+
+  - id: review-self
+    agent: claude
+    prompt: file:../prompts/implement-summary.md
+    output_schema: ../schemas/implement.json
+    timeout: 10m
+    budget: { tokens: 60k }
+    expect:
+      - schema: ../schemas/implement.json
