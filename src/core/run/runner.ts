@@ -1,20 +1,42 @@
 import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 
+import {
+  createAnchorer,
+  detectAnchorKind,
+  type Anchor,
+  type AnchorKind,
+  type TreeAnchorer,
+} from '../anchor/index.js';
+import { fingerprintInputs } from '../anchor/fingerprint.js';
 import { resolveAdapter } from '../backend/registry.js';
 import type { BackendAdapter } from '../backend/types.js';
 import { UsageAccumulator, describeExceeded, type BudgetScope } from '../budget/accumulator.js';
 import type { Config } from '../config/resolve.js';
 import { assembleContext, type UpstreamOutput } from '../context/assemble.js';
-import { ExitCode, ScarpError, isScarpError, type ExitCodeValue } from '../errors.js';
+import { ExitCode, isStepcastError, type ExitCodeValue } from '../errors.js';
 import { createSessionRegistry, executeAgentStep } from '../exec/agentStep.js';
 import { buildStepEnv, injectedVariables } from '../exec/env.js';
 import { executeRunStep } from '../exec/runStep.js';
 import { evaluatePredicates } from '../expect/evaluate.js';
 import { buildGraph } from '../graph.js';
+import { bookkeep } from './bookkeeping.js';
+import { HaltCause, type HaltCauseValue } from './halt.js';
+import { preflight } from './preflight.js';
+import { buildPreviousFailure } from './previousFailure.js';
+import type { ResumePlan, SourceRun, StepPlan } from './resumePlan.js';
+import { computeStepKey } from './stepKey.js';
+import { prepareWorkspace, type PreparedWorkspace } from './workspace.js';
 import { shortRunId } from '../journal/paths.js';
 import { RunJournal } from '../journal/writer.js';
 import { serializeLock } from '../pipeline/lock.js';
-import type { AgentStep, ExpandedPipeline, Job, Step } from '../pipeline/model.js';
+import type {
+  AgentStep,
+  ContextEntry,
+  ExpandedPipeline,
+  Job,
+  Step,
+} from '../pipeline/model.js';
 import type {
   JobRecord,
   PredicateResult,
@@ -34,6 +56,23 @@ export interface RunOptions {
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
   /** Подмена адаптера бэкенда: тесты подставляют поддельный. */
   readonly adapterFor?: (name: string) => BackendAdapter;
+  /**
+   * Подмена якоря состояния дерева. Нужна, чтобы проверить главное свойство
+   * учёта: отказ фиксации не меняет исход прогона.
+   */
+  /** План переиспользования: исполнитель не знает, что это возобновление. */
+  readonly resume?: ResumeContext;
+  readonly anchorerFor?: (options: {
+    readonly dir: string;
+    readonly stateDir: string;
+    readonly kind: AnchorKind;
+    readonly scope: string;
+  }) => TreeAnchorer;
+}
+
+export interface ResumeContext {
+  readonly plan: ResumePlan;
+  readonly source: SourceRun;
 }
 
 export interface RunResult {
@@ -54,13 +93,18 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   const { pipeline } = options.expanded;
   const { config } = options;
 
-  if (pipeline.workspace.mode !== 'cwd') {
-    throw new ScarpError(`Режим рабочей директории ${pipeline.workspace.mode} ещё не реализован`, {
-      file: pipeline.file,
-      at: 'workspace.mode',
-      hint: 'В текущем срезе доступен только cwd; worktree и copy добавятся отдельным изменением',
-    });
-  }
+  // До создания журнала: отказ на этом этапе не оставляет за собой директории
+  // прогона, потому что прогона ещё нет.
+  preflight({
+    expanded: options.expanded,
+    projectRoot: options.projectRoot,
+    cwd: options.cwd,
+    runsRoot: config.runs.root,
+  });
+
+  // Способ фиксации выбирается один раз на прогон: якоря разных способов
+  // несравнимы, и смешивать их в пределах прогона нельзя.
+  const anchorKind = detectAnchorKind(options.cwd);
 
   const lock = serializeLock(pipeline);
   const lockHash = createHash('sha256').update(lock).digest('hex').slice(0, 16);
@@ -78,6 +122,8 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     lock_hash: lockHash,
     project_root: options.projectRoot,
     workspace: pipeline.workspace,
+    anchor_kind: anchorKind,
+    ...(options.resume === undefined ? {} : { resumed_from: options.resume.source.manifest.run_id }),
     inputs: pipeline.inputs,
     git: {},
     backends: Object.fromEntries(
@@ -108,6 +154,11 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     adapters,
     reportedDenials,
     lockHash,
+    anchorKind,
+    failureNote: { pending: options.resume === undefined ? undefined : previousFailureText(options.resume) },
+    ...(options.resume === undefined
+      ? {}
+      : { observedInputs: options.resume.plan.observedInputs }),
   };
 
   warnAboutDegradedBackends(context);
@@ -120,6 +171,9 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
       lock_hash: lockHash,
       status,
       workspace: pipeline.workspace,
+      ...(options.resume === undefined
+        ? {}
+        : { resumed_from: options.resume.source.manifest.run_id }),
       inputs: pipeline.inputs,
       jobs: [...records.values()],
       budget: {
@@ -134,13 +188,21 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
         ? {}
         : {
             resume: {
-              command: `scarp resume ${shortRunId(journal.paths.runId)} --from ${blocked.id}`,
+              command: `stepcast resume ${shortRunId(journal.paths.runId)} --from ${blocked.id}`,
               blocked_by: blocked.id,
             },
           }),
       updated_at: new Date().toISOString(),
     } satisfies RunStatus);
   };
+
+  if (options.resume !== undefined) {
+    restoreForResume(options.resume, journal, options.cwd, anchorKind);
+    for (const [jobId, value] of options.resume.plan.outputs) {
+      const path = join(journal.paths.artifacts, `${jobId}.json`);
+      outputs.push({ job: jobId, path, value });
+    }
+  }
 
   writeStatus('running');
 
@@ -156,6 +218,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
         ...record,
         status: outcome.status,
         ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+        ...(outcome.cause === undefined ? {} : { cause: outcome.cause }),
         finished_at: new Date().toISOString(),
       });
       journal.event({
@@ -192,6 +255,18 @@ interface RunContext extends RunOptions {
   /** Одна и та же переменная вычёркивается на каждом шаге — сообщаем однажды. */
   readonly reportedDenials: Set<string>;
   readonly lockHash: string;
+  /** Способ фиксации состояния: определён один раз на прогон. */
+  readonly anchorKind: AnchorKind;
+  /** Наблюдённые входы шагов прошлого прогона: `<работа>/<шаг>` → пути. */
+  readonly observedInputs?: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Выдержка о прошлом отказе. Достаётся первому переисполняемому агентскому
+   * шагу и на этом исчезает: повторять её остальным — значит навязывать всему
+   * прогону разбор одной чужой неудачи.
+   */
+  readonly failureNote: { pending: string | undefined };
+  /** Результаты непрошедшего `check` предыдущей итерации текущей работы. */
+  readonly iterationCheck?: readonly PredicateResult[];
 }
 
 /** Отсутствие поддержки сессий не отказ, а деградация с предупреждением. */
@@ -223,6 +298,12 @@ function adapterOf(name: string, context: RunContext): BackendAdapter {
   return created;
 }
 
+/**
+ * Работа целиком: подготовка рабочей директории и внешний цикл `until`.
+ *
+ * Работа без цикла — вырожденный случай с одной итерацией и без уровня
+ * итерации в раскладке журнала.
+ */
 async function executeJob(job: Job, context: RunContext): Promise<JobOutcome> {
   const { journal } = context;
 
@@ -233,6 +314,159 @@ async function executeJob(job: Job, context: RunContext): Promise<JobOutcome> {
     status: 'running',
     started_at: new Date().toISOString(),
   });
+
+  // Рабочая директория готовится до первого шага. Её отказ означает, что шаги
+  // запустить негде, — это `spawn_failed` из закрытого перечня, а не новая
+  // причина остановки.
+  let prepared: PreparedWorkspace;
+  try {
+    prepared = prepareWorkspace({ job, cwd: context.cwd, runDir: journal.paths.dir });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      status: 'failed',
+      reason: `рабочую директорию в режиме ${job.workspace.mode} подготовить не удалось: ${detail}`,
+      cause: HaltCause.spawnFailed,
+    };
+  }
+
+  context.records.set(job.id, {
+    ...(context.records.get(job.id) as JobRecord),
+    workspace: { mode: prepared.mode, path: prepared.dir },
+  });
+
+  // Ниже по коду `context` — контекст работы: у него своя рабочая директория.
+  const jobContext: RunContext = { ...context, cwd: prepared.dir };
+  const anchorState = { anchorer: undefined as TreeAnchorer | undefined };
+  const maxIterations = job.until?.maxIterations ?? 1;
+  let previousCheck: readonly PredicateResult[] | undefined;
+
+  try {
+    for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+      if (job.until !== undefined) {
+        journal.event({ kind: 'iteration.started', job: job.id, iteration });
+      }
+
+      const outcome = await runJobSteps(job, jobContext, anchorState, {
+        ...(job.until === undefined ? {} : { iteration }),
+        ...(previousCheck === undefined ? {} : { previousCheck }),
+      });
+
+      // Отказ шага прекращает цикл немедленно: новой итерации нет, `check` не
+      // вычисляется. Повторять то, что уже исчерпало попытки, незачем.
+      if (outcome.status !== 'success' || job.until === undefined) {
+        if (job.until !== undefined) {
+          journal.event({
+            kind: 'iteration.finished',
+            job: job.id,
+            iteration,
+            passed: false,
+            reason: outcome.reason ?? outcome.status,
+          });
+        }
+        return outcome;
+      }
+
+      const results = await evaluateCheck(job, jobContext);
+      const passed = results.every((item) => item.passed || !item.hard);
+      journal.event({ kind: 'iteration.finished', job: job.id, iteration, passed });
+
+      context.records.set(job.id, {
+        ...(context.records.get(job.id) as JobRecord),
+        iterations: iteration,
+      });
+
+      if (passed) return outcome;
+      previousCheck = results;
+
+      if (context.usage.check(jobScopes(job, context)) !== undefined) {
+        return {
+          status: 'budget_exceeded',
+          reason: `цикл прекращён: бюджет работы ${job.id} исчерпан`,
+          cause: HaltCause.budgetExceeded,
+        };
+      }
+    }
+
+    return {
+      status: 'failed',
+      reason: `предикаты until не прошли за ${maxIterations} итераций`,
+      cause: HaltCause.untilNotMet,
+    };
+  } finally {
+    // Индексный файл живёт ровно столько, сколько работа.
+    anchorState.anchorer?.dispose();
+  }
+}
+
+/**
+ * Проверки цикла. Вычисляются после всех шагов итерации, в рабочей директории
+ * работы. Время идёт в бюджет работы, токены — только если проверка обращается
+ * к агентскому бэкенду.
+ */
+async function evaluateCheck(job: Job, context: RunContext): Promise<PredicateResult[]> {
+  const until = job.until;
+  if (until === undefined) return [];
+
+  return evaluatePredicates(until.check, {
+    exitCode: 0,
+    text: '',
+    structured: undefined,
+    cwd: context.cwd,
+    env: {},
+  });
+}
+
+/** Области бюджета работы и прогона: цикл ограничен ими обеими. */
+function jobScopes(job: Job, context: RunContext): BudgetScope[] {
+  return [
+    { kind: 'job', name: `работа ${job.id}`, jobId: job.id, budget: job.budget },
+    { kind: 'run', name: 'пайплайн', budget: context.expanded.pipeline.budget },
+  ];
+}
+
+interface IterationOptions {
+  /** Номер итерации. Отсутствует у работы без цикла. */
+  readonly iteration?: number;
+  /** Результаты непрошедшего `check` предыдущей итерации. */
+  readonly previousCheck?: readonly PredicateResult[];
+}
+
+async function runJobSteps(
+  job: Job,
+  context: RunContext,
+  anchorState: { anchorer: TreeAnchorer | undefined },
+  iterationOptions: IterationOptions = {},
+): Promise<JobOutcome> {
+  const { journal } = context;
+  const iteration = iterationOptions.iteration;
+  context =
+    iterationOptions.previousCheck === undefined
+      ? context
+      : { ...context, iterationCheck: iterationOptions.previousCheck };
+
+  // Якорь на работу: индексный файл переиспользуется между её шагами, поэтому
+  // `add -A` платит только за изменившиеся файлы.
+  const scope = { journal, job: job.id };
+  const anchorer = bookkeep(scope, 'создание якоря', () =>
+    (context.anchorerFor ?? createAnchorer)({
+      dir: context.cwd,
+      stateDir: journal.paths.anchors,
+      kind: context.anchorKind,
+      scope: job.id,
+    }),
+  );
+  anchorState.anchorer = anchorer;
+
+  /** Снять якорь. Неудача — запись в журнал и `undefined`, статусы не трогает. */
+  const capture = (step?: string): Anchor | undefined =>
+    anchorer === undefined
+      ? undefined
+      : bookkeep({ ...scope, ...(step === undefined ? {} : { step }) }, 'снятие якоря', () =>
+          anchorer.capture(),
+        );
+
+  let treeAnchor = capture();
 
   const sessions = createSessionRegistry();
   // Сессии, в которые уже отправлен унаследованный контекст. Отслеживание
@@ -245,8 +479,50 @@ async function executeJob(job: Job, context: RunContext): Promise<JobOutcome> {
   let outputFromStep: unknown;
 
   for (const step of job.steps) {
-    const stepDirPath = journal.prepareStep(job.id, step.index, step.id);
+    const stepDirPath = journal.prepareStep(job.id, step.index, step.id, iteration);
+
+    const planned = planFor(context, job.id, step.id);
+    if (planned?.decision.kind === 'reuse') {
+      const reused: StepRecord = {
+        ...planned.decision.record,
+        reused_from: context.resume?.source.manifest.run_id ?? 'неизвестно',
+      };
+      steps.push(reused);
+      journal.writeStepJson(stepDirPath, 'step.json', reused);
+      journal.event({
+        kind: 'step.reused',
+        job: job.id,
+        step: step.id,
+        source: reused.reused_from as string,
+      });
+      context.records.set(job.id, {
+        ...(context.records.get(job.id) as JobRecord),
+        steps: [...steps],
+      });
+      if (step.kind === 'agent' && planned.decision.record.status === 'success') {
+        // Переиспользованный шаг не исполнялся, структурированного вывода у
+        // него в этом прогоне нет: он берётся из выхода работы, если тот был
+        // перенесён целиком.
+        lastAgentStructured = context.resume?.plan.outputs.get(job.id) ?? lastAgentStructured;
+      }
+      treeAnchor =
+        reused.tree_id === undefined
+          ? treeAnchor
+          : { kind: reused.anchor_kind ?? context.anchorKind, id: reused.tree_id };
+      continue;
+    }
+
     journal.event({ kind: 'step.started', job: job.id, step: step.id, attempt: 1 });
+
+    const treeBefore = treeAnchor;
+    // Отпечаток считается до запуска: он отвечает на вопрос о валидности шага,
+    // а вопрос этот имеет смысл только перед исполнением.
+    const fingerprint = fingerprintInputs({
+      dir: context.cwd,
+      treeAnchor: treeBefore,
+      declared: job.inputs,
+      observed: context.observedInputs?.get(`${job.id}/${step.id}`),
+    });
 
     const budgetScopes = (): BudgetScope[] => [
       {
@@ -262,10 +538,34 @@ async function executeJob(job: Job, context: RunContext): Promise<JobOutcome> {
 
     let exceeded = context.usage.check(budgetScopes());
 
+    // Пути, изменившиеся за время шага, нужны только предикату границ —
+    // считаем их лениво и только когда он объявлен.
+    const wantsChanged = step.expect.some((predicate) => predicate.kind === 'changed_only');
+    const changedPaths = (): readonly string[] | undefined => {
+      if (!wantsChanged || anchorer === undefined || treeBefore === undefined) return undefined;
+      const now = bookkeep({ ...scope, step: step.id }, 'снятие якоря для changed_only', () =>
+        anchorer.capture(),
+      );
+      if (now === undefined) return undefined;
+      const comparison = bookkeep({ ...scope, step: step.id }, 'сравнение состояний', () =>
+        anchorer.changedPaths(treeBefore, now),
+      );
+      return comparison?.comparable === true ? comparison.paths : undefined;
+    };
+
     const outcome =
       step.kind === 'run'
-        ? await runCommandStep(step, job, context, stepDirPath, sessions, budgetScopes)
-        : await runAgentStep(step, job, context, stepDirPath, sessions, contextSent, budgetScopes);
+        ? await runCommandStep(step, job, context, stepDirPath, sessions, budgetScopes, changedPaths)
+        : await runAgentStep(
+            step,
+            job,
+            context,
+            stepDirPath,
+            sessions,
+            contextSent,
+            budgetScopes,
+            changedPaths,
+          );
 
     exceeded = outcome.exceeded ?? exceeded;
 
@@ -275,14 +575,43 @@ async function executeJob(job: Job, context: RunContext): Promise<JobOutcome> {
 
     const status: StatusValue = exceeded !== undefined ? 'budget_exceeded' : outcome.status;
     const reason = exceeded !== undefined ? describeExceeded(exceeded) : outcome.reason;
+    const cause = causeOf(status, outcome.results);
+
+    // Якорь снимается при любом исходе, включая отказ, отмену и превышение
+    // бюджета: разбирать упавший прогон без состояния дерева нечем.
+    const treeAfter = capture(step.id);
+    treeAnchor = treeAfter ?? treeAnchor;
+
+    if (anchorer !== undefined && treeBefore !== undefined && treeAfter !== undefined) {
+      const patch = bookkeep({ ...scope, step: step.id }, 'вычисление diff.patch', () =>
+        anchorer.diff(treeBefore, treeAfter),
+      );
+      if (patch !== undefined) journal.writeStepFile(stepDirPath, 'diff.patch', patch);
+    }
 
     const stepRecord: StepRecord = {
       id: step.id,
       index: step.index,
       kind: step.kind,
-      key: stepKey(context, job, step),
+      key: computeStepKey({
+        lockHash: context.lockHash,
+        jobId: job.id,
+        step,
+        inputsFingerprint: fingerprint?.value,
+        backendCommand:
+          step.kind === 'agent' ? context.config.backends[step.agent]?.command : undefined,
+        upstream: context.outputs,
+      }),
       status,
+      ...(treeAfter === undefined
+        ? { anchor_missing: 'якорь состояния дерева снять не удалось' }
+        : { tree_id: treeAfter.id, anchor_kind: treeAfter.kind }),
+      ...(treeBefore === undefined ? {} : { tree_before: treeBefore.id }),
+      ...(fingerprint === undefined
+        ? {}
+        : { inputs_fingerprint: fingerprint.value, inputs_origin: fingerprint.origin }),
       ...(reason === undefined ? {} : { reason }),
+      ...(cause === undefined ? {} : { cause }),
       ...(outcome.session === undefined ? {} : { session: outcome.session }),
       attempts: [...outcome.attempts],
       ...(outcome.observedInputs === undefined || outcome.observedInputs.length === 0
@@ -314,14 +643,23 @@ async function executeJob(job: Job, context: RunContext): Promise<JobOutcome> {
     });
 
     if (status !== 'success') {
-      return { status, ...(reason === undefined ? {} : { reason: `шаг ${step.id}: ${reason}` }) };
+      return {
+        status,
+        ...(reason === undefined ? {} : { reason: `шаг ${step.id}: ${reason}` }),
+        ...(cause === undefined ? {} : { cause }),
+      };
     }
   }
 
   const published = job.output === undefined ? undefined : (outputFromStep ?? lastAgentStructured);
   if (job.output !== undefined && published !== undefined) {
     const path = journal.writeArtifact(job.id, published);
-    context.outputs.push({ job: job.id, path, value: published });
+    // Выходом работы с циклом становится результат последней выполненной
+    // итерации: запись замещается, а не накапливается по итерациям.
+    const existing = context.outputs.findIndex((output) => output.job === job.id);
+    const entry = { job: job.id, path, value: published };
+    if (existing === -1) context.outputs.push(entry);
+    else context.outputs[existing] = entry;
     context.records.set(job.id, {
       ...(context.records.get(job.id) as JobRecord),
       output: path,
@@ -351,6 +689,7 @@ async function runCommandStep(
   stepDirPath: string,
   _sessions: ReturnType<typeof createSessionRegistry>,
   budgetScopes: () => BudgetScope[],
+  changedPaths: () => readonly string[] | undefined,
 ): Promise<StepOutcome> {
   const { journal, config } = context;
 
@@ -368,6 +707,7 @@ async function runCommandStep(
         structured: undefined,
         cwd: context.cwd,
         env: stepEnv(step, job, 1, context, stepDirPath),
+        changedPaths: changedPaths(),
       }),
     onStall: (silentMs) =>
       journal.event({ kind: 'step.stalled', job: job.id, step: step.id, silent_ms: silentMs }),
@@ -401,6 +741,7 @@ async function runAgentStep(
   sessions: ReturnType<typeof createSessionRegistry>,
   contextSent: Set<string>,
   budgetScopes: () => BudgetScope[],
+  changedPaths: () => readonly string[] | undefined,
 ): Promise<StepOutcome> {
   const { journal, config } = context;
   const { pipeline } = context.expanded;
@@ -427,7 +768,7 @@ async function runAgentStep(
         workspace: context.cwd,
         pipeline: first ? pipeline.context : [],
         job: first ? job.context : [],
-        step: step.context,
+        step: withIterationNote(context, step.context, context.iterationCheck),
         upstream: first ? context.outputs : [],
         contextUpstream: job.contextUpstream,
         inherit: step.contextInherit,
@@ -480,6 +821,7 @@ async function runAgentStep(
         structured: outcome.structured,
         cwd: context.cwd,
         env: stepEnv(step, job, 1, context, stepDirPath),
+        changedPaths: changedPaths(),
       });
     },
     onUsage: (current) => {
@@ -579,11 +921,118 @@ function stepEnv(
 }
 
 /** Ключ шага: записывается сейчас, используется возобновлением позже. */
-function stepKey(context: RunContext, job: Job, step: Step): string {
-  return createHash('sha256')
-    .update(JSON.stringify({ lock: context.lockHash, job: job.id, step }))
-    .digest('hex')
-    .slice(0, 16);
+/**
+ * Причина неуспеха из закрытого перечня `halt.ts`.
+ *
+ * Выводится из статуса и результатов предикатов, а не назначается в каждой
+ * точке отдельно: так место, где заводится новая причина отказа, ровно одно и
+ * его видно в обзоре.
+ */
+function causeOf(
+  status: StatusValue,
+  results: readonly (readonly PredicateResult[])[],
+): HaltCauseValue | undefined {
+  if (status === 'canceled') return HaltCause.canceled;
+  if (status === 'budget_exceeded') return HaltCause.budgetExceeded;
+  if (status !== 'failed') return undefined;
+
+  const failed = results.at(-1)?.find((item) => !item.passed && item.hard);
+  if (failed?.predicate === 'timeout') return HaltCause.timeout;
+  if (failed?.predicate === 'spawn_failed') return HaltCause.spawnFailed;
+  return HaltCause.expectFailed;
 }
 
-export { isScarpError };
+/** Решение плана по конкретному шагу, если возобновление вообще идёт. */
+function planFor(context: RunContext, jobId: string, stepId: string): StepPlan | undefined {
+  return context.resume?.plan.steps.find((item) => item.job === jobId && item.step === stepId);
+}
+
+/**
+ * Привести дерево к состоянию, на котором остановилось переиспользование.
+ *
+ * Недоступный якорь не отказ: возобновление отступает к ближайшему
+ * предшествующему восстановимому состоянию, в пределе — к началу пайплайна.
+ * Худший исход равен тому, что пользователь получил бы без `resume` вообще.
+ */
+function restoreForResume(
+  resume: ResumeContext,
+  journal: RunJournal,
+  cwd: string,
+  anchorKind: AnchorKind,
+): void {
+  const restore = resume.plan.restore;
+  if (restore === undefined) return;
+
+  const anchorer = createAnchorer({
+    dir: cwd,
+    stateDir: journal.paths.anchors,
+    kind: anchorKind,
+    scope: 'resume',
+  });
+
+  try {
+    anchorer.restorePaths(restore.anchor, restore.paths);
+    journal.event({ kind: 'tree.restored', anchor: restore.anchor.id, path: cwd });
+  } catch (error) {
+    // Недоступный якорь не отказ: переисполнить лишнее дороже, но это ровно
+    // то, что пользователь получил бы без возобновления вообще.
+    journal.event({
+      kind: 'bookkeeping.failed',
+      operation: 'восстановление дерева по якорю',
+      detail: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    anchorer.dispose();
+  }
+}
+
+/**
+ * Контекст шага итерации: к его собственным записям добавляется результат
+ * непрошедшего `check` **непосредственно предшествующей** итерации. Копить
+ * результаты нескольких прошлых итераций незачем: они описывают состояние,
+ * которого уже нет.
+ */
+function withIterationNote(
+  context: RunContext,
+  own: readonly ContextEntry[],
+  previousCheck: readonly PredicateResult[] | undefined,
+): readonly ContextEntry[] {
+  const entries = takeFailureNote(context, own);
+  if (previousCheck === undefined) return entries;
+
+  const failed = previousCheck.filter((item) => !item.passed && item.hard);
+  if (failed.length === 0) return entries;
+
+  const text = [
+    '# Проверка предыдущей итерации не прошла',
+    '',
+    ...failed.map((item) => `- \`${item.predicate}\`: ${item.detail ?? 'не пройдена'}`),
+    '',
+    'Это та же работа, следующий заход. Почини причину.',
+  ].join('\n');
+
+  return [{ kind: 'text', text }, ...entries];
+}
+
+/** Текст выдержки о прошлом отказе, если прошлый прогон её заслуживает. */
+function previousFailureText(resume: ResumeContext): string | undefined {
+  return buildPreviousFailure(resume.source.paths, resume.source.status)?.text;
+}
+
+/**
+ * Подложить выдержку о прошлом отказе первому переисполняемому шагу с
+ * контекстом. Запись входит в состав контекста наравне с остальными и потому
+ * учитывается в пределе размера.
+ */
+function takeFailureNote(
+  context: RunContext,
+  own: readonly ContextEntry[],
+): readonly ContextEntry[] {
+  const note = context.failureNote.pending;
+  if (note === undefined) return own;
+
+  context.failureNote.pending = undefined;
+  return [{ kind: 'text', text: note }, ...own];
+}
+
+export { isStepcastError };

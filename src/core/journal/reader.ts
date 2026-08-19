@@ -2,13 +2,27 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { ScarpError } from '../errors.js';
-import { parseStepDirName, projectKey, runPaths, stepDir, type RunPaths } from './paths.js';
+import { StepcastError } from '../errors.js';
+import {
+  iterationDirName,
+  parseIterationDirName,
+  parseStepDirName,
+  projectKey,
+  runPaths,
+  stepDir,
+  type RunPaths,
+} from './paths.js';
+import { z } from 'zod';
+
 import {
   EventSchema,
+  ExpectReportSchema,
+  RunManifestSchema,
   RunStatusSchema,
   UsageReportSchema,
   type Event,
+  type ExpectReport,
+  type RunManifest,
   type RunStatus,
   type UsageReport,
 } from './schema.js';
@@ -36,8 +50,8 @@ export function resolveRun(runsRoot: string, projectRoot: string, runId?: string
   if (runId === undefined || runId === 'latest') {
     const latest = runs[0];
     if (latest === undefined) {
-      throw new ScarpError('Прогонов ещё не было', {
-        hint: 'Запустите пайплайн командой scarp run',
+      throw new StepcastError('Прогонов ещё не было', {
+        hint: 'Запустите пайплайн командой stepcast run',
       });
     }
     return runPaths(runsRoot, key, latest);
@@ -45,8 +59,11 @@ export function resolveRun(runsRoot: string, projectRoot: string, runId?: string
 
   const exact = runs.find((name) => name === runId || name.endsWith(`-${runId}`));
   if (exact === undefined) {
-    throw new ScarpError(`Прогон ${runId} не найден`, {
-      hint: runs.length === 0 ? 'Прогонов ещё не было' : `Последний: ${runs[0]}`,
+    throw new StepcastError(`Прогон ${runId} не найден`, {
+      hint:
+        runs.length === 0
+          ? 'Прогонов ещё не было'
+          : `Последние: ${runs.slice(0, 5).join(', ')}`,
     });
   }
   return runPaths(runsRoot, key, exact);
@@ -55,7 +72,16 @@ export function resolveRun(runsRoot: string, projectRoot: string, runId?: string
 export function readStatus(paths: RunPaths): RunStatus {
   const parsed = RunStatusSchema.safeParse(readJson(paths.status));
   if (!parsed.success) {
-    throw new ScarpError('Состояние прогона повреждено', { file: paths.status });
+    throw new StepcastError('Состояние прогона повреждено', { file: paths.status });
+  }
+  return parsed.data;
+}
+
+/** Манифест прогона: способ фиксации якоря, входы, происхождение. */
+export function readManifest(paths: RunPaths): RunManifest {
+  const parsed = RunManifestSchema.safeParse(readJson(paths.manifest));
+  if (!parsed.success) {
+    throw new StepcastError('Манифест прогона повреждён', { file: paths.manifest });
   }
   return parsed.data;
 }
@@ -63,7 +89,7 @@ export function readStatus(paths: RunPaths): RunStatus {
 export function readUsage(paths: RunPaths): UsageReport {
   const parsed = UsageReportSchema.safeParse(readJson(paths.usage));
   if (!parsed.success) {
-    throw new ScarpError('Сводка расхода повреждена', { file: paths.usage });
+    throw new StepcastError('Сводка расхода повреждена', { file: paths.usage });
   }
   return parsed.data;
 }
@@ -80,16 +106,67 @@ export function readEvents(paths: RunPaths): Event[] {
 }
 
 /** Найти каталог шага по идентификаторам, без знания его номера. */
+/**
+ * Результаты предикатов шага по попыткам. Пустой список означает, что отчёта
+ * нет, — например, шаг не дошёл до проверок.
+ */
+export function readExpectReports(
+  paths: RunPaths,
+  jobId: string,
+  stepId: string,
+): ExpectReport[] {
+  const dir = findStepDir(paths, jobId, stepId);
+  if (dir === undefined) return [];
+  const file = join(dir, 'expect.json');
+  if (!existsSync(file)) return [];
+
+  const raw = readJson(file);
+  const many = z.array(ExpectReportSchema).safeParse(raw);
+  if (many.success) return many.data;
+  const one = ExpectReportSchema.safeParse(raw);
+  return one.success ? [one.data] : [];
+}
+
+/**
+ * Каталог шага. Итерацию можно не указывать — тогда берётся последняя
+ * выполненная: чаще всего спрашивают именно про неё.
+ */
 export function findStepDir(
   paths: RunPaths,
   jobId: string,
   stepId: string,
+  iteration?: number,
 ): string | undefined {
   const stepsDir = join(paths.jobs, jobId, 'steps');
   if (!existsSync(stepsDir)) return undefined;
-  for (const name of readdirSync(stepsDir)) {
+
+  const iterations = readdirSync(stepsDir)
+    .map(parseIterationDirName)
+    .filter((value): value is number => value !== undefined)
+    .sort((a, b) => a - b);
+
+  if (iterations.length > 0) {
+    const target = iteration ?? iterations.at(-1);
+    if (target === undefined || !iterations.includes(target)) return undefined;
+    return within(paths, jobId, stepId, join(stepsDir, iterationDirName(target)), target);
+  }
+
+  return within(paths, jobId, stepId, stepsDir, undefined);
+}
+
+function within(
+  paths: RunPaths,
+  jobId: string,
+  stepId: string,
+  dir: string,
+  iteration: number | undefined,
+): string | undefined {
+  if (!existsSync(dir)) return undefined;
+  for (const name of readdirSync(dir)) {
     const parsed = parseStepDirName(name);
-    if (parsed?.stepId === stepId) return stepDir(paths, jobId, parsed.index, parsed.stepId);
+    if (parsed?.stepId === stepId) {
+      return stepDir(paths, jobId, parsed.index, parsed.stepId, iteration);
+    }
   }
   return undefined;
 }
@@ -98,7 +175,7 @@ function readJson(path: string): unknown {
   try {
     return JSON.parse(readFileSync(path, 'utf8'));
   } catch (error) {
-    throw new ScarpError(`Не удалось прочитать ${path}: ${(error as Error).message}`, {
+    throw new StepcastError(`Не удалось прочитать ${path}: ${(error as Error).message}`, {
       file: path,
       cause: error,
     });

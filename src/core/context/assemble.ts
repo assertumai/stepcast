@@ -1,7 +1,7 @@
 import { globSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, relative, resolve as resolvePath } from 'node:path';
 
-import { ScarpError } from '../errors.js';
+import { StepcastError } from '../errors.js';
 import { formatTokens } from '../units.js';
 import type { ContextEntry, ContextUpstream } from '../pipeline/model.js';
 import type { ContextEntryReport, ContextReport } from './report.js';
@@ -13,7 +13,7 @@ import { matchesAnyGlob } from './glob.js';
  * Записи склеиваются сверху вниз: выходы предшественников, пайплайн, работа,
  * шаг. Порядок нужен не для кеша — им управляет бэкенд, — а для детерминизма:
  * одинаковый вход должен давать посимвольно одинаковый промпт, иначе ключ шага
- * плавает, а `scarp diff` показывает шум вместо разницы.
+ * плавает, а `stepcast diff` показывает шум вместо разницы.
  */
 
 export type Origin = ContextEntryReport['origin'];
@@ -161,7 +161,7 @@ function resolveEntry(entry: ContextEntry, origin: Origin, options: AssembleOpti
     try {
       content = readFileSync(path, 'utf8');
     } catch (error) {
-      throw new ScarpError(`Не удалось прочитать файл контекста: ${relativePath}`, {
+      throw new StepcastError(`Не удалось прочитать файл контекста: ${relativePath}`, {
         file: path,
         cause: error,
       });
@@ -243,7 +243,7 @@ function applyBudget(resolved: Resolved[], options: AssembleOptions): void {
     .slice(0, 3)
     .map((item) => `${item.path ?? 'текст'} (${formatTokens(item.tokens)})`);
 
-  throw new ScarpError(
+  throw new StepcastError(
     `Контекст шага превышает предел: ${formatTokens(total())} против ${formatTokens(options.maxTokens)}`,
     {
       hint: `Крупнейшие записи: ${biggest.join(', ')}. Поднимите context_max_tokens или сузьте контекст`,

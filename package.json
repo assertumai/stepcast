@@ -1,5 +1,5 @@
 {
-  "name": "scarp",
+  "name": "stepcast",
   "version": "0.0.0",
   "description": "Движок пайплайнов для разработки с ИИ-агентами",
   "type": "module",
@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "bin": {
-    "scarp": "./dist/src/bin.js"
+    "stepcast": "./dist/src/bin.js"
   },
   "exports": {
     ".": "./dist/src/core/index.js"

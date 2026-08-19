@@ -24,7 +24,7 @@ const BACKEND: BackendConfig = {
 };
 
 function workdir(): string {
-  return mkdtempSync(join(tmpdir(), 'scarp-backend-'));
+  return mkdtempSync(join(tmpdir(), 'stepcast-backend-'));
 }
 
 function makeAgentStep(overrides: Partial<AgentStep> = {}): AgentStep {

@@ -1,4 +1,4 @@
-import { ScarpError } from '../errors.js';
+import { StepcastError } from '../errors.js';
 
 /**
  * Язык выражений для `if`.
@@ -37,7 +37,7 @@ function tokenize(source: string, at: string | undefined): Token[] {
   let index = 0;
 
   const fail = (message: string): never => {
-    throw new ScarpError(`${message} в выражении: ${source}`, at === undefined ? {} : { at });
+    throw new StepcastError(`${message} в выражении: ${source}`, at === undefined ? {} : { at });
   };
 
   while (index < source.length) {
@@ -102,7 +102,7 @@ export function parseExpression(source: string, at?: string): Expr {
   const advance = (): Token => tokens[position++] as Token;
 
   const fail = (message: string): never => {
-    throw new ScarpError(`${message} в выражении: ${source}`, {
+    throw new StepcastError(`${message} в выражении: ${source}`, {
       ...(at === undefined ? {} : { at }),
       hint: 'Допустимы обращения к полям, сравнения, and, or, not и скобки',
     });

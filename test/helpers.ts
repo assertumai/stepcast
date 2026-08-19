@@ -18,11 +18,11 @@ export interface Project {
 
 /** Временный проект на диске: общий каркас для тестов раскрытия и линта. */
 export function makeProject(files: Readonly<Record<string, string>> = {}): Project {
-  const base = mkdtempSync(join(tmpdir(), 'scarp-project-'));
+  const base = mkdtempSync(join(tmpdir(), 'stepcast-project-'));
   const root = join(base, 'work');
   const home = join(base, 'home');
   mkdirSync(root, { recursive: true });
-  mkdirSync(join(home, '.scarp'), { recursive: true });
+  mkdirSync(join(home, '.stepcast'), { recursive: true });
 
   const project: Project = {
     root,
@@ -30,8 +30,8 @@ export function makeProject(files: Readonly<Record<string, string>> = {}): Proje
     config: resolveConfig({
       cwd: root,
       home,
-      globalPath: join(home, '.scarp', 'config.yml'),
-      projectPath: join(root, '.scarp', 'config.yml'),
+      globalPath: join(home, '.stepcast', 'config.yml'),
+      projectPath: join(root, '.stepcast', 'config.yml'),
     }).config,
     write(relativePath, content) {
       const full = join(root, relativePath);

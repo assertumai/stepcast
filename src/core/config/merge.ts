@@ -1,6 +1,6 @@
 import { parseDuration, parseTokens } from '../units.js';
 
-/** Откуда пришло значение. Печатается в `scarp config`. */
+/** Откуда пришло значение. Печатается в `stepcast config`. */
 export type Source =
   | { readonly kind: 'builtin' }
   | { readonly kind: 'file'; readonly path: string }

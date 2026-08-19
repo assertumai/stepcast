@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { formatDuration, formatTokens, parseDuration, parseTokens } from '../src/core/units.js';
-import { ScarpError } from '../src/core/errors.js';
+import { StepcastError } from '../src/core/errors.js';
 
 describe('единицы измерения', () => {
   // Спека pipeline-definition: «Дробное число токенов»
@@ -22,7 +22,7 @@ describe('единицы измерения', () => {
     assert.throws(
       () => parseTokens('2m'),
       (error: unknown) => {
-        assert.ok(error instanceof ScarpError);
+        assert.ok(error instanceof StepcastError);
         assert.match(error.hint ?? '', /Регистр различается/);
         return true;
       },
@@ -30,7 +30,7 @@ describe('единицы измерения', () => {
   });
 
   it('отклоняет заглавную M в длительности', () => {
-    assert.throws(() => parseDuration('2M'), ScarpError);
+    assert.throws(() => parseDuration('2M'), StepcastError);
   });
 
   it('разбирает остальные единицы времени', () => {
@@ -41,9 +41,9 @@ describe('единицы измерения', () => {
   });
 
   it('отклоняет мусор', () => {
-    assert.throws(() => parseTokens('много'), ScarpError);
-    assert.throws(() => parseDuration('скоро'), ScarpError);
-    assert.throws(() => parseTokens(-1), ScarpError);
+    assert.throws(() => parseTokens('много'), StepcastError);
+    assert.throws(() => parseDuration('скоро'), StepcastError);
+    assert.throws(() => parseTokens(-1), StepcastError);
   });
 
   it('печатает величины обратно в человекочитаемом виде', () => {

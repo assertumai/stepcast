@@ -6,12 +6,12 @@ import { describe, it } from 'node:test';
 
 import { evaluatePredicates } from '../src/core/expect/evaluate.js';
 import { UsageAccumulator, describeExceeded } from '../src/core/budget/accumulator.js';
-import { ScarpError } from '../src/core/errors.js';
+import { StepcastError } from '../src/core/errors.js';
 import type { Predicate } from '../src/core/pipeline/model.js';
 import type { Usage } from '../src/core/journal/schema.js';
 
 function workdir(files: Record<string, string> = {}): string {
-  const dir = mkdtempSync(join(tmpdir(), 'scarp-expect-'));
+  const dir = mkdtempSync(join(tmpdir(), 'stepcast-expect-'));
   for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
   return dir;
 }
@@ -123,9 +123,14 @@ describe('result-contract: предикаты', () => {
     assert.match(failed?.detail ?? '', /сломалось/);
   });
 
-  it('нереализованные предикаты дают внятный отказ', () => {
-    assert.throws(() => run([{ kind: 'judge', claim: 'хорошо', hard: true }]), ScarpError);
-    assert.throws(() => run([{ kind: 'changed_only', globs: ['src/**'] }]), ScarpError);
+  it('нереализованный судья даёт внятный отказ', () => {
+    assert.throws(() => run([{ kind: 'judge', claim: 'хорошо', hard: true }]), StepcastError);
+  });
+
+  // Предикат границ реализован и живёт в отдельном наборе тестов; здесь важно
+  // лишь то, что он больше не отклоняется как нереализованный.
+  it('предикат границ изменений больше не отклоняется', () => {
+    assert.doesNotThrow(() => run([{ kind: 'changed_only', globs: ['src/**'] }]));
   });
 });
 

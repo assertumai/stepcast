@@ -25,7 +25,7 @@ Windows.
 Система SHALL формировать окружение шага, наследуя окружение своего процесса
 целиком и накладывая поверх, в порядке возрастания приоритета: `env_files`,
 `env` пайплайна, `env` на месте подключения работы, `env` в файле работы, `env`
-шага. Затем MUST добавляться переменные `SCARP_*`, не подлежащие
+шага. Затем MUST добавляться переменные `STEPCAST_*`, не подлежащие
 переопределению, и последним MUST применяться фильтр `env_deny`.
 
 #### Scenario: Перекрытие по уровням
@@ -42,11 +42,11 @@ Windows.
 #### Scenario: Инжектируемые переменные
 
 - **WHEN** шаг исполняется
-- **THEN** его окружение содержит `SCARP_RUN_ID`, `SCARP_RUN_DIR`, `SCARP_JOB`, `SCARP_JOB_DIR`, `SCARP_STEP`, `SCARP_STEP_DIR`, `SCARP_ATTEMPT`, `SCARP_WORKSPACE`, `SCARP_ARTIFACTS`
+- **THEN** его окружение содержит `STEPCAST_RUN_ID`, `STEPCAST_RUN_DIR`, `STEPCAST_JOB`, `STEPCAST_JOB_DIR`, `STEPCAST_STEP`, `STEPCAST_STEP_DIR`, `STEPCAST_ATTEMPT`, `STEPCAST_WORKSPACE`, `STEPCAST_ARTIFACTS`
 
 #### Scenario: Инжектируемые переменные не переопределяются
 
-- **WHEN** шаг объявляет `env` с ключом `SCARP_JOB`
+- **WHEN** шаг объявляет `env` с ключом `STEPCAST_JOB`
 - **THEN** действующим остаётся значение, подставленное системой
 
 ### Requirement: Ограничение времени шага

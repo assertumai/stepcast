@@ -6,7 +6,7 @@ import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { ErrorObject, ValidateFunction } from 'ajv';
 
-import { ScarpError } from '../errors.js';
+import { StepcastError } from '../errors.js';
 import type { Predicate } from '../pipeline/model.js';
 import type { PredicateResult } from '../journal/schema.js';
 
@@ -25,6 +25,13 @@ export interface EvaluationInput {
   readonly structured: unknown;
   readonly cwd: string;
   readonly env: Readonly<Record<string, string>>;
+  /**
+   * Пути, изменившиеся за время шага, — база для предиката границ.
+   * `undefined` означает, что якорь снять не удалось: предикат тогда не
+   * вычисляется, а помечается невычисленным. Считать его непройденным нельзя —
+   * это превратило бы неудачу внутреннего учёта в отказ пользователю.
+   */
+  readonly changedPaths?: readonly string[] | undefined;
 }
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
@@ -125,14 +132,73 @@ function evaluateOne(predicate: Predicate, input: EvaluationInput): PredicateRes
     }
 
     case 'changed_only':
+      return evaluateChangedOnly(predicate.globs, input);
     case 'judge':
-      throw new ScarpError(`Предикат ${predicate.kind} ещё не реализован`, {
-        hint:
-          predicate.kind === 'changed_only'
-            ? 'Ему нужен якорь рабочего дерева, который появится вместе с worktree и resume'
-            : 'Судья требует отдельного агентского вызова и появится отдельным изменением',
+      throw new StepcastError('Предикат judge ещё не реализован', {
+        hint: 'Судья требует отдельного агентского вызова и появится отдельным изменением',
       });
   }
+}
+
+/**
+ * Границы изменений: все изменившиеся пути обязаны попадать хотя бы под один
+ * из объявленных шаблонов.
+ *
+ * Предикат проверяет границы, но не факт работы: шаг, не изменивший ничего,
+ * его проходит. Держать его единственным не стоит, о чём предупреждает линт.
+ */
+function evaluateChangedOnly(
+  globs: readonly string[],
+  input: EvaluationInput,
+): PredicateResult {
+  if (input.changedPaths === undefined) {
+    return {
+      predicate: 'changed_only',
+      passed: true,
+      hard: false,
+      detail: 'не вычислен: состояние рабочего дерева снять не удалось',
+      expected: globs,
+    };
+  }
+
+  const outside = input.changedPaths.filter((path) => !globs.some((glob) => matches(glob, path)));
+
+  return {
+    predicate: 'changed_only',
+    passed: outside.length === 0,
+    hard: true,
+    expected: globs,
+    ...(outside.length === 0
+      ? {}
+      : {
+          actual: outside,
+          detail: `за объявленные границы вышли: ${outside.join(', ')}`,
+        }),
+  };
+}
+
+/** Сопоставление пути с шаблоном: `**` пересекает разделители, `*` — нет. */
+function matches(glob: string, path: string): boolean {
+  let source = '';
+  for (let index = 0; index < glob.length; index += 1) {
+    const char = glob[index] as string;
+    if (char === '*' && glob[index + 1] === '*') {
+      source += '.*';
+      index += 1;
+      if (glob[index + 1] === '/') index += 1;
+      continue;
+    }
+    if (char === '*') {
+      source += '[^/]*';
+      continue;
+    }
+    if (char === '?') {
+      source += '[^/]';
+      continue;
+    }
+    source += char.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${source}$`).test(path);
 }
 
 function evaluateSchema(path: string, input: EvaluationInput): PredicateResult {
@@ -150,7 +216,7 @@ function evaluateSchema(path: string, input: EvaluationInput): PredicateResult {
   try {
     schema = JSON.parse(readFileSync(absolute(path, input.cwd), 'utf8'));
   } catch (error) {
-    throw new ScarpError(`Не удалось прочитать схему ${path}: ${(error as Error).message}`, {
+    throw new StepcastError(`Не удалось прочитать схему ${path}: ${(error as Error).message}`, {
       file: path,
       cause: error,
     });
@@ -162,7 +228,7 @@ function evaluateSchema(path: string, input: EvaluationInput): PredicateResult {
   } catch (error) {
     // Схему писал пользователь: её дефект — ошибка конфигурации с указанием
     // файла, а не внутренний сбой движка со стеком.
-    throw new ScarpError(`Схема ${path} некорректна: ${(error as Error).message}`, {
+    throw new StepcastError(`Схема ${path} некорректна: ${(error as Error).message}`, {
       file: path,
       cause: error,
     });

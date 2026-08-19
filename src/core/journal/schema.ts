@@ -94,6 +94,20 @@ export const AttemptRecordSchema = z
   })
   .strict();
 
+/**
+ * Причина досрочной остановки из закрытого перечня `core/run/halt.ts`.
+ * Держится строкой, а не ссылкой на константу: схема описывает формат файла,
+ * который читают посторонние инструменты.
+ */
+export const HaltCauseSchema = z.enum([
+  'expect_failed',
+  'timeout',
+  'spawn_failed',
+  'until_not_met',
+  'budget_exceeded',
+  'canceled',
+]);
+
 export const StepRecordSchema = z
   .object({
     id: z.string(),
@@ -102,12 +116,34 @@ export const StepRecordSchema = z
     key: z.string(),
     status: StatusValueSchema,
     reason: z.string().optional(),
+    /** Причина неуспеха из закрытого перечня. */
+    cause: HaltCauseSchema.optional(),
     session: z.string().optional(),
     attempts: z.array(AttemptRecordSchema),
+    /** Якорь состояния рабочего дерева на конец шага. */
+    tree_id: z.string().optional(),
+    /** Якорь на начало шага: база для `changed_only` и для `diff.patch`. */
+    tree_before: z.string().optional(),
+    /** Способ фиксации: якоря разных способов несравнимы. */
+    anchor_kind: z.enum(['git', 'manifest']).optional(),
+    /**
+     * Почему якорь снять не удалось. Наличие поля означает, что шаг непригоден
+     * для переиспользования при возобновлении, но на его статус это не влияло.
+     */
+    anchor_missing: z.string().optional(),
+    /** Отпечаток входов шага — то, что решает вопрос о его валидности. */
+    inputs_fingerprint: z.string().optional(),
+    /**
+     * Откуда взят отпечаток. Пишется рядом с ним, чтобы объяснение
+     * инвалидации собиралось из записи, без повторного вычисления.
+     */
+    inputs_origin: z.enum(['declared', 'observed', 'tree']).optional(),
     /** Файлы, которые шаг фактически прочитал, — уточняют инвалидацию. */
     observed_inputs: z.array(z.string()).optional(),
     /** Что бэкенд сообщил о своей инициализации: плагины, серверы, ошибки. */
     backend_init: z.record(z.string(), z.unknown()).optional(),
+    /** Прогон, из которого запись перенесена без исполнения шага. */
+    reused_from: z.string().optional(),
   })
   .strict();
 
@@ -116,6 +152,12 @@ export const JobRecordSchema = z
     id: z.string(),
     status: StatusValueSchema,
     reason: z.string().optional(),
+    /** Причина неуспеха из закрытого перечня. */
+    cause: HaltCauseSchema.optional(),
+    /** Число выполненных итераций цикла. У работы без цикла отсутствует. */
+    iterations: z.number().int().positive().optional(),
+    /** Режим и путь рабочей директории работы: их нужно знать для apply. */
+    workspace: z.object({ mode: z.string(), path: z.string() }).strict().optional(),
     started_at: z.string().optional(),
     finished_at: z.string().optional(),
     output: z.string().optional(),
@@ -131,6 +173,10 @@ export const RunManifestSchema = z
     lock_hash: z.string(),
     project_root: z.string(),
     workspace: z.object({ mode: z.string(), path: z.string().optional() }).strict(),
+    /** Способ фиксации состояния дерева: определяется один раз на прогон. */
+    anchor_kind: z.enum(['git', 'manifest']).optional(),
+    /** Прогон, из которого этот получен возобновлением. */
+    resumed_from: z.string().optional(),
     inputs: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
     git: z.object({ head: z.string().optional(), dirty_hash: z.string().optional() }).strict(),
     backends: z.record(z.string(), z.object({ command: z.string(), version: z.string().optional() }).strict()),
@@ -157,6 +203,8 @@ export const RunStatusSchema = z
     lock_hash: z.string(),
     status: StatusValueSchema,
     workspace: z.object({ mode: z.string(), path: z.string().optional() }).strict(),
+    /** Прогон, из которого этот получен возобновлением. */
+    resumed_from: z.string().optional(),
     inputs: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),
     jobs: z.array(JobRecordSchema),
     budget: BudgetStateSchema,
@@ -221,6 +269,12 @@ export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('budget.exceeded'), scope: z.string(), used: z.number(), limit: z.number() }).strict(),
   z.object({ ...eventBase, kind: z.literal('backend.degraded'), backend: z.string(), capability: z.string(), detail: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('backend.unparsed'), job: z.string(), step: z.string(), line: z.string() }).strict(),
+  // Неудача внутреннего учёта. Статусов не меняет: см. core/run/bookkeeping.ts.
+  z.object({ ...eventBase, kind: z.literal('iteration.started'), job: z.string(), iteration: z.number().int().positive() }).strict(),
+  z.object({ ...eventBase, kind: z.literal('iteration.finished'), job: z.string(), iteration: z.number().int().positive(), passed: z.boolean(), reason: z.string().optional() }).strict(),
+  z.object({ ...eventBase, kind: z.literal('step.reused'), job: z.string(), step: z.string(), source: z.string() }).strict(),
+  z.object({ ...eventBase, kind: z.literal('tree.restored'), anchor: z.string(), path: z.string() }).strict(),
+  z.object({ ...eventBase, kind: z.literal('bookkeeping.failed'), operation: z.string(), job: z.string().optional(), step: z.string().optional(), detail: z.string() }).strict(),
 ]);
 
 export type Event = z.infer<typeof EventSchema>;

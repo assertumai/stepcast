@@ -1,4 +1,4 @@
-# Scarp
+# Stepcast
 
 Движок пайплайнов для разработки с ИИ-агентами.
 
@@ -17,7 +17,7 @@
 - [Формат пайплайна](docs/pipeline-format.md) — работы, шаги, сессии, контекст
 - [Прогон](docs/run-layout.md) — рабочее дерево, состояние, resume, дифф, расход
 - [Конфигурация](docs/config.md) — глобальная и проектная, политика
-- [Запускаемый пример](examples/minimal/scarp.yml)
+- [Запускаемый пример](examples/minimal/stepcast.yml)
 
 ## Как это выглядит
 
@@ -45,7 +45,7 @@ jobs:
 
 ```bash
 npm install && npm run build
-node dist/src/bin.js run examples/minimal/scarp.yml --input topic=сессии
+node dist/src/bin.js run examples/minimal/stepcast.yml --input topic=сессии
 ```
 
 ## Принципы
@@ -74,13 +74,13 @@ node dist/src/bin.js run examples/minimal/scarp.yml --input topic=сессии
 и окружение живут на месте подключения — поэтому одна работа переиспользуется в
 разных пайплайнах без изменений.
 
-**Ошибки ловятся до запуска.** `scarp lint` проверяет структуру статически:
+**Ошибки ловятся до запуска.** `stepcast lint` проверяет структуру статически:
 циклы, недостижимые работы, неразрешимые ссылки, цикл без предела, подстановку
 данных модели в командную строку. Отрабатывает до того, как потрачен первый
 токен.
 
-**Непонятного поведения не бывает.** `scarp config` показывает происхождение
-каждой настройки, `scarp context` — что именно увидит шаг, `scarp status` —
+**Непонятного поведения не бывает.** `stepcast config` показывает происхождение
+каждой настройки, `stepcast context` — что именно увидит шаг, `stepcast status` —
 почему шаг признан невалидным. Кеш и политика, про которые непонятно, откуда
 они взялись, обходятся дороже, чем их отсутствие.
 
@@ -88,9 +88,9 @@ node dist/src/bin.js run examples/minimal/scarp.yml --input topic=сессии
 
 | | |
 |---|---|
-| Бинарник | `scarp` |
-| Пайплайн | `scarp.yml` или `.scarp/pipelines/*.yml` |
-| Работы | `.scarp/jobs/*.yml` |
-| Конфиг | `~/.scarp/config.yml` и `.scarp/config.yml` |
-| Прогоны | `~/.scarp/runs/<project>/<run>/` |
-| Переменные | `SCARP_*` |
+| Бинарник | `stepcast` |
+| Пайплайн | `stepcast.yml` или `.stepcast/pipelines/*.yml` |
+| Работы | `.stepcast/jobs/*.yml` |
+| Конфиг | `~/.stepcast/config.yml` и `.stepcast/config.yml` |
+| Прогоны | `~/.stepcast/runs/<project>/<run>/` |
+| Переменные | `STEPCAST_*` |

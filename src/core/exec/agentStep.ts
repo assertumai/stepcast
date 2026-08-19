@@ -251,7 +251,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
 
 function writePrompt(stepDir: string, suffix: string, prompt: string): void {
   // Промпт хранится целиком: без него нельзя понять, почему шаг повёл себя
-  // так, а не иначе. Это часть запроса, сформированная scarp, — бэкенд
+  // так, а не иначе. Это часть запроса, сформированная stepcast, — бэкенд
   // добавит к ней свой системный промпт и проектный контекст.
   writeFileSync(join(stepDir, `prompt${suffix}.txt`), prompt, { mode: 0o600 });
 }

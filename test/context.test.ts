@@ -6,10 +6,10 @@ import { describe, it } from 'node:test';
 
 import { assembleContext, estimateTokens, type AssembleOptions } from '../src/core/context/assemble.js';
 import { matchesGlob } from '../src/core/context/glob.js';
-import { ScarpError } from '../src/core/errors.js';
+import { StepcastError } from '../src/core/errors.js';
 
 function workspace(files: Record<string, string> = {}): string {
-  const dir = mkdtempSync(join(tmpdir(), 'scarp-context-'));
+  const dir = mkdtempSync(join(tmpdir(), 'stepcast-context-'));
   for (const [name, content] of Object.entries(files)) {
     const path = join(dir, name);
     mkdirSync(join(path, '..'), { recursive: true });
@@ -248,7 +248,7 @@ describe('step-context: предел размера', () => {
           maxTokens: 100,
         }),
       (error: unknown) => {
-        assert.ok(error instanceof ScarpError);
+        assert.ok(error instanceof StepcastError);
         assert.match(error.message, /превышает предел/);
         assert.match(error.hint ?? '', /huge\.md/);
         return true;

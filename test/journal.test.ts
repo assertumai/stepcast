@@ -23,7 +23,7 @@ import {
   stepDirName,
 } from '../src/core/journal/paths.js';
 import { RunStatusSchema, type RunStatus } from '../src/core/journal/schema.js';
-import { ScarpError } from '../src/core/errors.js';
+import { StepcastError } from '../src/core/errors.js';
 
 interface Bed {
   readonly runsRoot: string;
@@ -31,7 +31,7 @@ interface Bed {
 }
 
 function bed(): Bed {
-  const base = mkdtempSync(join(tmpdir(), 'scarp-journal-'));
+  const base = mkdtempSync(join(tmpdir(), 'stepcast-journal-'));
   const runsRoot = join(base, 'runs');
   const projectRoot = join(base, 'project');
   mkdirSync(runsRoot, { recursive: true });
@@ -74,7 +74,7 @@ function sampleStatus(runId: string, overrides: Partial<RunStatus> = {}): RunSta
       },
     ],
     budget: { tokens_used: 1200, tokens_limit: 100000, wallclock_ms: 5000 },
-    resume: { command: `scarp resume ${shortRunId(runId)} --from build`, blocked_by: 'build' },
+    resume: { command: `stepcast resume ${shortRunId(runId)} --from build`, blocked_by: 'build' },
     updated_at: '2026-08-16T10:00:01.000Z',
     ...overrides,
   };
@@ -169,7 +169,7 @@ describe('run-journal: раскладка и состояние', () => {
     assert.ok(failed !== undefined);
     assert.equal(failed.steps[0]?.id, 'compile');
     assert.equal(failed.steps[0]?.attempts[0]?.exit_code, 2);
-    assert.match(status.resume?.command ?? '', /scarp resume/);
+    assert.match(status.resume?.command ?? '', /stepcast resume/);
   });
 
   it('состояние проходит собственную схему', () => {
@@ -229,7 +229,7 @@ describe('run-journal: раскладка и состояние', () => {
     assert.equal(resolveRun(runsRoot, projectRoot, 'aaaaaa').runId.endsWith('aaaaaa'), true);
     // Ярлык называется latest, и это же имя пользователь набирает в командах.
     assert.equal(resolveRun(runsRoot, projectRoot, 'latest').runId, newer.paths.runId);
-    assert.throws(() => resolveRun(runsRoot, projectRoot, 'нет'), ScarpError);
+    assert.throws(() => resolveRun(runsRoot, projectRoot, 'нет'), StepcastError);
   });
 
   it('сообщает понятно, когда прогонов ещё не было', () => {
@@ -237,7 +237,7 @@ describe('run-journal: раскладка и состояние', () => {
     assert.throws(
       () => resolveRun(runsRoot, projectRoot),
       (error: unknown) => {
-        assert.ok(error instanceof ScarpError);
+        assert.ok(error instanceof StepcastError);
         assert.match(error.message, /Прогонов ещё не было/);
         return true;
       },

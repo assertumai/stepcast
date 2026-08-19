@@ -12,7 +12,7 @@ export const ExitCode = {
 
 export type ExitCodeValue = (typeof ExitCode)[keyof typeof ExitCode];
 
-export interface ScarpErrorOptions {
+export interface StepcastErrorOptions {
   /** Код возврата процесса. По умолчанию — ошибка конфигурации. */
   readonly exitCode?: ExitCodeValue;
   /** Файл, к которому относится ошибка. */
@@ -28,15 +28,15 @@ export interface ScarpErrorOptions {
  * Единственный тип ошибки, который движок выпускает наружу осознанно.
  * Всё остальное, всплывшее наверх, считается дефектом и печатается со стеком.
  */
-export class ScarpError extends Error {
+export class StepcastError extends Error {
   readonly exitCode: ExitCodeValue;
   readonly file: string | undefined;
   readonly at: string | undefined;
   readonly hint: string | undefined;
 
-  constructor(message: string, options: ScarpErrorOptions = {}) {
+  constructor(message: string, options: StepcastErrorOptions = {}) {
     super(message, options.cause === undefined ? undefined : { cause: options.cause });
-    this.name = 'ScarpError';
+    this.name = 'StepcastError';
     this.exitCode = options.exitCode ?? ExitCode.configError;
     this.file = options.file;
     this.at = options.at;
@@ -50,6 +50,6 @@ export class ScarpError extends Error {
   }
 }
 
-export function isScarpError(value: unknown): value is ScarpError {
-  return value instanceof ScarpError;
+export function isStepcastError(value: unknown): value is StepcastError {
+  return value instanceof StepcastError;
 }

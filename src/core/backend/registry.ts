@@ -1,5 +1,5 @@
 import type { Config } from '../config/resolve.js';
-import { ScarpError } from '../errors.js';
+import { StepcastError } from '../errors.js';
 import { createClaudeAdapter } from './claude.js';
 import type { BackendAdapter } from './types.js';
 
@@ -11,19 +11,19 @@ import type { BackendAdapter } from './types.js';
 export function resolveAdapter(name: string, config: Config): BackendAdapter {
   const backend = config.backends[name];
   if (backend === undefined) {
-    throw new ScarpError(`Неизвестный бэкенд ${name}`, {
+    throw new StepcastError(`Неизвестный бэкенд ${name}`, {
       hint: `Настроены: ${Object.keys(config.backends).sort().join(', ')}`,
     });
   }
   if (!backend.enabled) {
-    throw new ScarpError(`Бэкенд ${name} выключен в конфигурации`);
+    throw new StepcastError(`Бэкенд ${name} выключен в конфигурации`);
   }
 
   switch (name) {
     case 'claude':
       return createClaudeAdapter(backend);
     default:
-      throw new ScarpError(`Адаптер для бэкенда ${name} ещё не реализован`, {
+      throw new StepcastError(`Адаптер для бэкенда ${name} ещё не реализован`, {
         hint: 'В текущем срезе поддержан claude; остальные добавятся отдельными изменениями',
       });
   }

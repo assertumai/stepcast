@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
-import { ScarpError } from '../errors.js';
+import { StepcastError } from '../errors.js';
 import {
   GLOBAL_ONLY_KEYS,
   RawConfigSchema,
@@ -69,7 +69,7 @@ export interface ResolvedConfig {
   readonly config: Config;
   /**
    * Слитые значения в том же виде «точечный путь → значение», в каком шло
-   * слияние. Отчёт `scarp config` читает их напрямую: любая попытка вывести
+   * слияние. Отчёт `stepcast config` читает их напрямую: любая попытка вывести
    * его из типизированной конфигурации требует таблицы соответствия имён и
    * начинает врать на первом же ключе, который назван по-разному.
    */
@@ -79,9 +79,9 @@ export interface ResolvedConfig {
 }
 
 export interface ResolveOptions {
-  /** Каталог проекта. Проектный конфиг ищется в `<cwd>/.scarp/config.yml`. */
+  /** Каталог проекта. Проектный конфиг ищется в `<cwd>/.stepcast/config.yml`. */
   readonly cwd: string;
-  /** Домашний каталог. Глобальный конфиг ищется в `<home>/.scarp/config.yml`. */
+  /** Домашний каталог. Глобальный конфиг ищется в `<home>/.stepcast/config.yml`. */
   readonly home?: string;
   /** Значения из флагов в виде «точечный путь → значение». */
   readonly flags?: Readonly<Record<string, unknown>>;
@@ -105,7 +105,7 @@ function readConfigFile(path: string): RawConfig | undefined {
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') return undefined;
-    throw new ScarpError(`Не удалось прочитать конфигурацию: ${(error as Error).message}`, {
+    throw new StepcastError(`Не удалось прочитать конфигурацию: ${(error as Error).message}`, {
       file: path,
       cause: error,
     });
@@ -115,7 +115,7 @@ function readConfigFile(path: string): RawConfig | undefined {
   try {
     document = parseYaml(text);
   } catch (error) {
-    throw new ScarpError(`Конфигурация не разбирается как YAML: ${(error as Error).message}`, {
+    throw new StepcastError(`Конфигурация не разбирается как YAML: ${(error as Error).message}`, {
       file: path,
       cause: error,
     });
@@ -127,7 +127,7 @@ function readConfigFile(path: string): RawConfig | undefined {
   if (!parsed.success) {
     const first = parsed.error.issues[0];
     const at = first === undefined ? undefined : first.path.join('.');
-    throw new ScarpError(
+    throw new StepcastError(
       `Конфигурация не соответствует схеме: ${first?.message ?? 'неизвестная ошибка'}`,
       {
         file: path,
@@ -145,10 +145,10 @@ function rejectGlobalOnlyKeys(config: RawConfig, path: string): void {
   for (const [keyPath] of flatten(config as Record<string, unknown>)) {
     for (const pattern of GLOBAL_ONLY_KEYS) {
       if (matchesKeyPattern(keyPath, pattern)) {
-        throw new ScarpError(`Ключ ${keyPath} допустим только в глобальной конфигурации`, {
+        throw new StepcastError(`Ключ ${keyPath} допустим только в глобальной конфигурации`, {
           file: path,
           at: keyPath,
-          hint: 'Проектный конфиг попадает в репозиторий — перенесите значение в ~/.scarp/config.yml',
+          hint: 'Проектный конфиг попадает в репозиторий — перенесите значение в ~/.stepcast/config.yml',
         });
       }
     }
@@ -158,7 +158,7 @@ function rejectGlobalOnlyKeys(config: RawConfig, path: string): void {
 function requireNumber(values: ReadonlyMap<string, unknown>, path: string): number {
   const value = values.get(path);
   if (typeof value !== 'number') {
-    throw new ScarpError(`Внутренняя ошибка: значение ${path} не разрешилось в число`);
+    throw new StepcastError(`Внутренняя ошибка: значение ${path} не разрешилось в число`);
   }
   return value;
 }
@@ -166,7 +166,7 @@ function requireNumber(values: ReadonlyMap<string, unknown>, path: string): numb
 function requireString(values: ReadonlyMap<string, unknown>, path: string): string {
   const value = values.get(path);
   if (typeof value !== 'string') {
-    throw new ScarpError(`Внутренняя ошибка: значение ${path} не разрешилось в строку`);
+    throw new StepcastError(`Внутренняя ошибка: значение ${path} не разрешилось в строку`);
   }
   return value;
 }
@@ -205,8 +205,8 @@ function buildBackends(
  */
 export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   const home = options.home ?? homedir();
-  const globalPath = options.globalPath ?? join(home, '.scarp', 'config.yml');
-  const projectPath = options.projectPath ?? join(options.cwd, '.scarp', 'config.yml');
+  const globalPath = options.globalPath ?? join(home, '.stepcast', 'config.yml');
+  const projectPath = options.projectPath ?? join(options.cwd, '.stepcast', 'config.yml');
 
   const layers: Layer[] = [{ source: { kind: 'builtin' }, values: BUILTIN_CONFIG as Record<string, unknown> }];
 

@@ -1,4 +1,4 @@
-import { ScarpError } from './errors.js';
+import { StepcastError } from './errors.js';
 
 /**
  * Разбор величин из конфигурации и пайплайна.
@@ -24,7 +24,7 @@ const TOKEN_PATTERN = /^(\d+(?:\.\d+)?)([a-zA-Z]*)$/;
 const DURATION_PATTERN = /^(\d+(?:\.\d+)?)([a-zA-Z]*)$/;
 
 function fail(message: string, hint: string, at?: string): never {
-  throw new ScarpError(message, at === undefined ? { hint } : { hint, at });
+  throw new StepcastError(message, at === undefined ? { hint } : { hint, at });
 }
 
 /** Токены: целое число либо число с суффиксом `k` или `M`. */

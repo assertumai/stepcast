@@ -24,7 +24,7 @@ export interface RunStepOptions {
   readonly step: RunStep;
   readonly cwd: string;
   readonly stepDir: string;
-  /** Окружение на попытку: SCARP_ATTEMPT меняется от попытки к попытке. */
+  /** Окружение на попытку: STEPCAST_ATTEMPT меняется от попытки к попытке. */
   readonly env: (plan: AttemptPlan) => Readonly<Record<string, string>>;
   readonly stallTimeoutMs?: number;
   readonly graceMs?: number;
@@ -83,13 +83,10 @@ export async function executeRunStep(options: RunStepOptions): Promise<RunStepRe
           ? evaluate(step, result)
           : [
               {
-                predicate: result.outcome === 'timeout' ? 'timeout' : 'canceled',
+                predicate: result.outcome,
                 passed: false,
                 hard: true,
-                detail:
-                  result.outcome === 'timeout'
-                    ? `Шаг не завершился за ${step.timeoutMs} мс${result.forceKilled ? ' и был добит' : ''}`
-                    : 'Прогон отменён',
+                detail: describeOutcome(result.outcome, step.timeoutMs, result.forceKilled),
               } satisfies PredicateResult,
             ];
 
@@ -127,6 +124,22 @@ export async function executeRunStep(options: RunStepOptions): Promise<RunStepRe
     results: allResults,
     last,
   };
+}
+
+/** Исход процесса, не дошедшего до собственного кода возврата. */
+function describeOutcome(
+  outcome: Exclude<ProcessResult['outcome'], 'exited'>,
+  timeoutMs: number,
+  forceKilled: boolean,
+): string {
+  switch (outcome) {
+    case 'timeout':
+      return `Шаг не завершился за ${timeoutMs} мс${forceKilled ? ' и был добит' : ''}`;
+    case 'canceled':
+      return 'Прогон отменён';
+    case 'spawn_failed':
+      return 'Процесс шага не удалось запустить: проверьте команду и её доступность';
+  }
 }
 
 function firstFailureReason(results: readonly PredicateResult[]): string | undefined {

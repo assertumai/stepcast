@@ -1,8 +1,8 @@
-import { ScarpError } from '../core/errors.js';
+import { StepcastError } from '../core/errors.js';
 
 /**
  * Разбор аргументов командной строки. Внешний разборщик не заводится
- * сознательно: набор форм у scarp закрытый, а лишняя зависимость в пакете,
+ * сознательно: набор форм у stepcast закрытый, а лишняя зависимость в пакете,
  * который должен ставиться одной командой, стоит дороже сотни строк здесь.
  */
 
@@ -36,12 +36,12 @@ export function parseArgs(
   const [command, ...rest] = argv;
 
   if (command === undefined || command === '--help' || command === '-h' || command === 'help') {
-    throw new ScarpError('Не указана команда', { hint: usage(commands) });
+    throw new StepcastError('Не указана команда', { hint: usage(commands) });
   }
 
   const spec = commands[command];
   if (spec === undefined) {
-    throw new ScarpError(`Неизвестная команда: ${command}`, { hint: usage(commands) });
+    throw new StepcastError(`Неизвестная команда: ${command}`, { hint: usage(commands) });
   }
 
   const positional: string[] = [];
@@ -61,14 +61,14 @@ export function parseArgs(
 
     const flagSpec = spec.flags?.[name];
     if (flagSpec === undefined) {
-      throw new ScarpError(`Неизвестный флаг --${name} у команды ${command}`, {
+      throw new StepcastError(`Неизвестный флаг --${name} у команды ${command}`, {
         hint: usage(commands, command),
       });
     }
 
     if (flagSpec.kind === 'boolean') {
       if (inlineValue !== undefined && inlineValue !== 'true' && inlineValue !== 'false') {
-        throw new ScarpError(`Флаг --${name} логический и не принимает значение ${inlineValue}`);
+        throw new StepcastError(`Флаг --${name} логический и не принимает значение ${inlineValue}`);
       }
       flags[name] = inlineValue !== 'false';
       continue;
@@ -78,7 +78,7 @@ export function parseArgs(
     if (value === undefined) {
       const next = rest[index + 1];
       if (next === undefined || next.startsWith('-')) {
-        throw new ScarpError(`Флаг --${name} требует значения`);
+        throw new StepcastError(`Флаг --${name} требует значения`);
       }
       value = next;
       index += 1;
@@ -87,7 +87,7 @@ export function parseArgs(
     if (flagSpec.kind === 'number') {
       const parsed = Number(value);
       if (!Number.isFinite(parsed)) {
-        throw new ScarpError(`Флаг --${name} требует числа, получено ${value}`);
+        throw new StepcastError(`Флаг --${name} требует числа, получено ${value}`);
       }
       flags[name] = parsed;
       continue;
@@ -96,7 +96,7 @@ export function parseArgs(
     if (flagSpec.kind === 'keyValue') {
       const separatorAt = value.indexOf('=');
       if (separatorAt === -1) {
-        throw new ScarpError(`Флаг --${name} требует пары вида ключ=значение, получено ${value}`);
+        throw new StepcastError(`Флаг --${name} требует пары вида ключ=значение, получено ${value}`);
       }
       const existing = (flags[name] as Record<string, string> | undefined) ?? {};
       existing[value.slice(0, separatorAt)] = value.slice(separatorAt + 1);
@@ -109,7 +109,7 @@ export function parseArgs(
 
   const expected = spec.positional ?? [];
   if (positional.length > expected.length) {
-    throw new ScarpError(
+    throw new StepcastError(
       `Команда ${command} принимает не больше ${expected.length} позиционных аргументов, получено ${positional.length}`,
       { hint: usage(commands, command) },
     );
@@ -126,7 +126,7 @@ export function usage(
   for (const [name, spec] of Object.entries(commands)) {
     if (only !== undefined && only !== name) continue;
     const args = (spec.positional ?? []).map((item) => `<${item}>`).join(' ');
-    lines.push(`  scarp ${name}${args === '' ? '' : ` ${args}`} — ${spec.description}`);
+    lines.push(`  stepcast ${name}${args === '' ? '' : ` ${args}`} — ${spec.description}`);
     for (const [flag, flagSpec] of Object.entries(spec.flags ?? {})) {
       lines.push(`      --${flag} — ${flagSpec.description}`);
     }

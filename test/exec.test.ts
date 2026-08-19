@@ -12,7 +12,7 @@ import { executeRunStep } from '../src/core/exec/runStep.js';
 import type { Attempts, RunStep } from '../src/core/pipeline/model.js';
 
 function workdir(): string {
-  return mkdtempSync(join(tmpdir(), 'scarp-exec-'));
+  return mkdtempSync(join(tmpdir(), 'stepcast-exec-'));
 }
 
 const NO_ATTEMPTS: Attempts = { max: 1, escalation: [] };
@@ -130,7 +130,7 @@ describe('step-execution: окружение', () => {
   });
 
   // Сценарий: «Инжектируемые переменные»
-  it('добавляет переменные scarp', () => {
+  it('добавляет переменные stepcast', () => {
     const injected = injectedVariables({
       runId: 'r1',
       runDir: '/runs/r1',
@@ -154,40 +154,40 @@ describe('step-execution: окружение', () => {
       cwd: '/tmp',
     });
 
-    assert.equal(env.SCARP_RUN_ID, 'r1');
-    assert.equal(env.SCARP_JOB, 'build');
-    assert.equal(env.SCARP_STEP, 'compile');
-    assert.equal(env.SCARP_ATTEMPT, '2');
-    assert.equal(env.SCARP_WORKSPACE, '/work');
+    assert.equal(env.STEPCAST_RUN_ID, 'r1');
+    assert.equal(env.STEPCAST_JOB, 'build');
+    assert.equal(env.STEPCAST_STEP, 'compile');
+    assert.equal(env.STEPCAST_ATTEMPT, '2');
+    assert.equal(env.STEPCAST_WORKSPACE, '/work');
   });
 
   // Сценарий: «Инжектируемые переменные не переопределяются»
-  it('не даёт шагу подменить переменные scarp', () => {
+  it('не даёт шагу подменить переменные stepcast', () => {
     const { env } = buildStepEnv({
       base: {},
       envFiles: [],
       pipeline: {},
       job: {},
-      step: { SCARP_JOB: 'подделка' },
-      injected: { SCARP_JOB: 'build' },
+      step: { STEPCAST_JOB: 'подделка' },
+      injected: { STEPCAST_JOB: 'build' },
       deny: [],
       cwd: '/tmp',
     });
-    assert.equal(env.SCARP_JOB, 'build');
+    assert.equal(env.STEPCAST_JOB, 'build');
   });
 
-  it('переменные scarp не попадают под запреты', () => {
+  it('переменные stepcast не попадают под запреты', () => {
     const { env, denied } = buildStepEnv({
       base: {},
       envFiles: [],
       pipeline: {},
       job: {},
       step: {},
-      injected: { SCARP_RUN_ID: 'r1' },
-      deny: ['SCARP_*'],
+      injected: { STEPCAST_RUN_ID: 'r1' },
+      deny: ['STEPCAST_*'],
       cwd: '/tmp',
     });
-    assert.equal(env.SCARP_RUN_ID, 'r1');
+    assert.equal(env.STEPCAST_RUN_ID, 'r1');
     assert.deepEqual(denied, []);
   });
 });
@@ -437,7 +437,7 @@ describe('step-execution: шаг целиком', () => {
       }),
       cwd: dir,
       stepDir: dir,
-      env: (plan) => ({ PATH: process.env.PATH ?? '', SCARP_ATTEMPT: String(plan.attempt) }),
+      env: (plan) => ({ PATH: process.env.PATH ?? '', STEPCAST_ATTEMPT: String(plan.attempt) }),
     });
 
     assert.equal(result.status, 'failed');

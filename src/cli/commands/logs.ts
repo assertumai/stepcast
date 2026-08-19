@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { resolveConfig } from '../../core/config/resolve.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { findStepDir, follow, resolveRun } from '../../core/journal/reader.js';
-import { ExitCode, ScarpError, type ExitCodeValue } from '../../core/errors.js';
+import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -47,7 +47,7 @@ export async function runLogsCommand(
 function stepLogFiles(paths: ReturnType<typeof resolveRun>, target: string): string[] {
   const separator = target.indexOf('/');
   if (separator === -1) {
-    throw new ScarpError(`Шаг адресуется как <работа>/<шаг>, получено ${target}`, {
+    throw new StepcastError(`Шаг адресуется как <работа>/<шаг>, получено ${target}`, {
       hint: 'Например: implement/write-code',
     });
   }
@@ -57,7 +57,7 @@ function stepLogFiles(paths: ReturnType<typeof resolveRun>, target: string): str
   const dir = findStepDir(paths, jobId, stepId);
 
   if (dir === undefined) {
-    throw new ScarpError(`Шаг ${target} в прогоне не найден`, { file: paths.dir });
+    throw new StepcastError(`Шаг ${target} в прогоне не найден`, { file: paths.dir });
   }
 
   return [join(dir, 'stdout.log'), join(dir, 'stderr.log')];

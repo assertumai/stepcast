@@ -1,4 +1,4 @@
-import { ScarpError } from '../errors.js';
+import { StepcastError } from '../errors.js';
 import type { RawParam } from './schema.js';
 
 export type ParamValue = string | number | boolean;
@@ -20,7 +20,7 @@ export function resolveParams(
   for (const name of Object.keys(provided)) {
     if (!(name in declared)) {
       const known = Object.keys(declared).sort().join(', ');
-      throw new ScarpError(`Параметр ${name} не объявлен`, {
+      throw new StepcastError(`Параметр ${name} не объявлен`, {
         file: context.file,
         at: `${where}.${name}`,
         hint: known === '' ? 'Объявленных параметров нет' : `Объявлены: ${known}`,
@@ -39,7 +39,7 @@ export function resolveParams(
         continue;
       }
       if (spec.required === true) {
-        throw new ScarpError(`Не передан обязательный параметр ${name}`, {
+        throw new StepcastError(`Не передан обязательный параметр ${name}`, {
           file: context.file,
           at: `${where}.${name}`,
           hint: context.what === 'inputs' ? `Передайте --input ${name}=<значение>` : `Добавьте ${name} в with`,
@@ -72,7 +72,7 @@ function coerce(
       const text = String(value).toLowerCase();
       if (text === 'true') return true;
       if (text === 'false') return false;
-      throw new ScarpError(`Параметр ${name} должен быть логическим, получено ${String(value)}`, {
+      throw new StepcastError(`Параметр ${name} должен быть логическим, получено ${String(value)}`, {
         file,
         at,
         hint: 'Допустимы true и false',
@@ -82,7 +82,7 @@ function coerce(
     case 'int': {
       const parsed = typeof value === 'number' ? value : Number(String(value));
       if (!Number.isInteger(parsed)) {
-        throw new ScarpError(`Параметр ${name} должен быть целым, получено ${String(value)}`, {
+        throw new StepcastError(`Параметр ${name} должен быть целым, получено ${String(value)}`, {
           file,
           at,
         });

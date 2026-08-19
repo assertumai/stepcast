@@ -1,9 +1,12 @@
 import { ExitCode, type ExitCodeValue } from '../core/errors.js';
 import { parseArgs, type CommandSpec } from './args.js';
 import { reportError } from './output.js';
+import { runApplyCommand } from './commands/apply.js';
 import { runConfigCommand } from './commands/config.js';
+import { runDiffCommand } from './commands/diff.js';
 import { runLintCommand } from './commands/lint.js';
 import { runLogsCommand } from './commands/logs.js';
+import { runResumeCommand } from './commands/resume.js';
 import { runRunCommand } from './commands/run.js';
 import { runStatusCommand } from './commands/status.js';
 
@@ -27,6 +30,10 @@ export const COMMANDS: Record<string, CommandSpec> = {
     description: 'показать состояние прогона',
     flags: {
       run: { kind: 'string', description: 'идентификатор прогона, по умолчанию последний' },
+      explain: {
+        kind: 'boolean',
+        description: 'объяснить по каждому шагу, будет ли он переиспользован при возобновлении',
+      },
     },
   },
   logs: {
@@ -34,6 +41,26 @@ export const COMMANDS: Record<string, CommandSpec> = {
     positional: ['run', 'job/step'],
     flags: {
       follow: { kind: 'boolean', description: 'продолжать показывать вывод по мере записи' },
+    },
+  },
+  resume: {
+    description: 'возобновить прогон, переиспользовав шаги с совпавшим ключом',
+    positional: ['run'],
+    flags: {
+      from: { kind: 'string', description: 'начать заново с работы или шага: --from job[/step]' },
+      set: { kind: 'keyValue', description: 'переопределить вход: --set имя=значение' },
+      'dry-run': { kind: 'boolean', description: 'показать план, ничего не исполняя' },
+    },
+  },
+  diff: {
+    description: 'сравнить два прогона по ключам шагов, промптам, контексту и деревьям',
+    positional: ['run-a', 'run-b'],
+  },
+  apply: {
+    description: 'наложить результат изолированного прогона на текущее дерево',
+    positional: ['run'],
+    flags: {
+      job: { kind: 'string', description: 'наложить только результат этой работы' },
     },
   },
   config: {
@@ -57,6 +84,12 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
     switch (args.command) {
       case 'run':
         return await runRunCommand(args, io.out, io.cwd);
+      case 'resume':
+        return await runResumeCommand(args, io.out, io.cwd);
+      case 'diff':
+        return runDiffCommand(args, io.out, io.cwd);
+      case 'apply':
+        return runApplyCommand(args, io.out, io.cwd);
       case 'lint':
         return runLintCommand(args, io.out, io.cwd);
       case 'status':

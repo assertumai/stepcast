@@ -2,6 +2,7 @@ import { evaluate, parseExpression } from '../expr/parse.js';
 import { buildGraph, type Graph } from '../graph.js';
 import { isFailure, type StatusValue } from '../journal/schema.js';
 import type { Job, Pipeline } from '../pipeline/model.js';
+import { HaltCause, type HaltCauseValue } from './halt.js';
 
 /**
  * Планировщик работ.
@@ -17,6 +18,8 @@ import type { Job, Pipeline } from '../pipeline/model.js';
 export interface JobOutcome {
   readonly status: StatusValue;
   readonly reason?: string;
+  /** Причина неуспеха из закрытого перечня `halt.ts`. */
+  readonly cause?: HaltCauseValue;
   /** Опубликованный структурированный выход, если работа его произвела. */
   readonly output?: unknown;
 }
@@ -113,7 +116,11 @@ export async function schedule(options: ScheduleOptions): Promise<ScheduleResult
       const dependencies = graph.dependencies.get(job.id) ?? [];
 
       if (options.signal?.aborted === true && phase === 'main') {
-        await settle(job, { status: 'canceled', reason: 'прогон отменён' });
+        await settle(job, {
+          status: 'canceled',
+          reason: 'прогон отменён',
+          cause: HaltCause.canceled,
+        });
         continue;
       }
 

@@ -5,8 +5,8 @@
 
 | Файл | Область | В git |
 |---|---|---|
-| `~/.scarp/config.yml` | машина: пути, бэкенды, политика | нет |
-| `.scarp/config.yml` | проект: умолчания и ужесточения | да |
+| `~/.stepcast/config.yml` | машина: пути, бэкенды, политика | нет |
+| `.stepcast/config.yml` | проект: умолчания и ужесточения | да |
 
 Проектный конфиг перекрывает глобальный, пайплайн перекрывает оба, флаги CLI
 перекрывают всё. Исключения — `env_deny`, `context.deny` и `limits`: они
@@ -20,7 +20,7 @@ version: 1
 kind: config
 
 runs:
-  root: ~/.scarp/runs
+  root: ~/.stepcast/runs
   keep: 30d
 
 defaults:
@@ -142,7 +142,7 @@ ui:
 
 Оценка размера делается локально и приблизительно — точного токенизатора у
 клиента нет, поэтому предел стоит задавать с запасом. Те же числа показывает
-`scarp context`.
+`stepcast context`.
 
 ## Потолки
 
@@ -157,13 +157,13 @@ ui:
 ## Разрешение
 
 ```
-$ scarp config
-defaults.agent        claude          .scarp/config.yml
+$ stepcast config
+defaults.agent        claude          .stepcast/config.yml
 defaults.model        opus            --model (флаг)
 defaults.workspace    { mode: cwd }   встроенное умолчание
-runs.root             ~/.scarp/runs   ~/.scarp/config.yml
-limits.tokens         5M              ~/.scarp/config.yml
-env_deny              9 шаблонов      ~/.scarp/config.yml (6) + .scarp/config.yml (3)
+runs.root             ~/.stepcast/runs   ~/.stepcast/config.yml
+limits.tokens         5M              ~/.stepcast/config.yml
+env_deny              9 шаблонов      ~/.stepcast/config.yml (6) + .stepcast/config.yml (3)
 ```
 
 Настройка, про которую непонятно, откуда она взялась, обходится дороже, чем её

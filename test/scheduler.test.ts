@@ -7,9 +7,9 @@ import { makeProject } from './helpers.js';
 import type { Pipeline } from '../src/core/pipeline/model.js';
 
 function pipelineOf(yaml: string, inputs?: Record<string, string>): Pipeline {
-  const project = makeProject({ 'scarp.yml': yaml });
+  const project = makeProject({ 'stepcast.yml': yaml });
   return expandPipeline({
-    pipelinePath: project.path('scarp.yml'),
+    pipelinePath: project.path('stepcast.yml'),
     config: project.config,
     ...(inputs === undefined ? {} : { inputs }),
   }).pipeline;

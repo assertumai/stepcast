@@ -1,7 +1,7 @@
 # Пример, который запускается текущим срезом движка целиком.
 #
-#   scarp lint examples/minimal/scarp.yml
-#   scarp run  examples/minimal/scarp.yml --input topic=сессии
+#   stepcast lint examples/minimal/stepcast.yml
+#   stepcast run  examples/minimal/stepcast.yml --input topic=сессии
 #
 # Показывает: общую сессию агентских шагов, структурированный выход работы,
 # автоматическую передачу выхода в контекст следующей работы, предикаты и
@@ -58,7 +58,7 @@ jobs:
     needs: [research]
     steps:
       - id: check
-        run: [sh, -c, 'test -s "$SCARP_ARTIFACTS/research.json"']
+        run: [sh, -c, 'test -s "$STEPCAST_ARTIFACTS/research.json"']
         expect: [{ exit_code: 0 }]
 
   triage:
@@ -67,5 +67,5 @@ jobs:
     on: failure
     steps:
       - id: explain
-        run: [sh, -c, 'echo "прогон $SCARP_RUN_ID завершился отказом, см. status.json"']
+        run: [sh, -c, 'echo "прогон $STEPCAST_RUN_ID завершился отказом, см. status.json"']
         expect: [{ exit_code: 0 }]

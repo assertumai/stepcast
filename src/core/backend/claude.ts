@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 
 import type { BackendConfig } from '../config/resolve.js';
-import { ScarpError } from '../errors.js';
+import { StepcastError } from '../errors.js';
 import type { AgentInvocation, BackendAdapter, BackendEvent, LaunchSpec } from './types.js';
 
 /**
@@ -113,7 +113,7 @@ function prepareSchema(path: string): string {
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
   } catch (error) {
-    throw new ScarpError(`Схема вывода не разбирается как JSON: ${(error as Error).message}`, {
+    throw new StepcastError(`Схема вывода не разбирается как JSON: ${(error as Error).message}`, {
       file: path,
       cause: error,
     });

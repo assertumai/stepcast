@@ -140,6 +140,9 @@ const JobBodyShape = {
   context: z.array(ContextEntrySchema).optional(),
   context_upstream: ContextUpstreamSchema.optional(),
   output: OutputSchema.optional(),
+  // Объявленные входы — опция для тех, кому нужна предсказуемость: отпечаток
+  // считается только по ним, под ответственность автора.
+  inputs: z.array(z.string()).optional(),
   budget: BudgetSchema.optional(),
   until: UntilSchema.optional(),
   steps: z.array(StepSchema).min(1),

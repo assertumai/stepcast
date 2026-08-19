@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
-import { ScarpError } from '../errors.js';
+import { StepcastError } from '../errors.js';
 import {
   jobDir,
   makeRunId,
@@ -64,6 +64,7 @@ export class RunJournal {
     mkdirSync(paths.dir, { recursive: true, mode: DIR_MODE });
     mkdirSync(paths.artifacts, { recursive: true, mode: DIR_MODE });
     mkdirSync(paths.jobs, { recursive: true, mode: DIR_MODE });
+    mkdirSync(paths.anchors, { recursive: true, mode: DIR_MODE });
 
     const journal = new RunJournal(paths, options.projectRoot);
     journal.updateProjectIndex(options.runsRoot, key);
@@ -125,8 +126,8 @@ export class RunJournal {
   }
 
   /** Создать каталог шага и вернуть его путь. */
-  prepareStep(jobId: string, index: number, stepId: string): string {
-    const dir = stepDir(this.paths, jobId, index, stepId);
+  prepareStep(jobId: string, index: number, stepId: string, iteration?: number): string {
+    const dir = stepDir(this.paths, jobId, index, stepId, iteration);
     mkdirSync(dir, { recursive: true, mode: DIR_MODE });
     return dir;
   }
@@ -165,7 +166,7 @@ export function atomicWrite(path: string, content: string): void {
     renameSync(temporary, path);
   } catch (error) {
     rmSync(temporary, { force: true });
-    throw new ScarpError(`Не удалось записать ${path}: ${(error as Error).message}`, {
+    throw new StepcastError(`Не удалось записать ${path}: ${(error as Error).message}`, {
       file: path,
       cause: error,
     });

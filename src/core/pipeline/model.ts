@@ -122,6 +122,12 @@ export interface Job {
   readonly context: readonly ContextEntry[];
   readonly contextUpstream: ContextUpstream;
   readonly output?: JobOutput;
+  /**
+   * Объявленные входы работы. Пусто — отпечаток считается по всему дереву;
+   * заполнено — только по этим путям, и пропущенный файл означает пропущенную
+   * инвалидацию.
+   */
+  readonly inputs: readonly string[];
   readonly budget?: Budget;
   readonly until?: Until;
   readonly steps: readonly Step[];

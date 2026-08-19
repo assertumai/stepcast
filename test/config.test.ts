@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 
 import { resolveConfig } from '../src/core/config/resolve.js';
 import { describeSource } from '../src/core/config/merge.js';
-import { ScarpError } from '../src/core/errors.js';
+import { StepcastError } from '../src/core/errors.js';
 import { renderConfigReport } from '../src/cli/commands/config.js';
 
 interface Sandbox {
@@ -17,14 +17,14 @@ interface Sandbox {
 }
 
 function sandbox(files: { global?: string; project?: string }): Sandbox {
-  const root = mkdtempSync(join(tmpdir(), 'scarp-config-'));
+  const root = mkdtempSync(join(tmpdir(), 'stepcast-config-'));
   const home = join(root, 'home');
   const cwd = join(root, 'project');
-  mkdirSync(join(home, '.scarp'), { recursive: true });
-  mkdirSync(join(cwd, '.scarp'), { recursive: true });
+  mkdirSync(join(home, '.stepcast'), { recursive: true });
+  mkdirSync(join(cwd, '.stepcast'), { recursive: true });
 
-  const globalPath = join(home, '.scarp', 'config.yml');
-  const projectPath = join(cwd, '.scarp', 'config.yml');
+  const globalPath = join(home, '.stepcast', 'config.yml');
+  const projectPath = join(cwd, '.stepcast', 'config.yml');
   if (files.global !== undefined) writeFileSync(globalPath, files.global);
   if (files.project !== undefined) writeFileSync(projectPath, files.project);
 
@@ -41,7 +41,7 @@ function resolveIn(box: Sandbox, flags?: Record<string, unknown>) {
   });
 }
 
-describe('scarp-configuration', () => {
+describe('stepcast-configuration', () => {
   // Сценарий: «Проектный конфиг перекрывает глобальный»
   it('проектный конфиг перекрывает глобальный', () => {
     const box = sandbox({
@@ -125,7 +125,7 @@ describe('scarp-configuration', () => {
     assert.throws(
       () => resolveIn(box),
       (error: unknown) => {
-        assert.ok(error instanceof ScarpError);
+        assert.ok(error instanceof StepcastError);
         assert.match(error.message, /backends\.claude\.command/);
         assert.equal(error.file, box.projectPath);
         return true;
@@ -135,7 +135,7 @@ describe('scarp-configuration', () => {
 
   it('отклоняет runs.root в проектном конфиге', () => {
     const box = sandbox({ project: 'runs:\n  root: /tmp/runs\n' });
-    assert.throws(() => resolveIn(box), ScarpError);
+    assert.throws(() => resolveIn(box), StepcastError);
   });
 
   it('принимает те же ключи в глобальном конфиге', () => {
@@ -145,17 +145,17 @@ describe('scarp-configuration', () => {
 
   it('отклоняет неизвестный ключ', () => {
     const box = sandbox({ project: 'defaults:\n  modle: opus\n' });
-    assert.throws(() => resolveIn(box), ScarpError);
+    assert.throws(() => resolveIn(box), StepcastError);
   });
 
   it('отклоняет неразбираемый YAML', () => {
     const box = sandbox({ project: 'defaults:\n  - : :\n   bad\n' });
-    assert.throws(() => resolveIn(box), ScarpError);
+    assert.throws(() => resolveIn(box), StepcastError);
   });
 
   it('разворачивает тильду в корне прогонов', () => {
-    const box = sandbox({ global: 'runs:\n  root: ~/.scarp/runs\n' });
-    assert.equal(resolveIn(box).config.runs.root, join(box.home, '.scarp', 'runs'));
+    const box = sandbox({ global: 'runs:\n  root: ~/.stepcast/runs\n' });
+    assert.equal(resolveIn(box).config.runs.root, join(box.home, '.stepcast', 'runs'));
   });
 
   // Сценарий: «Отчёт о конфигурации»

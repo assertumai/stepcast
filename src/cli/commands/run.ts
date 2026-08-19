@@ -1,9 +1,10 @@
 import { resolve as resolvePath } from 'node:path';
 
 import { resolveConfig } from '../../core/config/resolve.js';
-import { ExitCode, isScarpError, type ExitCodeValue } from '../../core/errors.js';
+import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { shortRunId } from '../../core/journal/paths.js';
+import { readStatus } from '../../core/journal/reader.js';
 import { hasErrors, lintPipeline } from '../../core/lint.js';
 import { expandPipeline } from '../../core/pipeline/expand.js';
 import { runPipeline } from '../../core/run/runner.js';
@@ -15,7 +16,7 @@ export async function runRunCommand(
   write: (line: string) => void,
   cwd: string,
 ): Promise<ExitCodeValue> {
-  const target = args.positional[0] ?? 'scarp.yml';
+  const target = args.positional[0] ?? 'stepcast.yml';
   const pipelinePath = resolvePath(cwd, target);
   const { config } = resolveConfig({ cwd });
   const inputs = (args.flags.input as Record<string, string> | undefined) ?? {};
@@ -50,11 +51,26 @@ export async function runRunCommand(
       signal: controller.signal,
     });
 
-    write(`прогон ${shortRunId(result.journal.paths.runId)}: ${result.status}`);
+    const runId = shortRunId(result.journal.paths.runId);
+    write(`прогон ${runId}: ${result.status}`);
     write(`журнал: ${result.journal.paths.dir}`);
+
+    // В изолированном режиме результат остался в стороне. Молча закончить —
+    // значит оставить пользователя гадать, где его работа.
+    const isolated = readStatus(result.journal.paths).jobs.filter(
+      (job) => job.workspace !== undefined && job.workspace.mode !== 'cwd',
+    );
+    if (isolated.length > 0) {
+      write('рабочие деревья:');
+      for (const job of isolated) {
+        write(`  ${job.id} (${job.workspace?.mode}): ${job.workspace?.path}`);
+      }
+      write(`наложить результат на текущее дерево: stepcast apply ${runId}`);
+    }
+
     return result.exitCode;
   } catch (error) {
-    if (!isScarpError(error)) throw error;
+    if (!isStepcastError(error)) throw error;
     for (const line of formatDiagnostic({
       severity: 'error',
       message: error.message,

@@ -13,9 +13,9 @@ import { RawConfigSchema } from '../src/core/config/schema.js';
  * подсказка в редакторе и валидация разъезжаются, и первая начинает врать.
  */
 const targets = [
-  ['schema/pipeline.schema.json', PipelineDocumentSchema, 'scarp pipeline'],
-  ['schema/job.schema.json', JobDocumentSchema, 'scarp job'],
-  ['schema/config.schema.json', RawConfigSchema, 'scarp config'],
+  ['schema/pipeline.schema.json', PipelineDocumentSchema, 'stepcast pipeline'],
+  ['schema/job.schema.json', JobDocumentSchema, 'stepcast job'],
+  ['schema/config.schema.json', RawConfigSchema, 'stepcast config'],
 ] as const;
 
 for (const [file, schema, title] of targets) {

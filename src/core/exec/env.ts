@@ -13,7 +13,7 @@ import { compileNameGlob } from '../lint.js';
  */
 
 export interface EnvLayers {
-  /** Окружение процесса scarp. */
+  /** Окружение процесса stepcast. */
   readonly base: Readonly<Record<string, string | undefined>>;
   readonly envFiles: readonly string[];
   readonly pipeline: Readonly<Record<string, string>>;
@@ -21,7 +21,7 @@ export interface EnvLayers {
   readonly step: Readonly<Record<string, string>>;
   /** Переменные бэкенда: их добавляет адаптер, запрету они тоже подчиняются. */
   readonly backend?: Readonly<Record<string, string>>;
-  /** Переменные scarp: добавляются последними и не переопределяются. */
+  /** Переменные stepcast: добавляются последними и не переопределяются. */
   readonly injected: Readonly<Record<string, string>>;
   readonly deny: readonly string[];
   /** Каталог, от которого разрешаются относительные пути env_files. */
@@ -59,9 +59,9 @@ export function buildStepEnv(layers: EnvLayers): BuiltEnv {
   const denied: DeniedVariable[] = [];
 
   for (const name of Object.keys(env)) {
-    // Собственные переменные scarp под запрет не попадают: они описывают
+    // Собственные переменные stepcast под запрет не попадают: они описывают
     // прогон, а не несут учётных данных.
-    if (name.startsWith('SCARP_')) continue;
+    if (name.startsWith('STEPCAST_')) continue;
     const hit = matchers.find(({ matcher }) => matcher.test(name));
     if (hit === undefined) continue;
     delete env[name];
@@ -115,18 +115,18 @@ export interface InjectedContext {
 
 export function injectedVariables(context: InjectedContext): Record<string, string> {
   return {
-    SCARP_RUN_ID: context.runId,
-    SCARP_RUN_DIR: context.runDir,
-    SCARP_JOB: context.jobId,
-    SCARP_JOB_DIR: context.jobDir,
-    SCARP_STEP: context.stepId,
-    SCARP_STEP_DIR: context.stepDir,
-    SCARP_ATTEMPT: String(context.attempt),
-    SCARP_WORKSPACE: context.workspace,
-    SCARP_ARTIFACTS: context.artifacts,
-    ...(context.iteration === undefined ? {} : { SCARP_ITERATION: String(context.iteration) }),
+    STEPCAST_RUN_ID: context.runId,
+    STEPCAST_RUN_DIR: context.runDir,
+    STEPCAST_JOB: context.jobId,
+    STEPCAST_JOB_DIR: context.jobDir,
+    STEPCAST_STEP: context.stepId,
+    STEPCAST_STEP_DIR: context.stepDir,
+    STEPCAST_ATTEMPT: String(context.attempt),
+    STEPCAST_WORKSPACE: context.workspace,
+    STEPCAST_ARTIFACTS: context.artifacts,
+    ...(context.iteration === undefined ? {} : { STEPCAST_ITERATION: String(context.iteration) }),
     ...(context.previousFailurePath === undefined
       ? {}
-      : { SCARP_PREV_FAILURE: context.previousFailurePath }),
+      : { STEPCAST_PREV_FAILURE: context.previousFailurePath }),
   };
 }

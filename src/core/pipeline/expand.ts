@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
 import type { Config } from '../config/resolve.js';
-import { ScarpError } from '../errors.js';
+import { StepcastError } from '../errors.js';
 import { parseDuration, parseTokens } from '../units.js';
 import { interpolateTree, type Scope } from './interpolate.js';
 import { readYamlDocument, rejectWiringKeys, validateDocument } from './load.js';
@@ -46,7 +46,7 @@ export interface ExpandOptions {
 function toBudget(raw: RawBudget, at: string): Budget {
   const onExceed = raw.on_exceed ?? 'stop';
   if (onExceed === 'wait') {
-    throw new ScarpError('Режим on_exceed: wait ещё не реализован', {
+    throw new StepcastError('Режим on_exceed: wait ещё не реализован', {
       at: `${at}.on_exceed`,
       hint: 'Пока доступен только stop — прогон остановится со статусом budget_exceeded',
     });
@@ -98,7 +98,7 @@ function toPermissions(raw: NonNullable<RawAgentStep['permissions']>): Permissio
 function toAttempts(raw: RawStep['attempts'], limits: Config['limits'], at: string): Attempts {
   const max = raw?.max ?? 1;
   if (max > limits.attempts) {
-    throw new ScarpError(
+    throw new StepcastError(
       `attempts.max = ${max} превышает потолок limits.attempts = ${limits.attempts}`,
       { at: `${at}.attempts.max`, hint: 'Поднимите потолок в конфигурации или уменьшите число попыток' },
     );
@@ -130,7 +130,7 @@ function readPrompt(value: string, declaringFile: string, scope: Scope, at: stri
   try {
     raw = readFileSync(path, 'utf8');
   } catch (error) {
-    throw new ScarpError(`Не удалось прочитать файл промпта: ${(error as Error).message}`, {
+    throw new StepcastError(`Не удалось прочитать файл промпта: ${(error as Error).message}`, {
       file: declaringFile,
       at,
       cause: error,
@@ -335,11 +335,18 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     const rawSteps = body.steps as RawStep[];
 
     const until = body.until as { max_iterations?: number; check: RawPredicate[] } | undefined;
-    if (until !== undefined) {
-      throw new ScarpError('Цикл until ещё не реализован', {
+    if (until !== undefined && until.max_iterations === undefined) {
+      throw new StepcastError('Цикл until объявлен без max_iterations', {
         file: declaringFile,
-        at: `${at}.until`,
-        hint: 'В текущем срезе работа выполняется один раз; цикл добавится отдельным изменением',
+        at: `${at}.until.max_iterations`,
+        hint: 'Без предела итераций худший случай работы неограничен',
+      });
+    }
+    if (until !== undefined && until.check.length === 0) {
+      throw new StepcastError('Цикл until объявлен с пустым check', {
+        file: declaringFile,
+        at: `${at}.until.check`,
+        hint: 'Условие выхода из цикла должно быть хотя бы одно',
       });
     }
 
@@ -347,7 +354,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     if (output !== undefined && output.from === undefined) {
       const lastAgent = [...rawSteps].reverse().find((step) => !('run' in step));
       if (lastAgent === undefined) {
-        throw new ScarpError('Работа объявляет output без from и не содержит агентских шагов', {
+        throw new StepcastError('Работа объявляет output без from и не содержит агентских шагов', {
           file: declaringFile,
           at: `${at}.output`,
           hint: 'Укажите output.from или добавьте агентский шаг',
@@ -368,6 +375,15 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       context: toContext(body.context as RawContextEntry[] | undefined),
       contextUpstream:
         (body.context_upstream as ContextUpstream | undefined) ?? document.context_upstream ?? 'all',
+      inputs: (body.inputs as readonly string[] | undefined) ?? [],
+      ...(until === undefined
+        ? {}
+        : {
+            until: {
+              maxIterations: until.max_iterations as number,
+              check: until.check.map(toPredicate),
+            },
+          }),
       ...(output === undefined
         ? {}
         : {

@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import type { Config } from './config/resolve.js';
 import { parseExpression, references } from './expr/parse.js';
 import { buildGraph } from './graph.js';
-import { isScarpError } from './errors.js';
+import { isStepcastError } from './errors.js';
 import { formatDuration, formatTokens } from './units.js';
 import type { ExpandedPipeline, Job, Predicate, Step } from './pipeline/model.js';
 
@@ -118,6 +118,21 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
     });
   }
 
+  for (const job of pipeline.jobs) {
+    if (job.until === undefined || job.budget !== undefined) continue;
+    // Худший случай работы с циклом = Σ по шагам (бюджет × attempts.max) ×
+    // max_iterations. Без собственного бюджета он ограничен только сверху
+    // бюджетом пайплайна, а это обычно не то, чего ждёт автор.
+    const attempts = job.steps.reduce((sum, step) => sum + step.attempts.max, 0);
+    push({
+      severity: 'warning',
+      message: `У работы ${job.id} есть цикл until, но нет собственного бюджета`,
+      file: job.source,
+      at: `jobs.${job.id}.budget`,
+      hint: `Худший случай: до ${attempts * job.until.maxIterations} исполнений шагов (${job.until.maxIterations} итераций)`,
+    });
+  }
+
   if (pipeline.workspace.mode === 'cwd' && pipeline.concurrency > 1) {
     push({
       severity: 'warning',
@@ -147,10 +162,10 @@ function checkCondition(
   } catch (error) {
     push({
       severity: 'error',
-      message: isScarpError(error) ? error.message : String(error),
+      message: isStepcastError(error) ? error.message : String(error),
       file,
       at,
-      ...(isScarpError(error) && error.hint !== undefined ? { hint: error.hint } : {}),
+      ...(isStepcastError(error) && error.hint !== undefined ? { hint: error.hint } : {}),
     });
     return;
   }
@@ -262,16 +277,13 @@ function checkStep(
   }
 
   for (const predicate of step.expect) {
-    if (predicate.kind !== 'changed_only' && predicate.kind !== 'judge') continue;
+    if (predicate.kind !== 'judge') continue;
     push({
       severity: 'error',
-      message: `Предикат ${predicate.kind} ещё не реализован`,
+      message: 'Предикат judge ещё не реализован',
       file: job.source,
       at: `${at}.expect`,
-      hint:
-        predicate.kind === 'changed_only'
-          ? 'Ему нужен якорь рабочего дерева, который появится вместе с worktree и resume'
-          : 'Судья требует отдельного агентского вызова и появится отдельным изменением',
+      hint: 'Судья требует отдельного агентского вызова и появится отдельным изменением',
     });
   }
 

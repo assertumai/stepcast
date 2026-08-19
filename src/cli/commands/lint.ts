@@ -3,7 +3,7 @@ import { resolve as resolvePath } from 'node:path';
 import { expandPipeline } from '../../core/pipeline/expand.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../../core/lint.js';
 import { resolveConfig } from '../../core/config/resolve.js';
-import { ExitCode, isScarpError, type ExitCodeValue } from '../../core/errors.js';
+import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
 import type { ParsedArgs } from '../args.js';
 
 export function formatDiagnostic(diagnostic: Diagnostic): string[] {
@@ -20,7 +20,7 @@ export function runLintCommand(
   write: (line: string) => void,
   cwd: string,
 ): ExitCodeValue {
-  const target = args.positional[0] ?? 'scarp.yml';
+  const target = args.positional[0] ?? 'stepcast.yml';
   const pipelinePath = resolvePath(cwd, target);
   const { config } = resolveConfig({ cwd });
 
@@ -31,7 +31,7 @@ export function runLintCommand(
     expanded = expandPipeline({ pipelinePath, config, inputs });
   } catch (error) {
     // Без раскрытия проверять нечего, поэтому такая ошибка одна и фатальна.
-    if (!isScarpError(error)) throw error;
+    if (!isStepcastError(error)) throw error;
     for (const line of formatDiagnostic({
       severity: 'error',
       message: error.message,

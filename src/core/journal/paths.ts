@@ -51,6 +51,8 @@ export interface RunPaths {
   readonly artifacts: string;
   readonly jobs: string;
   readonly workspace: string;
+  /** Служебные файлы якоря: индекс git, тела манифестов. Вне рабочего дерева. */
+  readonly anchors: string;
 }
 
 export function runPaths(runsRoot: string, key: string, runId: string): RunPaths {
@@ -68,6 +70,7 @@ export function runPaths(runsRoot: string, key: string, runId: string): RunPaths
     artifacts: join(dir, 'artifacts'),
     jobs: join(dir, 'jobs'),
     workspace: join(dir, 'workspace'),
+    anchors: join(dir, 'anchors'),
   };
 }
 
@@ -83,8 +86,32 @@ export function stepDirName(index: number, stepId: string): string {
   return `${String(index).padStart(2, '0')}-${stepId}`;
 }
 
-export function stepDir(paths: RunPaths, jobId: string, index: number, stepId: string): string {
-  return join(jobDir(paths, jobId), 'steps', stepDirName(index, stepId));
+/**
+ * Каталог шага. Уровень итерации появляется только у работ с циклом: добавлять
+ * его всем единообразнее, но раскладку читает человек, и её краткость стоит
+ * дороже единообразия. Точка порождения пути при этом одна — здесь.
+ */
+export function stepDir(
+  paths: RunPaths,
+  jobId: string,
+  index: number,
+  stepId: string,
+  iteration?: number,
+): string {
+  const base = join(jobDir(paths, jobId), 'steps');
+  return iteration === undefined
+    ? join(base, stepDirName(index, stepId))
+    : join(base, iterationDirName(iteration), stepDirName(index, stepId));
+}
+
+/** Имя каталога итерации: `iter-1`, `iter-2`, … */
+export function iterationDirName(iteration: number): string {
+  return `iter-${iteration}`;
+}
+
+export function parseIterationDirName(name: string): number | undefined {
+  const match = /^iter-(\d+)$/.exec(name);
+  return match === null ? undefined : Number(match[1]);
 }
 
 /** Разобрать имя каталога шага обратно в номер и идентификатор. */

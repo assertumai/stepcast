@@ -1,0 +1,71 @@
+# Приёмка цикла `until` на живом бэкенде.
+#
+#   stepcast lint examples/acceptance/stepcast.yml
+#   stepcast run  examples/acceptance/stepcast.yml
+#   node examples/acceptance/verify.mjs <каталог-прогона-из-вывода>
+#
+# Пайплайн намеренно дёшев: один агентский вызов на итерацию, промпт в одну
+# строку, потолок в 40k токенов. Число итераций задаётся не моделью, а
+# счётчиком в файле, поэтому прогон детерминирован и стоит одинаково при любом
+# поведении агента.
+#
+# Что проверяется: итерации цикла и их предел, сброс сессий и попыток на
+# границе итерации, уровень `iter-N` в раскладке журнала — и его отсутствие у
+# работы без цикла.
+
+version: 1
+kind: pipeline
+name: acceptance-until
+
+workspace:
+  mode: cwd
+
+budget:
+  tokens: 40k
+  wallclock: 10m
+
+defaults:
+  agent: claude
+  session: shared
+
+jobs:
+
+  готовит:
+    description: Обнулить счётчик, задающий число итераций
+    steps:
+      - id: обнуляет
+        run: [sh, -c, 'echo 0 > .stepcast-счётчик']
+        expect: [{ exit_code: 0 }]
+
+  цикл:
+    description: Работа, которой нужно ровно два захода до выполнения условия
+    needs: [готовит]
+    session: shared
+    budget: { tokens: 30k }
+    until:
+      max_iterations: 3
+      # Счётчик растёт на единицу за итерацию, поэтому условие выполняется на
+      # второй: третья итерация не должна начаться.
+      check:
+        - cmd: "test $(cat .stepcast-счётчик) -ge 2"
+    steps:
+      # Агентский шаг нужен ровно для одного: у него есть сессия, и по её
+      # идентификатору видно, что на новой итерации диалог начался заново.
+      - id: отмечается
+        agent: claude
+        prompt: "Ответь ровно одним словом: готово"
+        timeout: 2m
+        expect:
+          - matches: "/готов/i"
+
+      - id: считает
+        run: [sh, -c, 'echo $(( $(cat .stepcast-счётчик) + 1 )) > .stepcast-счётчик']
+        expect: [{ exit_code: 0 }]
+
+  без-цикла:
+    description: "Контрольная работа: уровня iter-N у неё быть не должно"
+    needs: [цикл]
+    steps:
+      - id: один-раз
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]

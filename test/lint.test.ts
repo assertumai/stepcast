@@ -3,12 +3,12 @@ import { describe, it } from 'node:test';
 
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../src/core/lint.js';
-import { ScarpError } from '../src/core/errors.js';
+import { StepcastError } from '../src/core/errors.js';
 import { makeProject, type Project } from './helpers.js';
 
 function lint(project: Project, inputs?: Record<string, string>): Diagnostic[] {
   const expanded = expandPipeline({
-    pipelinePath: project.path('scarp.yml'),
+    pipelinePath: project.path('stepcast.yml'),
     config: project.config,
     ...(inputs === undefined ? {} : { inputs }),
   });
@@ -37,7 +37,7 @@ jobs:
 
 describe('pipeline-definition: статическая проверка', () => {
   it('чистый пайплайн не даёт ни ошибок, ни предупреждений', () => {
-    const diagnostics = lint(makeProject({ 'scarp.yml': OK_PIPELINE }));
+    const diagnostics = lint(makeProject({ 'stepcast.yml': OK_PIPELINE }));
     assert.deepEqual(diagnostics, []);
     assert.equal(hasErrors(diagnostics), false);
   });
@@ -46,7 +46,7 @@ describe('pipeline-definition: статическая проверка', () => {
   it('находит цикл и перечисляет участников', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -69,7 +69,7 @@ jobs:
   it('сообщает о недостижимой работе за циклом', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -91,7 +91,7 @@ jobs:
   it('находит зависимость от несуществующей работы', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -107,7 +107,7 @@ jobs:
   it('предупреждает о явно перечисленной транзитивной зависимости', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -129,7 +129,7 @@ jobs:
   it('отклоняет условие с необъявленным входом', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -145,7 +145,7 @@ jobs:
   it('отклоняет условие о работе не выше по графу', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -163,7 +163,7 @@ jobs:
   it('разрешает условие о работе выше по графу и при needs: all', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -188,7 +188,7 @@ jobs:
   it('отклоняет вывод работы в строковой форме run и предлагает argv', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -210,7 +210,7 @@ jobs:
   it('разрешает тот же вывод в форме списком argv', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -228,7 +228,7 @@ jobs:
   it('отклоняет переменную env под действующим запретом', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 env:
@@ -249,7 +249,7 @@ jobs:
   it('отклоняет неизвестный бэкенд и перечисляет настроенные', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -267,7 +267,7 @@ jobs:
   it('не проверяет существование схемы, если в пути есть подстановка', () => {
     const withSubstitution = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 inputs:
@@ -282,7 +282,7 @@ jobs:
 
     const withoutSubstitution = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -296,7 +296,7 @@ jobs:
 
   it('проверяет превышение потолков конфигурации', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 9M }
 concurrency: 20
@@ -313,7 +313,7 @@ jobs:
   it('предупреждает о пайплайне без бюджета', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 jobs:
   build:
@@ -328,7 +328,7 @@ jobs:
   it('предупреждает о cwd при параллелизме', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 concurrency: 3
@@ -346,7 +346,7 @@ jobs:
   it('предупреждает о единственном предикате changed_only', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -364,7 +364,7 @@ jobs:
   it('предупреждает о гейте только из совещательного judge', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -381,7 +381,7 @@ jobs:
 
   it('предупреждает о контексте у работы без агентских шагов', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 100k }
 jobs:
@@ -397,7 +397,7 @@ jobs:
   it('собирает все ошибки сразу, а не по одной', () => {
     const diagnostics = lint(
       makeProject({
-        'scarp.yml': `
+        'stepcast.yml': `
 kind: pipeline
 budget: { tokens: 9M }
 jobs:
@@ -414,7 +414,7 @@ jobs:
 
   it('ошибка раскрытия остаётся фатальной и одиночной', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   build:
@@ -423,8 +423,8 @@ jobs:
     });
     assert.throws(
       () =>
-        expandPipeline({ pipelinePath: project.path('scarp.yml'), config: project.config }),
-      ScarpError,
+        expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      StepcastError,
     );
   });
 });

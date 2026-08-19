@@ -1,8 +1,8 @@
-import { ExitCode, isScarpError, type ExitCodeValue } from '../core/errors.js';
+import { ExitCode, isStepcastError, type ExitCodeValue } from '../core/errors.js';
 
 /** Единая печать диагностики: всё, что видит пользователь при отказе. */
 export function reportError(error: unknown, write: (line: string) => void): ExitCodeValue {
-  if (isScarpError(error)) {
+  if (isStepcastError(error)) {
     const location = error.location();
     write(`ошибка: ${error.message}`);
     if (location !== undefined) write(`  где: ${location}`);

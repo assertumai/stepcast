@@ -31,7 +31,7 @@ export interface ProcessOptions {
   readonly signal?: AbortSignal;
 }
 
-export type ProcessOutcome = 'exited' | 'timeout' | 'canceled';
+export type ProcessOutcome = 'exited' | 'timeout' | 'canceled' | 'spawn_failed';
 
 export interface ProcessResult {
   readonly outcome: ProcessOutcome;
@@ -125,6 +125,18 @@ export async function runProcess(options: ProcessOptions): Promise<ProcessResult
   options.signal?.removeEventListener('abort', onAbort);
 
   await Promise.all([stdout.done(), stderr.done()]);
+
+  // Процесс, не сумевший стартовать, не имеет ни кода, ни сигнала. Отличать
+  // это от обычного отказа нужно, чтобы причина остановки называла отсутствие
+  // команды, а не непройденный предикат кода возврата.
+  if (
+    outcome === 'exited' &&
+    result.failed === true &&
+    typeof result.exitCode !== 'number' &&
+    (result.signal ?? null) === null
+  ) {
+    outcome = 'spawn_failed';
+  }
 
   return {
     outcome,

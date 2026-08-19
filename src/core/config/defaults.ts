@@ -2,12 +2,12 @@ import type { RawConfig } from './schema.js';
 
 /**
  * Встроенные умолчания. Это такой же слой конфигурации, как файлы и флаги, —
- * поэтому у каждого значения из него в отчёте `scarp config` будет честный
+ * поэтому у каждого значения из него в отчёте `stepcast config` будет честный
  * источник «встроенное умолчание», а не пустота.
  */
 export const BUILTIN_CONFIG: RawConfig = {
   runs: {
-    root: '~/.scarp/runs',
+    root: '~/.stepcast/runs',
     keep: '30d',
   },
   defaults: {

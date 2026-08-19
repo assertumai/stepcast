@@ -4,10 +4,10 @@ import { parse as parseYaml } from 'yaml';
 
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { serializeLock } from '../src/core/pipeline/lock.js';
-import { ScarpError } from '../src/core/errors.js';
+import { StepcastError } from '../src/core/errors.js';
 import { asAgent, asRun, makeProject, MINIMAL_PIPELINE, type Project } from './helpers.js';
 
-function expand(project: Project, file = 'scarp.yml', inputs?: Record<string, string>) {
+function expand(project: Project, file = 'stepcast.yml', inputs?: Record<string, string>) {
   return expandPipeline({
     pipelinePath: project.path(file),
     config: project.config,
@@ -18,20 +18,20 @@ function expand(project: Project, file = 'scarp.yml', inputs?: Record<string, st
 describe('pipeline-definition: разбор и раскрытие', () => {
   // Сценарий: «Работа описана на месте»
   it('исполняет работу, описанную на месте', () => {
-    const project = makeProject({ 'scarp.yml': MINIMAL_PIPELINE });
+    const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
     const { pipeline } = expand(project);
 
     assert.equal(pipeline.jobs.length, 1);
     const job = pipeline.jobs[0]!;
     assert.equal(job.id, 'build');
-    assert.equal(job.source, project.path('scarp.yml'));
+    assert.equal(job.source, project.path('stepcast.yml'));
     assert.equal(job.steps[0]!.kind, 'run');
   });
 
   // Сценарий: «Работа подключена файлом»
   it('раскрывает работу, подключённую файлом', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 name: p
 jobs:
@@ -54,7 +54,7 @@ steps:
 
   it('отклоняет файл, у которого kind не job', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   build:
@@ -62,13 +62,13 @@ jobs:
 `,
       'jobs/build.yml': 'kind: pipeline\njobs: {}\n',
     });
-    assert.throws(() => expand(project), ScarpError);
+    assert.throws(() => expand(project), StepcastError);
   });
 
   // Сценарий: «Обязательный параметр не передан»
   it('требует обязательный параметр работы', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   build:
@@ -87,7 +87,7 @@ steps:
     assert.throws(
       () => expand(project),
       (error: unknown) => {
-        assert.ok(error instanceof ScarpError);
+        assert.ok(error instanceof StepcastError);
         assert.match(error.message, /target/);
         return true;
       },
@@ -97,7 +97,7 @@ steps:
   // Сценарий: «Лишний ключ в with»
   it('отклоняет лишний ключ в with', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   build:
@@ -106,13 +106,13 @@ jobs:
 `,
       'jobs/build.yml': 'kind: job\nsteps:\n  - id: c\n    run: [echo, ok]\n',
     });
-    assert.throws(() => expand(project), ScarpError);
+    assert.throws(() => expand(project), StepcastError);
   });
 
   // Сценарий: «Умолчание параметра»
   it('подставляет умолчание параметра', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   build:
@@ -134,7 +134,7 @@ steps:
 
   it('приводит типы параметров', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 inputs:
   count: { type: int }
@@ -147,7 +147,7 @@ jobs:
 `,
     });
 
-    const step = expand(project, 'scarp.yml', { count: '3', flag: 'false' }).pipeline.jobs[0]!
+    const step = expand(project, 'stepcast.yml', { count: '3', flag: 'false' }).pipeline.jobs[0]!
       .steps[0]!;
     assert.deepEqual(asRun(step).command, ['echo', '3-false']);
   });
@@ -155,7 +155,7 @@ jobs:
   // Сценарий: «needs в файле работы»
   it('отклоняет обвязку внутри файла работы', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   build:
@@ -173,7 +173,7 @@ steps:
     assert.throws(
       () => expand(project),
       (error: unknown) => {
-        assert.ok(error instanceof ScarpError);
+        assert.ok(error instanceof StepcastError);
         assert.match(error.message, /needs недопустим внутри файла работы/);
         assert.equal(error.file, project.path('jobs/build.yml'));
         return true;
@@ -184,7 +184,7 @@ steps:
   // Сценарий: «Подстановка входа пайплайна»
   it('подставляет вход пайплайна', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 inputs:
   change: { type: string, required: true }
@@ -196,14 +196,14 @@ jobs:
 `,
     });
 
-    const step = expand(project, 'scarp.yml', { change: 'foo' }).pipeline.jobs[0]!.steps[0]!;
+    const step = expand(project, 'stepcast.yml', { change: 'foo' }).pipeline.jobs[0]!.steps[0]!;
     assert.deepEqual(asRun(step).command, ['echo', 'foo']);
   });
 
   // Сценарий: «Неизвестное имя»
   it('отклоняет обращение к необъявленному входу', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   build:
@@ -212,12 +212,12 @@ jobs:
         run: [echo, "\${inputs.missing}"]
 `,
     });
-    assert.throws(() => expand(project), ScarpError);
+    assert.throws(() => expand(project), StepcastError);
   });
 
   it('работе недоступны inputs пайплайна', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 inputs:
   change: { type: string, default: x }
@@ -236,7 +236,7 @@ steps:
     assert.throws(
       () => expand(project),
       (error: unknown) => {
-        assert.ok(error instanceof ScarpError);
+        assert.ok(error instanceof StepcastError);
         assert.match(error.hint ?? '', /Работе недоступны inputs/);
         return true;
       },
@@ -245,7 +245,7 @@ steps:
 
   it('оставляет подстановки времени прогона нераскрытыми и запоминает их', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   plan:
@@ -276,7 +276,7 @@ jobs:
   // Сценарий: «Экранирование в промпте»
   it('экранирует $${ в промпте', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   ask:
@@ -294,29 +294,29 @@ jobs:
   // Сценарий: «Промпт рядом с файлом работы»
   it('разрешает промпт от файла работы, а не от пайплайна', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   ask:
-    uses: ./.scarp/jobs/ask.yml
+    uses: ./.stepcast/jobs/ask.yml
 `,
-      '.scarp/jobs/ask.yml': `
+      '.stepcast/jobs/ask.yml': `
 kind: job
 steps:
   - id: a
     prompt: "file:../prompts/ask.md"
 `,
-      '.scarp/prompts/ask.md': 'спроси\n',
+      '.stepcast/prompts/ask.md': 'спроси\n',
     });
 
     const step = asAgent(expand(project).pipeline.jobs[0]!.steps[0]!);
     assert.equal(step.prompt.trim(), 'спроси');
-    assert.equal(step.promptSource, project.path('.scarp/prompts/ask.md'));
+    assert.equal(step.promptSource, project.path('.stepcast/prompts/ask.md'));
   });
 
   it('шаблонизирует файл промпта параметрами работы', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   ask:
@@ -340,7 +340,7 @@ steps:
 
   it('применяет умолчания конфигурации и пайплайна к шагам', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 defaults:
   model: opus
@@ -369,7 +369,7 @@ jobs:
 
   it('раздаёт псевдонимы сессий по режиму работы', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   shared_job:
@@ -403,7 +403,7 @@ jobs:
 
   it('накладывает переопределения с места подключения поверх файла работы', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   build:
@@ -429,7 +429,7 @@ steps:
 
   it('отклоняет output без from у работы без агентских шагов', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   build:
@@ -439,12 +439,12 @@ jobs:
         run: [echo, ok]
 `,
     });
-    assert.throws(() => expand(project), ScarpError);
+    assert.throws(() => expand(project), StepcastError);
   });
 
   it('отклоняет превышение limits.attempts', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   build:
@@ -457,7 +457,7 @@ jobs:
     assert.throws(
       () => expand(project),
       (error: unknown) => {
-        assert.ok(error instanceof ScarpError);
+        assert.ok(error instanceof StepcastError);
         assert.match(error.message, /limits\.attempts/);
         return true;
       },
@@ -466,7 +466,7 @@ jobs:
 
   it('сохраняет порядок объявления работ', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   zebra:
@@ -488,7 +488,7 @@ jobs:
 describe('pipeline.lock.yml', () => {
   it('не содержит ссылок uses и нераскрытых подстановок пайплайна', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 inputs:
   change: { type: string, required: true }
@@ -507,7 +507,7 @@ steps:
 `,
     });
 
-    const lock = serializeLock(expand(project, 'scarp.yml', { change: 'foo' }).pipeline);
+    const lock = serializeLock(expand(project, 'stepcast.yml', { change: 'foo' }).pipeline);
     assert.doesNotMatch(lock, /uses:/);
     assert.doesNotMatch(lock, /\$\{(inputs|params)\./);
     assert.match(lock, /foo/);
@@ -519,7 +519,7 @@ steps:
 
   it('сохраняет подстановки времени прогона как есть', () => {
     const project = makeProject({
-      'scarp.yml': `
+      'stepcast.yml': `
 kind: pipeline
 jobs:
   plan:
@@ -533,7 +533,7 @@ jobs:
   });
 
   it('раскрывает умолчания, чтобы лок был самодостаточен', () => {
-    const project = makeProject({ 'scarp.yml': MINIMAL_PIPELINE });
+    const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
     const parsed = parseYaml(serializeLock(expand(project).pipeline)) as {
       concurrency: number;
       fail_fast: boolean;

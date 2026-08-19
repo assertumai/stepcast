@@ -1,4 +1,4 @@
-export { ExitCode, ScarpError, isScarpError, type ExitCodeValue } from './errors.js';
+export { ExitCode, StepcastError, isStepcastError, type ExitCodeValue } from './errors.js';
 export { parseTokens, parseDuration, formatTokens, formatDuration } from './units.js';
 export {
   resolveConfig,

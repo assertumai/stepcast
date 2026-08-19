@@ -1,4 +1,4 @@
-import { ScarpError } from '../errors.js';
+import { StepcastError } from '../errors.js';
 import type { Substitution } from './model.js';
 
 /**
@@ -46,7 +46,7 @@ function lookup(values: Readonly<Record<string, unknown>>, path: readonly string
 function renderValue(value: unknown, expression: string, at: string | undefined): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  throw new ScarpError(`Подстановка ${expression} даёт значение, непредставимое строкой`, {
+  throw new StepcastError(`Подстановка ${expression} даёт значение, непредставимое строкой`, {
     ...(at === undefined ? {} : { at }),
     hint: 'В подстановке допустимы строки, числа и логические значения',
   });
@@ -60,7 +60,7 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
 
     const expression = (expressionRaw ?? '').trim();
     if (expression === '') {
-      throw new ScarpError('Пустая подстановка ${}', at === undefined ? {} : { at });
+      throw new StepcastError('Пустая подстановка ${}', at === undefined ? {} : { at });
     }
 
     const segments = expression.split('.');
@@ -74,7 +74,7 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
 
     if (!(namespace in scope.values)) {
       const available = [...Object.keys(scope.values), ...scope.deferred].sort().join(', ');
-      throw new ScarpError(`Неизвестное пространство подстановки: ${namespace}`, {
+      throw new StepcastError(`Неизвестное пространство подстановки: ${namespace}`, {
         ...(at === undefined ? {} : { at }),
         hint: scope.hints?.[namespace] ?? `Доступны: ${available}`,
       });
@@ -82,7 +82,7 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
 
     const resolved = lookup(scope.values, segments);
     if (resolved === undefined) {
-      throw new ScarpError(`Подстановка ${expression} не определена`, {
+      throw new StepcastError(`Подстановка ${expression} не определена`, {
         ...(at === undefined ? {} : { at }),
         hint: `Проверьте, что ${namespace}.${rest.join('.')} объявлено`,
       });
