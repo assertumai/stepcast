@@ -1,3 +1,8 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: Ключ шага вычисляется и записывается`
+- TO: `### Requirement: Ключ шага вычисляется, записывается и определяет переиспользование`
+
 ## MODIFIED Requirements
 
 ### Requirement: Состав директории прогона
