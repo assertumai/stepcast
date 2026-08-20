@@ -53,10 +53,7 @@ export function runStatusCommand(
 
   const rows: string[][] = [];
   for (const job of status.jobs) {
-    const detail =
-      job.status === 'failed' && job.steps.length > 0
-        ? failureDetail(job.steps)
-        : (job.reason ?? '');
+    const detail = job.status === 'failed' ? failureDetail(job) : (job.reason ?? '');
     rows.push([`  ${job.id}`, label(job.status), detail]);
   }
   for (const line of formatColumns(rows)) write(line);
@@ -133,10 +130,19 @@ function label(status: string): string {
   return STATUS_LABEL[status] ?? status;
 }
 
-function failureDetail(steps: ReturnType<typeof readStatus>['jobs'][number]['steps']): string {
-  const failed = steps.find((step) => step.status === 'failed');
-  if (failed === undefined) return '';
-  const attempt = failed.attempts.at(-1);
-  const reason = attempt?.reason ?? failed.reason ?? '';
-  return `шаг ${failed.id}, попытка ${attempt?.attempt ?? 1}${reason === '' ? '' : `: ${reason}`}`;
+function failureDetail(job: ReturnType<typeof readStatus>['jobs'][number]): string {
+  const failed = job.steps.find((step) => step.status === 'failed');
+  if (failed !== undefined) {
+    const attempt = failed.attempts.at(-1);
+    const reason = attempt?.reason ?? failed.reason ?? '';
+    return `шаг ${failed.id}, попытка ${attempt?.attempt ?? 1}${reason === '' ? '' : `: ${reason}`}`;
+  }
+  if (job.last_check !== undefined) {
+    const names = job.last_check
+      .filter((item) => !item.passed && item.hard)
+      .map((item) => item.predicate)
+      .join(', ');
+    if (names !== '') return `check не пройден: ${names}`;
+  }
+  return job.reason ?? '';
 }

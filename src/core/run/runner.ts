@@ -219,6 +219,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
         status: outcome.status,
         ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
         ...(outcome.cause === undefined ? {} : { cause: outcome.cause }),
+        ...(outcome.lastCheck === undefined ? {} : { last_check: [...outcome.lastCheck] }),
         finished_at: new Date().toISOString(),
       });
       journal.event({
@@ -392,6 +393,7 @@ async function executeJob(job: Job, context: RunContext): Promise<JobOutcome> {
       status: 'failed',
       reason: `предикаты until не прошли за ${maxIterations} итераций`,
       cause: HaltCause.untilNotMet,
+      ...(previousCheck === undefined ? {} : { lastCheck: previousCheck }),
     };
   } finally {
     // Индексный файл живёт ровно столько, сколько работа.

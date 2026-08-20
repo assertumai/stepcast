@@ -104,6 +104,13 @@ describe('job-iteration: исчерпание итераций', () => {
     assert.equal(job?.cause, HaltCause.untilNotMet);
     assert.match(job?.reason ?? '', /2 итераций/);
     assert.equal(job?.iterations, 2);
+
+    // Диагностика исчерпания: непройденные предикаты последней итерации
+    // должны быть видны без обращения к другим файлам.
+    assert.ok(job?.last_check !== undefined, 'last_check должен быть записан');
+    const failed = job.last_check.filter((item) => !item.passed);
+    assert.ok(failed.length > 0);
+    assert.equal(failed[0]?.predicate, 'cmd');
   });
 });
 

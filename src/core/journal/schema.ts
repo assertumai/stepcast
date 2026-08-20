@@ -156,6 +156,12 @@ export const JobRecordSchema = z
     cause: HaltCauseSchema.optional(),
     /** Число выполненных итераций цикла. У работы без цикла отсутствует. */
     iterations: z.number().int().positive().optional(),
+    /**
+     * Результаты предикатов check последней вычисленной итерации. Есть
+     * только при отказе с причиной until_not_met — иначе цикл завершился
+     * успехом и объяснять нечего.
+     */
+    last_check: z.array(PredicateResultSchema).optional(),
     /** Режим и путь рабочей директории работы: их нужно знать для apply. */
     workspace: z.object({ mode: z.string(), path: z.string() }).strict().optional(),
     started_at: z.string().optional(),

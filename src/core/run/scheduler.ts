@@ -1,6 +1,6 @@
 import { evaluate, parseExpression } from '../expr/parse.js';
 import { buildGraph, type Graph } from '../graph.js';
-import { isFailure, type StatusValue } from '../journal/schema.js';
+import { isFailure, type PredicateResult, type StatusValue } from '../journal/schema.js';
 import type { Job, Pipeline } from '../pipeline/model.js';
 import { HaltCause, type HaltCauseValue } from './halt.js';
 
@@ -20,6 +20,8 @@ export interface JobOutcome {
   readonly reason?: string;
   /** Причина неуспеха из закрытого перечня `halt.ts`. */
   readonly cause?: HaltCauseValue;
+  /** Результаты check последней итерации, когда причина — until_not_met. */
+  readonly lastCheck?: readonly PredicateResult[];
   /** Опубликованный структурированный выход, если работа его произвела. */
   readonly output?: unknown;
 }
