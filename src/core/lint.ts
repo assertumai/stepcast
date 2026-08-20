@@ -4,6 +4,7 @@ import type { Config } from './config/resolve.js';
 import { parseExpression, references } from './expr/parse.js';
 import { buildGraph } from './graph.js';
 import { isStepcastError } from './errors.js';
+import { workspacePathNeedsCopy } from './run/workspace.js';
 import { formatDuration, formatTokens } from './units.js';
 import type { ExpandedPipeline, Job, Predicate, Step } from './pipeline/model.js';
 
@@ -130,6 +131,17 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
       file: job.source,
       at: `jobs.${job.id}.budget`,
       hint: `Худший случай: до ${attempts * job.until.maxIterations} исполнений шагов (${job.until.maxIterations} итераций)`,
+    });
+  }
+
+  for (const job of pipeline.jobs) {
+    if (!workspacePathNeedsCopy(job.workspace)) continue;
+    push({
+      severity: 'error',
+      message: 'Путь размещения рабочей копии допустим только при режиме copy',
+      file: job.source,
+      at: `jobs.${job.id}.workspace.path`,
+      hint: `Работа объявляет workspace.mode: ${job.workspace.mode}`,
     });
   }
 

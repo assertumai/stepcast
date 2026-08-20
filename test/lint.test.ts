@@ -428,3 +428,27 @@ jobs:
     );
   });
 });
+
+describe('pipeline-definition: путь копии при неподходящем режиме', () => {
+  it('отклоняет путь размещения рабочей копии при режиме, отличном от copy', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: путь-не-туда
+workspace: { mode: cwd, path: ./куда-то }
+jobs:
+  build:
+    steps:
+      - id: a
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`,
+    });
+
+    const diagnostics = lint(project);
+    assert.ok(
+      errors(diagnostics).some((message) => /допустим только при режиме copy/.test(message)),
+    );
+  });
+});

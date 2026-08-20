@@ -104,6 +104,11 @@ export function prepareWorkspace(options: PrepareOptions): PreparedWorkspace {
  * работы: отказ на пятой работе из семи после сорока минут работы агента
  * недопустим, если то же самое было видно на нулевой секунде.
  */
+/** Путь размещения копии, объявленный при режиме, для которого он бессмыслен. */
+export function workspacePathNeedsCopy(workspace: Workspace): boolean {
+  return workspace.path !== undefined && workspace.mode !== 'copy';
+}
+
 export function checkWorkspaceAvailability(options: {
   readonly pipeline: Pipeline;
   readonly cwd: string;
@@ -121,7 +126,7 @@ export function checkWorkspaceAvailability(options: {
 
   for (const workspace of workspaces) {
     if (workspace.path === undefined) continue;
-    if (workspace.mode !== 'copy') {
+    if (workspacePathNeedsCopy(workspace)) {
       throw new StepcastError('Путь размещения рабочей копии допустим только при режиме copy', {
         file: pipeline.file,
         at: 'workspace.path',
