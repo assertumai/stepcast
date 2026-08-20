@@ -1,4 +1,5 @@
-import { resolve, sep } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { dirname, join, resolve, sep } from 'node:path';
 
 import { StepcastError } from '../errors.js';
 import type { ExpandedPipeline } from '../pipeline/model.js';
@@ -32,16 +33,39 @@ export const checkWorkspaceMode: PreflightCheck = ({ expanded, cwd }) => {
 };
 
 /**
+ * Разрешить путь до реального, поднимаясь к первому существующему предку.
+ * `realpathSync` требует, чтобы путь существовал целиком, а `runsRoot` на
+ * первом прогоне ещё не создан — резолвим то, что есть, и дописываем остаток
+ * буквально: несуществующий хвост не может содержать симлинков.
+ */
+function realOrLiteral(path: string): string {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    const parent = dirname(absolute);
+    if (parent === absolute) return absolute;
+    return join(realOrLiteral(parent), absolute.slice(parent.length + 1));
+  }
+}
+
+/**
  * Журнал прогона обязан лежать вне рабочего дерева.
  *
  * Иначе он попадает в якорь состояния: каждый шаг «меняет дерево» самим фактом
  * записи собственного журнала, отпечатки перестают совпадать, `changed_only`
  * срабатывает на `events.ndjson`, а возобновление перестаёт переиспользовать
  * что-либо. Поймать это по симптомам почти невозможно, поэтому проверяем.
+ *
+ * Сравнение идёт по разрешённым (без символических ссылок) путям: `cwd`
+ * приходит от `process.cwd()`, который на POSIX уже резолвит симлинки, а
+ * `runsRoot` строится из `homedir()` в исходном виде — если домашний каталог
+ * сам достижим через ссылку (например, `/tmp` → `/private/tmp` на macOS),
+ * буквальное сравнение молчит там, где должно сработать.
  */
 export const checkRunsRootOutsideTree: PreflightCheck = ({ expanded, cwd, runsRoot }) => {
-  const tree = resolve(cwd);
-  const runs = resolve(runsRoot);
+  const tree = realOrLiteral(cwd);
+  const runs = realOrLiteral(runsRoot);
   if (runs !== tree && !runs.startsWith(`${tree}${sep}`)) return;
 
   throw new StepcastError(`Каталог прогонов лежит внутри рабочего дерева: ${runs}`, {

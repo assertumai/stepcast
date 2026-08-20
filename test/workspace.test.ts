@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -547,6 +547,51 @@ jobs:
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /внутри рабочего дерева/);
         assert.match(error.hint ?? '', /вынесите runs\.root/i);
+        return true;
+      },
+    );
+  });
+
+  it('находит нарушение, даже если путь к каталогу прогонов литерально другой из-за символической ссылки', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: журнал-через-ссылку
+jobs:
+  build:
+    steps:
+      - id: a
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`,
+    });
+
+    // linkedRoot литерально не совпадает с project.root, но физически ведёт
+    // туда же — так на macOS ведёт себя /tmp → /private/tmp.
+    const linkBase = mkdtempSync(join(tmpdir(), 'stepcast-link-'));
+    const linkedRoot = join(linkBase, 'alias');
+    symlinkSync(project.root, linkedRoot, 'dir');
+
+    const expanded = expandPipeline({
+      pipelinePath: project.path('stepcast.yml'),
+      config: project.config,
+    });
+
+    await assert.rejects(
+      () =>
+        runPipeline({
+          expanded,
+          config: {
+            ...project.config,
+            runs: { ...project.config.runs, root: join(linkedRoot, '.stepcast', 'runs') },
+          },
+          projectRoot: project.root,
+          cwd: project.root,
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /внутри рабочего дерева/);
         return true;
       },
     );
