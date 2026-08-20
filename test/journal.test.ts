@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { RunJournal } from '../src/core/journal/writer.js';
+import { cleanupRun } from '../src/core/run/cleanup.js';
 import {
   findStepDir,
   follow,
@@ -77,6 +78,22 @@ function sampleStatus(runId: string, overrides: Partial<RunStatus> = {}): RunSta
     resume: { command: `stepcast resume ${shortRunId(runId)} --from build`, blocked_by: 'build' },
     updated_at: '2026-08-16T10:00:01.000Z',
     ...overrides,
+  };
+}
+
+function sampleManifest(runId: string): Parameters<RunJournal['writeManifest']>[0] {
+  return {
+    run_id: runId,
+    pipeline: 'demo',
+    pipeline_file: '/tmp/stepcast.yml',
+    lock_hash: 'abc',
+    project_root: '/tmp/project',
+    workspace: { mode: 'cwd' },
+    inputs: {},
+    git: {},
+    backends: {},
+    started_at: '2026-08-16T10:00:00.000Z',
+    finished_at: '2026-08-16T10:05:00.000Z',
   };
 }
 
@@ -251,6 +268,30 @@ describe('run-journal: раскладка и состояние', () => {
     mkdirSync(join(projectRoot, '.git'), { recursive: true });
 
     assert.equal(findProjectRoot(nested), findProjectRoot(projectRoot));
+  });
+
+  // Сценарий: «Минимум переживает уборку»
+  it('уборка сохраняет run.json, status.json и usage.json', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeManifest(sampleManifest(journal.paths.runId));
+    journal.writeStatus(sampleStatus(journal.paths.runId));
+    journal.writeUsage({
+      run_id: journal.paths.runId,
+      total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 0, wallclock_ms: 0 },
+      unreported: [],
+      jobs: {},
+    });
+    journal.prepareStep('build', 1, 'compile');
+    journal.writeArtifact('build', { ok: true });
+
+    cleanupRun(journal.paths);
+
+    assert.equal(readStatus(journal.paths).run_id, journal.paths.runId);
+    assert.ok(existsSync(journal.paths.manifest));
+    assert.ok(existsSync(journal.paths.usage));
+    assert.ok(!existsSync(journal.paths.jobs));
+    assert.ok(!existsSync(journal.paths.artifacts));
   });
 
   // Сценарий: «Чтение на лету»

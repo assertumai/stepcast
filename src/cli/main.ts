@@ -3,7 +3,10 @@ import { parseArgs, type CommandSpec } from './args.js';
 import { reportError } from './output.js';
 import { runApplyCommand } from './commands/apply.js';
 import { runConfigCommand } from './commands/config.js';
+import { runContextCommand } from './commands/context.js';
 import { runDiffCommand } from './commands/diff.js';
+import { runGcCommand } from './commands/gc.js';
+import { runInitCommand } from './commands/init.js';
 import { runLintCommand } from './commands/lint.js';
 import { runLogsCommand } from './commands/logs.js';
 import { runResumeCommand } from './commands/resume.js';
@@ -70,6 +73,30 @@ export const COMMANDS: Record<string, CommandSpec> = {
       agent: { kind: 'string', description: 'переопределить бэкенд по умолчанию' },
     },
   },
+  gc: {
+    description: 'убрать прогоны: без --older-than только отчёт, ничего не удаляя',
+    flags: {
+      'older-than': {
+        kind: 'string',
+        description: 'удалить прогоны старше этой длительности, например 30d',
+      },
+    },
+  },
+  init: {
+    description: 'создать stepcast.yml и пример работы в текущем каталоге',
+    flags: {
+      force: { kind: 'boolean', description: 'перезаписать существующий stepcast.yml' },
+    },
+  },
+  context: {
+    description: 'показать состав и размер контекста шага без запуска пайплайна',
+    positional: ['pipeline'],
+    flags: {
+      job: { kind: 'string', description: 'работа, для которой считается контекст' },
+      step: { kind: 'string', description: 'шаг, для которого считается контекст' },
+      input: { kind: 'keyValue', description: 'значение входа пайплайна: --input имя=значение' },
+    },
+  },
 };
 
 export interface CliIo {
@@ -98,6 +125,12 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
         return await runLogsCommand(args, io.out, io.cwd);
       case 'config':
         return runConfigCommand(args, io.out, io.cwd);
+      case 'gc':
+        return runGcCommand(args, io.out, io.cwd);
+      case 'init':
+        return runInitCommand(args, io.out, io.cwd);
+      case 'context':
+        return runContextCommand(args, io.out, io.cwd);
       default:
         return ExitCode.configError;
     }

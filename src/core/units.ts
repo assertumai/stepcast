@@ -103,6 +103,20 @@ export function formatTokens(value: number): string {
   return String(value);
 }
 
+const BYTE_UNITS = ['Б', 'КБ', 'МБ', 'ГБ'] as const;
+
+/** Человекочитаемый размер: 1536 → "1.5 КБ". */
+export function formatBytes(bytes: number): string {
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < BYTE_UNITS.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const rounded = unitIndex === 0 ? value : Math.round(value * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)} ${BYTE_UNITS[unitIndex]}`;
+}
+
 /** Обратное преобразование для отчётов: 1_800_000 → "30m". */
 export function formatDuration(ms: number): string {
   for (const [suffix, multiplier] of [

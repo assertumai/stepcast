@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { formatDuration, formatTokens, parseDuration, parseTokens } from '../src/core/units.js';
+import { formatBytes, formatDuration, formatTokens, parseDuration, parseTokens } from '../src/core/units.js';
 import { StepcastError } from '../src/core/errors.js';
 
 describe('единицы измерения', () => {
@@ -52,5 +52,15 @@ describe('единицы измерения', () => {
     assert.equal(formatTokens(42), '42');
     assert.equal(formatDuration(1_800_000), '30m');
     assert.equal(formatDuration(7_200_000), '2h');
+  });
+
+  // Спека run-cleanup: оценка размера в отчёте gc
+  it('печатает размер в байтах человекочитаемо', () => {
+    assert.equal(formatBytes(0), '0 Б');
+    assert.equal(formatBytes(512), '512 Б');
+    assert.equal(formatBytes(1024), '1 КБ');
+    assert.equal(formatBytes(1536), '1.5 КБ');
+    assert.equal(formatBytes(1024 * 1024), '1 МБ');
+    assert.equal(formatBytes(1024 * 1024 * 1024 * 2.5), '2.5 ГБ');
   });
 });
