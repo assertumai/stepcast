@@ -40,6 +40,9 @@ export { parseExpression, evaluate, references, type Expr } from './expr/parse.j
 export { RunJournal, atomicWrite } from './journal/writer.js';
 export {
   listRuns,
+  listRunsByKey,
+  listProjects,
+  type ProjectEntry,
   resolveRun,
   readStatus,
   readUsage,

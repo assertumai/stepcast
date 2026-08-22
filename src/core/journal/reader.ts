@@ -37,6 +37,64 @@ export function listRuns(runsRoot: string, projectRoot: string): string[] {
     .reverse();
 }
 
+export interface ProjectEntry {
+  readonly key: string;
+  /** Путь корня проекта из указателя. Отсутствует, если записи в нём нет. */
+  readonly path?: string;
+}
+
+/**
+ * Проекты, найденные в корне прогонов.
+ *
+ * Что существует, решают каталоги: ключ проекта необратим (sha256 пути), и по
+ * каталогу нельзя восстановить путь. Как это назвать, решает `projects.json`.
+ * Указатель может отстать или испортиться — писатель это допускает, — поэтому
+ * каталог без записи отдаётся без пути, а не выбрасывается и не подписывается
+ * догадкой.
+ */
+export function listProjects(runsRoot: string): ProjectEntry[] {
+  if (!existsSync(runsRoot)) return [];
+
+  let index: Record<string, { path?: string }> = {};
+  try {
+    index = JSON.parse(readFileSync(join(runsRoot, 'projects.json'), 'utf8')) as typeof index;
+  } catch {
+    // Указателя нет или он повреждён: имена неизвестны, но каталоги на месте.
+    index = {};
+  }
+
+  return readdirSync(runsRoot)
+    .filter((name) => {
+      try {
+        return statSync(join(runsRoot, name)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .sort()
+    .map((key) => {
+      const path = index[key]?.path;
+      return typeof path === 'string' ? { key, path } : { key };
+    });
+}
+
+/** Прогоны проекта по его ключу, новейшие первыми. */
+export function listRunsByKey(runsRoot: string, key: string): string[] {
+  const projectDir = join(runsRoot, key);
+  if (!existsSync(projectDir)) return [];
+  return readdirSync(projectDir)
+    .filter((name) => {
+      if (name === 'latest') return false;
+      try {
+        return statSync(join(projectDir, name)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .sort()
+    .reverse();
+}
+
 /**
  * Найти прогон по идентификатору или его короткому хвосту. Пользователь видит
  * короткий идентификатор в выводе и им же адресует прогон.

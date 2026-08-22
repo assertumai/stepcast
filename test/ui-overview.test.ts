@@ -1,0 +1,105 @@
+import assert from 'node:assert/strict';
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, it } from 'node:test';
+
+import { buildOverview } from '../src/ui/overview.js';
+import { cleanupRun } from '../src/core/run/cleanup.js';
+import { projectKey } from '../src/core/journal/paths.js';
+import { makeJournalBed, seedRun } from './helpers.js';
+
+describe('ui-dashboard: обзор всех проектов и прогонов', () => {
+  // Сценарий: «Прогоны нескольких проектов в одном обзоре»
+  it('показывает прогоны двух разных проектов', () => {
+    const first = makeJournalBed();
+    const second = makeJournalBed();
+
+    seedRun(first.runsRoot, first.projectRoot, { runId: 'a' });
+    seedRun(first.runsRoot, second.projectRoot, { runId: 'b' });
+
+    const overview = buildOverview(first.runsRoot);
+    assert.equal(overview.projects.length, 2);
+    assert.deepEqual(
+      overview.projects.map((project) => project.path).sort(),
+      [first.projectRoot, second.projectRoot].sort(),
+    );
+  });
+
+  // Сценарий: «Порядок прогонов»
+  it('перечисляет прогоны проекта новейшими первыми', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: '2026-08-01T00-00-00Z-aaa' });
+    seedRun(runsRoot, projectRoot, { runId: '2026-08-02T00-00-00Z-bbb' });
+    seedRun(runsRoot, projectRoot, { runId: '2026-08-03T00-00-00Z-ccc' });
+
+    const runs = buildOverview(runsRoot).projects[0]?.runs ?? [];
+    assert.deepEqual(
+      runs.map((run) => run.shortId),
+      ['ccc', 'bbb', 'aaa'],
+    );
+  });
+
+  // Сценарий: «Идущий прогон отличим от завершённого»
+  it('отличает идущий прогон от завершённого', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'done', status: 'success' });
+    seedRun(runsRoot, projectRoot, { runId: 'going', status: 'running' });
+
+    const runs = buildOverview(runsRoot).projects[0]?.runs ?? [];
+    const going = runs.find((run) => run.runId === 'going');
+    const done = runs.find((run) => run.runId === 'done');
+
+    assert.equal(going?.running, true);
+    assert.equal(going?.status, 'running');
+    assert.equal(done?.running, false);
+    assert.equal(done?.status, 'success');
+  });
+
+  // Сценарий: «Проект без записи в указателе»
+  it('показывает проект без пути, если его нет в указателе', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+
+    // Каталог проекта без записи в указателе и без прогонов в обзор не
+    // попадает; с прогоном — попадает, но без пути.
+    const orphanKey = 'ffffffffffff';
+    mkdirSync(join(runsRoot, orphanKey, 'orphan-run'), { recursive: true });
+
+    const orphan = buildOverview(runsRoot).projects.find((project) => project.key === orphanKey);
+    assert.ok(orphan !== undefined);
+    assert.equal(orphan.path, undefined);
+    assert.equal(orphan.runs.length, 1);
+  });
+
+  // Сценарий: «Прогон с нечитаемым состоянием»
+  it('оставляет в обзоре прогон, чьи манифест и состояние не читаются', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'good' });
+    mkdirSync(join(runsRoot, projectKey(projectRoot), 'broken'), { recursive: true });
+
+    const runs = buildOverview(runsRoot).projects[0]?.runs ?? [];
+    const broken = runs.find((run) => run.runId === 'broken');
+
+    assert.ok(broken !== undefined, 'битый прогон не должен молча исчезать из обзора');
+    assert.equal(broken.unreadable, true);
+    assert.equal(broken.status, undefined);
+  });
+
+  // Сценарий: «Убранный прогон в обзоре»
+  it('оставляет в обзоре прогон, подвергшийся уборке', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, { runId: 'swept', artifacts: { build: {} } });
+    cleanupRun(journal.paths);
+
+    const run = buildOverview(runsRoot).projects[0]?.runs[0];
+    assert.equal(run?.runId, 'swept');
+    assert.equal(run?.swept, true);
+    assert.equal(run?.status, 'success');
+    assert.equal(run?.unreadable, false);
+  });
+
+  it('на пустом корне прогонов отдаёт пустой обзор', () => {
+    const { runsRoot } = makeJournalBed();
+    assert.deepEqual(buildOverview(runsRoot).projects, []);
+  });
+});

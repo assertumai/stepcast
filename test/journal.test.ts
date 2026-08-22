@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -10,7 +18,9 @@ import { cleanupRun } from '../src/core/run/cleanup.js';
 import {
   findStepDir,
   follow,
+  listProjects,
   listRuns,
+  listRunsByKey,
   readEvents,
   readStatus,
   resolveRun,
@@ -292,6 +302,60 @@ describe('run-journal: раскладка и состояние', () => {
     assert.ok(existsSync(journal.paths.usage));
     assert.ok(!existsSync(journal.paths.jobs));
     assert.ok(!existsSync(journal.paths.artifacts));
+  });
+
+  // Спека ui-dashboard: «Прогоны нескольких проектов в одном обзоре»
+  it('перечисляет проекты корня прогонов и сопоставляет им пути', () => {
+    const first = bed();
+    const second = bed();
+
+    RunJournal.create({ runsRoot: first.runsRoot, projectRoot: first.projectRoot });
+    RunJournal.create({ runsRoot: first.runsRoot, projectRoot: second.projectRoot });
+
+    const projects = listProjects(first.runsRoot);
+    assert.equal(projects.length, 2);
+    assert.deepEqual(
+      projects.map((project) => project.path).sort(),
+      [first.projectRoot, second.projectRoot].sort(),
+    );
+  });
+
+  // Спека ui-dashboard: «Проект без записи в указателе»
+  it('отдаёт проект без пути, если его нет в указателе', () => {
+    const { runsRoot, projectRoot } = bed();
+    RunJournal.create({ runsRoot, projectRoot });
+    mkdirSync(join(runsRoot, 'ffffffffffff'), { recursive: true });
+
+    const orphan = listProjects(runsRoot).find((project) => project.key === 'ffffffffffff');
+    assert.ok(orphan !== undefined);
+    assert.equal(orphan.path, undefined);
+  });
+
+  it('перечисляет каталоги проектов при повреждённом указателе', () => {
+    const { runsRoot, projectRoot } = bed();
+    RunJournal.create({ runsRoot, projectRoot });
+    writeFileSync(join(runsRoot, 'projects.json'), 'не json');
+
+    const projects = listProjects(runsRoot);
+    assert.equal(projects.length, 1);
+    assert.equal(projects[0]?.path, undefined);
+    assert.equal(projects[0]?.key, projectKey(projectRoot));
+  });
+
+  it('на пустом и отсутствующем корне прогонов отдаёт пустой список', () => {
+    const { runsRoot } = bed();
+    assert.deepEqual(listProjects(runsRoot), []);
+    assert.deepEqual(listProjects(join(runsRoot, 'нет-такого')), []);
+  });
+
+  it('перечисляет прогоны по ключу проекта, минуя ярлык latest', () => {
+    const { runsRoot, projectRoot } = bed();
+    RunJournal.create({ runsRoot, projectRoot, runId: 'older' });
+    RunJournal.create({ runsRoot, projectRoot, runId: 'newer' });
+
+    const runs = listRunsByKey(runsRoot, projectKey(projectRoot));
+    assert.deepEqual(runs, ['older', 'newer'].sort().reverse());
+    assert.ok(!runs.includes('latest'));
   });
 
   // Сценарий: «Чтение на лету»

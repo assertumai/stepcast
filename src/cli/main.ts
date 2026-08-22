@@ -5,6 +5,7 @@ import { runApplyCommand } from './commands/apply.js';
 import { runConfigCommand } from './commands/config.js';
 import { runContextCommand } from './commands/context.js';
 import { runDiffCommand } from './commands/diff.js';
+import { runDownCommand } from './commands/down.js';
 import { runGcCommand } from './commands/gc.js';
 import { runInitCommand } from './commands/init.js';
 import { runLintCommand } from './commands/lint.js';
@@ -12,6 +13,7 @@ import { runLogsCommand } from './commands/logs.js';
 import { runResumeCommand } from './commands/resume.js';
 import { runRunCommand } from './commands/run.js';
 import { runStatusCommand } from './commands/status.js';
+import { runUpCommand } from './commands/up.js';
 
 export const COMMANDS: Record<string, CommandSpec> = {
   run: {
@@ -88,6 +90,18 @@ export const COMMANDS: Record<string, CommandSpec> = {
       force: { kind: 'boolean', description: 'перезаписать существующий stepcast.yml' },
     },
   },
+  up: {
+    description: 'поднять витрину: наблюдение за всеми прогонами в браузере',
+    flags: {
+      foreground: {
+        kind: 'boolean',
+        description: 'держать сервер в текущем терминале, не отсоединяя его',
+      },
+    },
+  },
+  down: {
+    description: 'остановить витрину',
+  },
   context: {
     description: 'показать состав и размер контекста шага без запуска пайплайна',
     positional: ['pipeline'],
@@ -131,6 +145,10 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
         return runInitCommand(args, io.out, io.cwd);
       case 'context':
         return runContextCommand(args, io.out, io.cwd);
+      case 'up':
+        return await runUpCommand(args, io.out, io.cwd);
+      case 'down':
+        return runDownCommand(args, io.out, io.cwd);
       default:
         return ExitCode.configError;
     }
