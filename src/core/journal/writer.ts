@@ -125,6 +125,11 @@ export class RunJournal {
     return dir;
   }
 
+  /** Записать JSON в каталог работы. */
+  writeJobJson(jobId: string, name: string, value: unknown): string {
+    return this.writeStepJson(jobDir(this.paths, jobId), name, value);
+  }
+
   /** Создать каталог шага и вернуть его путь. */
   prepareStep(jobId: string, index: number, stepId: string, iteration?: number): string {
     const dir = stepDir(this.paths, jobId, index, stepId, iteration);

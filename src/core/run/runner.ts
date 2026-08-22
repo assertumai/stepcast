@@ -14,6 +14,7 @@ import type { BackendAdapter } from '../backend/types.js';
 import { UsageAccumulator, describeExceeded, type BudgetScope } from '../budget/accumulator.js';
 import type { Config } from '../config/resolve.js';
 import { assembleContext, type UpstreamOutput } from '../context/assemble.js';
+import { resolveLate, type JobScopeEntry } from '../pipeline/late.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../errors.js';
 import { createSessionRegistry, executeAgentStep } from '../exec/agentStep.js';
 import { buildStepEnv, injectedVariables } from '../exec/env.js';
@@ -211,7 +212,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     graph,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     scopeExtras: { run: { id: journal.paths.runId, dir: journal.paths.dir }, env: {} },
-    execute: async (job) => executeJob(job, context),
+    execute: async (job, scope) => executeJob(job, scope, context),
     onSettled: async (job, outcome) => {
       const record = records.get(job.id) as JobRecord;
       records.set(job.id, {
@@ -305,8 +306,18 @@ function adapterOf(name: string, context: RunContext): BackendAdapter {
  * Работа без цикла — вырожденный случай с одной итерацией и без уровня
  * итерации в раскладке журнала.
  */
-async function executeJob(job: Job, context: RunContext): Promise<JobOutcome> {
+async function executeJob(
+  declared: Job,
+  scope: Record<string, unknown>,
+  context: RunContext,
+): Promise<JobOutcome> {
   const { journal } = context;
+
+  // Отложенные подстановки раскрываются ниже, после подготовки рабочей
+  // директории: её путь входит в область видимости как `run.workspace`, и
+  // раньше он неизвестен. До этого момента работа адресуется объявленной —
+  // подстановок в идентификаторе и топологии не бывает по устройству формата.
+  let job = declared;
 
   journal.prepareJob(job.id);
   journal.event({ kind: 'job.started', job: job.id });
@@ -335,6 +346,26 @@ async function executeJob(job: Job, context: RunContext): Promise<JobOutcome> {
     ...(context.records.get(job.id) as JobRecord),
     workspace: { mode: prepared.mode, path: prepared.dir },
   });
+
+  try {
+    job = resolveLate(declared, {
+      jobs: (scope.jobs ?? {}) as Readonly<Record<string, JobScopeEntry>>,
+      run: { id: journal.paths.runId, dir: journal.paths.dir, workspace: prepared.dir },
+      env: declared.env,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      status: 'failed',
+      reason: `подстановку раскрыть не удалось: ${detail}`,
+      cause: HaltCause.spawnFailed,
+    };
+  }
+
+  // Раскрытое определение кладётся рядом с записью работы: иначе ответ на
+  // вопрос, с каким путём шаг на самом деле пошёл в файловую систему,
+  // восстанавливается только из логов.
+  journal.writeJobJson(job.id, 'resolved.json', job);
 
   // Ниже по коду `context` — контекст работы: у него своя рабочая директория.
   const jobContext: RunContext = { ...context, cwd: prepared.dir };

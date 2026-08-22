@@ -25,6 +25,20 @@ export interface Scope {
    * видны `inputs` пайплайна, и об этом стоит сказать прямо.
    */
   readonly hints?: Readonly<Record<string, string>>;
+  /**
+   * Этап раскрытия. `expand` — разбор документа: `$${` даёт литерал `${`, а
+   * неизвестное пространство считается опечаткой и роняет разбор. `late` —
+   * раскрытие отложенных подстановок перед исполнением работы: пространства,
+   * которых нет в области видимости, остаются текстом, потому что на этом
+   * этапе они уже не отличимы от литералов, полученных экранированием.
+   */
+  readonly mode?: 'expand' | 'late';
+  /**
+   * Почему значение недоступно. Позволяет отличить «работа ещё не
+   * завершилась» от «работа упала и выхода не опубликовала»: обе выглядят как
+   * отсутствующее поле, но означают разное.
+   */
+  readonly explain?: (expression: string, namespace: string, path: string) => string | undefined;
 }
 
 export interface Interpolated {
@@ -32,7 +46,7 @@ export interface Interpolated {
   readonly substitutions: readonly Substitution[];
 }
 
-const PLACEHOLDER = /\$\$\{|\$\{([^}]*)\}/g;
+const PLACEHOLDER = /\$\$\{([^}]*)\}|\$\$\{|\$\{([^}]*)\}/g;
 
 function lookup(values: Readonly<Record<string, unknown>>, path: readonly string[]): unknown {
   let cursor: unknown = values;
@@ -54,43 +68,59 @@ function renderValue(value: unknown, expression: string, at: string | undefined)
 
 export function interpolate(template: string, scope: Scope, at?: string): Interpolated {
   const substitutions: Substitution[] = [];
+  const late = scope.mode === 'late';
 
-  const value = template.replace(PLACEHOLDER, (match, expressionRaw: string | undefined) => {
-    if (match === '$${') return '${';
+  const value = template.replace(
+    PLACEHOLDER,
+    (match, escapedRaw: string | undefined, plainRaw: string | undefined) => {
+      if (match.startsWith('$${')) {
+        // Экранирование снимает тот этап, который раскрывает это пространство.
+        // Снять его раньше значит отдать позднему проходу литерал, от
+        // подстановки неотличимый, — и он его раскроет.
+        if (escapedRaw === undefined) return '${';
+        const escaped = escapedRaw.trim().split('.')[0] ?? '';
+        return !late && scope.deferred.has(escaped) ? match : `\${${escapedRaw}}`;
+      }
 
-    const expression = (expressionRaw ?? '').trim();
-    if (expression === '') {
-      throw new StepcastError('Пустая подстановка ${}', at === undefined ? {} : { at });
-    }
+      const expression = (plainRaw ?? '').trim();
+      if (expression === '') {
+        throw new StepcastError('Пустая подстановка ${}', at === undefined ? {} : { at });
+      }
 
-    const segments = expression.split('.');
-    const namespace = segments[0] as string;
-    const rest = segments.slice(1);
+      const segments = expression.split('.');
+      const namespace = segments[0] as string;
+      const rest = segments.slice(1);
 
-    if (scope.deferred.has(namespace)) {
-      substitutions.push({ expression, namespace, path: rest.join('.'), deferred: true });
-      return match;
-    }
+      if (scope.deferred.has(namespace)) {
+        substitutions.push({ expression, namespace, path: rest.join('.'), deferred: true });
+        return match;
+      }
 
-    if (!(namespace in scope.values)) {
-      const available = [...Object.keys(scope.values), ...scope.deferred].sort().join(', ');
-      throw new StepcastError(`Неизвестное пространство подстановки: ${namespace}`, {
-        ...(at === undefined ? {} : { at }),
-        hint: scope.hints?.[namespace] ?? `Доступны: ${available}`,
-      });
-    }
+      if (!(namespace in scope.values)) {
+        // На позднем этапе чужое пространство — это литерал, полученный
+        // экранированием, а не опечатка: опечатку ловит разбор документа.
+        if (late) return match;
+        const available = [...Object.keys(scope.values), ...scope.deferred].sort().join(', ');
+        throw new StepcastError(`Неизвестное пространство подстановки: ${namespace}`, {
+          ...(at === undefined ? {} : { at }),
+          hint: scope.hints?.[namespace] ?? `Доступны: ${available}`,
+        });
+      }
 
-    const resolved = lookup(scope.values, segments);
-    if (resolved === undefined) {
-      throw new StepcastError(`Подстановка ${expression} не определена`, {
-        ...(at === undefined ? {} : { at }),
-        hint: `Проверьте, что ${namespace}.${rest.join('.')} объявлено`,
-      });
-    }
+      const resolved = lookup(scope.values, segments);
+      if (resolved === undefined) {
+        throw new StepcastError(`Подстановка ${expression} не определена`, {
+          ...(at === undefined ? {} : { at }),
+          hint:
+            scope.explain?.(expression, namespace, rest.join('.')) ??
+            `Проверьте, что ${namespace}.${rest.join('.')} объявлено`,
+        });
+      }
 
-    substitutions.push({ expression, namespace, path: rest.join('.'), deferred: false });
-    return renderValue(resolved, expression, at);
-  });
+      substitutions.push({ expression, namespace, path: rest.join('.'), deferred: false });
+      return renderValue(resolved, expression, at);
+    },
+  );
 
   return { value, substitutions };
 }
@@ -99,7 +129,7 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
 export function hasPlaceholder(template: string): boolean {
   PLACEHOLDER.lastIndex = 0;
   for (const match of template.matchAll(PLACEHOLDER)) {
-    if (match[0] !== '$${') return true;
+    if (!match[0].startsWith('$${')) return true;
   }
   return false;
 }

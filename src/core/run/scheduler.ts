@@ -33,9 +33,14 @@ export interface SettledJob extends JobOutcome {
 export interface ScheduleOptions {
   readonly pipeline: Pipeline;
   readonly graph?: Graph;
-  /** Исполнить работу. Планировщик не знает, что происходит внутри. */
-  readonly execute: (job: Job) => Promise<JobOutcome>;
-  /** Дополнительные значения для условий: `run`, `env`. */
+  /**
+   * Исполнить работу. Планировщик не знает, что происходит внутри, но отдаёт
+   * ту же область видимости, которой сам проверяет условия: иначе
+   * `if: "jobs.plan.status == 'success'"` и `${jobs.plan.status}` начнут
+   * отвечать по-разному, и объяснить это будет нечем.
+   */
+  readonly execute: (job: Job, scope: Record<string, unknown>) => Promise<JobOutcome>;
+  /** Дополнительные значения для условий и подстановок: `run`, `env`. */
   readonly scopeExtras?: Readonly<Record<string, unknown>>;
   readonly signal?: AbortSignal;
   readonly onSettled?: (job: Job, outcome: JobOutcome) => void | Promise<void>;
@@ -142,7 +147,7 @@ export async function schedule(options: ScheduleOptions): Promise<ScheduleResult
         continue;
       }
 
-      await settle(job, await options.execute(job));
+      await settle(job, await options.execute(job, conditionScope()));
     }
 
     // Работы, до которых очередь не дошла: при неразрешимом графе линт бы уже

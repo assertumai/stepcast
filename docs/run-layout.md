@@ -33,7 +33,7 @@
 ```
 2026-08-16T14-03-22Z-3f9a1c/
   run.json              # манифест: пайплайн, входы, git ref, окружение, итог
-  pipeline.lock.yml     # пайплайн после раскрытия uses/defaults/подстановок
+  pipeline.lock.yml     # пайплайн после раскрытия uses/defaults/inputs/params
   status.json           # текущее состояние, достаточно для возобновления
   events.ndjson         # поток событий для UI и постмортема
   usage.json            # агрегат расхода
@@ -45,6 +45,7 @@
   jobs/
     implement/
       job.json
+      resolved.json    # определение работы с раскрытыми отложенными подстановками
       steps/            # iter-N появляется только у работ с until
         01-write-code/
           step.json     # ключ, статус, попытки, usage, tree_id
