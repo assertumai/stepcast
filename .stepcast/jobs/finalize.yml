@@ -1,0 +1,23 @@
+# Работа: проставить исход пункту очереди и закоммитить успешное улучшение.
+#
+# Подключается с needs: all и on: always — только так она отрабатывает и при
+# отмене по сигналу, и при остановке по бюджету. Обычная зависимость от verify
+# в этих случаях не сработала бы, и пункт остался бы в in_progress до
+# протухания.
+
+version: 1
+kind: job
+name: finalize
+description: Проставить исход пункту очереди; при успехе — закоммитить
+
+params:
+  verify_status: { type: string, required: true }
+
+budget:
+  wallclock: 5m
+
+steps:
+  - id: settle
+    run: [node, scripts/finalize.mjs, --verify-status, "${params.verify_status}"]
+    timeout: 3m
+    expect: [{ exit_code: 0 }]

@@ -1,0 +1,87 @@
+# Петля саморазвития: stepcast улучшает сам stepcast.
+#
+# Один заход берёт первый свободный пункт из backlog.md, заводит под него
+# OpenSpec-изменение, реализует до зелёного npm run check, ревьюит, исправляет
+# находки, проверяет ещё раз начисто и коммитит — по коммиту на улучшение.
+#
+#   stepcast lint .stepcast/pipelines/self-improve.yml
+#   stepcast run  .stepcast/pipelines/self-improve.yml
+#
+# Требует чистого рабочего дерева: отказ прошлого захода останавливает петлю до
+# разбора человеком, а не наслаивает следующее улучшение на сломанный код.
+
+version: 1
+kind: pipeline
+name: self-improve
+
+# cwd вынужденно: изолирующие режимы дают каждой работе снимок от исходного
+# HEAD, и review не увидел бы правок implement, а verify собирал бы
+# неизменённый код. Отсюда же concurrency: 1 — работы и так строго
+# последовательны. Снимается пунктом очереди dependent-job-workspace.
+workspace:
+  mode: cwd
+
+concurrency: 1
+fail_fast: true
+
+context:
+  - CLAUDE.md
+  - docs/status.md
+  - text: |
+      Это репозиторий самого stepcast. Правки движка проверяются командой
+      npm run check — она гоняет типизацию, линт и тесты.
+      Сгенерированное в dist/ не трогать: оно пересобирается сборкой.
+
+defaults:
+  agent: claude
+  session: shared
+
+# Потолки подобраны так, чтобы внешний не отменял внутренние: сумма бюджетов
+# работ — 2.35M токенов и 4 часа, и прогон обязан их вмещать. Связывает тот
+# предел, который упрётся первым, и по опыту это токены, а не время.
+budget:
+  tokens: 2.5M
+  wallclock: 4h
+  rate_limit_pct: 80
+  # on_exceed: wait пока не реализован — доступен только stop. Значит упор в
+  # лимит подписки завершит прогон, а не усыпит его; finalize при этом всё
+  # равно отработает по needs: all. Снимается пунктом budget-wait-on-exceed.
+  on_exceed: stop
+
+jobs:
+
+  propose:
+    uses: ../jobs/propose.yml
+
+  plan:
+    uses: ../jobs/plan.yml
+    with: { change: "${jobs.propose.output.slug}" }
+    needs: [propose]
+
+  implement:
+    uses: ../jobs/implement.yml
+    with: { change: "${jobs.propose.output.slug}" }
+    needs: [plan]
+
+  review:
+    uses: ../jobs/review.yml
+    with: { change: "${jobs.propose.output.slug}" }
+    needs: [implement]
+
+  fix-review:
+    uses: ../jobs/fix-review.yml
+    with: { change: "${jobs.propose.output.slug}" }
+    needs: [review]
+
+  verify:
+    uses: ../jobs/verify.yml
+    needs: [fix-review]
+
+  # needs: all и on: always — единственная конструкция формата, отрабатывающая
+  # и при отмене, и при остановке по бюджету. Без неё пункт очереди зависал бы
+  # в in_progress до протухания.
+  finalize:
+    uses: ../jobs/finalize.yml
+    with: { verify_status: "${jobs.verify.status}" }
+    needs: all
+    on: always

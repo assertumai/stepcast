@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["changed_files", "completed", "remaining"],
+  "additionalProperties": false,
+  "properties": {
+    "changed_files": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Файлы, изменённые в ходе реализации"
+    },
+    "completed": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Идентификаторы задач плана, доведённых до конца"
+    },
+    "remaining": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      },
+      "description": "Задачи плана, оставшиеся невыполненными, и почему"
+    }
+  }
+}

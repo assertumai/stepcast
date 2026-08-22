@@ -1,0 +1,49 @@
+# Работа: разобрать заведённое изменение и составить план реализации.
+# Ничего не знает о том, кто её запускает и что будет после неё.
+
+version: 1
+kind: job
+name: plan
+description: Разобрать OpenSpec-изменение и составить план реализации
+
+params:
+  change: { type: string, required: true }
+
+session: shared
+
+context:
+  - openspec/changes/${params.change}/proposal.md
+  - openspec/changes/${params.change}/design.md
+  - openspec/changes/${params.change}/tasks.md
+  - "openspec/changes/${params.change}/specs/**/*.md"
+
+output:
+  from: read-change
+  schema: ../schemas/plan.json
+
+budget:
+  tokens: 200k
+  wallclock: 25m
+
+steps:
+  # Модель старшая: ошибка плана размножается на все последующие работы, а
+  # автоматического гейта на неё нет. Токенов шаг тратит мало — итераций нет.
+  - id: read-change
+    agent: claude
+    model: opus
+    prompt: file:../prompts/plan.md
+    output_schema: ../schemas/plan.json
+    permissions:
+      allow:
+        - Read
+        - Bash(git log*)
+        - Bash(git diff*)
+    timeout: 20m
+    expect:
+      - schema: ../schemas/plan.json
+      # План не реализует: дерево после него должно остаться нетронутым.
+      - changed_only: []
+    attempts:
+      max: 2
+      escalation:
+        - include_failure: true

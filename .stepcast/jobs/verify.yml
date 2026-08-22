@@ -1,0 +1,28 @@
+# Работа: финальная проверка вне цикла итераций.
+#
+# npm run check внутри until гоняется ради быстрой обратной связи агенту; эта
+# работа — чистый прогон снаружи, и её статус определяет исход улучшения.
+
+version: 1
+kind: job
+name: verify
+description: Типизация, линт и тесты на итоговом дереве
+
+budget:
+  wallclock: 20m
+
+steps:
+  - id: typecheck
+    run: [npm, run, typecheck]
+    timeout: 5m
+    expect: [{ exit_code: 0 }]
+
+  - id: lint
+    run: [npm, run, lint]
+    timeout: 5m
+    expect: [{ exit_code: 0 }]
+
+  - id: test
+    run: [npm, test]
+    timeout: 10m
+    expect: [{ exit_code: 0 }]

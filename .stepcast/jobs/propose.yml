@@ -1,0 +1,60 @@
+# Работа: взять пункт очереди улучшений и завести под него OpenSpec-изменение.
+
+version: 1
+kind: job
+name: propose
+description: Взять пункт очереди и завести под него OpenSpec-изменение
+
+session: shared
+
+output:
+  from: create-change
+  schema: ../schemas/propose.json
+
+budget:
+  tokens: 200k
+  wallclock: 25m
+
+steps:
+  # Предусловие всей петли, и оно первое: до выбора пункта и до первого
+  # потраченного токена. Отказ здесь оставляет очередь нетронутой, а грязное
+  # дерево означает либо незавершённую правку человека, либо разбор
+  # отказавшего прошлого захода — в обоих случаях автоматике продолжать нечего.
+  - id: guard-clean-tree
+    run: [sh, -c, 'test -z "$(git status --porcelain)"']
+    timeout: 1m
+    expect: [{ exit_code: 0 }]
+
+  # Пункт кладётся в каталог прогона, а не в рабочее дерево: журнал живёт вне
+  # проекта, и промежуточный файл не попадает ни в changed_only, ни в коммит.
+  - id: pick-item
+    run: [sh, -c, 'node scripts/backlog.mjs pick --out "$STEPCAST_RUN_DIR/item.json"']
+    timeout: 1m
+    expect: [{ exit_code: 0 }]
+
+  - id: create-change
+    agent: claude
+    model: opus
+    prompt: file:../prompts/propose.md
+    context:
+      - path: ${run.dir}/item.json
+        mode: inline
+    output_schema: ../schemas/propose.json
+    permissions:
+      allow:
+        - Read
+        - Edit
+        - Write
+        - Bash(openspec *)
+        - Bash(git status*)
+        - Bash(git diff*)
+        - Bash(git log*)
+    timeout: 20m
+    expect:
+      - schema: ../schemas/propose.json
+      - changed_only:
+          - openspec/changes/**
+    attempts:
+      max: 2
+      escalation:
+        - include_failure: true

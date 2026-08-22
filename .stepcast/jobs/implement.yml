@@ -1,0 +1,67 @@
+# Работа: реализовать задачи из плана до зелёной сборки, линта и тестов.
+
+version: 1
+kind: job
+name: implement
+description: Реализовать задачи из плана до зелёного npm run check
+
+params:
+  change: { type: string, required: true }
+
+session: shared
+
+context:
+  - openspec/changes/${params.change}/tasks.md
+  - "openspec/changes/${params.change}/specs/**/*.md"
+
+output:
+  from: write-code
+  schema: ../schemas/implement.json
+
+budget:
+  tokens: 1.2M
+  wallclock: 90m
+
+# Числа литералами: подстановка в числовые поля пока не работает — схема
+# документа проверяется до раскрытия. Снимается пунктом очереди
+# numeric-field-substitution.
+until:
+  max_iterations: 4
+  check:
+    - cmd: npm run check
+
+steps:
+  # Модель младшая: работа механическая по готовому плану, самая токеноёмкая в
+  # петле (итерации × попытки), а её результат проверяется объективным гейтом
+  # npm run check — ошибка видна сразу и не проносится дальше по графу.
+  # Эскалация модель не повышает: подмешивается только вывод прошлой неудачи.
+  - id: write-code
+    agent: claude
+    model: sonnet
+    prompt: file:../prompts/implement.md
+    output_schema: ../schemas/implement.json
+    permissions:
+      allow:
+        - Read
+        - Edit
+        - Write
+        - Bash(npm *)
+        - Bash(npx *)
+        - Bash(node *)
+        - Bash(git status*)
+        - Bash(git diff*)
+        - Bash(git log*)
+    timeout: 40m
+    budget: { tokens: 300k }
+    expect:
+      - schema: ../schemas/implement.json
+      - changed_only:
+          - src/**
+          - test/**
+          - docs/**
+          - openspec/changes/**
+    attempts:
+      max: 3
+      escalation:
+        - include_failure: true
+        - include_failure: true
