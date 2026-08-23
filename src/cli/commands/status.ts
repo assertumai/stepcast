@@ -48,8 +48,12 @@ export function runStatusCommand(
   );
   const status = readStatus(paths);
 
-  write(`прогон ${shortRunId(status.run_id)}  ${status.pipeline}  ${label(status.status)}`);
+  const sleeping = status.status === 'running' && status.wake_at !== undefined;
+  write(
+    `прогон ${shortRunId(status.run_id)}  ${status.pipeline}  ${sleeping ? 'спит' : label(status.status)}`,
+  );
   write(`каталог: ${paths.dir}`);
+  if (sleeping) write(`проснётся: ${status.wake_at}`);
 
   const rows: string[][] = [];
   for (const job of status.jobs) {

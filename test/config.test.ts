@@ -119,6 +119,14 @@ describe('stepcast-configuration', () => {
     assert.equal(resolveIn(loosened).config.limits.tokens, 5_000_000);
   });
 
+  it('предел ожидания разбирается как длительность и переопределяется слоем', () => {
+    const builtin = resolveIn(sandbox({}));
+    assert.equal(builtin.config.defaults.maxWaitMs, 6 * 60 * 60 * 1000);
+
+    const overridden = resolveIn(sandbox({ project: 'defaults:\n  max_wait: 30m\n' }));
+    assert.equal(overridden.config.defaults.maxWaitMs, 30 * 60 * 1000);
+  });
+
   // Сценарий: «Путь к бэкенду в проектном конфиге»
   it('отклоняет backends.*.command в проектном конфиге', () => {
     const box = sandbox({ project: 'backends:\n  claude:\n    command: /opt/claude\n' });

@@ -36,8 +36,16 @@ export interface LaunchSpec {
 
 export type BackendEvent =
   | { readonly kind: 'init'; readonly data: Record<string, unknown> }
-  | { readonly kind: 'tool_use'; readonly name: string; readonly input: unknown }
-  | { readonly kind: 'usage'; readonly usage: Partial<Usage> }
+  | {
+      readonly kind: 'tool_use';
+      readonly name: string;
+      readonly input: unknown;
+      /** Claude attaches usage to the same assistant message as the tool call. */
+      readonly usage?: Partial<Usage>;
+      /** Stable within duplicate stream records of one Claude model turn. */
+      readonly messageId?: string;
+    }
+  | { readonly kind: 'usage'; readonly usage: Partial<Usage>; readonly messageId?: string }
   | {
       readonly kind: 'result';
       readonly text?: string;

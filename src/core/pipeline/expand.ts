@@ -45,12 +45,6 @@ export interface ExpandOptions {
 
 function toBudget(raw: RawBudget, at: string): Budget {
   const onExceed = raw.on_exceed ?? 'stop';
-  if (onExceed === 'wait') {
-    throw new StepcastError('Режим on_exceed: wait ещё не реализован', {
-      at: `${at}.on_exceed`,
-      hint: 'Пока доступен только stop — прогон остановится со статусом budget_exceeded',
-    });
-  }
 
   return {
     ...(raw.tokens === undefined ? {} : { tokens: parseTokens(raw.tokens, `${at}.tokens`) }),

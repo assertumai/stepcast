@@ -34,7 +34,7 @@ reason: прогон a50755 — работа review упёрлась в лими
 
 ## budget-wait-on-exceed
 
-status: pending
+status: done
 title: Режим on_exceed wait
 why: Сейчас доступен только stop, и упор в лимит подписки завершает прогон вместо ожидания сброса. Длинный ночной заход петли из-за этого умирает на середине и требует ручного resume.
 done_when: on_exceed wait усыпляет прогон до resets_at, сообщённого бэкендом, и продолжает его; событие budget.waiting пишется в журнал; docs/status.md обновлён

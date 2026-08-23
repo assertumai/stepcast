@@ -361,6 +361,44 @@ jobs:
     assert.ok(warnings(diagnostics).some((message) => /changed_only/.test(message)));
   });
 
+  it('предупреждает о on_exceed: wait без rate_limit_pct', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k, on_exceed: wait }
+jobs:
+  build:
+    steps:
+      - id: a
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`,
+      }),
+    );
+    assert.ok(warnings(diagnostics).some((message) => /on_exceed: wait/.test(message)));
+    assert.equal(hasErrors(diagnostics), false);
+  });
+
+  it('не предупреждает о wait, объявленном вместе с rate_limit_pct', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: a
+        run: [echo, ok]
+        budget: { rate_limit_pct: 80, on_exceed: wait }
+        expect: [{ exit_code: 0 }]
+`,
+      }),
+    );
+    assert.equal(warnings(diagnostics).some((message) => /on_exceed: wait/.test(message)), false);
+  });
+
   it('предупреждает о гейте только из совещательного judge', () => {
     const diagnostics = lint(
       makeProject({

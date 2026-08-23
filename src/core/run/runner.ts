@@ -11,8 +11,9 @@ import {
 import { fingerprintInputs } from '../anchor/fingerprint.js';
 import { resolveAdapter } from '../backend/registry.js';
 import { sumUsage, type BackendAdapter } from '../backend/types.js';
-import { UsageAccumulator, describeExceeded, type BudgetScope } from '../budget/accumulator.js';
+import { UsageAccumulator, describeExceeded, type BudgetScope, type Exceeded } from '../budget/accumulator.js';
 import type { Config } from '../config/resolve.js';
+import { formatDuration } from '../units.js';
 import { assembleContext, type UpstreamOutput } from '../context/assemble.js';
 import { resolveLate, type JobScopeEntry } from '../pipeline/late.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../errors.js';
@@ -148,6 +149,10 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   const reportedDenials = new Set<string>();
   const graph = buildGraph(pipeline).graph;
 
+  // Момент пробуждения: дописывается на диск до начала сна и снимается после
+  // продолжения — состояние спящего прогона доступно снаружи, пока он спит.
+  const waitState: { wakeAt: string | undefined } = { wakeAt: undefined };
+
   const context: RunContext = {
     ...options,
     journal,
@@ -162,6 +167,10 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     ...(options.resume === undefined
       ? {}
       : { observedInputs: options.resume.plan.observedInputs }),
+    onWait: (wakeAt) => {
+      waitState.wakeAt = wakeAt;
+      writeStatus('running');
+    },
   };
 
   warnAboutDegradedBackends(context);
@@ -195,6 +204,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
               blocked_by: blocked.id,
             },
           }),
+      ...(waitState.wakeAt === undefined ? {} : { wake_at: waitState.wakeAt }),
       updated_at: new Date().toISOString(),
     } satisfies RunStatus);
   };
@@ -271,6 +281,12 @@ interface RunContext extends RunOptions {
   readonly failureNote: { pending: string | undefined };
   /** Результаты непрошедшего `check` предыдущей итерации текущей работы. */
   readonly iterationCheck?: readonly PredicateResult[];
+  /**
+   * Уход в ожидание и пробуждение из него: состояние прогона должно быть на
+   * диске до начала сна, а не после — иначе спящий прогон неотличим от
+   * зависшего. `undefined` снимает момент пробуждения.
+   */
+  readonly onWait: (wakeAt: string | undefined) => void;
 }
 
 /** Отсутствие поддержки сессий не отказ, а деградация с предупреждением. */
@@ -510,6 +526,91 @@ function jobScopes(job: Job, context: RunContext): BudgetScope[] {
     { kind: 'job', name: `работа ${job.id}`, jobId: job.id, budget: job.budget },
     { kind: 'run', name: 'пайплайн', budget: context.expanded.pipeline.budget },
   ];
+}
+
+/** Исход ожидания сброса окна лимита. */
+type WaitOutcome =
+  | { readonly kind: 'resumed' }
+  | { readonly kind: 'canceled' }
+  | { readonly kind: 'stopped'; readonly exceeded: Exceeded };
+
+/**
+ * Ждать сброса окна лимита, упёршегося в потолок с `on_exceed: wait`.
+ *
+ * Вырождается в остановку, если ждать нечего — момент сброса не сообщён,
+ * отстоит дальше предела ожидания, или суммарное ожидание за прогон уже
+ * исчерпало предел. Сон прерывается сигналом прогона немедленно.
+ */
+async function waitForReset(exceeded: Exceeded, context: RunContext): Promise<WaitOutcome> {
+  if (exceeded.resetsAt === undefined) {
+    return {
+      kind: 'stopped',
+      exceeded: {
+        ...exceeded,
+        onExceed: 'stop',
+        waitDegeneration: 'бэкенд не сообщил момент сброса окна лимита',
+      },
+    };
+  }
+
+  const now = Date.now();
+  const waitMs = exceeded.resetsAt - now;
+  // Момент сброса в прошлом сном не считается: следующая попытка либо
+  // покажет упавший процент, либо упрётся снова — в пределах общего предела.
+  if (waitMs <= 0) return { kind: 'resumed' };
+
+  const maxWaitMs = context.config.defaults.maxWaitMs;
+  if (context.usage.wouldExceedMaxWait(waitMs, maxWaitMs)) {
+    return {
+      kind: 'stopped',
+      exceeded: {
+        ...exceeded,
+        onExceed: 'stop',
+        waitDegeneration: `предел ожидания ${formatDuration(maxWaitMs)} исчерпан; сброс сообщён на ${new Date(exceeded.resetsAt).toISOString()}`,
+      },
+    };
+  }
+
+  const wakeAt = new Date(exceeded.resetsAt).toISOString();
+  context.onWait(wakeAt);
+  context.journal.event({
+    kind: 'budget.waiting',
+    scope: exceeded.scope,
+    dimension: 'rate_limit',
+    threshold: exceeded.limit,
+    resets_at: exceeded.resetsAt,
+    wait_ms: waitMs,
+  });
+
+  const started = Date.now();
+  const canceled = await sleepInterruptibly(waitMs, context.signal);
+  const actualMs = Date.now() - started;
+
+  context.usage.recordWait(started, started + actualMs);
+  context.onWait(undefined);
+  if (canceled) return { kind: 'canceled' };
+
+  context.journal.event({ kind: 'budget.resumed', actual_ms: actualMs });
+  return { kind: 'resumed' };
+}
+
+/** Сон, прерываемый сигналом отмены. Возвращает true, если прерван. */
+function sleepInterruptibly(ms: number, signal?: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (signal?.aborted === true) {
+      resolve(true);
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve(false);
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 interface IterationOptions {
@@ -785,6 +886,37 @@ interface StepOutcome {
   readonly exceeded?: ReturnType<UsageAccumulator['check']>;
 }
 
+/**
+ * Комбинированный сигнал шага: аборт по отмене прогона *или* по превышению
+ * бюджета с `on_exceed: wait` по `rate_limit`. Разделены, чтобы после
+ * исполнения отличить настоящую отмену от прерывания ради ожидания — только
+ * второе ведёт в переисполнение шага, а не в статус `canceled`.
+ */
+function stepAbort(context: RunContext): {
+  readonly controller: AbortController;
+  readonly trigger: (found: Exceeded | undefined) => void;
+  readonly dispose: () => void;
+  waitTrigger: Exceeded | undefined;
+} {
+  const controller = new AbortController();
+  const onRunAbort = (): void => controller.abort();
+  context.signal?.addEventListener('abort', onRunAbort, { once: true });
+
+  const state = {
+    controller,
+    waitTrigger: undefined as Exceeded | undefined,
+    trigger(found: Exceeded | undefined) {
+      if (found === undefined || controller.signal.aborted) return;
+      if (found.onExceed === 'wait' && found.dimension === 'rate_limit') state.waitTrigger = found;
+      controller.abort();
+    },
+    dispose() {
+      context.signal?.removeEventListener('abort', onRunAbort);
+    },
+  };
+  return state;
+}
+
 async function runCommandStep(
   step: Extract<Step, { kind: 'run' }>,
   job: Job,
@@ -796,81 +928,116 @@ async function runCommandStep(
 ): Promise<StepOutcome> {
   const { journal, config } = context;
 
-  let judgeCallCount = 0;
-  const nextCallIndex = (): number => {
-    judgeCallCount += 1;
-    return judgeCallCount;
-  };
-  const onStall = (silentMs: number): void =>
-    journal.event({ kind: 'step.stalled', job: job.id, step: step.id, silent_ms: silentMs });
+  for (;;) {
+    let exceeded: ReturnType<UsageAccumulator['check']>;
+    let judgeCallCount = 0;
+    const nextCallIndex = (): number => {
+      judgeCallCount += 1;
+      return judgeCallCount;
+    };
+    const onStall = (silentMs: number): void =>
+      journal.event({ kind: 'step.stalled', job: job.id, step: step.id, silent_ms: silentMs });
 
-  const result = await executeRunStep({
-    step,
-    cwd: context.cwd,
-    stepDir: stepDirPath,
-    stallTimeoutMs: config.defaults.stallTimeoutMs,
-    ...(context.signal === undefined ? {} : { signal: context.signal }),
-    env: (plan) => stepEnv(step, job, plan.attempt, context, stepDirPath),
-    evaluate: async (target, process_, plan) => {
-      const firstPass = evaluatePredicates(target.expect, {
-        exitCode: process_.exitCode,
-        text: process_.stdout,
-        structured: undefined,
-        cwd: context.cwd,
-        env: stepEnv(step, job, 1, context, stepDirPath),
-        changedPaths: changedPaths(),
-      });
+    const abort = stepAbort(context);
 
-      if (!target.expect.some((predicate) => predicate.kind === 'judge')) return firstPass;
+    const result = await executeRunStep({
+      step,
+      cwd: context.cwd,
+      stepDir: stepDirPath,
+      stallTimeoutMs: config.defaults.stallTimeoutMs,
+      signal: abort.controller.signal,
+      env: (plan) => stepEnv(step, job, plan.attempt, context, stepDirPath),
+      evaluate: async (target, process_, plan) => {
+        const firstPass = evaluatePredicates(target.expect, {
+          exitCode: process_.exitCode,
+          text: process_.stdout,
+          structured: undefined,
+          cwd: context.cwd,
+          env: stepEnv(step, job, 1, context, stepDirPath),
+          changedPaths: changedPaths(),
+        });
 
-      // Командный шаг сам расхода не несёт: расход попытки — это расход
-      // судей, накапливаемый по мере их вызовов, а не заменяемый последним.
-      let attemptUsage: Usage | undefined;
-      return runJudgePass({
-        predicates: target.expect,
-        firstPass,
-        task: describeStepTask(target),
-        text: process_.stdout,
-        structured: process_.stdout,
-        cwd: context.cwd,
-        stepDir: stepDirPath,
-        attempt: plan.attempt,
-        timeoutMs: target.timeoutMs,
-        stallTimeoutMs: config.defaults.stallTimeoutMs,
-        ...(context.signal === undefined ? {} : { signal: context.signal }),
-        onStall,
-        adapterFor: (name) => adapterOf(name, context),
-        defaultAgent: config.defaults.agent,
-        journal,
-        nextCallIndex,
-        canCall: () => context.usage.check(budgetScopes()) === undefined,
-        onUsage: (usage) => {
-          attemptUsage = attemptUsage === undefined ? usage : sumUsage(attemptUsage, usage);
-          context.usage.record(job.id, step.id, plan.attempt, attemptUsage);
-        },
-      });
-    },
-    onStall,
-    onExpectFailed: (plan, failure) =>
-      journal.event({
-        kind: 'expect.failed',
-        job: job.id,
-        step: step.id,
-        attempt: plan.attempt,
-        predicate: failure.predicate,
-        ...(failure.detail === undefined ? {} : { detail: failure.detail }),
-      }),
-  });
+        if (!target.expect.some((predicate) => predicate.kind === 'judge')) return firstPass;
 
-  return {
-    status: result.status,
-    ...(result.reason === undefined ? {} : { reason: result.reason }),
-    attempts: result.attempts,
-    results: result.results,
-    ...(context.usage.check(budgetScopes()) === undefined
-      ? {}
-      : { exceeded: context.usage.check(budgetScopes()) }),
-  };
+        // Командный шаг сам расхода не несёт: расход попытки — это расход
+        // судей, накапливаемый по мере их вызовов, а не заменяемый последним.
+        let attemptUsage: Usage | undefined;
+        return runJudgePass({
+          predicates: target.expect,
+          firstPass,
+          task: describeStepTask(target),
+          text: process_.stdout,
+          structured: process_.stdout,
+          cwd: context.cwd,
+          stepDir: stepDirPath,
+          attempt: plan.attempt,
+          timeoutMs: target.timeoutMs,
+          stallTimeoutMs: config.defaults.stallTimeoutMs,
+          signal: abort.controller.signal,
+          onStall,
+          adapterFor: (name) => adapterOf(name, context),
+          defaultAgent: config.defaults.agent,
+          journal,
+          nextCallIndex,
+          canCall: () => {
+            const found = context.usage.check(budgetScopes());
+            exceeded ??= found;
+            abort.trigger(found);
+            return found === undefined;
+          },
+          onUsage: (usage) => {
+            attemptUsage = attemptUsage === undefined ? usage : sumUsage(attemptUsage, usage);
+            context.usage.record(job.id, step.id, plan.attempt, attemptUsage);
+            const found = context.usage.check(budgetScopes());
+            exceeded ??= found;
+            abort.trigger(found);
+          },
+        });
+      },
+      onStall,
+      onExpectFailed: (plan, failure) =>
+        journal.event({
+          kind: 'expect.failed',
+          job: job.id,
+          step: step.id,
+          attempt: plan.attempt,
+          predicate: failure.predicate,
+          ...(failure.detail === undefined ? {} : { detail: failure.detail }),
+        }),
+    });
+
+    abort.dispose();
+    if (exceeded === undefined) {
+      const found = context.usage.check(budgetScopes());
+      exceeded = found;
+      abort.trigger(found);
+    }
+
+    if (abort.waitTrigger !== undefined) {
+      // Реальная отмена уже настигла прогон — ждать нечего, шаг canceled.
+      // `exceeded` в этом исходе не отдаётся: иначе runJobSteps прочёл бы
+      // его как основание для budget_exceeded и затёр бы canceled, который
+      // важнее.
+      if (context.signal?.aborted === true) {
+        return { status: 'canceled', attempts: result.attempts, results: result.results };
+      }
+      context.usage.sealStep(job.id, step.id);
+      const waited = await waitForReset(abort.waitTrigger, context);
+      if (waited.kind === 'resumed') continue;
+      if (waited.kind === 'stopped') {
+        return { status: 'budget_exceeded', attempts: result.attempts, results: result.results, exceeded: waited.exceeded };
+      }
+      return { status: 'canceled', attempts: result.attempts, results: result.results };
+    }
+
+    return {
+      status: result.status,
+      ...(result.reason === undefined ? {} : { reason: result.reason }),
+      attempts: result.attempts,
+      results: result.results,
+      ...(exceeded === undefined ? {} : { exceeded }),
+    };
+  }
 }
 
 async function runAgentStep(
@@ -887,6 +1054,7 @@ async function runAgentStep(
   const { pipeline } = context.expanded;
   const adapter = adapterOf(step.agent, context);
 
+  for (;;) {
   let exceeded: ReturnType<UsageAccumulator['check']>;
   let judgeCallCount = 0;
   const nextCallIndex = (): number => {
@@ -896,6 +1064,8 @@ async function runAgentStep(
   const onStall = (silentMs: number): void =>
     journal.event({ kind: 'step.stalled', job: job.id, step: step.id, silent_ms: silentMs });
 
+  const abort = stepAbort(context);
+
   const result = await executeAgentStep({
     step,
     adapter,
@@ -903,7 +1073,7 @@ async function runAgentStep(
     stepDir: stepDirPath,
     sessions,
     stallTimeoutMs: config.defaults.stallTimeoutMs,
-    ...(context.signal === undefined ? {} : { signal: context.signal }),
+    signal: abort.controller.signal,
     env: (plan) => stepEnv(step, job, plan.attempt, context, stepDirPath),
     buildPrompt: (_plan, previousFailure) => {
       // Унаследованный контекст уходит в первое сообщение сессии: повторять
@@ -989,24 +1159,33 @@ async function runAgentStep(
         attempt: plan.attempt,
         timeoutMs: target.timeoutMs,
         stallTimeoutMs: config.defaults.stallTimeoutMs,
-        ...(context.signal === undefined ? {} : { signal: context.signal }),
+        signal: abort.controller.signal,
         onStall,
         adapterFor: (name) => adapterOf(name, context),
         defaultAgent: config.defaults.agent,
         journal,
         nextCallIndex,
-        canCall: () => context.usage.check(budgetScopes()) === undefined,
+        canCall: () => {
+          const found = context.usage.check(budgetScopes());
+          exceeded ??= found;
+          abort.trigger(found);
+          return found === undefined;
+        },
         onUsage: (usage) => {
           attemptUsage = sumUsage(attemptUsage, usage);
           context.usage.record(job.id, step.id, plan.attempt, attemptUsage);
-          exceeded ??= context.usage.check(budgetScopes());
+          const found = context.usage.check(budgetScopes());
+          exceeded ??= found;
+          abort.trigger(found);
         },
       });
       return results;
     },
     onUsage: (current) => {
       context.usage.record(job.id, step.id, 1, current);
-      exceeded ??= context.usage.check(budgetScopes(), current);
+      const found = context.usage.check(budgetScopes(), current);
+      exceeded ??= found;
+      abort.trigger(found);
     },
     onUnparsed: (line) =>
       journal.event({ kind: 'backend.unparsed', job: job.id, step: step.id, line }),
@@ -1021,10 +1200,14 @@ async function runAgentStep(
         ...(failure.detail === undefined ? {} : { detail: failure.detail }),
       }),
     canContinue: () => {
-      exceeded ??= context.usage.check(budgetScopes());
+      const found = exceeded ?? context.usage.check(budgetScopes());
+      exceeded ??= found;
+      abort.trigger(found);
       return exceeded === undefined;
     },
   });
+
+  abort.dispose();
 
   if (exceeded !== undefined) {
     journal.event({
@@ -1033,6 +1216,40 @@ async function runAgentStep(
       used: exceeded.used,
       limit: exceeded.limit,
     });
+  }
+
+  if (abort.waitTrigger !== undefined) {
+    // Реальная отмена уже настигла прогон — ждать нечего, шаг canceled.
+    // `exceeded` в этом исходе не отдаётся: иначе runJobSteps прочёл бы его
+    // как основание для budget_exceeded и затёр бы canceled, который важнее.
+    if (context.signal?.aborted === true) {
+      return {
+        status: 'canceled',
+        ...(result.reason === undefined ? {} : { reason: result.reason }),
+        attempts: result.attempts,
+        results: result.results,
+        session: result.sessionId,
+      };
+    }
+    context.usage.sealStep(job.id, step.id);
+    const waited = await waitForReset(abort.waitTrigger, context);
+    if (waited.kind === 'resumed') continue;
+    if (waited.kind === 'stopped') {
+      return {
+        status: 'budget_exceeded',
+        attempts: result.attempts,
+        results: result.results,
+        session: result.sessionId,
+        exceeded: waited.exceeded,
+      };
+    }
+    return {
+      status: 'canceled',
+      ...(result.reason === undefined ? {} : { reason: result.reason }),
+      attempts: result.attempts,
+      results: result.results,
+      session: result.sessionId,
+    };
   }
 
   return {
@@ -1048,6 +1265,7 @@ async function runAgentStep(
     ...(result.last?.backendInit === undefined ? {} : { backendInit: result.last.backendInit }),
     ...(exceeded === undefined ? {} : { exceeded }),
   };
+  }
 }
 
 /** Задание шага без блока контекста — вход судьи на командном шаге. */

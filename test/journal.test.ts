@@ -206,6 +206,37 @@ describe('run-journal: раскладка и состояние', () => {
     assert.equal(RunStatusSchema.safeParse(readStatus(journal.paths)).success, true);
   });
 
+  it('состояние с моментом пробуждения читается во время ожидания', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeStatus(
+      sampleStatus(journal.paths.runId, { status: 'running', wake_at: '2026-08-23T22:00:00.000Z' }),
+    );
+
+    const status = readStatus(journal.paths);
+    assert.equal(status.wake_at, '2026-08-23T22:00:00.000Z');
+    assert.equal(RunStatusSchema.safeParse(status).success, true);
+  });
+
+  it('пишет события ожидания и пробуждения по бюджету', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+
+    journal.event({
+      kind: 'budget.waiting',
+      scope: 'работа build/plan',
+      dimension: 'rate_limit',
+      threshold: 80,
+      resets_at: 1_700_000_000_000,
+      wait_ms: 60_000,
+    });
+    journal.event({ kind: 'budget.resumed', actual_ms: 60_050 });
+
+    const events = readEvents(journal.paths);
+    assert.equal(events.some((event) => event.kind === 'budget.waiting'), true);
+    assert.equal(events.some((event) => event.kind === 'budget.resumed'), true);
+  });
+
   it('замена состояния атомарна: временных файлов не остаётся', () => {
     const { runsRoot, projectRoot } = bed();
     const journal = RunJournal.create({ runsRoot, projectRoot });

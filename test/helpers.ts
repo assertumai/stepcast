@@ -101,6 +101,7 @@ export interface SeedRunOptions {
   readonly runId?: string;
   readonly status?: StatusValue;
   readonly jobs?: RunStatus['jobs'];
+  readonly wakeAt?: string;
   readonly manifest?: Partial<RunManifest>;
   /** Работы, публикующие выход: каждой пишется `artifacts/<id>.json`. */
   readonly artifacts?: Readonly<Record<string, unknown>>;
@@ -148,6 +149,7 @@ export function seedRun(
     inputs: {},
     jobs: options.jobs ?? [],
     budget: { tokens_used: 0, wallclock_ms: 0 },
+    ...(options.wakeAt === undefined ? {} : { wake_at: options.wakeAt }),
     updated_at: '2026-08-01T00:05:00.000Z',
   });
 

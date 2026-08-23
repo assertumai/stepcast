@@ -10,9 +10,14 @@ params:
 
 session: shared
 
+# План — единственный нужный выход предшественника: proposal уже развёрнут в
+# нём, а повторная вставка только раздувает стартовый кеш сессии.
+context_upstream: [plan]
+
 context:
   - openspec/changes/${params.change}/tasks.md
-  - "openspec/changes/${params.change}/specs/**/*.md"
+  - path: "openspec/changes/${params.change}/specs/**/*.md"
+    mode: reference
 
 output:
   from: write-code
@@ -34,6 +39,9 @@ steps:
   - id: write-code
     agent: claude
     model: sonnet
+    # Все файлы остаются доступны агенту, но крупные спеки попадают в prompt
+    # ссылками: сначала читается задача, затем только нужная для неё спека.
+    context_max_tokens: 8k
     prompt: file:../prompts/implement.md
     output_schema: ../schemas/implement.json
     permissions:

@@ -44,6 +44,7 @@ const DURATION_VALUED = new Set([
   'runs.keep',
   'defaults.step_timeout',
   'defaults.stall_timeout',
+  'defaults.max_wait',
   'limits.wallclock',
 ]);
 

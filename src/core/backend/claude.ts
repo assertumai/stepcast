@@ -66,9 +66,18 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
       if (type === 'assistant') {
         const message = record.message as Record<string, unknown> | undefined;
         const tool = firstToolUse(message);
-        if (tool !== undefined) return tool;
         const usage = readUsage(message?.usage);
-        if (usage !== undefined) return { kind: 'usage', usage };
+        const messageId = typeof message?.id === 'string' ? message.id : undefined;
+        if (tool !== undefined) {
+          return {
+            ...tool,
+            ...(usage === undefined ? {} : { usage }),
+            ...(messageId === undefined ? {} : { messageId }),
+          };
+        }
+        if (usage !== undefined) {
+          return { kind: 'usage', usage, ...(messageId === undefined ? {} : { messageId }) };
+        }
         return { kind: 'ignored' };
       }
 
@@ -123,7 +132,9 @@ function prepareSchema(path: string): string {
   return JSON.stringify(rest);
 }
 
-function firstToolUse(message: Record<string, unknown> | undefined): BackendEvent | undefined {
+function firstToolUse(
+  message: Record<string, unknown> | undefined,
+): Extract<BackendEvent, { readonly kind: 'tool_use' }> | undefined {
   const content = message?.content;
   if (!Array.isArray(content)) return undefined;
   for (const block of content) {

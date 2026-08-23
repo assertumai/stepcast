@@ -21,6 +21,8 @@ export interface RunOverview {
   readonly running: boolean;
   readonly startedAt?: string;
   readonly finishedAt?: string;
+  /** Прогон спит до сброса окна лимита: отличает сон от зависания. */
+  readonly wakeAt?: string;
   /** Прогон после уборки: подробностей на диске уже нет. */
   readonly swept: boolean;
   /** Манифест или состояние не читаются — прогон показан, но неполно. */
@@ -47,6 +49,7 @@ function readRun(runsRoot: string, key: string, runId: string): RunOverview {
   let startedAt: string | undefined;
   let finishedAt: string | undefined;
   let status: StatusValue | undefined;
+  let wakeAt: string | undefined;
   let unreadable = false;
 
   try {
@@ -64,6 +67,7 @@ function readRun(runsRoot: string, key: string, runId: string): RunOverview {
   try {
     const state = readStatus(paths);
     status = state.status;
+    wakeAt = state.wake_at;
     if (pipeline === '') pipeline = state.pipeline;
   } catch {
     if (status === undefined) unreadable = true;
@@ -77,6 +81,7 @@ function readRun(runsRoot: string, key: string, runId: string): RunOverview {
     running: status === 'running',
     ...(startedAt === undefined ? {} : { startedAt }),
     ...(finishedAt === undefined ? {} : { finishedAt }),
+    ...(wakeAt === undefined ? {} : { wakeAt }),
     // Каталог работ исчезает только после уборки: движок создаёт его всегда.
     swept: !existsSync(paths.jobs),
     unreadable,

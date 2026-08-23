@@ -35,6 +35,7 @@ export const RawDefaultsSchema = z
     fail_fast: z.boolean().optional(),
     step_timeout: amount.optional(),
     stall_timeout: amount.optional(),
+    max_wait: amount.optional(),
   })
   .strict();
 

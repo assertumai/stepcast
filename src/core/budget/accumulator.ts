@@ -45,6 +45,21 @@ export interface Exceeded {
   readonly dimension: 'tokens' | 'wallclock' | 'rate_limit';
   readonly used: number;
   readonly limit: number;
+  /** Режим области, чей потолок упёрся: решает, ждать или остановиться. */
+  readonly onExceed: 'wait' | 'stop';
+  /** Момент сброса окна — только для rate_limit, только если бэкенд его сообщил. */
+  readonly resetsAt?: number;
+  /**
+   * Причина, по которой объявленный `wait` не привёл к ожиданию. Задана —
+   * заменяет стандартное описание превышения объяснением остановки.
+   */
+  readonly waitDegeneration?: string;
+}
+
+/** Интервал сна: нужен, чтобы вычесть из области только ту его часть, что пришлась на её жизнь. */
+interface WaitInterval {
+  readonly start: number;
+  readonly end: number;
 }
 
 interface Counters {
@@ -76,6 +91,10 @@ export class UsageAccumulator {
   /** Измерения, которых бэкенд не сообщил: учёт по ним заведомо неполон. */
   private readonly unreported = new Set<string>();
   private readonly startedAt = Date.now();
+  /** Интервалы ожидания сброса окна лимита за весь прогон. */
+  private readonly waits: WaitInterval[] = [];
+  /** Отличает переисполнения одной и той же попытки в ключах расхода. */
+  private sealCounter = 0;
 
   constructor(private readonly cacheReadWeight: (backend: string) => number) {}
 
@@ -125,7 +144,50 @@ export class UsageAccumulator {
   }
 
   elapsedMs(): number {
-    return Date.now() - this.startedAt;
+    return Date.now() - this.startedAt - this.sleptMs();
+  }
+
+  /** Записать интервал сна: вычитается из `elapsedMs()` и из длительности застигнутых им областей. */
+  recordWait(start: number, end: number): void {
+    this.waits.push({ start, end });
+  }
+
+  /** Суммарная длительность всех ожиданий за прогон. */
+  totalWaitMs(): number {
+    return this.waits.reduce((sum, wait) => sum + (wait.end - wait.start), 0);
+  }
+
+  /** Уложится ли ожидание длиной `durationMs` в объявленный предел с учётом уже проспанного. */
+  wouldExceedMaxWait(durationMs: number, maxWaitMs: number): boolean {
+    return this.totalWaitMs() + durationMs > maxWaitMs;
+  }
+
+  /**
+   * Зафиксировать расход всех текущих попыток шага перед его переисполнением.
+   * Ключи их записей уводятся в сторону: переисполнение начинает счёт заново
+   * под теми же именами попыток, а расход оборванной попытки не теряется —
+   * он уже вошёл в счётчики прогона и работы и остаётся в собственном счёте
+   * шага под новым внутренним именем.
+   */
+  sealStep(jobId: string, stepId: string): void {
+    const prefix = `${jobId}/${stepId}#`;
+    for (const [key, counters] of [...this.steps]) {
+      if (!key.startsWith(prefix)) continue;
+      this.sealCounter += 1;
+      this.steps.delete(key);
+      this.steps.set(`${key}@seal${this.sealCounter}`, counters);
+    }
+  }
+
+  /** Сон, вычитаемый из области, начавшейся не раньше `sinceMs` (по умолчанию — весь). */
+  private sleptMs(sinceMs?: number): number {
+    let total = 0;
+    for (const wait of this.waits) {
+      if (sinceMs !== undefined && wait.end <= sinceMs) continue;
+      const start = sinceMs === undefined ? wait.start : Math.max(wait.start, sinceMs);
+      total += wait.end - start;
+    }
+    return total;
   }
 
   /** Первый потолок, который упёрся. Связывает тот, что ближе. */
@@ -136,7 +198,13 @@ export class UsageAccumulator {
 
       const used = this.usedFor(scope);
       if (budget.tokens !== undefined && used > budget.tokens) {
-        return { scope: scope.name, dimension: 'tokens', used, limit: budget.tokens };
+        return {
+          scope: scope.name,
+          dimension: 'tokens',
+          used,
+          limit: budget.tokens,
+          onExceed: budget.onExceed,
+        };
       }
 
       // Область без собственного начала — это прогон: он и начался вместе с
@@ -144,7 +212,7 @@ export class UsageAccumulator {
       const elapsed =
         scope.kind === 'run' || scope.startedAt === undefined
           ? this.elapsedMs()
-          : Date.now() - scope.startedAt;
+          : Date.now() - scope.startedAt - this.sleptMs(scope.startedAt);
 
       if (budget.wallclockMs !== undefined && elapsed > budget.wallclockMs) {
         return {
@@ -152,19 +220,33 @@ export class UsageAccumulator {
           dimension: 'wallclock',
           used: elapsed,
           limit: budget.wallclockMs,
+          onExceed: budget.onExceed,
         };
       }
 
       if (budget.rateLimitPct !== undefined && usage?.rate_limits !== undefined) {
+        // Несколько окон могут превысить порог одновременно — берётся более
+        // позднее из сообщённых: иначе прогон проснулся бы к сбросу
+        // пятичасового окна и немедленно упёрся в недельное.
+        let worst: { readonly usedPct: number; readonly resetsAt: number | undefined } | undefined;
         for (const window of Object.values(usage.rate_limits)) {
-          if (window.used_pct > budget.rateLimitPct) {
-            return {
-              scope: scope.name,
-              dimension: 'rate_limit',
-              used: window.used_pct,
-              limit: budget.rateLimitPct,
-            };
+          if (window.used_pct <= budget.rateLimitPct) continue;
+          if (
+            worst === undefined ||
+            (window.resets_at ?? -Infinity) > (worst.resetsAt ?? -Infinity)
+          ) {
+            worst = { usedPct: window.used_pct, resetsAt: window.resets_at };
           }
+        }
+        if (worst !== undefined) {
+          return {
+            scope: scope.name,
+            dimension: 'rate_limit',
+            used: worst.usedPct,
+            limit: budget.rateLimitPct,
+            onExceed: budget.onExceed,
+            ...(worst.resetsAt === undefined ? {} : { resetsAt: worst.resetsAt }),
+          };
         }
       }
     }
@@ -252,6 +334,11 @@ function toCounters(usage: Usage, cacheReadWeight: number): Counters {
 }
 
 export function describeExceeded(exceeded: Exceeded): string {
+  const base = describeExceededDimension(exceeded);
+  return exceeded.waitDegeneration === undefined ? base : `${base}; ${exceeded.waitDegeneration}`;
+}
+
+function describeExceededDimension(exceeded: Exceeded): string {
   switch (exceeded.dimension) {
     case 'tokens':
       return `${exceeded.scope}: израсходовано ${formatTokens(exceeded.used)} при потолке ${formatTokens(exceeded.limit)}`;

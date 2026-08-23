@@ -212,6 +212,11 @@ plan/read-change       valid    — переиспользуется из 3f9a1c
 }
 ```
 
+Прогон, ушедший в ожидание сброса окна лимита (`on_exceed: wait`), дописывает
+`status.json` до начала сна: статус остаётся `running`, а поле `wake_at`
+называет момент пробуждения. Поле снимается после продолжения — так спящий
+прогон отличим от зависшего снаружи, не заглядывая в журнал событий.
+
 ## Возобновление
 
 ```bash
@@ -291,7 +296,7 @@ stepcast diff <run-a> <run-b>
 
 `events.ndjson` — по строке на событие: `job.started`, `step.attempt`,
 `step.stalled`, `expect.failed`, `env.denied`, `budget.warning`,
-`budget.waiting`. UI читает хвост файла.
+`budget.waiting`, `budget.resumed`. UI читает хвост файла.
 
 ```bash
 stepcast logs <run-id> [<job>/<step>] [--follow]

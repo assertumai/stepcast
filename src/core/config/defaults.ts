@@ -18,6 +18,10 @@ export const BUILTIN_CONFIG: RawConfig = {
     fail_fast: true,
     step_timeout: '30m',
     stall_timeout: '5m',
+    // Сброс окна лимита подписки известен заранее, но неточно; шесть часов
+    // покрывают и пятичасовое, и (частично) недельное окно, не превращая
+    // зависший бэкенд в многодневный сон.
+    max_wait: '6h',
   },
   limits: {
     tokens: '5M',

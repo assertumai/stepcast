@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { BackendAdapter } from '../backend/types.js';
-import { emptyUsage, mergeUsage } from '../backend/types.js';
+import { emptyUsage, mergeUsage, sumUsage } from '../backend/types.js';
 import type { AgentStep } from '../pipeline/model.js';
 import type { AttemptRecord, PredicateResult, StatusValue, Usage } from '../journal/schema.js';
 import { runAttempts, type AttemptPlan } from './attempts.js';
@@ -121,6 +121,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
       writePrompt(options.stepDir, suffix, prompt);
 
       let usage = emptyUsage(adapter.name, resolvedModel, 0);
+      const seenUsageMessageIds = new Set<string>();
       let text: string | undefined;
       let structured: unknown;
       let backendInit: Record<string, unknown> | undefined;
@@ -146,17 +147,19 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
               const path = readPathFromInput(event.input);
               if (path !== undefined) observedInputs.add(path);
             }
+            recordUsageDelta(event.usage, event.messageId);
             break;
           case 'usage':
-            usage = mergeUsage(usage, event.usage);
-            options.onUsage?.(usage);
+            recordUsageDelta(event.usage, event.messageId);
             break;
           case 'result':
             if (event.text !== undefined) text = event.text;
             if (event.structured !== undefined) structured = event.structured;
-            usage = mergeUsage(usage, event.usage);
+            if (event.usage !== undefined) {
+              usage = mergeUsage(usage, event.usage);
+              options.onUsage?.(usage);
+            }
             if (event.failed === true) failedByBackend = true;
-            options.onUsage?.(usage);
             break;
           case 'unparsed':
             options.onUnparsed?.(event.line);
@@ -164,6 +167,13 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
           case 'ignored':
             break;
         }
+      };
+
+      const recordUsageDelta = (delta: Partial<Usage> | undefined, messageId: string | undefined): void => {
+        if (delta === undefined || (messageId !== undefined && seenUsageMessageIds.has(messageId))) return;
+        if (messageId !== undefined) seenUsageMessageIds.add(messageId);
+        usage = sumUsage(usage, mergeUsage(emptyUsage(adapter.name, resolvedModel, 0), delta));
+        options.onUsage?.(usage);
       };
 
       const process_ = await runProcess({

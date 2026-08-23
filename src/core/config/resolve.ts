@@ -47,6 +47,8 @@ export interface Config {
     readonly failFast: boolean;
     readonly stepTimeoutMs: number;
     readonly stallTimeoutMs: number;
+    /** Предел суммарного ожидания сброса окна лимита за прогон. */
+    readonly maxWaitMs: number;
   };
   readonly limits: {
     readonly tokens: number;
@@ -257,6 +259,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
       failFast: values.get('defaults.fail_fast') !== false,
       stepTimeoutMs: requireNumber(values, 'defaults.step_timeout'),
       stallTimeoutMs: requireNumber(values, 'defaults.stall_timeout'),
+      maxWaitMs: requireNumber(values, 'defaults.max_wait'),
     },
     limits: {
       tokens: requireNumber(values, 'limits.tokens'),

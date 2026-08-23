@@ -10,8 +10,13 @@ import { createClaudeAdapter } from './claude.js';
  */
 export interface FakeBackendOptions {
   readonly capabilities?: Partial<BackendCapabilities>;
-  /** Строки потока, которые «выдаст» бэкенд. Разбираются как у Claude Code. */
-  readonly lines: readonly string[];
+  /**
+   * Строки потока, которые «выдаст» бэкенд. Разбираются как у Claude Code.
+   * Функцией — чтобы различить переисполнение шага (например, после
+   * ожидания сброса окна лимита) от первого запуска: аргумент — номер
+   * запуска этого бэкенда, с нуля.
+   */
+  readonly lines: readonly string[] | ((invocationIndex: number) => readonly string[]);
   readonly exitCode?: number;
   /** Не завершаться самостоятельно это время — для проверки прерывания по таймауту. */
   readonly hangMs?: number;
@@ -44,12 +49,12 @@ export function createFakeBackend(options: FakeBackendOptions): FakeBackend {
       structuredOutput: options.capabilities?.structuredOutput ?? true,
     },
     launch(invocation): LaunchSpec {
+      const index = invocations.length;
       invocations.push(invocation);
       // Печатаем заготовленный поток и выходим с заданным кодом: движок
       // работает с настоящим процессом, но без настоящей модели.
-      const script = options.lines
-        .map((line) => `printf '%s\\n' ${shellQuote(line)}`)
-        .join('\n');
+      const lines = typeof options.lines === 'function' ? options.lines(index) : options.lines;
+      const script = lines.map((line) => `printf '%s\\n' ${shellQuote(line)}`).join('\n');
       // `sleep` реагирует на SIGTERM сам — этого достаточно, чтобы проверить
       // прерывание по таймауту без настоящего висящего процесса.
       const hang = options.hangMs === undefined ? '' : `sleep ${options.hangMs / 1000}\n`;
@@ -76,6 +81,8 @@ export function resultLine(options: {
   readonly tokensOut?: number;
   readonly cacheRead?: number;
   readonly cacheWrite?: number;
+  /** Окна лимитов подписки: имя окна → процент и, опционально, момент сброса. */
+  readonly rateLimits?: Readonly<Record<string, { readonly usedPct: number; readonly resetsAt?: number }>>;
 }): string {
   return JSON.stringify({
     type: 'result',
@@ -90,6 +97,19 @@ export function resultLine(options: {
         ? {}
         : { cache_creation_input_tokens: options.cacheWrite }),
     },
+    ...(options.rateLimits === undefined
+      ? {}
+      : {
+          rate_limits: Object.fromEntries(
+            Object.entries(options.rateLimits).map(([window, value]) => [
+              window,
+              {
+                used_percentage: value.usedPct,
+                ...(value.resetsAt === undefined ? {} : { resets_at: value.resetsAt }),
+              },
+            ]),
+          ),
+        }),
   });
 }
 

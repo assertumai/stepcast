@@ -98,6 +98,20 @@ describe('ui-dashboard: обзор всех проектов и прогонов
     assert.equal(run?.unreadable, false);
   });
 
+  // Сценарий: «Спящий прогон отличим от зависшего»
+  it('показывает момент пробуждения спящего прогона', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'sleeping',
+      status: 'running',
+      wakeAt: '2026-08-23T22:00:00.000Z',
+    });
+
+    const run = buildOverview(runsRoot).projects[0]?.runs[0];
+    assert.equal(run?.running, true);
+    assert.equal(run?.wakeAt, '2026-08-23T22:00:00.000Z');
+  });
+
   it('на пустом корне прогонов отдаёт пустой обзор', () => {
     const { runsRoot } = makeJournalBed();
     assert.deepEqual(buildOverview(runsRoot).projects, []);

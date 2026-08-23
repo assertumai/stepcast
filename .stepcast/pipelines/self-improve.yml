@@ -29,7 +29,8 @@ fail_fast: true
 # подавляет. Дублировать подгружаемое бэкендом значило бы платить за него
 # дважды.
 context:
-  - docs/status.md
+  - path: docs/status.md
+    mode: reference
   - text: |
       Это репозиторий самого stepcast. Правки движка проверяются командой
       npm run check — она гоняет типизацию, линт и тесты.

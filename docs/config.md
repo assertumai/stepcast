@@ -32,6 +32,7 @@ defaults:
   fail_fast: true
   step_timeout: 30m
   stall_timeout: 5m
+  max_wait: 6h                 # предел суммарного ожидания сброса окна лимита за прогон
 
 limits:                        # потолки, которые пайплайн не может поднять
   tokens: 5M

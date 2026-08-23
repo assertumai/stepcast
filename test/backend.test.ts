@@ -122,6 +122,30 @@ describe('agent-backend: разбор потока', () => {
     assert.equal(adapter.parseLine(resultLine({ text: 'готово' })).kind, 'result');
   });
 
+  it('не теряет usage, когда Claude сообщает его рядом с tool_use', () => {
+    const event = adapter.parseLine(
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          id: 'msg-usage-tool',
+          content: [{ type: 'tool_use', name: 'Read', input: { file_path: 'src/a.ts' } }],
+          usage: { input_tokens: 2, output_tokens: 3, cache_read_input_tokens: 40 },
+        },
+      }),
+    ) as unknown as {
+      readonly kind: string;
+      readonly messageId?: string;
+      readonly name?: string;
+      readonly usage?: { readonly tokens_in?: number; readonly cache_read?: number };
+    };
+
+    assert.equal(event.kind, 'tool_use');
+    assert.equal(event.messageId, 'msg-usage-tool');
+    assert.equal(event.name, 'Read');
+    assert.equal(event.usage?.tokens_in, 2);
+    assert.equal(event.usage?.cache_read, 40);
+  });
+
   // Сценарий: «Битая строка потока»
   it('не роняет шаг на неразбираемой строке и молчит о неизвестной', () => {
     assert.deepEqual(adapter.parseLine('{это не json'), {
@@ -251,6 +275,37 @@ describe('agent-backend: исполнение шага', () => {
     assert.equal(readFileSync(join(dir, 'prompt.txt'), 'utf8'), 'полный промпт с контекстом');
     assert.equal(result.last?.usage.tokens_in, 120);
     assert.equal(result.last?.backendInit?.mcp_servers !== undefined, true);
+  });
+
+  it('суммирует уникальные streaming usage и не дублирует один message id', async () => {
+    const dir = workdir();
+    const assistant = (id: string, tokens: number, tool = false): string =>
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          id,
+          content: tool ? [{ type: 'tool_use', name: 'Read', input: { file_path: 'src/a.ts' } }] : [],
+          usage: { input_tokens: tokens },
+        },
+      });
+    const backend = createFakeBackend({
+      lines: [assistant('msg-1', 60), assistant('msg-1', 60, true), assistant('msg-2', 60), resultLine({ text: 'ок' })],
+    });
+    const reported: number[] = [];
+
+    const result = await executeAgentStep({
+      step: makeAgentStep(),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+      onUsage: (usage) => reported.push(usage.tokens_in ?? 0),
+    });
+
+    assert.deepEqual(reported, [60, 120]);
+    assert.equal(result.last?.usage.tokens_in, 120);
   });
 
   // Сценарий: «Фиксация инициализации»

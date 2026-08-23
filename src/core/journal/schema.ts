@@ -216,6 +216,12 @@ export const RunStatusSchema = z
     budget: BudgetStateSchema,
     /** Команда возобновления: состояние должно объяснять, как продолжить. */
     resume: z.object({ command: z.string(), blocked_by: z.string().optional() }).strict().optional(),
+    /**
+     * Момент, когда прогон, уснувший до сброса окна лимита, должен
+     * возобновиться. Пишется на диск до начала сна и снимается после
+     * пробуждения — это отличает спящий прогон от зависшего.
+     */
+    wake_at: z.string().optional(),
     updated_at: z.string(),
   })
   .strict();
@@ -274,6 +280,16 @@ export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('context.downgraded'), job: z.string(), step: z.string(), path: z.string(), tokens: z.number() }).strict(),
   z.object({ ...eventBase, kind: z.literal('budget.warning'), scope: z.string(), used: z.number(), limit: z.number() }).strict(),
   z.object({ ...eventBase, kind: z.literal('budget.exceeded'), scope: z.string(), used: z.number(), limit: z.number() }).strict(),
+  z.object({
+    ...eventBase,
+    kind: z.literal('budget.waiting'),
+    scope: z.string(),
+    dimension: z.literal('rate_limit'),
+    threshold: z.number(),
+    resets_at: z.number(),
+    wait_ms: z.number(),
+  }).strict(),
+  z.object({ ...eventBase, kind: z.literal('budget.resumed'), actual_ms: z.number() }).strict(),
   z.object({ ...eventBase, kind: z.literal('backend.degraded'), backend: z.string(), capability: z.string(), detail: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('backend.unparsed'), job: z.string(), step: z.string(), line: z.string() }).strict(),
   // Неудача внутреннего учёта. Статусов не меняет: см. core/run/bookkeeping.ts.
