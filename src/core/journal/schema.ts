@@ -263,6 +263,7 @@ export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('run.started'), pipeline: z.string(), run_id: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('run.finished'), status: StatusValueSchema, exit_code: z.number() }).strict(),
   z.object({ ...eventBase, kind: z.literal('job.started'), job: z.string() }).strict(),
+  z.object({ ...eventBase, kind: z.literal('job.errored'), job: z.string(), detail: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('job.finished'), job: z.string(), status: StatusValueSchema, reason: z.string().optional() }).strict(),
   z.object({ ...eventBase, kind: z.literal('step.started'), job: z.string(), step: z.string(), attempt: z.number().int().positive() }).strict(),
   z.object({ ...eventBase, kind: z.literal('step.finished'), job: z.string(), step: z.string(), attempt: z.number().int().positive(), status: StatusValueSchema, reason: z.string().optional() }).strict(),

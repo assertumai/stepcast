@@ -426,6 +426,24 @@ async function executeJob(
       cause: HaltCause.untilNotMet,
       ...(previousCheck === undefined ? {} : { lastCheck: previousCheck }),
     };
+  } catch (error) {
+    // Ошибка внутри работы — её отказ, а не крушение прогона. Иначе состояние
+    // остаётся в `running`, статусы отработавших работ теряются, а работы с
+    // `needs: all` не выполняются — то есть разбирать случившееся нечем ровно
+    // тогда, когда разбор нужнее всего.
+    //
+    // Ловится любое исключение: ошибки учёта сюда не доходят, их отделяет
+    // `bookkeep`. Значит это либо объявленная ошибка конфигурации, которую
+    // нельзя было выявить заранее (путь с подстановкой статически не
+    // проверяется), либо дефект движка — и во втором случае унести с собой
+    // бухгалтерию прогона хуже, чем отказать одной работой.
+    const detail = error instanceof Error ? error.message : String(error);
+    journal.event({ kind: 'job.errored', job: job.id, detail });
+    return {
+      status: 'failed',
+      reason: `работа прервана ошибкой: ${detail}`,
+      cause: HaltCause.spawnFailed,
+    };
   } finally {
     // Индексный файл живёт ровно столько, сколько работа.
     anchorState.anchorer?.dispose();
