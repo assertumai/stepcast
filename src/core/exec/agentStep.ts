@@ -52,10 +52,12 @@ export interface AgentStepOptions {
   readonly onUsage?: (usage: Usage) => void;
   readonly onUnparsed?: (line: string) => void;
   readonly onExpectFailed?: (plan: AttemptPlan, result: PredicateResult) => void;
+  /** Может возвращать промис: судья внутри неё — асинхронный агентский вызов. */
   readonly evaluate?: (
     step: AgentStep,
     outcome: AgentAttemptOutcome,
-  ) => readonly PredicateResult[];
+    plan: AttemptPlan,
+  ) => readonly PredicateResult[] | Promise<readonly PredicateResult[]>;
   readonly canContinue?: (attempt: number) => boolean;
 }
 
@@ -195,7 +197,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
 
       const results =
         process_.outcome === 'exited'
-          ? evaluate(step, outcome)
+          ? await evaluate(step, outcome, plan)
           : [
               {
                 predicate: process_.outcome === 'timeout' ? 'timeout' : 'canceled',

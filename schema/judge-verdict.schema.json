@@ -1,0 +1,11 @@
+{
+  "title": "stepcast judge verdict",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "pass": { "type": "boolean" },
+    "reason": { "type": "string" }
+  },
+  "required": ["pass", "reason"],
+  "additionalProperties": false
+}

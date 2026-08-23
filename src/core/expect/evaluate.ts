@@ -134,9 +134,18 @@ function evaluateOne(predicate: Predicate, input: EvaluationInput): PredicateRes
     case 'changed_only':
       return evaluateChangedOnly(predicate.globs, input);
     case 'judge':
-      throw new StepcastError('Предикат judge ещё не реализован', {
-        hint: 'Судья требует отдельного агентского вызова и появится отдельным изменением',
-      });
+      // Вычисление судьи — второй, асинхронный проход попытки (см.
+      // exec/judgePass.ts): он требует агентского вызова, сессий и журнала, а
+      // этот синхронный проход о них не знает нарочно. Место в списке
+      // сохраняется, чтобы порядок предикатов не зависел от того, что судья
+      // вычисляется позже остальных.
+      return {
+        predicate: 'judge',
+        passed: true,
+        hard: false,
+        expected: predicate.claim,
+        detail: 'не вычислен: судья вызывается вторым проходом',
+      };
   }
 }
 

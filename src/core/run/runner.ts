@@ -19,6 +19,7 @@ import { ExitCode, isStepcastError, type ExitCodeValue } from '../errors.js';
 import { createSessionRegistry, executeAgentStep } from '../exec/agentStep.js';
 import { buildStepEnv, injectedVariables } from '../exec/env.js';
 import { executeRunStep } from '../exec/runStep.js';
+import { runJudgePass } from '../exec/judgePass.js';
 import { evaluatePredicates } from '../expect/evaluate.js';
 import { buildGraph } from '../graph.js';
 import { bookkeep } from './bookkeeping.js';
@@ -762,6 +763,14 @@ async function runCommandStep(
 ): Promise<StepOutcome> {
   const { journal, config } = context;
 
+  let judgeCallCount = 0;
+  const nextCallIndex = (): number => {
+    judgeCallCount += 1;
+    return judgeCallCount;
+  };
+  const onStall = (silentMs: number): void =>
+    journal.event({ kind: 'step.stalled', job: job.id, step: step.id, silent_ms: silentMs });
+
   const result = await executeRunStep({
     step,
     cwd: context.cwd,
@@ -769,17 +778,40 @@ async function runCommandStep(
     stallTimeoutMs: config.defaults.stallTimeoutMs,
     ...(context.signal === undefined ? {} : { signal: context.signal }),
     env: (plan) => stepEnv(step, job, plan.attempt, context, stepDirPath),
-    evaluate: (target, process_) =>
-      evaluatePredicates(target.expect, {
+    evaluate: async (target, process_, plan) => {
+      const firstPass = evaluatePredicates(target.expect, {
         exitCode: process_.exitCode,
         text: process_.stdout,
         structured: undefined,
         cwd: context.cwd,
         env: stepEnv(step, job, 1, context, stepDirPath),
         changedPaths: changedPaths(),
-      }),
-    onStall: (silentMs) =>
-      journal.event({ kind: 'step.stalled', job: job.id, step: step.id, silent_ms: silentMs }),
+      });
+
+      if (!target.expect.some((predicate) => predicate.kind === 'judge')) return firstPass;
+
+      return runJudgePass({
+        predicates: target.expect,
+        firstPass,
+        task: describeStepTask(target),
+        text: process_.stdout,
+        structured: process_.stdout,
+        cwd: context.cwd,
+        stepDir: stepDirPath,
+        attempt: plan.attempt,
+        timeoutMs: target.timeoutMs,
+        stallTimeoutMs: config.defaults.stallTimeoutMs,
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+        onStall,
+        adapterFor: (name) => adapterOf(name, context),
+        defaultAgent: config.defaults.agent,
+        journal,
+        nextCallIndex,
+        canCall: () => context.usage.check(budgetScopes()) === undefined,
+        onUsage: (usage) => context.usage.record(job.id, step.id, plan.attempt, usage),
+      });
+    },
+    onStall,
     onExpectFailed: (plan, failure) =>
       journal.event({
         kind: 'expect.failed',
@@ -817,6 +849,13 @@ async function runAgentStep(
   const adapter = adapterOf(step.agent, context);
 
   let exceeded: ReturnType<UsageAccumulator['check']>;
+  let judgeCallCount = 0;
+  const nextCallIndex = (): number => {
+    judgeCallCount += 1;
+    return judgeCallCount;
+  };
+  const onStall = (silentMs: number): void =>
+    journal.event({ kind: 'step.stalled', job: job.id, step: step.id, silent_ms: silentMs });
 
   const result = await executeAgentStep({
     step,
@@ -865,10 +904,11 @@ async function runAgentStep(
         .filter((part) => part !== undefined && part !== '')
         .join('\n\n');
     },
-    evaluate: (target, outcome) => {
+    evaluate: async (target, outcome, plan) => {
       // Ненулевой код возврата означает, что бэкенд не отработал, и жалобы
       // предикатов на отсутствующий вывод только уводят от причины. Настоящую
-      // причину бэкенд написал в stderr — её и показываем первой.
+      // причину бэкенд написал в stderr — её и показываем первой. Судья здесь
+      // не вызывается: попытка отклонена в любом случае.
       if (outcome.process.exitCode !== 0) {
         const detail = outcome.process.stderr.trim().split('\n').slice(-3).join('\n');
         return [
@@ -884,7 +924,8 @@ async function runAgentStep(
           },
         ];
       }
-      return evaluatePredicates(target.expect, {
+
+      const firstPass = evaluatePredicates(target.expect, {
         exitCode: outcome.process.exitCode,
         text: outcome.text ?? '',
         structured: outcome.structured,
@@ -892,6 +933,33 @@ async function runAgentStep(
         env: stepEnv(step, job, 1, context, stepDirPath),
         changedPaths: changedPaths(),
       });
+
+      if (!target.expect.some((predicate) => predicate.kind === 'judge')) return firstPass;
+
+      const results = await runJudgePass({
+        predicates: target.expect,
+        firstPass,
+        task: target.prompt,
+        text: outcome.text ?? '',
+        structured: outcome.structured,
+        cwd: context.cwd,
+        stepDir: stepDirPath,
+        attempt: plan.attempt,
+        timeoutMs: target.timeoutMs,
+        stallTimeoutMs: config.defaults.stallTimeoutMs,
+        ...(context.signal === undefined ? {} : { signal: context.signal }),
+        onStall,
+        adapterFor: (name) => adapterOf(name, context),
+        defaultAgent: config.defaults.agent,
+        journal,
+        nextCallIndex,
+        canCall: () => context.usage.check(budgetScopes()) === undefined,
+        onUsage: (usage) => {
+          context.usage.record(job.id, step.id, plan.attempt, usage);
+          exceeded ??= context.usage.check(budgetScopes());
+        },
+      });
+      return results;
     },
     onUsage: (current) => {
       context.usage.record(job.id, step.id, 1, current);
@@ -899,8 +967,7 @@ async function runAgentStep(
     },
     onUnparsed: (line) =>
       journal.event({ kind: 'backend.unparsed', job: job.id, step: step.id, line }),
-    onStall: (silentMs) =>
-      journal.event({ kind: 'step.stalled', job: job.id, step: step.id, silent_ms: silentMs }),
+    onStall,
     onExpectFailed: (plan, failure) =>
       journal.event({
         kind: 'expect.failed',
@@ -938,6 +1005,12 @@ async function runAgentStep(
     ...(result.last?.backendInit === undefined ? {} : { backendInit: result.last.backendInit }),
     ...(exceeded === undefined ? {} : { exceeded }),
   };
+}
+
+/** Задание шага без блока контекста — вход судьи на командном шаге. */
+function describeStepTask(step: Step): string {
+  if (step.kind === 'agent') return step.prompt;
+  return typeof step.command === 'string' ? step.command : step.command.join(' ');
 }
 
 function failureBlock(previousFailure: string | undefined): string {

@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { StepcastError } from '../errors.js';
 import {
   jobDir,
+  judgeCallDir,
   makeRunId,
   projectKey,
   runPaths,
@@ -133,6 +134,13 @@ export class RunJournal {
   /** Создать каталог шага и вернуть его путь. */
   prepareStep(jobId: string, index: number, stepId: string, iteration?: number): string {
     const dir = stepDir(this.paths, jobId, index, stepId, iteration);
+    mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+    return dir;
+  }
+
+  /** Создать каталог вызова судьи и вернуть его путь. */
+  prepareJudgeCall(stepDirPath: string, n: number): string {
+    const dir = judgeCallDir(stepDirPath, n);
     mkdirSync(dir, { recursive: true, mode: DIR_MODE });
     return dir;
   }

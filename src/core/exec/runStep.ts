@@ -32,11 +32,15 @@ export interface RunStepOptions {
   readonly onStall?: (silentMs: number) => void;
   readonly onAttemptStart?: (plan: AttemptPlan) => void;
   readonly onExpectFailed?: (plan: AttemptPlan, result: PredicateResult) => void;
-  /** Оценка результата попытки. Умолчание проверяет только код возврата. */
+  /**
+   * Оценка результата попытки. Умолчание проверяет только код возврата.
+   * Может возвращать промис: судья внутри неё — асинхронный агентский вызов.
+   */
   readonly evaluate?: (
     step: RunStep,
     result: ProcessResult,
-  ) => readonly PredicateResult[];
+    plan: AttemptPlan,
+  ) => readonly PredicateResult[] | Promise<readonly PredicateResult[]>;
   readonly canContinue?: (attempt: number) => boolean;
 }
 
@@ -80,7 +84,7 @@ export async function executeRunStep(options: RunStepOptions): Promise<RunStepRe
 
       const results =
         result.outcome === 'exited'
-          ? evaluate(step, result)
+          ? await evaluate(step, result, plan)
           : [
               {
                 predicate: result.outcome,

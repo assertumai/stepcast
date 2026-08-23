@@ -407,13 +407,28 @@ function checkStep(
       continue;
     }
     if (predicate.kind !== 'judge') continue;
-    push({
-      severity: 'error',
-      message: 'Предикат judge ещё не реализован',
-      file: job.source,
-      at: `${at}.expect`,
-      hint: 'Судья требует отдельного агентского вызова и появится отдельным изменением',
-    });
+
+    const backendName = predicate.agent ?? options.config.defaults.agent;
+    const backend = options.config.backends[backendName];
+    if (backend === undefined) {
+      push({
+        severity: 'error',
+        message: `Неизвестный бэкенд судьи ${backendName} у шага ${job.id}/${step.id}`,
+        file: job.source,
+        at: `${at}.expect.${index}.agent`,
+        hint: `Настроены: ${Object.keys(options.config.backends).sort().join(', ')}`,
+      });
+      continue;
+    }
+    if (!backend.structuredOutput) {
+      push({
+        severity: 'error',
+        message: `Бэкенд судьи ${backendName} не поддерживает структурированный вывод`,
+        file: job.source,
+        at: `${at}.expect.${index}.agent`,
+        hint: 'Вердикт судьи принимается только структурой { pass, reason } — бэкенд обязан объявлять structured_output: true',
+      });
+    }
   }
 
   const structural = step.expect.filter((predicate) => predicate.kind !== 'judge' || predicate.hard);

@@ -6,7 +6,6 @@ import { describe, it } from 'node:test';
 
 import { evaluatePredicates } from '../src/core/expect/evaluate.js';
 import { UsageAccumulator, describeExceeded } from '../src/core/budget/accumulator.js';
-import { StepcastError } from '../src/core/errors.js';
 import type { Predicate } from '../src/core/pipeline/model.js';
 import type { Usage } from '../src/core/journal/schema.js';
 
@@ -123,8 +122,13 @@ describe('result-contract: предикаты', () => {
     assert.match(failed?.detail ?? '', /сломалось/);
   });
 
-  it('нереализованный судья даёт внятный отказ', () => {
-    assert.throws(() => run([{ kind: 'judge', claim: 'хорошо', hard: true }]), StepcastError);
+  // Сценарий: судья вычисляется вторым, асинхронным проходом — синхронный
+  // проход оставляет для него заготовку, а не отказ.
+  it('судья помечается невычисленным до второго прохода', () => {
+    const [result] = run([{ kind: 'judge', claim: 'хорошо', hard: true }]);
+    assert.equal(result?.passed, true);
+    assert.equal(result?.hard, false);
+    assert.match(result?.detail ?? '', /не вычислен/);
   });
 
   // Предикат границ реализован и живёт в отдельном наборе тестов; здесь важно

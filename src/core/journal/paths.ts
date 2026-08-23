@@ -104,6 +104,14 @@ export function stepDir(
     : join(base, iterationDirName(iteration), stepDirName(index, stepId));
 }
 
+/**
+ * Каталог вызова судьи внутри каталога шага. Номер сквозной для шага — растёт
+ * через попытки и предикаты, а не начинается заново на каждой попытке.
+ */
+export function judgeCallDir(stepDirPath: string, n: number): string {
+  return join(stepDirPath, `judge-${n}`);
+}
+
 /** Имя каталога итерации: `iter-1`, `iter-2`, … */
 export function iterationDirName(iteration: number): string {
   return `iter-${iteration}`;
