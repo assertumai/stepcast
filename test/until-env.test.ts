@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { readStatus } from '../src/core/journal/reader.js';
-import { makeProject, type Project } from './helpers.js';
+import { makeProject, testBaseEnv, type Project } from './helpers.js';
 
 async function run(project: Project): Promise<RunResult> {
   const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
@@ -16,6 +16,11 @@ async function run(project: Project): Promise<RunResult> {
     config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
     projectRoot: project.root,
     cwd: project.root,
+    // Сам этот тест может исполняться шагом stepcast (петля саморазвития), и
+    // тогда process.env уже несёт STEPCAST_STEP снаружи — без очистки
+    // проверка «переменная шага сюда не доходит» была бы неверной по причине,
+    // не имеющей отношения к движку.
+    baseEnv: testBaseEnv(),
   });
 }
 

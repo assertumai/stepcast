@@ -50,6 +50,21 @@ export function makeProject(files: Readonly<Record<string, string>> = {}): Proje
   return project;
 }
 
+/**
+ * Окружение процесса без `STEPCAST_*`. Тесты, гоняемые самим stepcast (петля
+ * саморазвития), наследуют эти переменные от внешнего прогона — без очистки
+ * они просачиваются в проверяемый пайплайн, будто это настоящие шаг или
+ * работа.
+ */
+export function testBaseEnv(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (name.startsWith('STEPCAST_')) continue;
+    env[name] = value;
+  }
+  return env;
+}
+
 /** Минимальный пайплайн с одним шагом командной строки. */
 export const MINIMAL_PIPELINE = `
 version: 1

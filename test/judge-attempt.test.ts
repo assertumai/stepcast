@@ -219,6 +219,83 @@ describe('judge-attempt: причина непройденного вердик�
   });
 });
 
+const AGENT_STEP_SHARED_SESSION = `
+version: 1
+kind: pipeline
+name: judge-attempt-shared-session
+jobs:
+  build:
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        expect:
+          - exit_code: 0
+          - judge: "план полный"
+            hard: true
+            agent: critic
+      - id: verify
+        agent: fake
+        prompt: "Проверь план"
+        expect:
+          - exit_code: 0
+`;
+
+describe('judge-attempt: сессия судьи не попадает в реестр псевдонимов', () => {
+  it('следующий шаг той же общей сессии продолжает диалог шага, а не судьи', async () => {
+    const project = makeProject({ 'stepcast.yml': AGENT_STEP_SHARED_SESSION });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово' })],
+    });
+    const critic = createFakeBackend({
+      lines: [resultLine({ structured: { pass: true, reason: 'план полный' } })],
+    });
+
+    const result = await run(project, { fake, critic });
+
+    assert.equal(stepStatus(result, 'build', 'plan'), 'success');
+    assert.equal(stepStatus(result, 'build', 'verify'), 'success');
+    assert.equal(fake.invocations.length, 2);
+    assert.equal(critic.invocations.length, 1);
+
+    const [planCall, verifyCall] = fake.invocations;
+    assert.equal(verifyCall?.sessionId, planCall?.sessionId, 'второй шаг продолжает сессию шага');
+    assert.equal(verifyCall?.resumeSession, true);
+    assert.notEqual(
+      critic.invocations[0]?.sessionId,
+      planCall?.sessionId,
+      'судья не делит идентификатор сессии с оцениваемым шагом',
+    );
+  });
+});
+
+describe('judge-attempt: сквозная нумерация растёт через попытки', () => {
+  it('вторая попытка продолжает счётчик judge-<n>, а не начинает заново', async () => {
+    const project = makeProject({ 'stepcast.yml': AGENT_STEP_ESCALATION });
+    const fake = createFakeBackend({ lines: [initLine(), resultLine({ text: 'план готов' })] });
+    const critic = createFakeBackend({
+      lines: [resultLine({ structured: { pass: false, reason: 'не покрыты крайние случаи' } })],
+    });
+
+    const result = await run(project, { fake, critic });
+
+    assert.equal(stepStatus(result, 'build', 'plan'), 'failed');
+    assert.equal(critic.invocations.length, 2, 'судья вызван в обеих попытках');
+
+    const dir = findStepDir(result.journal.paths, 'build', 'plan');
+    assert.ok(dir !== undefined);
+
+    const first = JSON.parse(readFileSync(join(dir, 'judge-1', 'verdict.json'), 'utf8')) as {
+      attempt: number;
+    };
+    const second = JSON.parse(readFileSync(join(dir, 'judge-2', 'verdict.json'), 'utf8')) as {
+      attempt: number;
+    };
+    assert.equal(first.attempt, 1);
+    assert.equal(second.attempt, 2);
+  });
+});
+
 describe('judge-attempt: судья на шаге командной строки', () => {
   it('вызывается, а местом структурированного вывода служит stdout', async () => {
     const project = makeProject({ 'stepcast.yml': RUN_STEP_JUDGE });
