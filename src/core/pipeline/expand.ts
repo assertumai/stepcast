@@ -70,10 +70,18 @@ function toContext(raw: readonly RawContextEntry[] | undefined): ContextEntry[] 
   });
 }
 
-function toPredicate(raw: RawPredicate): Predicate {
+/**
+ * Путь схемы разрешается от файла объявления — тем же правилом, что
+ * `output_schema` шага и `output.schema` работы. Путь `file_exists` остаётся
+ * сырым: он указывает на файл, созданный шагом, а тот появляется в рабочей
+ * директории.
+ */
+function toPredicate(raw: RawPredicate, declaringFile: string): Predicate {
   if ('exit_code' in raw) return { kind: 'exit_code', value: raw.exit_code };
   if ('file_exists' in raw) return { kind: 'file_exists', path: raw.file_exists };
-  if ('schema' in raw) return { kind: 'schema', path: raw.schema };
+  if ('schema' in raw) {
+    return { kind: 'schema', path: resolveDeclaredPath(raw.schema, declaringFile) };
+  }
   if ('matches' in raw) return { kind: 'matches', pattern: raw.matches };
   if ('not_matches' in raw) return { kind: 'not_matches', pattern: raw.not_matches };
   if ('changed_only' in raw) return { kind: 'changed_only', globs: raw.changed_only };
@@ -168,7 +176,7 @@ function toStep(
     timeoutMs:
       raw.timeout === undefined ? defaults.timeoutMs : parseDuration(raw.timeout, `${at}.timeout`),
     ...(raw.budget === undefined ? {} : { budget: toBudget(raw.budget, `${at}.budget`) }),
-    expect: (raw.expect ?? []).map(toPredicate),
+    expect: (raw.expect ?? []).map((entry) => toPredicate(entry, declaringFile)),
     attempts: toAttempts(raw.attempts, config.limits, at),
   };
 
@@ -381,7 +389,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         : {
             until: {
               maxIterations: until.max_iterations as number,
-              check: until.check.map(toPredicate),
+              check: until.check.map((entry) => toPredicate(entry, declaringFile)),
             },
           }),
       ...(output === undefined
