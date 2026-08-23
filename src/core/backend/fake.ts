@@ -13,6 +13,8 @@ export interface FakeBackendOptions {
   /** Строки потока, которые «выдаст» бэкенд. Разбираются как у Claude Code. */
   readonly lines: readonly string[];
   readonly exitCode?: number;
+  /** Не завершаться самостоятельно это время — для проверки прерывания по таймауту. */
+  readonly hangMs?: number;
 }
 
 export interface FakeBackend {
@@ -48,8 +50,11 @@ export function createFakeBackend(options: FakeBackendOptions): FakeBackend {
       const script = options.lines
         .map((line) => `printf '%s\\n' ${shellQuote(line)}`)
         .join('\n');
+      // `sleep` реагирует на SIGTERM сам — этого достаточно, чтобы проверить
+      // прерывание по таймауту без настоящего висящего процесса.
+      const hang = options.hangMs === undefined ? '' : `sleep ${options.hangMs / 1000}\n`;
       return {
-        command: ['sh', '-c', `${script}\nexit ${options.exitCode ?? 0}`],
+        command: ['sh', '-c', `${script}\n${hang}exit ${options.exitCode ?? 0}`],
         stdin: invocation.prompt,
       };
     },

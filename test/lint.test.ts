@@ -379,6 +379,81 @@ jobs:
     assert.ok(warnings(diagnostics).some((message) => /структурных предикатов/.test(message)));
   });
 
+  it('не отклоняет judge на бэкенде со структурированным выводом', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: a
+        prompt: сделай
+        expect: [{ exit_code: 0 }, { judge: "всё хорошо", hard: true }]
+`,
+      }),
+    );
+    assert.equal(errors(diagnostics).length, 0);
+  });
+
+  it('отклоняет неизвестный бэкенд судьи', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: a
+        prompt: сделай
+        expect: [{ exit_code: 0 }, { judge: "всё хорошо", agent: nope }]
+`,
+      }),
+    );
+    assert.ok(errors(diagnostics).some((message) => /Неизвестный бэкенд судьи nope/.test(message)));
+  });
+
+  it('отклоняет бэкенд судьи без структурированного вывода', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: a
+        prompt: сделай
+        expect: [{ exit_code: 0 }, { judge: "всё хорошо", agent: text_only }]
+`,
+    });
+    const config = {
+      ...project.config,
+      backends: {
+        ...project.config.backends,
+        text_only: {
+          command: 'text-only',
+          enabled: true,
+          defaultModel: undefined,
+          concurrency: 1,
+          cacheReadWeight: 0.1,
+          sessions: true,
+          structuredOutput: false,
+          permissions: undefined,
+          env: {},
+        },
+      },
+    };
+    const diagnostics = lintPipeline(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+      { config },
+    );
+    assert.ok(
+      errors(diagnostics).some((message) => /не поддерживает структурированный вывод/.test(message)),
+    );
+  });
+
   it('предупреждает о контексте у работы без агентских шагов', () => {
     const project = makeProject({
       'stepcast.yml': `

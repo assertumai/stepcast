@@ -10,7 +10,7 @@ import {
 } from '../anchor/index.js';
 import { fingerprintInputs } from '../anchor/fingerprint.js';
 import { resolveAdapter } from '../backend/registry.js';
-import type { BackendAdapter } from '../backend/types.js';
+import { sumUsage, type BackendAdapter } from '../backend/types.js';
 import { UsageAccumulator, describeExceeded, type BudgetScope } from '../budget/accumulator.js';
 import type { Config } from '../config/resolve.js';
 import { assembleContext, type UpstreamOutput } from '../context/assemble.js';
@@ -46,6 +46,7 @@ import type {
   RunStatus,
   StatusValue,
   StepRecord,
+  Usage,
 } from '../journal/schema.js';
 import { schedule, type JobOutcome } from './scheduler.js';
 
@@ -467,8 +468,40 @@ async function evaluateCheck(job: Job, context: RunContext): Promise<PredicateRe
     text: '',
     structured: undefined,
     cwd: context.cwd,
-    env: {},
+    // Проверка цикла запускает настоящую команду сборки или тестов, и без
+    // окружения она не найдёт ни одного инструмента: `execaSync` зовётся с
+    // `extendEnv: false`, поэтому пустой набор означает буквально пустой —
+    // ни PATH, ни HOME.
+    env: jobEnv(job, context),
   });
+}
+
+/**
+ * Окружение работы: то же, что у её шагов, но без переменных уровня шага.
+ * Проверка цикла шагом не является, и объявлять `STEPCAST_STEP` для неё было
+ * бы неправдой.
+ */
+function jobEnv(job: Job, context: RunContext): Record<string, string> {
+  const { pipeline } = context.expanded;
+  const { env } = buildStepEnv({
+    base: context.baseEnv ?? process.env,
+    envFiles: pipeline.envFiles,
+    pipeline: pipeline.env,
+    job: job.env,
+    step: {},
+    injected: injectedVariables({
+      runId: context.journal.paths.runId,
+      runDir: context.journal.paths.dir,
+      jobId: job.id,
+      jobDir: context.journal.prepareJob(job.id),
+      attempt: 1,
+      workspace: context.cwd,
+      artifacts: context.journal.paths.artifacts,
+    }),
+    deny: pipeline.envDeny,
+    cwd: context.cwd,
+  });
+  return env;
 }
 
 /** Области бюджета работы и прогона: цикл ограничен ими обеими. */
@@ -790,6 +823,9 @@ async function runCommandStep(
 
       if (!target.expect.some((predicate) => predicate.kind === 'judge')) return firstPass;
 
+      // Командный шаг сам расхода не несёт: расход попытки — это расход
+      // судей, накапливаемый по мере их вызовов, а не заменяемый последним.
+      let attemptUsage: Usage | undefined;
       return runJudgePass({
         predicates: target.expect,
         firstPass,
@@ -808,7 +844,10 @@ async function runCommandStep(
         journal,
         nextCallIndex,
         canCall: () => context.usage.check(budgetScopes()) === undefined,
-        onUsage: (usage) => context.usage.record(job.id, step.id, plan.attempt, usage),
+        onUsage: (usage) => {
+          attemptUsage = attemptUsage === undefined ? usage : sumUsage(attemptUsage, usage);
+          context.usage.record(job.id, step.id, plan.attempt, attemptUsage);
+        },
       });
     },
     onStall,
@@ -936,6 +975,9 @@ async function runAgentStep(
 
       if (!target.expect.some((predicate) => predicate.kind === 'judge')) return firstPass;
 
+      // Расход попытки уже включает расход самого шага (`outcome.usage`) —
+      // судьи добавляются к нему, а не подменяют его.
+      let attemptUsage = outcome.usage;
       const results = await runJudgePass({
         predicates: target.expect,
         firstPass,
@@ -955,7 +997,8 @@ async function runAgentStep(
         nextCallIndex,
         canCall: () => context.usage.check(budgetScopes()) === undefined,
         onUsage: (usage) => {
-          context.usage.record(job.id, step.id, plan.attempt, usage);
+          attemptUsage = sumUsage(attemptUsage, usage);
+          context.usage.record(job.id, step.id, plan.attempt, attemptUsage);
           exceeded ??= context.usage.check(budgetScopes());
         },
       });

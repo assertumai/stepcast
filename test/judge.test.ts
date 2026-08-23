@@ -150,7 +150,7 @@ describe('agent-backend: вызов судьи', () => {
 
   it('прерывание по времени даёт причину, называющую таймаут', async () => {
     const { stepDir } = bed();
-    const backend = createFakeBackend({ lines: ['sleep 1'] });
+    const backend = createFakeBackend({ lines: [], hangMs: 1000 });
     const options = baseOptions({ adapter: backend.adapter, stepDir });
 
     const results = await runJudgePass({ ...options, timeoutMs: 30 });
@@ -225,10 +225,51 @@ describe('agent-backend: вызов судьи', () => {
     assert.match(prompt, /сделай план/);
   });
 
-  it('несколько судей нумеруются сквозным образом', async () => {
+  it('промпт содержит выводы шага и другие проверки, но не контекст', async () => {
     const { stepDir } = bed();
     const backend = createFakeBackend({
       lines: [resultLine({ structured: { pass: true, reason: 'ок' } })],
+    });
+
+    const contextMarker = 'СЕКРЕТНЫЙ_БЛОК_КОНТЕКСТА_ШАГА';
+    const options = baseOptions({
+      adapter: backend.adapter,
+      stepDir,
+      firstPass: [
+        STRUCTURAL_PASSED,
+        { ...STRUCTURAL_PASSED, predicate: 'matches', detail: 'строка найдена' },
+        JUDGE_PLACEHOLDER,
+      ],
+    });
+
+    await runJudgePass({
+      ...options,
+      predicates: [STRUCTURAL[0] as Predicate, { kind: 'matches', pattern: 'x' } as Predicate, CLAIM],
+      task: 'сделай план',
+      text: 'текстовый ответ шага',
+      structured: { tasks: ['a', 'b'] },
+    });
+
+    const prompt = readFileSync(join(stepDir, 'judge-1', 'prompt.txt'), 'utf8');
+    assert.match(prompt, /Утверждение для проверки/);
+    assert.match(prompt, /Задание шага/);
+    assert.match(prompt, /сделай план/);
+    assert.match(prompt, /Текстовый результат шага/);
+    assert.match(prompt, /текстовый ответ шага/);
+    assert.match(prompt, /Структурированный вывод шага/);
+    assert.match(prompt, /"tasks"/);
+    assert.match(prompt, /Результаты остальных проверок/);
+    assert.match(prompt, /exit_code/);
+    assert.match(prompt, /matches/);
+    assert.match(prompt, /строка найдена/);
+    assert.doesNotMatch(prompt, new RegExp(contextMarker));
+    assert.doesNotMatch(prompt, /Контекст/);
+  });
+
+  it('несколько судей нумеруются сквозным образом', async () => {
+    const { stepDir } = bed();
+    const backend = createFakeBackend({
+      lines: [resultLine({ structured: { pass: true, reason: 'первое утверждение верно' } })],
     });
 
     const secondClaim: Extract<Predicate, { kind: 'judge' }> = {
@@ -238,14 +279,36 @@ describe('agent-backend: вызов судьи', () => {
     };
     const secondPlaceholder: PredicateResult = { ...JUDGE_PLACEHOLDER, expected: secondClaim.claim };
 
-    await runJudgePass(
-      baseOptions({
-        adapter: backend.adapter,
-        stepDir,
-        firstPass: [STRUCTURAL_PASSED, JUDGE_PLACEHOLDER, secondPlaceholder],
-      }) as unknown as Parameters<typeof runJudgePass>[0] & { predicates: readonly Predicate[] },
-    );
+    const options = baseOptions({
+      adapter: backend.adapter,
+      stepDir,
+      firstPass: [STRUCTURAL_PASSED, JUDGE_PLACEHOLDER, secondPlaceholder],
+    });
+    const results = await runJudgePass({
+      ...options,
+      predicates: [...STRUCTURAL, CLAIM, secondClaim],
+    });
 
-    // Второй вызов сверх той же попытки — второй судья в expect.
+    assert.equal(backend.invocations.length, 2);
+    assert.equal(results[1]?.detail, 'первое утверждение верно');
+    assert.equal(results[2]?.detail, 'первое утверждение верно');
+
+    const first = join(stepDir, 'judge-1');
+    const second = join(stepDir, 'judge-2');
+    assert.ok(existsSync(first));
+    assert.ok(existsSync(second));
+
+    const firstVerdict = JSON.parse(readFileSync(join(first, 'verdict.json'), 'utf8')) as {
+      claim: string;
+      attempt: number;
+    };
+    const secondVerdict = JSON.parse(readFileSync(join(second, 'verdict.json'), 'utf8')) as {
+      claim: string;
+      attempt: number;
+    };
+    assert.equal(firstVerdict.claim, CLAIM.claim);
+    assert.equal(firstVerdict.attempt, 1);
+    assert.equal(secondVerdict.claim, secondClaim.claim);
+    assert.equal(secondVerdict.attempt, 1);
   });
 });

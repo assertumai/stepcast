@@ -84,3 +84,26 @@ export function mergeUsage(base: Usage, patch: Partial<Usage> | undefined): Usag
   }
   return out;
 }
+
+/**
+ * Сложить расход двух независимых вызовов — шага и вызванного им судьи.
+ * В отличие от `mergeUsage` (патч поверх того же потока), здесь складываются
+ * показания двух разных процессов: несообщаемое поле остаётся несообщаемым,
+ * только если оно таким было у обоих, иначе за него считается то, что есть.
+ */
+export function sumUsage(base: Usage, addition: Usage): Usage {
+  return {
+    backend: base.backend,
+    ...(base.model === undefined ? {} : { model: base.model }),
+    tokens_in: sumNullable(base.tokens_in, addition.tokens_in),
+    tokens_out: sumNullable(base.tokens_out, addition.tokens_out),
+    cache_read: sumNullable(base.cache_read, addition.cache_read),
+    cache_write: sumNullable(base.cache_write, addition.cache_write),
+    wallclock_ms: base.wallclock_ms + addition.wallclock_ms,
+  };
+}
+
+function sumNullable(a: number | null, b: number | null): number | null {
+  if (a === null && b === null) return null;
+  return (a ?? 0) + (b ?? 0);
+}

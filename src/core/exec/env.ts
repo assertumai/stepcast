@@ -104,8 +104,9 @@ export interface InjectedContext {
   readonly runDir: string;
   readonly jobId: string;
   readonly jobDir: string;
-  readonly stepId: string;
-  readonly stepDir: string;
+  /** Шаг и его каталог. Отсутствуют у проверки цикла: она не шаг. */
+  readonly stepId?: string;
+  readonly stepDir?: string;
   readonly attempt: number;
   readonly workspace: string;
   readonly artifacts: string;
@@ -119,8 +120,8 @@ export function injectedVariables(context: InjectedContext): Record<string, stri
     STEPCAST_RUN_DIR: context.runDir,
     STEPCAST_JOB: context.jobId,
     STEPCAST_JOB_DIR: context.jobDir,
-    STEPCAST_STEP: context.stepId,
-    STEPCAST_STEP_DIR: context.stepDir,
+    ...(context.stepId === undefined ? {} : { STEPCAST_STEP: context.stepId }),
+    ...(context.stepDir === undefined ? {} : { STEPCAST_STEP_DIR: context.stepDir }),
     STEPCAST_ATTEMPT: String(context.attempt),
     STEPCAST_WORKSPACE: context.workspace,
     STEPCAST_ARTIFACTS: context.artifacts,
