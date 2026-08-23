@@ -26,7 +26,7 @@ export async function runRunCommand(
   // Проверка перед запуском бесплатна по сравнению с прогоном, поэтому она
   // безусловна: ловить структурную ошибку после первого агентского шага
   // означает платить за неё токенами.
-  const diagnostics = lintPipeline(expanded, { config });
+  const diagnostics = lintPipeline(expanded, { config, cwd });
   for (const diagnostic of diagnostics) {
     for (const line of formatDiagnostic(diagnostic)) write(line);
   }

@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { dirname, resolve as resolvePath } from 'node:path';
 
 import type { Config } from './config/resolve.js';
 import { parseExpression, references } from './expr/parse.js';
@@ -6,7 +7,7 @@ import { buildGraph } from './graph.js';
 import { isStepcastError } from './errors.js';
 import { workspacePathNeedsCopy } from './run/workspace.js';
 import { formatDuration, formatTokens } from './units.js';
-import type { ExpandedPipeline, Job, Predicate, Step } from './pipeline/model.js';
+import type { ContextEntry, ExpandedPipeline, Job, Predicate, Step } from './pipeline/model.js';
 
 /**
  * Статическая проверка раскрытого пайплайна.
@@ -29,8 +30,85 @@ export interface Diagnostic {
 
 export interface LintOptions {
   readonly config: Config;
+  /**
+   * Корень рабочей директории: от него отсчитываются пути контекста. Каталог
+   * файла пайплайна основанием не годится — пайплайн живёт и в
+   * `.stepcast/pipelines/`, а контекст всё равно считается от корня проекта.
+   */
+  readonly cwd?: string;
   /** Проверять ли существование путей, зависящих от рабочей директории. */
   readonly resolvePaths?: boolean;
+}
+
+/** Метасимволы глоба. Глоб запрашивает совпадения, и их отсутствие не ошибка. */
+const GLOB = /[*?[]/;
+
+interface DeclaredPath {
+  readonly path: string;
+  /** Каталог, от которого путь отсчитывается. Пусто — путь уже абсолютный. */
+  readonly base?: string;
+  readonly declaredAt: string;
+  /** Ключи карты подстановок, под которыми этот путь мог быть записан. */
+  readonly keys?: readonly string[];
+  readonly file: string;
+  readonly kind: string;
+}
+
+/**
+ * Проверить, что объявленный путь существует.
+ *
+ * Пропускается то, что проверить нельзя: путь с подстановкой — его значение
+ * появляется только в прогоне, а произведённый работой выше по графу файл на
+ * момент линта и не обязан существовать; глоб — по той же причине, что и
+ * пустой результат поиска не ошибка.
+ */
+function checkDeclaredPath(
+  declared: DeclaredPath,
+  substitutions: ExpandedPipeline['substitutions'],
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  const keys = declared.keys ?? [declared.declaredAt];
+  if (keys.some((key) => (substitutions.get(key) ?? []).length > 0)) return;
+  if (declared.path.includes('${') || GLOB.test(declared.path)) return;
+
+  const full =
+    declared.base === undefined ? declared.path : resolvePath(declared.base, declared.path);
+  if (existsSync(full)) return;
+
+  push({
+    severity: 'error',
+    message: `${declared.kind} не найден: ${full}`,
+    file: declared.file,
+    at: declared.declaredAt,
+  });
+}
+
+/** Проверить пути записей контекста одного уровня. */
+function checkContext(
+  entries: readonly ContextEntry[],
+  base: string,
+  file: string,
+  prefix: string,
+  substitutions: ExpandedPipeline['substitutions'],
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  for (const [index, entry] of entries.entries()) {
+    if (entry.kind !== 'path') continue;
+    checkDeclaredPath(
+      {
+        path: entry.path,
+        base,
+        declaredAt: `${prefix}.${index}`,
+        // Запись контекста бывает строкой и объектом, и подстановка
+        // записывается под разными ключами.
+        keys: [`${prefix}.${index}`, `${prefix}.${index}.path`],
+        file,
+        kind: 'Файл контекста',
+      },
+      substitutions,
+      push,
+    );
+  }
 }
 
 /** Пространства, чьи имена в `if` известны заранее. */
@@ -87,8 +165,31 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
   const declaredInputs = new Set(Object.keys(pipeline.inputs));
   const envDenyMatchers = pipeline.envDeny.map(compileNameGlob);
 
+  // Рабочая директория на этапе линта ещё не подготовлена, но её содержимое
+  // берётся из каталога проекта: в режиме `cwd` он с ней совпадает, а
+  // `worktree` и `copy` копируют дерево из него же.
+  const base = options.cwd ?? dirname(pipeline.file);
+
+  checkContext(pipeline.context, base, pipeline.file, 'context', substitutions, push);
+
   for (const job of pipeline.jobs) {
     const at = `jobs.${job.id}`;
+    checkContext(job.context, base, job.source, `${at}.context`, substitutions, push);
+
+    for (const [index, predicate] of job.until?.check.entries() ?? []) {
+      if (predicate.kind !== 'schema') continue;
+      checkDeclaredPath(
+        {
+          path: predicate.path,
+          declaredAt: `${at}.until.check.${index}.schema`,
+          file: job.source,
+          kind: 'Файл схемы',
+        },
+        substitutions,
+        push,
+      );
+    }
+
     checkCondition(job, graph.upstream.get(job.id) ?? new Set(), declaredInputs, pipeline.file, push);
     checkEnv(job.env, envDenyMatchers, pipeline.envDeny, job.source, `${at}.env`, push);
 
@@ -103,7 +204,7 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
     }
 
     for (const step of job.steps) {
-      checkStep(job, step, options, substitutions, envDenyMatchers, pipeline.envDeny, push);
+      checkStep(job, step, base, options, substitutions, envDenyMatchers, pipeline.envDeny, push);
     }
   }
 
@@ -229,6 +330,7 @@ function checkCondition(
 function checkStep(
   job: Job,
   step: Step,
+  base: string,
   options: LintOptions,
   substitutions: ExpandedPipeline['substitutions'],
   envDenyMatchers: readonly RegExp[],
@@ -275,20 +377,35 @@ function checkStep(
     }
 
     if (step.outputSchemaPath !== undefined) {
-      const declaredAt = `${at}.output_schema`;
-      const interpolated = (substitutions.get(declaredAt) ?? []).length > 0;
-      if (!interpolated && !existsSync(step.outputSchemaPath)) {
-        push({
-          severity: 'error',
-          message: `Файл схемы не найден: ${step.outputSchemaPath}`,
+      checkDeclaredPath(
+        {
+          path: step.outputSchemaPath,
+          declaredAt: `${at}.output_schema`,
           file: job.source,
-          at: declaredAt,
-        });
-      }
+          kind: 'Файл схемы',
+        },
+        substitutions,
+        push,
+      );
     }
   }
 
-  for (const predicate of step.expect) {
+  checkContext(step.context, base, job.source, `${at}.context`, substitutions, push);
+
+  for (const [index, predicate] of step.expect.entries()) {
+    if (predicate.kind === 'schema') {
+      checkDeclaredPath(
+        {
+          path: predicate.path,
+          declaredAt: `${at}.expect.${index}.schema`,
+          file: job.source,
+          kind: 'Файл схемы',
+        },
+        substitutions,
+        push,
+      );
+      continue;
+    }
     if (predicate.kind !== 'judge') continue;
     push({
       severity: 'error',

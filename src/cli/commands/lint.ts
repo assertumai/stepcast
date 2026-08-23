@@ -44,7 +44,7 @@ export function runLintCommand(
     return ExitCode.configError;
   }
 
-  const diagnostics = lintPipeline(expanded, { config });
+  const diagnostics = lintPipeline(expanded, { config, cwd });
 
   for (const diagnostic of diagnostics) {
     for (const line of formatDiagnostic(diagnostic)) write(line);
