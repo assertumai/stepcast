@@ -13,9 +13,6 @@ description: Проставить исход пункту очереди; при
 params:
   verify_status: { type: string, required: true }
 
-budget:
-  wallclock: 5m
-
 steps:
   - id: settle
     run: [node, scripts/finalize.mjs, --verify-status, "${params.verify_status}"]

@@ -22,10 +22,6 @@ output:
   from: review-diff
   schema: ../schemas/review.json
 
-budget:
-  tokens: 250k
-  wallclock: 30m
-
 steps:
   # Права только на чтение: работа ищет, но не правит. Отсутствие Edit и Write
   # делает это ограничением, а не просьбой в промпте.

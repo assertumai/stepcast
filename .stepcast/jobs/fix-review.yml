@@ -17,10 +17,6 @@ output:
   from: apply-fixes
   schema: ../schemas/implement.json
 
-budget:
-  tokens: 500k
-  wallclock: 45m
-
 until:
   max_iterations: 2
   check:
@@ -46,7 +42,6 @@ steps:
         - Bash(git diff*)
         - Bash(git log*)
     timeout: 30m
-    budget: { tokens: 200k }
     expect:
       - schema: ../schemas/implement.json
       - changed_only:

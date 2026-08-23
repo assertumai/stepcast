@@ -8,9 +8,6 @@ kind: job
 name: verify
 description: Типизация, линт и тесты на итоговом дереве
 
-budget:
-  wallclock: 20m
-
 steps:
   - id: typecheck
     run: [npm, run, typecheck]

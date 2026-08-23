@@ -11,10 +11,6 @@ output:
   from: create-change
   schema: ../schemas/propose.json
 
-budget:
-  tokens: 200k
-  wallclock: 25m
-
 steps:
   # Предусловие всей петли, и оно первое: до выбора пункта и до первого
   # потраченного токена. Отказ здесь оставляет очередь нетронутой, а грязное

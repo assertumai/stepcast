@@ -15,12 +15,20 @@ import type { Usage, UsageReport } from '../journal/schema.js';
  * областей по имени однажды уже привело к тому, что потолок шага молча не
  * срабатывал, потому что попытки хранятся с суффиксом номера.
  */
+/**
+ * Область бюджета. `startedAt` — момент, с которого отсчитывается её
+ * `wallclock`: у работы это начало работы, у шага — начало шага. Без него
+ * потолок времени у любой области означал бы «прогон идёт дольше N», а не
+ * «эта область длится дольше N», и, скажем, завершающая работа с потолком в
+ * пять минут была бы обречена в любом прогоне длиннее пяти минут.
+ */
 export type BudgetScope =
   | { readonly kind: 'run'; readonly name: string; readonly budget: Budget | undefined }
   | {
       readonly kind: 'job';
       readonly name: string;
       readonly jobId: string;
+      readonly startedAt?: number;
       readonly budget: Budget | undefined;
     }
   | {
@@ -28,6 +36,7 @@ export type BudgetScope =
       readonly name: string;
       readonly jobId: string;
       readonly stepId: string;
+      readonly startedAt?: number;
       readonly budget: Budget | undefined;
     };
 
@@ -130,11 +139,18 @@ export class UsageAccumulator {
         return { scope: scope.name, dimension: 'tokens', used, limit: budget.tokens };
       }
 
-      if (budget.wallclockMs !== undefined && this.elapsedMs() > budget.wallclockMs) {
+      // Область без собственного начала — это прогон: он и начался вместе с
+      // учётом.
+      const elapsed =
+        scope.kind === 'run' || scope.startedAt === undefined
+          ? this.elapsedMs()
+          : Date.now() - scope.startedAt;
+
+      if (budget.wallclockMs !== undefined && elapsed > budget.wallclockMs) {
         return {
           scope: scope.name,
           dimension: 'wallclock',
-          used: this.elapsedMs(),
+          used: elapsed,
           limit: budget.wallclockMs,
         };
       }

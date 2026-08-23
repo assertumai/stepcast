@@ -256,3 +256,77 @@ describe('run-journal: расход и бюджет', () => {
     assert.equal(report.jobs.build?.steps.test?.billable_tokens, 250);
   });
 });
+
+describe('run-journal: потолок времени меряет свою область', () => {
+  /**
+   * До исправления `wallclock` любой области сравнивался со временем всего
+   * прогона. Завершающая работа с потолком в пять минут была из-за этого
+   * обречена в любом прогоне длиннее пяти минут — то есть ровно тогда, когда
+   * она нужнее всего.
+   */
+  it('работа не упирается в потолок из-за длительности прогона', () => {
+    const accumulator = new UsageAccumulator(() => 0.1);
+    const startedAt = Date.now();
+
+    const exceeded = accumulator.check([
+      {
+        kind: 'job',
+        name: 'работа finalize',
+        jobId: 'finalize',
+        startedAt,
+        budget: { wallclockMs: 5 * 60_000, onExceed: 'stop' },
+      },
+    ]);
+
+    assert.equal(exceeded, undefined);
+  });
+
+  it('работа упирается в потолок по собственной длительности', () => {
+    const accumulator = new UsageAccumulator(() => 0.1);
+
+    const exceeded = accumulator.check([
+      {
+        kind: 'job',
+        name: 'работа slow',
+        jobId: 'slow',
+        startedAt: Date.now() - 10 * 60_000,
+        budget: { wallclockMs: 5 * 60_000, onExceed: 'stop' },
+      },
+    ]);
+
+    assert.equal(exceeded?.dimension, 'wallclock');
+    assert.equal(exceeded?.scope, 'работа slow');
+  });
+
+  it('потолок шага меряет шаг', () => {
+    const accumulator = new UsageAccumulator(() => 0.1);
+
+    assert.equal(
+      accumulator.check([
+        {
+          kind: 'step',
+          name: 'job/fast',
+          jobId: 'job',
+          stepId: 'fast',
+          startedAt: Date.now(),
+          budget: { wallclockMs: 60_000, onExceed: 'stop' },
+        },
+      ]),
+      undefined,
+    );
+
+    assert.equal(
+      accumulator.check([
+        {
+          kind: 'step',
+          name: 'job/slow',
+          jobId: 'job',
+          stepId: 'slow',
+          startedAt: Date.now() - 120_000,
+          budget: { wallclockMs: 60_000, onExceed: 'stop' },
+        },
+      ])?.scope,
+      'job/slow',
+    );
+  });
+});

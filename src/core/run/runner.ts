@@ -370,6 +370,7 @@ async function executeJob(
   // Ниже по коду `context` — контекст работы: у него своя рабочая директория.
   const jobContext: RunContext = { ...context, cwd: prepared.dir };
   const anchorState = { anchorer: undefined as TreeAnchorer | undefined };
+  const jobStartedAt = Date.now();
   const maxIterations = job.until?.maxIterations ?? 1;
   let previousCheck: readonly PredicateResult[] | undefined;
 
@@ -380,6 +381,7 @@ async function executeJob(
       }
 
       const outcome = await runJobSteps(job, jobContext, anchorState, {
+        jobStartedAt,
         ...(job.until === undefined ? {} : { iteration }),
         ...(previousCheck === undefined ? {} : { previousCheck }),
       });
@@ -477,6 +479,11 @@ function jobScopes(job: Job, context: RunContext): BudgetScope[] {
 }
 
 interface IterationOptions {
+  /**
+   * Момент начала работы. Потолок времени работы меряет её саму, включая все
+   * итерации цикла, а не прогон целиком.
+   */
+  readonly jobStartedAt: number;
   /** Номер итерации. Отсутствует у работы без цикла. */
   readonly iteration?: number;
   /** Результаты непрошедшего `check` предыдущей итерации. */
@@ -487,10 +494,11 @@ async function runJobSteps(
   job: Job,
   context: RunContext,
   anchorState: { anchorer: TreeAnchorer | undefined },
-  iterationOptions: IterationOptions = {},
+  iterationOptions: IterationOptions,
 ): Promise<JobOutcome> {
   const { journal } = context;
   const iteration = iterationOptions.iteration;
+  const jobStartedAt = iterationOptions.jobStartedAt;
   context =
     iterationOptions.previousCheck === undefined
       ? context
@@ -575,15 +583,25 @@ async function runJobSteps(
       observed: context.observedInputs?.get(`${job.id}/${step.id}`),
     });
 
+    // Начало шага — здесь: потолок времени шага меряет шаг, а не прогон.
+    const stepStartedAt = Date.now();
+
     const budgetScopes = (): BudgetScope[] => [
       {
         kind: 'step',
         name: `${job.id}/${step.id}`,
         jobId: job.id,
         stepId: step.id,
+        startedAt: stepStartedAt,
         budget: step.budget,
       },
-      { kind: 'job', name: `работа ${job.id}`, jobId: job.id, budget: job.budget },
+      {
+        kind: 'job',
+        name: `работа ${job.id}`,
+        jobId: job.id,
+        startedAt: jobStartedAt,
+        budget: job.budget,
+      },
       { kind: 'run', name: 'пайплайн', budget: context.expanded.pipeline.budget },
     ];
 

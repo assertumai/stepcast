@@ -18,10 +18,6 @@ output:
   from: write-code
   schema: ../schemas/implement.json
 
-budget:
-  tokens: 1.2M
-  wallclock: 90m
-
 # Числа литералами: подстановка в числовые поля пока не работает — схема
 # документа проверяется до раскрытия. Снимается пунктом очереди
 # numeric-field-substitution.
@@ -52,7 +48,6 @@ steps:
         - Bash(git diff*)
         - Bash(git log*)
     timeout: 40m
-    budget: { tokens: 300k }
     expect:
       - schema: ../schemas/implement.json
       - changed_only:
