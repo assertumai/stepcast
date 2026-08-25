@@ -70,6 +70,8 @@ interface Counters {
   billable: number;
   wallclockMs: number;
   attempts: number;
+  backend: string;
+  model: string | undefined;
 }
 
 function emptyCounters(): Counters {
@@ -81,6 +83,8 @@ function emptyCounters(): Counters {
     billable: 0,
     wallclockMs: 0,
     attempts: 0,
+    backend: '',
+    model: undefined,
   };
 }
 
@@ -277,21 +281,49 @@ export class UsageAccumulator {
     const jobs: UsageReport['jobs'] = {};
 
     for (const [jobId, counters] of this.jobs) {
-      const steps: Record<string, { billable_tokens: number; wallclock_ms: number; attempts: number }> = {};
+      const steps: Record<
+        string,
+        { billable_tokens: number; wallclock_ms: number; attempts: Map<number, UsageReport['jobs'][string]['steps'][string]['attempts'][number]> }
+      > = {};
       for (const [key, step] of this.steps) {
         if (!key.startsWith(`${jobId}/`)) continue;
-        const stepId = key.slice(jobId.length + 1, key.lastIndexOf('#'));
-        const existing = steps[stepId] ?? { billable_tokens: 0, wallclock_ms: 0, attempts: 0 };
+        // Разбор `stepId#attempt[@sealN]`: суффикс переисполнения роняется —
+        // он лишь развёл ключи разных попыток одного номера во времени.
+        const rest = key.slice(jobId.length + 1);
+        const hashAt = rest.indexOf('#');
+        const stepId = rest.slice(0, hashAt);
+        const attemptPart = rest.slice(hashAt + 1);
+        const sealAt = attemptPart.indexOf('@');
+        const attempt = Number(sealAt === -1 ? attemptPart : attemptPart.slice(0, sealAt));
+
+        const existing = steps[stepId] ?? { billable_tokens: 0, wallclock_ms: 0, attempts: new Map() };
+        const priorAttempt = existing.attempts.get(attempt);
+        existing.attempts.set(attempt, {
+          attempt,
+          backend: step.backend,
+          ...(step.model === undefined ? {} : { model: step.model }),
+          billable_tokens: (priorAttempt?.billable_tokens ?? 0) + step.billable,
+          wallclock_ms: (priorAttempt?.wallclock_ms ?? 0) + step.wallclockMs,
+        });
         steps[stepId] = {
           billable_tokens: existing.billable_tokens + step.billable,
           wallclock_ms: existing.wallclock_ms + step.wallclockMs,
-          attempts: existing.attempts + 1,
+          attempts: existing.attempts,
         };
       }
       jobs[jobId] = {
         billable_tokens: counters.billable,
         wallclock_ms: counters.wallclockMs,
-        steps,
+        steps: Object.fromEntries(
+          Object.entries(steps).map(([stepId, step]) => [
+            stepId,
+            {
+              billable_tokens: step.billable_tokens,
+              wallclock_ms: step.wallclock_ms,
+              attempts: [...step.attempts.values()].sort((a, b) => a.attempt - b.attempt),
+            },
+          ]),
+        ),
       };
     }
 
@@ -330,6 +362,8 @@ function toCounters(usage: Usage, cacheReadWeight: number): Counters {
     billable: Math.round(tokensIn + tokensOut + cacheWrite + cacheRead * cacheReadWeight),
     wallclockMs: usage.wallclock_ms,
     attempts: 1,
+    backend: usage.backend,
+    model: usage.model,
   };
 }
 

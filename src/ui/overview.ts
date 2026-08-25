@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 
-import { listProjects, listRunsByKey, readManifest, readStatus } from '../core/journal/reader.js';
+import { listProjects, listRunsByKey, readManifest, readStatus, readUsageSoft } from '../core/journal/reader.js';
 import { runPaths } from '../core/journal/paths.js';
 import type { StatusValue } from '../core/journal/schema.js';
 
@@ -27,6 +27,16 @@ export interface RunOverview {
   readonly swept: boolean;
   /** Манифест или состояние не читаются — прогон показан, но неполно. */
   readonly unreadable: boolean;
+  /** Отсутствует, если состояние прогона не прочиталось. */
+  readonly usage?: RunUsageOverview;
+}
+
+export interface RunUsageOverview {
+  readonly billableTokens: number;
+  readonly wallclockMs: number;
+  /** Сводка расхода прочитана: `unreported` достоверен. */
+  readonly aggregated: boolean;
+  readonly unreported: readonly string[];
 }
 
 export interface ProjectOverview {
@@ -51,6 +61,7 @@ function readRun(runsRoot: string, key: string, runId: string): RunOverview {
   let status: StatusValue | undefined;
   let wakeAt: string | undefined;
   let unreadable = false;
+  let usage: RunUsageOverview | undefined;
 
   try {
     const manifest = readManifest(paths);
@@ -69,6 +80,17 @@ function readRun(runsRoot: string, key: string, runId: string): RunOverview {
     status = state.status;
     wakeAt = state.wake_at;
     if (pipeline === '') pipeline = state.pipeline;
+
+    // Расход читается тем же проходом: сводка, если уже записана и проходит
+    // схему, точнее — `status.budget` растёт по ходу прогона и не хранит
+    // `unreported`; на идущем прогоне сводки ещё нет, и берётся состояние.
+    const { summary } = readUsageSoft(paths);
+    usage = {
+      billableTokens: summary?.total.billable_tokens ?? state.budget.tokens_used,
+      wallclockMs: summary?.total.wallclock_ms ?? state.budget.wallclock_ms,
+      aggregated: summary !== undefined,
+      unreported: summary?.unreported ?? [],
+    };
   } catch {
     if (status === undefined) unreadable = true;
   }
@@ -85,6 +107,7 @@ function readRun(runsRoot: string, key: string, runId: string): RunOverview {
     // Каталог работ исчезает только после уборки: движок создаёт его всегда.
     swept: !existsSync(paths.jobs),
     unreadable,
+    ...(usage === undefined ? {} : { usage }),
   };
 }
 

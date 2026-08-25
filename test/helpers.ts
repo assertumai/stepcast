@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { RunJournal } from '../src/core/journal/writer.js';
-import type { RunManifest, RunStatus, StatusValue } from '../src/core/journal/schema.js';
+import type { RunManifest, RunStatus, StatusValue, UsageReport } from '../src/core/journal/schema.js';
 import type { AgentStep, RunStep, Step } from '../src/core/pipeline/model.js';
 
 export interface Project {
@@ -106,6 +106,10 @@ export interface SeedRunOptions {
   /** Работы, публикующие выход: каждой пишется `artifacts/<id>.json`. */
   readonly artifacts?: Readonly<Record<string, unknown>>;
   readonly lock?: string;
+  /** Пустая сводка по умолчанию — тесты расхода задают её содержимое явно. */
+  readonly usage?: UsageReport;
+  /** Не писать `usage.json` вовсе: имитирует ещё не завершённый прогон. */
+  readonly skipUsage?: boolean;
 }
 
 /**
@@ -153,19 +157,23 @@ export function seedRun(
     updated_at: '2026-08-01T00:05:00.000Z',
   });
 
-  journal.writeUsage({
-    run_id: runId,
-    total: {
-      tokens_in: 0,
-      tokens_out: 0,
-      cache_read: 0,
-      cache_write: 0,
-      billable_tokens: 0,
-      wallclock_ms: 0,
-    },
-    unreported: [],
-    jobs: {},
-  });
+  if (options.skipUsage !== true) {
+    journal.writeUsage(
+      options.usage ?? {
+        run_id: runId,
+        total: {
+          tokens_in: 0,
+          tokens_out: 0,
+          cache_read: 0,
+          cache_write: 0,
+          billable_tokens: 0,
+          wallclock_ms: 0,
+        },
+        unreported: [],
+        jobs: {},
+      },
+    );
+  }
 
   if (options.lock !== undefined) journal.writeLock(options.lock);
   for (const [job, value] of Object.entries(options.artifacts ?? {})) {

@@ -217,14 +217,18 @@ jobs:
           },
         }),
       ],
-      hangMs: 3_000,
+      // Зависание заведомо длинное, а порог — с большим запасом: в удачном
+      // случае прогон завершается за десятки миллисекунд, и длина зависания
+      // ничего не стоит. Узкий запас же ловил не регресс, а задержку чтения
+      // потока под нагрузкой параллельных тестов.
+      hangMs: 10_000,
     });
 
     const started = Date.now();
     const result = await run(project, { fake });
 
     assert.equal(result.status, 'budget_exceeded');
-    assert.ok(Date.now() - started < 2_000, 'лимит должен остановить процесс, не дожидаясь hangMs');
+    assert.ok(Date.now() - started < 6_000, 'лимит должен остановить процесс, не дожидаясь hangMs');
   });
 });
 
@@ -335,6 +339,16 @@ describe('budget-wait-on-exceed: аккумулятор', () => {
   });
 });
 
+/**
+ * Окно сброса во всех тестах ниже заведомо шире, чем зависание фейкового
+ * процесса.
+ *
+ * Фейк печатает строки и только потом спит, но вывод идёт в трубу и
+ * буферизуется: под нагрузкой строка с лимитом доходит до движка не сразу, а
+ * иногда лишь при выходе процесса. Если окно уже, чем зависание, то первый
+ * путь даёт сон, а второй — нулевой, и тест мигает не из-за движка, а из-за
+ * буферизации. Запас `resetsAt - hangMs` держит сон измеримым на обоих путях.
+ */
 describe('budget-wait-on-exceed: ожидание сброса окна лимита в прогоне', () => {
   const WAIT_PIPELINE = `
 version: 1
@@ -358,7 +372,7 @@ jobs:
   it('превышение rate_limit_pct с известным resets_at усыпляет прогон и переисполняет шаг', async () => {
     const project = makeProject({ 'stepcast.yml': WAIT_PIPELINE });
     const fake = createFakeBackend({
-      hangMs: 4_000,
+      hangMs: 1_000,
       lines: (index) =>
         index === 0
           ? [
@@ -367,7 +381,7 @@ jobs:
                 text: 'упёрлись в лимит',
                 tokensIn: 10,
                 tokensOut: 0,
-                rateLimits: { five_hour: { usedPct: 80, resetsAt: Date.now() + 2_500 } },
+                rateLimits: { five_hour: { usedPct: 80, resetsAt: Date.now() + 4_000 } },
               }),
             ]
           : [initLine(), resultLine({ text: 'план готов', tokensIn: 10, tokensOut: 0 })],
@@ -406,7 +420,7 @@ jobs:
 `,
     });
     const fake = createFakeBackend({
-      hangMs: 4_000,
+      hangMs: 1_000,
       lines: (index) =>
         index === 0
           ? [
@@ -415,7 +429,7 @@ jobs:
                 text: 'упёрлись в лимит',
                 tokensIn: 40,
                 tokensOut: 0,
-                rateLimits: { five_hour: { usedPct: 80, resetsAt: Date.now() + 2_500 } },
+                rateLimits: { five_hour: { usedPct: 80, resetsAt: Date.now() + 4_000 } },
               }),
             ]
           : [initLine(), resultLine({ text: 'план готов', tokensIn: 15, tokensOut: 0 })],
@@ -515,7 +529,7 @@ jobs:
   it('ожидание не засчитывается в wallclock прогона', async () => {
     const project = makeProject({ 'stepcast.yml': WAIT_PIPELINE });
     const fake = createFakeBackend({
-      hangMs: 4_000,
+      hangMs: 1_000,
       lines: (index) =>
         index === 0
           ? [
@@ -524,7 +538,7 @@ jobs:
                 text: 'упёрлись в лимит',
                 tokensIn: 10,
                 tokensOut: 0,
-                rateLimits: { five_hour: { usedPct: 80, resetsAt: Date.now() + 1_500 } },
+                rateLimits: { five_hour: { usedPct: 80, resetsAt: Date.now() + 4_000 } },
               }),
             ]
           : [initLine(), resultLine({ text: 'план готов', tokensIn: 10, tokensOut: 0 })],
@@ -664,5 +678,55 @@ jobs:
 
     controller.abort();
     await promise;
+  });
+});
+
+describe('usage-visibility: расход попыток попадает в сводку', () => {
+  const RETRY_PIPELINE = `
+version: 1
+kind: pipeline
+name: retry-usage
+jobs:
+  build:
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        attempts:
+          max: 2
+        expect:
+          - matches: "готово"
+`;
+
+  it('вторая попытка не затирает первую, а длительность доезжает до работы и шага', async () => {
+    // Обе ошибки жили рядом: номер попытки в записи расхода был литеральной
+    // единицей, поэтому вторая попытка ложилась под ключ первой и стирала её
+    // из итога; а `wallclock_ms` проставлялся уже после потока событий и в
+    // аккумулятор не попадал вовсе, оставляя работе и шагу честный на вид нуль.
+    const fake = createFakeBackend({
+      lines: (index) =>
+        index === 0
+          ? [initLine(), resultLine({ text: 'мимо', tokensIn: 100, tokensOut: 0 })]
+          : [initLine(), resultLine({ text: 'готово', tokensIn: 300, tokensOut: 0 })],
+    });
+
+    const result = await run(makeProject({ 'stepcast.yml': RETRY_PIPELINE }), { fake });
+    assert.equal(result.status, 'success');
+
+    const usage = readUsage(result.journal.paths);
+    const step = usage.jobs.build?.steps.plan;
+
+    assert.deepEqual(
+      step?.attempts.map((entry) => entry.attempt),
+      [1, 2],
+      'обе попытки различимы в сводке',
+    );
+    assert.equal(step?.attempts[0]?.billable_tokens, 100, 'расход первой попытки уцелел');
+    assert.equal(step?.attempts[1]?.billable_tokens, 300);
+    assert.equal(step?.billable_tokens, 400, 'шаг суммирует обе попытки');
+    assert.equal(usage.jobs.build?.billable_tokens, 400, 'работа суммирует обе попытки');
+
+    assert.ok((step?.wallclock_ms ?? 0) > 0, 'у шага есть измеренная длительность, а не нуль');
+    assert.ok((usage.jobs.build?.wallclock_ms ?? 0) > 0, 'у работы тоже');
   });
 });

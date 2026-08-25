@@ -119,6 +119,21 @@ const el = (tag, cls, text) => {
   return node;
 };
 
+const fmtTokens = (v) => {
+  if (v === null || v === undefined) return 'не сообщено';
+  if (v >= 1e6) return (Number.isInteger(v / 1e6) ? v / 1e6 : (v / 1e6).toFixed(1)) + 'M';
+  if (v >= 1e3) return (Number.isInteger(v / 1e3) ? v / 1e3 : (v / 1e3).toFixed(1)) + 'k';
+  return String(v);
+};
+
+const fmtDuration = (ms) => {
+  if (ms === null || ms === undefined) return 'не сообщено';
+  if (ms >= 3600000 && ms % 3600000 === 0) return ms / 3600000 + 'h';
+  if (ms >= 60000 && ms % 60000 === 0) return ms / 60000 + 'm';
+  if (ms >= 1000 && ms % 1000 === 0) return ms / 1000 + 's';
+  return Math.round(ms / 1000) + 's';
+};
+
 const when = (run) => {
   if (!run.startedAt) return '';
   const started = new Date(run.startedAt).toLocaleString('ru');
@@ -157,6 +172,7 @@ function renderStep(address, step) {
   head.append(el('span', 'job-name', step.id), el('span', 'kind', step.kind));
   if (step.status) head.append(el('span', 'badge ' + step.status, step.status));
   if (step.attempts > 1) head.append(el('span', 'kind', 'попыток: ' + step.attempts));
+  head.append(el('span', 'kind', fmtTokens(step.usage.billableTokens) + '  ' + fmtDuration(step.usage.wallclockMs)));
   node.append(head);
 
   if (step.reason) node.append(el('div', 'desc', step.reason));
@@ -192,6 +208,7 @@ function renderJob(address, job) {
   head.append(el('span', 'job-name', job.id));
   if (job.status) head.append(el('span', 'badge ' + job.status, job.status));
   if (job.needs.length) head.append(el('span', 'kind', 'needs: ' + job.needs.join(', ')));
+  head.append(el('span', 'kind', fmtTokens(job.usage.billableTokens) + '  ' + fmtDuration(job.usage.wallclockMs)));
   node.append(head);
   if (job.description) node.append(el('div', 'desc', job.description));
 
@@ -242,6 +259,9 @@ function renderRun(projectKey, run) {
   summary.append(el('span', 'badge ' + (run.status || ''), run.status || 'неизвестно'));
   if (run.swept) summary.append(el('span', 'badge', 'убран'));
   if (run.unreadable) summary.append(el('span', 'badge', 'не читается'));
+  if (run.usage) {
+    summary.append(el('span', 'kind', fmtTokens(run.usage.billableTokens) + '  ' + fmtDuration(run.usage.wallclockMs)));
+  }
   summary.append(el('span', 'when', when(run)));
   node.append(summary);
 

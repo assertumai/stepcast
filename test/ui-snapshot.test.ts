@@ -105,6 +105,18 @@ function seed() {
     jobs: JOBS,
     lock: lockText(),
     artifacts: { producer: { факт: 'выход работы producer' } },
+    usage: {
+      run_id: 'run-a',
+      total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 300, wallclock_ms: 120_000 },
+      unreported: [],
+      jobs: {
+        producer: {
+          billable_tokens: 300,
+          wallclock_ms: 60_000,
+          steps: { think: { billable_tokens: 300, wallclock_ms: 60_000, attempts: [{ attempt: 1, backend: 'claude', billable_tokens: 300, wallclock_ms: 60_000 }] } },
+        },
+      },
+    },
   });
   return { bed, journal, key: projectKey(bed.projectRoot) };
 }
@@ -231,5 +243,42 @@ describe('ui-dashboard: детальный снимок прогона', () => {
     journal.prepareJob('producer');
     assert.equal(buildSnapshot(journal.paths, key).swept, false);
     assert.ok(join(journal.paths.jobs, 'producer').length > 0);
+  });
+
+  // Сценарий: «Расход работы и шага»
+  it('отдаёт расход работы и шага из сводки', () => {
+    const { journal, key } = seed();
+    const producer = buildSnapshot(journal.paths, key).jobs.find((job) => job.id === 'producer');
+
+    assert.deepEqual(producer?.usage, { billableTokens: 300, wallclockMs: 60_000 });
+    assert.deepEqual(producer?.steps[0]?.usage, { billableTokens: 300, wallclockMs: 60_000 });
+
+    const consumer = buildSnapshot(journal.paths, key).jobs.find((job) => job.id === 'consumer');
+    assert.deepEqual(consumer?.usage, { billableTokens: null, wallclockMs: null });
+  });
+
+  // Сценарий: «Расход убранного прогона»
+  it('снимок убранного прогона по-прежнему содержит расход', () => {
+    const { journal, key } = seed();
+    cleanupRun(journal.paths);
+
+    const producer = buildSnapshot(journal.paths, key).jobs.find((job) => job.id === 'producer');
+    assert.deepEqual(producer?.usage, { billableTokens: 300, wallclockMs: 60_000 });
+  });
+
+  // Сценарий: «Прогон без записанной сводки»
+  it('снимок идущего прогона без сводки не падает', () => {
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-going',
+      status: 'running',
+      jobs: JOBS,
+      lock: lockText(),
+      skipUsage: true,
+    });
+
+    const snapshot = buildSnapshot(journal.paths, projectKey(bed.projectRoot));
+    const producer = snapshot.jobs.find((job) => job.id === 'producer');
+    assert.deepEqual(producer?.usage, { billableTokens: null, wallclockMs: null });
   });
 });

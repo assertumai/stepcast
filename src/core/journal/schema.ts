@@ -226,6 +226,16 @@ export const RunStatusSchema = z
   })
   .strict();
 
+export const UsageAttemptReportSchema = z
+  .object({
+    attempt: z.number().int().positive(),
+    backend: z.string(),
+    model: z.string().optional(),
+    billable_tokens: z.number(),
+    wallclock_ms: z.number(),
+  })
+  .strict();
+
 export const UsageReportSchema = z
   .object({
     run_id: z.string(),
@@ -253,7 +263,14 @@ export const UsageReportSchema = z
               .object({
                 billable_tokens: z.number(),
                 wallclock_ms: z.number(),
-                attempts: z.number().int(),
+                // Прежняя форма сводки хранила число попыток. Разбивки в ней
+                // нет и взять её неоткуда, но остальная сводка старого прогона
+                // остаётся годной: терять её целиком ради поля, которого тогда
+                // не писали, значит ослепить отчёт на всех прошлых прогонах.
+                attempts: z.preprocess(
+                  (value) => (typeof value === 'number' ? [] : value),
+                  z.array(UsageAttemptReportSchema),
+                ),
               })
               .strict(),
           ),
@@ -311,6 +328,7 @@ export type JobRecord = z.infer<typeof JobRecordSchema>;
 export type StepRecord = z.infer<typeof StepRecordSchema>;
 export type AttemptRecord = z.infer<typeof AttemptRecordSchema>;
 export type UsageReport = z.infer<typeof UsageReportSchema>;
+export type UsageAttemptReport = z.infer<typeof UsageAttemptReportSchema>;
 export type ContextReport = z.infer<typeof ContextReportSchema>;
 export type ContextEntryReport = z.infer<typeof ContextEntryReportSchema>;
 export type ExpectReport = z.infer<typeof ExpectReportSchema>;

@@ -152,6 +152,33 @@ export function readUsage(paths: RunPaths): UsageReport {
   return parsed.data;
 }
 
+export type UsageSummaryUnavailable = 'missing' | 'unreadable';
+
+export interface UsageSummaryResult {
+  readonly summary?: UsageReport;
+  /** Отсутствует — файла ещё нет (прогон идёт); непрочитана — не прошла схему. */
+  readonly unavailable?: UsageSummaryUnavailable;
+}
+
+/**
+ * Сводка расхода, которая не бросает. Отчёт о расходе (команда и витрина)
+ * обязан строиться и на идущем прогоне без `usage.json`, и на прогоне со
+ * сводкой прежней формы — `readUsage` для этого слишком строг.
+ */
+export function readUsageSoft(paths: RunPaths): UsageSummaryResult {
+  if (!existsSync(paths.usage)) return { unavailable: 'missing' };
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(paths.usage, 'utf8'));
+  } catch {
+    return { unavailable: 'unreadable' };
+  }
+
+  const parsed = UsageReportSchema.safeParse(raw);
+  return parsed.success ? { summary: parsed.data } : { unavailable: 'unreadable' };
+}
+
 export function readEvents(paths: RunPaths): Event[] {
   if (!existsSync(paths.events)) return [];
   const events: Event[] = [];

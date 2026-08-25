@@ -1,9 +1,9 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
-import { findStepDir, readStatus } from '../core/journal/reader.js';
+import { findStepDir, readStatus, readUsageSoft } from '../core/journal/reader.js';
 import type { RunPaths } from '../core/journal/paths.js';
-import { ContextReportSchema, type StatusValue } from '../core/journal/schema.js';
+import { ContextReportSchema, type StatusValue, type UsageReport } from '../core/journal/schema.js';
 import { readLockJobs, type LockJob, type LockStep } from './lock.js';
 import { readJournalJson } from './file.js';
 
@@ -32,6 +32,12 @@ export interface JournalFileRef {
   readonly bytes: number;
 }
 
+/** Расход, взятый из сводки: `null`, пока сводка не записана или не читается. */
+export interface UsageSnapshot {
+  readonly billableTokens: number | null;
+  readonly wallclockMs: number | null;
+}
+
 export interface StepSnapshot {
   readonly id: string;
   readonly kind: 'agent' | 'run';
@@ -46,6 +52,7 @@ export interface StepSnapshot {
   /** Разрез контекста: есть только у исполнившегося агентского шага. */
   readonly contextBreakdown?: ContextBreakdown;
   readonly files: readonly JournalFileRef[];
+  readonly usage: UsageSnapshot;
 }
 
 export interface JobSnapshot {
@@ -62,6 +69,7 @@ export interface JobSnapshot {
   /** Работа объявляет выход, но ещё не опубликовала его. */
   readonly outputDeclared: boolean;
   readonly steps: readonly StepSnapshot[];
+  readonly usage: UsageSnapshot;
 }
 
 export interface RunSnapshot {
@@ -110,11 +118,28 @@ function contextBreakdown(dir: string | undefined): ContextBreakdown | undefined
   return { levels, total: parsed.data.total_tokens };
 }
 
+function stepUsage(summary: UsageReport | undefined, jobId: string, stepId: string): UsageSnapshot {
+  const step = summary?.jobs[jobId]?.steps[stepId];
+  return {
+    billableTokens: step?.billable_tokens ?? null,
+    wallclockMs: step?.wallclock_ms ?? null,
+  };
+}
+
+function jobUsage(summary: UsageReport | undefined, jobId: string): UsageSnapshot {
+  const job = summary?.jobs[jobId];
+  return {
+    billableTokens: job?.billable_tokens ?? null,
+    wallclockMs: job?.wallclock_ms ?? null,
+  };
+}
+
 function buildStep(
   paths: RunPaths,
   jobId: string,
   definition: LockStep | undefined,
   record: ReturnType<typeof readStatus>['jobs'][number]['steps'][number] | undefined,
+  summary: UsageReport | undefined,
 ): StepSnapshot {
   const id = definition?.id ?? record?.id ?? '';
   const dir = findStepDir(paths, jobId, id);
@@ -132,6 +157,7 @@ function buildStep(
     context: definition?.context ?? [],
     ...(breakdown === undefined ? {} : { contextBreakdown: breakdown }),
     files: stepFiles(paths.dir, dir),
+    usage: stepUsage(summary, jobId, id),
   };
 }
 
@@ -140,6 +166,7 @@ function buildJob(
   definition: LockJob | undefined,
   record: ReturnType<typeof readStatus>['jobs'][number] | undefined,
   publishedJobs: ReadonlySet<string>,
+  summary: UsageReport | undefined,
 ): JobSnapshot {
   const id = definition?.id ?? record?.id ?? '';
   const needs = definition?.needs ?? [];
@@ -176,8 +203,10 @@ function buildJob(
         id,
         definition?.steps.find((step) => step.id === stepId),
         record?.steps.find((step) => step.id === stepId),
+        summary,
       ),
     ),
+    usage: jobUsage(summary, id),
   };
 }
 
@@ -208,6 +237,7 @@ export function buildSnapshot(paths: RunPaths, projectKeyValue: string): RunSnap
   const swept = !existsSync(paths.jobs);
   const definitions = readLockJobs(paths.lock);
   const published = publishedOutputs(paths);
+  const summary = readUsageSoft(paths).summary;
 
   // Порядок работ задаёт лок; работы, оставшиеся только в состоянии
   // (например, после уборки лока), дописываются следом.
@@ -227,6 +257,7 @@ export function buildSnapshot(paths: RunPaths, projectKeyValue: string): RunSnap
         definitions.find((job) => job.id === id),
         status?.jobs.find((job) => job.id === id),
         published,
+        summary,
       ),
     ),
     swept,

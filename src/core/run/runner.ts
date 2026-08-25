@@ -1181,8 +1181,8 @@ async function runAgentStep(
       });
       return results;
     },
-    onUsage: (current) => {
-      context.usage.record(job.id, step.id, 1, current);
+    onUsage: (current, attempt) => {
+      context.usage.record(job.id, step.id, attempt, current);
       const found = context.usage.check(budgetScopes(), current);
       exceeded ??= found;
       abort.trigger(found);

@@ -49,7 +49,11 @@ export interface AgentStepOptions {
   readonly signal?: AbortSignal;
   readonly onStall?: (silentMs: number) => void;
   readonly onAttemptStart?: (plan: AttemptPlan) => void;
-  readonly onUsage?: (usage: Usage) => void;
+  /**
+   * Нарастающий итог попытки и её номер. Номер обязателен: без него расход
+   * ложится под чужую попытку, а замена по ключу стирает предыдущую.
+   */
+  readonly onUsage?: (usage: Usage, attempt: number) => void;
   readonly onUnparsed?: (line: string) => void;
   readonly onExpectFailed?: (plan: AttemptPlan, result: PredicateResult) => void;
   /** Может возвращать промис: судья внутри неё — асинхронный агентский вызов. */
@@ -157,7 +161,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
             if (event.structured !== undefined) structured = event.structured;
             if (event.usage !== undefined) {
               usage = mergeUsage(usage, event.usage);
-              options.onUsage?.(usage);
+              options.onUsage?.(usage, plan.attempt);
             }
             if (event.failed === true) failedByBackend = true;
             break;
@@ -173,7 +177,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
         if (delta === undefined || (messageId !== undefined && seenUsageMessageIds.has(messageId))) return;
         if (messageId !== undefined) seenUsageMessageIds.add(messageId);
         usage = sumUsage(usage, mergeUsage(emptyUsage(adapter.name, resolvedModel, 0), delta));
-        options.onUsage?.(usage);
+        options.onUsage?.(usage, plan.attempt);
       };
 
       const process_ = await runProcess({
@@ -193,6 +197,10 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
 
       if (carry.trim() !== '') handleLine(carry);
       usage = { ...usage, wallclock_ms: process_.wallclockMs };
+      // Длительность известна только после завершения процесса, а по ходу
+      // потока её в событиях нет. Без этой записи учёт работы и шага остаётся
+      // с нулевым временем, которое выглядит измерением, а не пробелом.
+      options.onUsage?.(usage, plan.attempt);
 
       const outcome: AgentAttemptOutcome = {
         process: process_,

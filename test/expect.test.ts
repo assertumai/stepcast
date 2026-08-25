@@ -256,8 +256,39 @@ describe('run-journal: расход и бюджет', () => {
 
     const report = accumulator.report('r1');
     assert.equal(report.total.billable_tokens, 250);
-    assert.equal(report.jobs.build?.steps.test?.attempts, 2);
+    assert.equal(report.jobs.build?.steps.test?.attempts.length, 2);
     assert.equal(report.jobs.build?.steps.test?.billable_tokens, 250);
+  });
+
+  // Сценарий: «Разбивка шага по номерам попыток»
+  it('шаг с двумя попытками даёт в сводке две записи попыток', () => {
+    const accumulator = new UsageAccumulator(() => 0);
+    const plain = { tokens_out: 0, cache_read: 0, cache_write: 0 };
+    accumulator.record('build', 'test', 1, usageOf({ tokens_in: 100, model: 'sonnet', ...plain }));
+    accumulator.record('build', 'test', 2, usageOf({ tokens_in: 150, model: 'opus', ...plain }));
+
+    const attempts = accumulator.report('r1').jobs.build?.steps.test?.attempts;
+    assert.deepEqual(
+      attempts?.map((entry) => [entry.attempt, entry.backend, entry.model, entry.billable_tokens]),
+      [
+        [1, 'claude', 'sonnet', 100],
+        [2, 'claude', 'opus', 150],
+      ],
+    );
+  });
+
+  // Сценарий: «Переисполнение той же попытки»
+  it('переисполнение попытки схлопывается в одну запись с суммарным расходом', () => {
+    const accumulator = new UsageAccumulator(() => 0);
+    const plain = { tokens_out: 0, cache_read: 0, cache_write: 0 };
+    accumulator.record('build', 'test', 1, usageOf({ tokens_in: 100, ...plain }));
+    accumulator.sealStep('build', 'test');
+    accumulator.record('build', 'test', 1, usageOf({ tokens_in: 40, ...plain }));
+
+    const attempts = accumulator.report('r1').jobs.build?.steps.test?.attempts;
+    assert.equal(attempts?.length, 1);
+    assert.equal(attempts?.[0]?.attempt, 1);
+    assert.equal(attempts?.[0]?.billable_tokens, 140);
   });
 });
 

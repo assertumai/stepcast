@@ -291,7 +291,7 @@ describe('agent-backend: исполнение шага', () => {
     const backend = createFakeBackend({
       lines: [assistant('msg-1', 60), assistant('msg-1', 60, true), assistant('msg-2', 60), resultLine({ text: 'ок' })],
     });
-    const reported: number[] = [];
+    const reported: Array<[number, number, number]> = [];
 
     const result = await executeAgentStep({
       step: makeAgentStep(),
@@ -301,10 +301,23 @@ describe('agent-backend: исполнение шага', () => {
       sessions: createSessionRegistry(),
       buildPrompt: () => 'промпт',
       env: () => ({ PATH: process.env.PATH ?? '' }),
-      onUsage: (usage) => reported.push(usage.tokens_in ?? 0),
+      onUsage: (usage, attempt) => reported.push([usage.tokens_in ?? 0, usage.wallclock_ms, attempt]),
     });
 
-    assert.deepEqual(reported, [60, 120]);
+    // Два уникальных сообщения дают нарастающий итог 60 и 120; повтор `msg-1`
+    // не добавляет ничего. Третья отправка — итоговая, после завершения
+    // процесса: те же токены, но уже с измеренной длительностью, ради которой
+    // она и делается.
+    assert.deepEqual(
+      reported.map(([tokens]) => tokens),
+      [60, 120, 120],
+    );
+    assert.deepEqual(
+      reported.map(([, , attempt]) => attempt),
+      [1, 1, 1],
+      'номер попытки сообщается вместе с расходом',
+    );
+    assert.equal(reported.at(-1)?.[1] !== 0, true, 'итоговая отправка несёт длительность');
     assert.equal(result.last?.usage.tokens_in, 120);
   });
 

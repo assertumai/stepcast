@@ -116,4 +116,28 @@ describe('ui-dashboard: обзор всех проектов и прогонов
     const { runsRoot } = makeJournalBed();
     assert.deepEqual(buildOverview(runsRoot).projects, []);
   });
+
+  // Сценарий: «Расход прогона в обзоре»
+  it('показывает расход прогона, в том числе для прогона без сводки', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'aggregated',
+      usage: {
+        run_id: 'aggregated',
+        total: { tokens_in: 100, tokens_out: 50, cache_read: 0, cache_write: 0, billable_tokens: 150, wallclock_ms: 5_000 },
+        unreported: [],
+        jobs: {},
+      },
+    });
+    seedRun(runsRoot, projectRoot, { runId: 'going', status: 'running', skipUsage: true });
+
+    const runs = buildOverview(runsRoot).projects[0]?.runs ?? [];
+    const aggregated = runs.find((run) => run.runId === 'aggregated');
+    const going = runs.find((run) => run.runId === 'going');
+
+    assert.equal(aggregated?.usage?.aggregated, true);
+    assert.equal(aggregated?.usage?.billableTokens, 150);
+    assert.equal(going?.usage?.aggregated, false);
+    assert.equal(going?.usage?.billableTokens, 0);
+  });
 });

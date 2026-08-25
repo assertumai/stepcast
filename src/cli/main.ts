@@ -14,6 +14,7 @@ import { runResumeCommand } from './commands/resume.js';
 import { runRunCommand } from './commands/run.js';
 import { runStatusCommand } from './commands/status.js';
 import { runUpCommand } from './commands/up.js';
+import { runUsageCommand } from './commands/usage.js';
 
 export const COMMANDS: Record<string, CommandSpec> = {
   run: {
@@ -111,6 +112,10 @@ export const COMMANDS: Record<string, CommandSpec> = {
       input: { kind: 'keyValue', description: 'значение входа пайплайна: --input имя=значение' },
     },
   },
+  usage: {
+    description: 'показать расход прогона по работам, шагам и попыткам',
+    positional: ['run'],
+  },
 };
 
 export interface CliIo {
@@ -149,6 +154,8 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
         return await runUpCommand(args, io.out, io.cwd);
       case 'down':
         return runDownCommand(args, io.out, io.cwd);
+      case 'usage':
+        return runUsageCommand(args, io.out, io.cwd);
       default:
         return ExitCode.configError;
     }
