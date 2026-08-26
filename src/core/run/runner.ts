@@ -11,7 +11,14 @@ import {
 } from '../anchor/index.js';
 import { fingerprintInputs } from '../anchor/fingerprint.js';
 import { resolveAdapter } from '../backend/registry.js';
-import { sumUsage, type BackendAdapter } from '../backend/types.js';
+import {
+  BACKEND_REFUSAL_PREDICATE,
+  describeRefusal,
+  extractRefusal,
+  sumUsage,
+  type BackendAdapter,
+  type BackendRefusal,
+} from '../backend/types.js';
 import { UsageAccumulator, describeExceeded, type BudgetScope, type Exceeded } from '../budget/accumulator.js';
 import type { Config } from '../config/resolve.js';
 import { formatDuration } from '../units.js';
@@ -101,6 +108,23 @@ const EXIT_BY_STATUS: Record<string, ExitCodeValue> = {
   budget_exceeded: ExitCode.budgetExceeded,
   canceled: ExitCode.canceled,
 };
+
+/**
+ * Код возврата прогона. Отказ аутентификации отличает неисполнимость
+ * окружения от отказа самого пайплайна: он переопределяет код по причине, а
+ * не по статусу работы, который у обоих одинаково `failed`. Отмена
+ * пользователем остаётся самой внешней причиной — `overallStatus` ставит её
+ * выше отказа, и код возврата не должен с ним расходиться.
+ */
+export function resolveExitCode(
+  status: string,
+  settled: readonly { readonly cause?: string }[],
+): ExitCodeValue {
+  const authRefused =
+    status !== 'canceled' &&
+    settled.some((job) => job.cause === HaltCause.backendUnauthenticated);
+  return authRefused ? ExitCode.backendUnavailable : (EXIT_BY_STATUS[status] ?? ExitCode.jobFailed);
+}
 
 export async function runPipeline(options: RunOptions): Promise<RunResult> {
   const { pipeline } = options.expanded;
@@ -266,7 +290,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   writeStatus(result.status);
   journal.writeUsage(usage.report(journal.paths.runId));
 
-  const exitCode = EXIT_BY_STATUS[result.status] ?? ExitCode.jobFailed;
+  const exitCode = resolveExitCode(result.status, result.settled);
   journal.writeManifest({
     ...manifest,
     finished_at: new Date().toISOString(),
@@ -614,6 +638,148 @@ async function waitForReset(exceeded: Exceeded, context: RunContext): Promise<Wa
   return { kind: 'resumed' };
 }
 
+/** Исход попытки, упёршейся в неустранимый отказ бэкенда — шага или судьи. */
+type RefusalOutcome = { readonly kind: 'retry' } | { readonly kind: 'final'; readonly outcome: StepOutcome };
+
+/**
+ * Режим для отказа по лимиту: у ближайшей *объявившей* его области — шаг →
+ * работа → пайплайн. Берётся написанное в документе, а не действующее
+ * значение бюджета: умолчание `stop` стоит в каждом объявленном бюджете, и по
+ * действующему значению шаг с одним лишь `tokens` молча отменял бы
+ * пайплайновый `on_exceed: wait`.
+ */
+function resolveOnExceedForRateLimit(job: Job, step: Step, context: RunContext): 'wait' | 'stop' {
+  return (
+    step.budget?.declaredOnExceed ??
+    job.budget?.declaredOnExceed ??
+    context.expanded.pipeline.budget?.declaredOnExceed ??
+    'stop'
+  );
+}
+
+/**
+ * Ждать сброса окна лимита, когда бэкенд отказал упором в лимит подписки, а
+ * не когда прогон сам измерил превышение `rate_limit_pct`. Механика та же,
+ * что у `waitForReset` (предел `defaults.max_wait`, немедленное прерывание
+ * сигналом отмены, невычитание сна из `wallclock`), но `used`/`limit`
+ * измеренного процента здесь нет и подделывать их нечем: отказ бэкенда не
+ * есть измеренная доля окна.
+ */
+async function waitForBackendRateLimit(
+  refusal: BackendRefusal,
+  scopeName: string,
+  context: RunContext,
+): Promise<{ readonly kind: 'resumed' } | { readonly kind: 'canceled' } | { readonly kind: 'stopped'; readonly reason: string }> {
+  if (refusal.resetAt === undefined) {
+    return {
+      kind: 'stopped',
+      reason: `${scopeName}: бэкенд не сообщил момент сброса окна лимита — ${refusal.message}`,
+    };
+  }
+
+  const now = Date.now();
+  const waitMs = refusal.resetAt - now;
+  if (waitMs <= 0) return { kind: 'resumed' };
+
+  const maxWaitMs = context.config.defaults.maxWaitMs;
+  if (context.usage.wouldExceedMaxWait(waitMs, maxWaitMs)) {
+    return {
+      kind: 'stopped',
+      reason: `${scopeName}: предел ожидания ${formatDuration(maxWaitMs)} исчерпан; сброс сообщён на ${new Date(refusal.resetAt).toISOString()} — ${refusal.message}`,
+    };
+  }
+
+  const wakeAt = new Date(refusal.resetAt).toISOString();
+  context.onWait(wakeAt);
+  context.journal.event({
+    kind: 'budget.waiting',
+    scope: scopeName,
+    dimension: 'rate_limit',
+    resets_at: refusal.resetAt,
+    wait_ms: waitMs,
+  });
+
+  const started = Date.now();
+  const canceled = await sleepInterruptibly(waitMs, context.signal);
+  const actualMs = Date.now() - started;
+
+  context.usage.recordWait(started, started + actualMs);
+  context.onWait(undefined);
+  if (canceled) return { kind: 'canceled' };
+
+  context.journal.event({ kind: 'budget.resumed', actual_ms: actualMs });
+  return { kind: 'resumed' };
+}
+
+/**
+ * Обработать неустранимый отказ бэкенда — общий путь для шага и судьи внутри
+ * него. Событие журнала пишется здесь же: причина видна без чтения
+ * `stdout.log` шага.
+ */
+async function resolveBackendRefusal(
+  refusal: BackendRefusal,
+  job: Job,
+  step: Step,
+  attempt: number,
+  context: RunContext,
+  base: Pick<StepOutcome, 'attempts' | 'results' | 'session'>,
+): Promise<RefusalOutcome> {
+  context.journal.event({
+    kind: 'backend.refused',
+    job: job.id,
+    step: step.id,
+    attempt,
+    class: refusal.class,
+    ...(refusal.statusCode === undefined ? {} : { status_code: refusal.statusCode }),
+    message: refusal.message,
+    ...(refusal.resetAt === undefined ? {} : { resets_at: refusal.resetAt }),
+  });
+
+  if (refusal.class === 'unauthenticated') {
+    return {
+      kind: 'final',
+      outcome: {
+        ...base,
+        status: 'failed',
+        reason: describeRefusal(refusal),
+        cause: HaltCause.backendUnauthenticated,
+      },
+    };
+  }
+
+  const scopeName = `${job.id}/${step.id}`;
+  const mode = resolveOnExceedForRateLimit(job, step, context);
+  const waited =
+    mode === 'wait'
+      ? await waitForBackendRateLimit(refusal, scopeName, context)
+      : ({
+          kind: 'stopped',
+          reason: `${scopeName}: упор в окно лимита подписки бэкенда — ${refusal.message}`,
+        } as const);
+
+  if (waited.kind === 'resumed') {
+    // Расход оборванной попытки запечатывается перед переисполнением: иначе
+    // новая попытка ляжет под тем же ключом `job/step#attempt` и разностный
+    // учёт `UsageAccumulator.record` вычтет из потолков расход прерванной —
+    // ровно то, чего требование «расход прерванной попытки остаётся
+    // учтённым» запрещает.
+    context.usage.sealStep(job.id, step.id);
+    return { kind: 'retry' };
+  }
+  if (waited.kind === 'canceled') {
+    return { kind: 'final', outcome: { ...base, status: 'canceled' } };
+  }
+  return {
+    kind: 'final',
+    outcome: {
+      ...base,
+      status: 'budget_exceeded',
+      reason: waited.reason,
+      cause: HaltCause.backendRateLimited,
+    },
+  };
+}
+
 /** Сон, прерываемый сигналом отмены. Возвращает true, если прерван. */
 function sleepInterruptibly(ms: number, signal?: AbortSignal): Promise<boolean> {
   return new Promise((resolve) => {
@@ -828,7 +994,7 @@ async function runJobSteps(
 
     const status: StatusValue = exceeded !== undefined ? 'budget_exceeded' : outcome.status;
     const reason = exceeded !== undefined ? describeExceeded(exceeded) : outcome.reason;
-    const cause = causeOf(status, outcome.results);
+    const cause = causeOf(status, outcome.results, outcome.cause);
 
     // Якорь снимается при любом исходе, включая отказ, отмену и превышение
     // бюджета: разбирать упавший прогон без состояния дерева нечем.
@@ -948,6 +1114,12 @@ interface StepOutcome {
   readonly observedInputs?: readonly string[];
   readonly backendInit?: Record<string, unknown>;
   readonly exceeded?: ReturnType<UsageAccumulator['check']>;
+  /**
+   * Причина неуспеха, назначенная самим исходом, а не выводимая из статуса
+   * позже: неустранимый отказ бэкенда определяет её точнее, чем это умеет
+   * `causeOf` по одному статусу и результатам предикатов.
+   */
+  readonly cause?: HaltCauseValue;
 }
 
 /**
@@ -1109,6 +1281,22 @@ async function runCommandStep(
       abort.trigger(found);
     }
 
+    // Отказ бэкенда добирается сюда только через судью: командный шаг сам
+    // агентский бэкенд не зовёт.
+    const refusal = extractRefusal(result.results.at(-1) ?? []);
+    if (refusal !== undefined) {
+      const resolved = await resolveBackendRefusal(
+        refusal,
+        job,
+        step,
+        result.attempts.at(-1)?.attempt ?? result.attempts.length,
+        context,
+        { attempts: result.attempts, results: result.results },
+      );
+      if (resolved.kind === 'retry') continue;
+      return resolved.outcome;
+    }
+
     if (abort.waitTrigger !== undefined) {
       // Реальная отмена уже настигла прогон — ждать нечего, шаг canceled.
       // `exceeded` в этом исходе не отдаётся: иначе runJobSteps прочёл бы
@@ -1236,6 +1424,23 @@ async function runAgentStep(
         .join('\n\n');
     },
     evaluate: async (target, outcome, plan) => {
+      // Неустранимый отказ проверяется раньше кода возврата: у обоих
+      // настоящих конвертов отказа (упор в лимит подписки, отказ
+      // аутентификации) код возврата ненулевой, и без этой проверки они
+      // ушли бы в «бэкенд завершился кодом N», не назвав действительной
+      // причины. Судья здесь не вызывается: попытка отклонена в любом случае.
+      if (outcome.refusal !== undefined) {
+        return [
+          {
+            predicate: BACKEND_REFUSAL_PREDICATE,
+            passed: false,
+            hard: true,
+            detail: describeRefusal(outcome.refusal),
+            actual: outcome.refusal,
+          },
+        ];
+      }
+
       // Ненулевой код возврата означает, что бэкенд не отработал, и жалобы
       // предикатов на отсутствующий вывод только уводят от причины. Настоящую
       // причину бэкенд написал в stderr — её и показываем первой. Судья здесь
@@ -1342,6 +1547,22 @@ async function runAgentStep(
       used: exceeded.used,
       limit: exceeded.limit,
     });
+  }
+
+  // Отказ бэкенда — свой либо доставшийся судье внутри `evaluate` — приходит
+  // тем же именем предиката: источник дальше не различается.
+  const refusal = extractRefusal(result.results.at(-1) ?? []);
+  if (refusal !== undefined) {
+    const resolved = await resolveBackendRefusal(
+      refusal,
+      job,
+      step,
+      result.attempts.at(-1)?.attempt ?? result.attempts.length,
+      context,
+      { attempts: result.attempts, results: result.results, session: result.sessionId },
+    );
+    if (resolved.kind === 'retry') continue;
+    return resolved.outcome;
   }
 
   if (abort.waitTrigger !== undefined) {
@@ -1460,7 +1681,9 @@ function stepEnv(
 function causeOf(
   status: StatusValue,
   results: readonly (readonly PredicateResult[])[],
+  assigned?: HaltCauseValue,
 ): HaltCauseValue | undefined {
+  if (assigned !== undefined) return assigned;
   if (status === 'canceled') return HaltCause.canceled;
   if (status === 'budget_exceeded') return HaltCause.budgetExceeded;
   if (status !== 'failed') return undefined;

@@ -25,6 +25,10 @@ export const HaltCause = {
   budgetExceeded: 'budget_exceeded',
   /** Прогон отменён пользователем или сигналом. */
   canceled: 'canceled',
+  /** Упор в окно лимита подписки бэкенда, когда ожидание не состоялось. */
+  backendRateLimited: 'backend_rate_limited',
+  /** Бэкенд отказал аутентификацией. */
+  backendUnauthenticated: 'backend_unauthenticated',
 } as const;
 
 export type HaltCauseValue = (typeof HaltCause)[keyof typeof HaltCause];
@@ -51,5 +55,9 @@ export function describeHaltCause(cause: HaltCauseValue): string {
       return 'превышен объявленный бюджет';
     case HaltCause.canceled:
       return 'прогон отменён';
+    case HaltCause.backendRateLimited:
+      return 'упор в окно лимита подписки бэкенда';
+    case HaltCause.backendUnauthenticated:
+      return 'отказ аутентификации бэкенда';
   }
 }

@@ -4,8 +4,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createClaudeAdapter } from '../src/core/backend/claude.js';
-import { createFakeBackend, initLine, resultLine, toolUseLine } from '../src/core/backend/fake.js';
+import { createClaudeAdapter, parseResetAt } from '../src/core/backend/claude.js';
+import {
+  authRefusalLine,
+  createFakeBackend,
+  initLine,
+  rateLimitRefusalLine,
+  resultLine,
+  toolUseLine,
+} from '../src/core/backend/fake.js';
 import { emptyUsage, mergeUsage, sumUsage } from '../src/core/backend/types.js';
 import { createSessionRegistry, executeAgentStep } from '../src/core/exec/agentStep.js';
 import type { BackendConfig } from '../src/core/config/resolve.js';
@@ -208,6 +215,166 @@ describe('agent-backend: разбор потока', () => {
     assert.equal(event.kind, 'result');
     assert.equal(event.usage?.rate_limits?.five_hour?.used_pct, 37);
     assert.equal(event.usage?.rate_limits?.seven_day?.used_pct, 61);
+  });
+});
+
+describe('agent-backend: неустранимый отказ бэкенда', () => {
+  const adapter = createClaudeAdapter(BACKEND);
+
+  // Дословный конверт из прогона 2dc340
+  // (jobs/plan/steps/01-read-change/stdout.log, запись `result`). Перед ней
+  // в том же потоке идёт запись `assistant` с `is_api_error_message: true`,
+  // но без `is_error` — как кандидат на классификацию она не рассматривается:
+  // признак отказа приходит только с финальной записью `result` (см. задачу
+  // 1.2 из tasks.md изменения backend-terminal-errors).
+  const RATE_LIMIT_ENVELOPE =
+    '{"is_error":true,"duration_api_ms":38573,"num_turns":19,"stop_reason":"stop_sequence","session_id":"a703e098-32b4-4c77-b857-60f5fea5e444","total_cost_usd":1.0312245,"usage":{"input_tokens":20,"cache_creation_input_tokens":70419,"cache_read_input_tokens":509879,"output_tokens":2384,"output_tokens_details":{"thinking_tokens":355},"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":70419,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":2,"output_tokens":147,"cache_read_input_tokens":68596,"cache_creation_input_tokens":1823,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":1823},"type":"message"}],"speed":"standard"},"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":12320,"outputTokens":15,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"webSearchRequests":0,"costUSD":0.012395,"contextWindow":200000,"maxOutputTokens":32000,"canonicalModel":"claude-haiku-4-5","provider":"firstParty","costBasis":"list"},"claude-opus-5":{"inputTokens":20,"outputTokens":2384,"cacheReadInputTokens":509879,"cacheCreationInputTokens":70419,"webSearchRequests":0,"costUSD":1.0188295,"contextWindow":1000000,"maxOutputTokens":64000,"canonicalModel":"claude-opus-5","provider":"firstParty","costBasis":"list"}},"permission_denials":[],"terminal_reason":"api_error","fast_mode_state":"off","fast_mode_disabled_reason":"sdk_opt_in_required","subagent_stats":{"spawned":0,"requested":{"background":0,"foreground":0,"unset":0},"started_in_background":0,"max_depth":0,"spawned_by_subagents":0,"completed":0,"failed":0,"killed":{"parent":0,"user":0,"system":0},"refused":{"depth_limit":0,"concurrency_limit":0,"budget":0},"by_type":{}},"subtype":"success","api_error_status":429,"result":"You\'ve hit your session limit · resets 11pm (Asia/Nicosia)","type":"result","duration_ms":37992,"uuid":"47a102c3-5c79-4168-a6f6-4df76767337e","queued_turn_count":0}';
+
+  // Запись `assistant` из того же потока, непосредственно перед конвертом
+  // выше: несёт признак ошибки API, но не `is_error`.
+  const RATE_LIMIT_PRECEDING_ASSISTANT =
+    '{"type":"assistant","message":{"diagnostics":null,"id":"929d3ce4-4774-424b-8820-47bd282c8604","container":null,"model":"<synthetic>","role":"assistant","stop_details":null,"stop_reason":"stop_sequence","stop_sequence":"","type":"message","usage":{"output_tokens_details":null,"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":null,"cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":null,"iterations":null,"speed":null},"content":[{"type":"text","text":"You\'ve hit your session limit · resets 11pm (Asia/Nicosia)"}],"context_management":null},"parent_tool_use_id":null,"session_id":"a703e098-32b4-4c77-b857-60f5fea5e444","uuid":"b46c3bdd-feab-4149-8a8e-72d099da6003","timestamp":"2026-08-26T19:01:59.403Z","error":"rate_limit","request_id":"req_011CeRsr24vQUYYFADKxkMyp","is_api_error_message":true}';
+
+  // Дословный конверт из прогона 18f9fc
+  // (jobs/propose/steps/03-create-change/stdout.log, запись `result`):
+  // отказ аутентификации без кода состояния (`api_error_status: null`).
+  const AUTH_ENVELOPE =
+    '{"is_error":true,"duration_api_ms":0,"num_turns":1,"stop_reason":"stop_sequence","session_id":"923a8100-557a-43b9-bdea-60b3fb75e4e7","total_cost_usd":0,"usage":{"output_tokens_details":{"thinking_tokens":0},"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"modelUsage":{},"permission_denials":[],"terminal_reason":"api_error","fast_mode_state":"off","fast_mode_disabled_reason":"sdk_opt_in_required","subtype":"success","api_error_status":null,"result":"Failed to authenticate: OAuth session expired and could not be refreshed","type":"result","duration_ms":26,"uuid":"053e5e1e-260a-462b-a9f2-e9ba400f84fb"}';
+
+  it('классифицирует упор в лимит подписки по коду состояния 429', () => {
+    const event = adapter.parseLine(RATE_LIMIT_ENVELOPE) as { readonly kind: string; readonly refusal?: unknown };
+    assert.equal(event.kind, 'result');
+    assert.deepEqual(event.refusal, {
+      class: 'rate_limit',
+      message: "You've hit your session limit · resets 11pm (Asia/Nicosia)",
+      statusCode: 429,
+      resetAt: parseResetAt("You've hit your session limit · resets 11pm (Asia/Nicosia)"),
+    });
+  });
+
+  it('запись assistant перед отказом не несёт классификации: у неё нет is_error', () => {
+    // См. комментарий у RATE_LIMIT_PRECEDING_ASSISTANT: задача 1.2. Запись не
+    // кандидат на классификацию — `is_api_error_message` не заменяет
+    // `is_error`, и разбирается она как обычная запись без вызова инструмента,
+    // то есть как нулевой расход (`kind: 'usage'`), не как отказ.
+    const event = adapter.parseLine(RATE_LIMIT_PRECEDING_ASSISTANT) as {
+      readonly kind: string;
+      readonly refusal?: unknown;
+    };
+    assert.equal(event.kind, 'usage');
+    assert.equal(event.refusal, undefined);
+  });
+
+  it('классифицирует отказ аутентификации по телу ответа, когда кода состояния нет', () => {
+    const event = adapter.parseLine(AUTH_ENVELOPE) as { readonly kind: string; readonly refusal?: unknown };
+    assert.equal(event.kind, 'result');
+    assert.deepEqual(event.refusal, {
+      class: 'unauthenticated',
+      message: 'Failed to authenticate: OAuth session expired and could not be refreshed',
+    });
+  });
+
+  it('is_error без кода состояния и без terminal_reason не классифицируется', () => {
+    const event = adapter.parseLine(
+      JSON.stringify({ type: 'result', is_error: true, result: 'что-то пошло не так' }),
+    ) as { readonly kind: string; readonly refusal?: unknown; readonly failed?: boolean };
+    assert.equal(event.refusal, undefined);
+    assert.equal(event.failed, true, 'обычным отказом шага запись остаётся');
+  });
+
+  it('is_error с признаком ошибки API, но без узнаваемой формулировки, не классифицируется', () => {
+    const event = adapter.parseLine(
+      JSON.stringify({
+        type: 'result',
+        is_error: true,
+        terminal_reason: 'api_error',
+        result: 'что-то внутреннее сломалось',
+      }),
+    ) as { readonly kind: string; readonly refusal?: unknown };
+    assert.equal(event.refusal, undefined);
+  });
+
+  it('успешный ответ с формулировкой про лимит в тексте не классифицируется', () => {
+    const event = adapter.parseLine(resultLine({ text: 'мы обсудили лимит подписки и решили подождать' })) as {
+      readonly kind: string;
+      readonly refusal?: unknown;
+      readonly failed?: boolean;
+    };
+    assert.equal(event.refusal, undefined);
+    assert.equal(event.failed, undefined);
+  });
+
+  it('запись без is_error не классифицируется', () => {
+    const event = adapter.parseLine(
+      JSON.stringify({ type: 'result', api_error_status: 429, result: 'мимо' }),
+    ) as { readonly kind: string; readonly refusal?: unknown };
+    assert.equal(event.refusal, undefined);
+  });
+
+  it('фейковый бэкенд воспроизводит оба конверта тем же путём разбора', () => {
+    assert.deepEqual(
+      (adapter.parseLine(rateLimitRefusalLine()) as { readonly refusal?: unknown }).refusal,
+      {
+        class: 'rate_limit',
+        message: "You've hit your session limit · resets 11pm (Asia/Nicosia)",
+        statusCode: 429,
+        resetAt: parseResetAt("You've hit your session limit · resets 11pm (Asia/Nicosia)"),
+      },
+    );
+    assert.deepEqual((adapter.parseLine(authRefusalLine()) as { readonly refusal?: unknown }).refusal, {
+      class: 'unauthenticated',
+      message: 'Failed to authenticate: OAuth session expired and could not be refreshed',
+    });
+  });
+});
+
+describe('agent-backend: момент сброса окна лимита', () => {
+  const NOW = Date.parse('2026-08-26T19:00:00.000Z'); // 22:00 в Asia/Nicosia (UTC+3)
+
+  it('час ещё не наступил сегодня в названном поясе', () => {
+    const resetAt = parseResetAt('resets 11pm (Asia/Nicosia)', NOW);
+    assert.equal(resetAt, Date.parse('2026-08-26T20:00:00.000Z'));
+  });
+
+  it('час уже прошёл сегодня — берётся ближайшее будущее наступление, завтра', () => {
+    const resetAt = parseResetAt('resets 9pm (Asia/Nicosia)', NOW);
+    assert.equal(resetAt, Date.parse('2026-08-27T18:00:00.000Z'));
+  });
+
+  it('минуты и часовой пояс с получасовым смещением', () => {
+    // Asia/Kolkata: UTC+5:30. NOW = 2026-08-27T00:30 IST.
+    const resetAt = parseResetAt('resets 11:15pm (Asia/Kolkata)', NOW);
+    assert.equal(resetAt, Date.parse('2026-08-27T17:45:00.000Z'));
+  });
+
+  it('неизвестный часовой пояс не даёт момента', () => {
+    assert.equal(parseResetAt('resets 11pm (Mars/Colony)', NOW), undefined);
+  });
+
+  it('метка ISO 8601 со смещением разбирается напрямую', () => {
+    const resetAt = parseResetAt('resets 2026-08-27T21:00:00+03:00', NOW);
+    assert.equal(resetAt, Date.parse('2026-08-27T18:00:00.000Z'));
+  });
+
+  it('метка ISO 8601 с Z разбирается напрямую', () => {
+    const resetAt = parseResetAt('resets 2026-08-27T18:00:00Z', NOW);
+    assert.equal(resetAt, Date.parse('2026-08-27T18:00:00.000Z'));
+  });
+
+  it('метка ISO 8601 в прошлом не даёт момента', () => {
+    // Иначе ожидание по ней длится нуль миллисекунд, и прогон крутит
+    // «переисполнить шаг → тот же отказ» без сна и без предела max_wait.
+    assert.equal(parseResetAt('resets 2026-08-26T18:00:00Z', NOW), undefined);
+    assert.equal(parseResetAt('resets 2026-08-26T19:00:00.000Z', NOW), undefined);
+  });
+
+  it('нераспознанная форма и мусор не дают момента', () => {
+    assert.equal(parseResetAt('resets soon', NOW), undefined);
+    assert.equal(parseResetAt('полная бессмыслица', NOW), undefined);
+  });
+
+  it('отсутствие упоминания сброса не даёт момента', () => {
+    assert.equal(parseResetAt("You've hit your session limit", NOW), undefined);
   });
 });
 
@@ -420,6 +587,66 @@ describe('agent-backend: исполнение шага', () => {
     assert.ok(existsSync(join(dir, 'prompt.txt')));
     assert.ok(existsSync(join(dir, 'prompt.2.txt')));
     assert.ok(existsSync(join(dir, 'stdout.2.log')));
+  });
+});
+
+describe('step-execution: отказ бэкенда прекращает попытки', () => {
+  it('отказ аутентификации на первой попытке не расходует оставшиеся', async () => {
+    const dir = workdir();
+    const backend = createFakeBackend({ lines: [authRefusalLine()], exitCode: 1 });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep({ attempts: { max: 3, escalation: [] } }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(backend.invocations.length, 1, 'запущен ровно один процесс бэкенда');
+    assert.equal(result.attempts.length, 1, 'записана ровно одна попытка');
+    assert.equal(result.status, 'failed');
+    assert.equal(result.last?.refusal?.class, 'unauthenticated');
+  });
+
+  it('упор в лимит подписки тоже прекращает попытки немедленно', async () => {
+    const dir = workdir();
+    const backend = createFakeBackend({ lines: [rateLimitRefusalLine()], exitCode: 1 });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep({ attempts: { max: 3, escalation: [] } }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(backend.invocations.length, 1);
+    assert.equal(result.attempts.length, 1);
+    assert.equal(result.last?.refusal?.class, 'rate_limit');
+    assert.equal(result.last?.refusal?.statusCode, 429);
+  });
+
+  it('нераспознанный отказ бэкенда по-прежнему повторяется по attempts.max', async () => {
+    const dir = workdir();
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'плохо' })], exitCode: 1 });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep({ attempts: { max: 3, escalation: [] } }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(backend.invocations.length, 3, 'отказ без классификации тратит все попытки как раньше');
+    assert.equal(result.last?.refusal, undefined);
   });
 });
 

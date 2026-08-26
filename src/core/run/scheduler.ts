@@ -63,7 +63,11 @@ export async function schedule(options: ScheduleOptions): Promise<ScheduleResult
     settled.set(job.id, outcome);
     order.push(job.id);
     await options.onSettled?.(job, outcome);
-    if (isFailure(outcome.status) && pipeline.failFast) stopping = true;
+    // Неустранимый отказ бэкенда останавливает прогон и мимо `fail_fast:
+    // false` — следующая работа упёрлась бы в тот же самый упор.
+    if (isFailure(outcome.status) && (pipeline.failFast || isUnrunnable(outcome.cause))) {
+      stopping = true;
+    }
   };
 
   const decide = (job: Job, dependencies: readonly string[]): JobOutcome | undefined => {
@@ -168,6 +172,11 @@ export async function schedule(options: ScheduleOptions): Promise<ScheduleResult
   }));
 
   return { settled: results, status: overallStatus(results) };
+}
+
+/** Причина, по которой любая следующая работа упёрлась бы в то же самое. */
+function isUnrunnable(cause: HaltCauseValue | undefined): boolean {
+  return cause === HaltCause.backendRateLimited || cause === HaltCause.backendUnauthenticated;
 }
 
 /**

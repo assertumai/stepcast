@@ -119,6 +119,47 @@ export function resultLine(options: {
   });
 }
 
+/**
+ * Конверт отказа по лимиту подписки — та же форма, что настоящий Claude Code
+ * вернул в прогоне 2dc340: `is_error`, `api_error_status`, `terminal_reason`
+ * и текст с моментом сброса.
+ */
+export function rateLimitRefusalLine(
+  options: {
+    readonly resetText?: string;
+    readonly tokensIn?: number;
+    readonly tokensOut?: number;
+  } = {},
+): string {
+  return JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    is_error: true,
+    api_error_status: 429,
+    terminal_reason: 'api_error',
+    result: `You've hit your session limit · ${options.resetText ?? 'resets 11pm (Asia/Nicosia)'}`,
+    usage: {
+      ...(options.tokensIn === undefined ? {} : { input_tokens: options.tokensIn }),
+      ...(options.tokensOut === undefined ? {} : { output_tokens: options.tokensOut }),
+    },
+  });
+}
+
+/**
+ * Конверт отказа аутентификации — та же форма, что прогон 18f9fc: без кода
+ * состояния (`api_error_status: null`), класс различим только по тексту.
+ */
+export function authRefusalLine(): string {
+  return JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    is_error: true,
+    api_error_status: null,
+    terminal_reason: 'api_error',
+    result: 'Failed to authenticate: OAuth session expired and could not be refreshed',
+  });
+}
+
 export function initLine(data: Record<string, unknown> = {}): string {
   return JSON.stringify({ type: 'system', subtype: 'init', ...data });
 }

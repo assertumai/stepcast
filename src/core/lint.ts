@@ -235,31 +235,6 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
     });
   }
 
-  const inertWaitBudgets: Array<{ readonly at: string; readonly file: string; readonly budget: Job['budget'] }> = [
-    { at: 'budget', file: pipeline.file, budget: pipeline.budget },
-    ...pipeline.jobs.map((job) => ({ at: `jobs.${job.id}.budget`, file: job.source, budget: job.budget })),
-    ...pipeline.jobs.flatMap((job) =>
-      job.steps.map((step) => ({
-        at: `jobs.${job.id}.steps.${step.index - 1}.budget`,
-        file: job.source,
-        budget: step.budget,
-      })),
-    ),
-  ];
-
-  for (const { at, file, budget } of inertWaitBudgets) {
-    if (budget === undefined || budget.onExceed !== 'wait' || budget.rateLimitPct !== undefined) {
-      continue;
-    }
-    push({
-      severity: 'warning',
-      message: `Бюджет ${at} объявляет on_exceed: wait без rate_limit_pct`,
-      file,
-      at,
-      hint: 'Ждать нечего: ждёт только превышение rate_limit_pct, превышение остановит прогон',
-    });
-  }
-
   for (const job of pipeline.jobs) {
     if (!workspacePathNeedsCopy(job.workspace)) continue;
     push({

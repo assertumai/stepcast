@@ -41,6 +41,12 @@ export function planAttempt(attempt: number, attempts: Attempts): AttemptPlan {
 export interface AttemptOutcome<T> {
   readonly passed: boolean;
   readonly value: T;
+  /**
+   * Отказ неустраним: дальнейшие попытки бессмысленны и физически не
+   * запускаются — в отличие от исчерпания `attempts.max`, где попытка просто
+   * кончилась.
+   */
+  readonly terminal?: boolean;
 }
 
 export interface AttemptLoopOptions<T> {
@@ -70,6 +76,9 @@ export async function runAttempts<T>(options: AttemptLoopOptions<T>): Promise<At
 
     if (outcome.passed) {
       return { passed: true, outcomes, attemptsUsed: attempt, stoppedEarly: false };
+    }
+    if (outcome.terminal === true) {
+      return { passed: false, outcomes, attemptsUsed: attempt, stoppedEarly: true };
     }
     if (attempt >= options.attempts.max) {
       return { passed: false, outcomes, attemptsUsed: attempt, stoppedEarly: false };

@@ -106,6 +106,8 @@ export const HaltCauseSchema = z.enum([
   'until_not_met',
   'budget_exceeded',
   'canceled',
+  'backend_rate_limited',
+  'backend_unauthenticated',
 ]);
 
 export const StepRecordSchema = z
@@ -312,11 +314,25 @@ export const EventSchema = z.discriminatedUnion('kind', [
     kind: z.literal('budget.waiting'),
     scope: z.string(),
     dimension: z.literal('rate_limit'),
-    threshold: z.number(),
+    // Отсутствует, когда ожидание вызвано отказом бэкенда, а не превышением
+    // объявленного `rate_limit_pct`: измеренного порога тут нет.
+    threshold: z.number().optional(),
     resets_at: z.number(),
     wait_ms: z.number(),
   }).strict(),
   z.object({ ...eventBase, kind: z.literal('budget.resumed'), actual_ms: z.number() }).strict(),
+  // Неустранимый отказ бэкенда: виден без чтения stdout.log шага.
+  z.object({
+    ...eventBase,
+    kind: z.literal('backend.refused'),
+    job: z.string(),
+    step: z.string(),
+    attempt: z.number().int().positive(),
+    class: z.enum(['rate_limit', 'unauthenticated']),
+    status_code: z.number().optional(),
+    message: z.string(),
+    resets_at: z.number().optional(),
+  }).strict(),
   // Первая завершившаяся попытка без цены при объявленном денежном потолке:
   // молча довести прогон до конца значило бы соврать, что потолок применялся.
   z.object({ ...eventBase, kind: z.literal('budget.cost_unreported'), job: z.string(), step: z.string(), attempt: z.number().int().positive() }).strict(),

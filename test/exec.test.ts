@@ -380,6 +380,23 @@ describe('step-execution: попытки', () => {
     assert.equal(result.stoppedEarly, true);
   });
 
+  // Неустранимый отказ бэкенда прекращает попытки немедленно, не расходуя
+  // оставшиеся: см. requirement «Повторные попытки» в step-execution/spec.md.
+  it('терминальная попытка прекращает цикл, даже когда max позволяет ещё', async () => {
+    let calls = 0;
+    const result = await runAttempts<number>({
+      attempts: { max: 3, escalation: [] },
+      run: async (plan) => {
+        calls += 1;
+        return { passed: false, value: plan.attempt, terminal: true };
+      },
+    });
+    assert.equal(calls, 1);
+    assert.equal(result.passed, false);
+    assert.equal(result.attemptsUsed, 1);
+    assert.equal(result.stoppedEarly, true);
+  });
+
   // Сценарий: «Передача причины отказа»
   it('первая ступень эскалации добавляет вывод отказа со второй попытки', () => {
     const attempts: Attempts = {

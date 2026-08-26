@@ -7,6 +7,8 @@ export const ExitCode = {
   jobFailed: 1,
   configError: 2,
   budgetExceeded: 3,
+  /** Отказ аутентификации бэкенда: окружение неисполнимо, а не пайплайн упал. */
+  backendUnavailable: 4,
   canceled: 130,
 } as const;
 

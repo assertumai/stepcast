@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 
+import { extractRefusal } from '../backend/types.js';
 import type { Predicate, RunStep } from '../pipeline/model.js';
 import type { AttemptRecord, PredicateResult, StatusValue } from '../journal/schema.js';
 import { planAttempt, runAttempts, type AttemptPlan } from './attempts.js';
@@ -114,7 +115,12 @@ export async function executeRunStep(options: RunStepOptions): Promise<RunStepRe
       };
       records.push(record);
 
-      return { passed: passed && result.outcome === 'exited', value: record };
+      // Командный шаг сам бэкенд не зовёт: отказ добирается сюда только через
+      // судью, вызванного из `evaluate`, — тем же именем предиката, что и у
+      // отказа агентского шага.
+      const terminal = extractRefusal(results) !== undefined;
+
+      return { passed: passed && result.outcome === 'exited', value: record, terminal };
     },
   });
 

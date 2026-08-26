@@ -2,7 +2,14 @@ import { readFileSync } from 'node:fs';
 
 import type { BackendConfig } from '../config/resolve.js';
 import { StepcastError } from '../errors.js';
-import type { AgentInvocation, BackendAdapter, BackendEvent, LaunchSpec } from './types.js';
+import type {
+  AgentInvocation,
+  BackendAdapter,
+  BackendEvent,
+  BackendRefusal,
+  BackendRefusalClass,
+  LaunchSpec,
+} from './types.js';
 
 /**
  * Адаптер Claude Code.
@@ -83,6 +90,7 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
 
       if (type === 'result') {
         const usage = readUsage(record.usage);
+        const refusal = readRefusal(record);
         return {
           kind: 'result',
           ...(typeof record.result === 'string' ? { text: record.result } : {}),
@@ -101,6 +109,7 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
                 },
               }),
           ...(record.is_error === true || record.subtype === 'error' ? { failed: true } : {}),
+          ...(refusal === undefined ? {} : { refusal }),
         };
       }
 
@@ -187,4 +196,180 @@ function readRateLimits(record: Record<string, unknown>): {
   }
 
   return Object.keys(out).length === 0 ? {} : { rate_limits: out };
+}
+
+/**
+ * Классификация неустранимого отказа бэкенда.
+ *
+ * Кандидат — только запись `is_error: true`, несущая признак ошибки бэкенда:
+ * код состояния ответа либо `terminal_reason: "api_error"`. Оба настоящих
+ * конверта отказа (прогоны 2dc340 и 18f9fc) несут этот признак; `subtype` в
+ * обоих равен `success` и в классификации не участвует.
+ *
+ * Перед финальной записью `result` поток может нести запись `assistant` с
+ * `is_api_error_message: true` (видно в 2dc340 непосредственно перед
+ * отказом) — но `is_error` у неё нет, и как кандидат она не рассматривается:
+ * классифицировать есть смысл только по финальной записи.
+ */
+function readRefusal(record: Record<string, unknown>): BackendRefusal | undefined {
+  if (record.is_error !== true) return undefined;
+
+  const statusCode = typeof record.api_error_status === 'number' ? record.api_error_status : undefined;
+  if (statusCode === undefined && record.terminal_reason !== 'api_error') return undefined;
+
+  const message = typeof record.result === 'string' ? record.result : '';
+  const refusalClass = classifyRefusal(statusCode, message);
+  if (refusalClass === undefined) return undefined;
+
+  const resetAt = refusalClass === 'rate_limit' ? parseResetAt(message) : undefined;
+
+  return {
+    class: refusalClass,
+    message,
+    ...(statusCode === undefined ? {} : { statusCode }),
+    ...(resetAt === undefined ? {} : { resetAt }),
+  };
+}
+
+/**
+ * Класс отказа сначала решает код состояния; тело ответа смотрится только
+ * тогда, когда кода нет вовсе — код, не входящий в узнаваемые (429, 401,
+ * 403), не классифицируется в обход текста: бэкенд его уже назвал, и
+ * угадывать поверх названного нельзя.
+ */
+function classifyRefusal(statusCode: number | undefined, message: string): BackendRefusalClass | undefined {
+  if (statusCode !== undefined) {
+    if (statusCode === 429) return 'rate_limit';
+    if (statusCode === 401 || statusCode === 403) return 'unauthenticated';
+    return undefined;
+  }
+
+  // Закрытый перечень формулировок. Расширять его — как менять коды возврата:
+  // такое же по весу решение, а не удобство разбора одного лога.
+  if (/session limit|usage limit/i.test(message)) return 'rate_limit';
+  if (/failed to authenticate|authentication failed|oauth session/i.test(message)) return 'unauthenticated';
+  return undefined;
+}
+
+const RESET_ISO = /resets?\s+(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))/i;
+const RESET_WALLCLOCK = /resets?\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)/i;
+
+/**
+ * Момент сброса окна лимита из текста ответа. Распознаются ровно две формы:
+ * настенное время с часовым поясом и метка ISO 8601 со смещением или `Z`.
+ * Нераспознанная форма, неизвестный часовой пояс и отсутствие упоминания
+ * сброса дают `undefined` — момент не угадывается.
+ */
+export function parseResetAt(message: string, now: number = Date.now()): number | undefined {
+  const iso = RESET_ISO.exec(message);
+  if (iso?.[1] !== undefined) {
+    const parsed = Date.parse(iso[1]);
+    // Момент в прошлом — не момент сброса: ожидание по нему длится нуль
+    // миллисекунд, и прогон крутил бы «переисполнить шаг → тот же отказ»
+    // без сна, а значит и без предела `defaults.max_wait`. Настенная форма
+    // от этого защищена сама (разрешается в ближайшее будущее наступление).
+    return Number.isNaN(parsed) || parsed <= now ? undefined : parsed;
+  }
+
+  const wall = RESET_WALLCLOCK.exec(message);
+  if (wall === null) return undefined;
+
+  const hour12 = Number(wall[1]);
+  const minute = wall[2] === undefined ? 0 : Number(wall[2]);
+  const meridiem = (wall[3] ?? '').toLowerCase();
+  const zone = wall[4] ?? '';
+  if (hour12 < 1 || hour12 > 12) return undefined;
+
+  const hour24 = meridiem === 'pm' ? (hour12 % 12) + 12 : hour12 % 12;
+  return nextOccurrenceInZone(zone, hour24, minute, now);
+}
+
+/** Ближайшее будущее наступление настенного времени в названном поясе. */
+function nextOccurrenceInZone(
+  zone: string,
+  hour: number,
+  minute: number,
+  now: number,
+): number | undefined {
+  let today: { year: number; month: number; day: number };
+  try {
+    today = zonedDateParts(zone, now);
+  } catch {
+    // Часовой пояс не входит в базу ICU — движок его не знает так же, как не
+    // знал бы пользователь, и угадывать момент сброса не вправе.
+    return undefined;
+  }
+
+  const candidate = zonedTimeToUtc(zone, today.year, today.month, today.day, hour, minute);
+  if (candidate > now) return candidate;
+
+  const tomorrow = new Date(Date.UTC(today.year, today.month - 1, today.day + 1));
+  return zonedTimeToUtc(
+    zone,
+    tomorrow.getUTCFullYear(),
+    tomorrow.getUTCMonth() + 1,
+    tomorrow.getUTCDate(),
+    hour,
+    minute,
+  );
+}
+
+function zonedDateParts(zone: string, utcMs: number): { year: number; month: number; day: number } {
+  const map = formatZonedParts(zone, utcMs, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  return { year: Number(map.year), month: Number(map.month), day: Number(map.day) };
+}
+
+/** Настенное время в поясе, приведённое к моменту UTC им же. */
+function zonedTimeToUtc(
+  zone: string,
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number,
+): number {
+  // Приближение: смещение берётся в точке-кандидате, а не в искомой. У
+  // подавляющего большинства поясов оно не меняется в пределах одних суток,
+  // и переход летнего времени ровно на границе часа сброса — случай,
+  // которым здесь можно пренебречь.
+  const guess = Date.UTC(year, month - 1, day, hour, minute, 0);
+  const offsetMs = timeZoneOffsetMs(zone, guess);
+  return guess - offsetMs;
+}
+
+/** Смещение пояса от UTC в момент `utcMs`, в миллисекундах — положительное к востоку. */
+function timeZoneOffsetMs(zone: string, utcMs: number): number {
+  const map = formatZonedParts(zone, utcMs, {
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+  const asIfUtc = Date.UTC(
+    Number(map.year),
+    Number(map.month) - 1,
+    Number(map.day),
+    Number(map.hour),
+    Number(map.minute),
+    Number(map.second),
+  );
+  return asIfUtc - utcMs;
+}
+
+function formatZonedParts(
+  zone: string,
+  utcMs: number,
+  options: Intl.DateTimeFormatOptions,
+): Record<string, string> {
+  const parts = new Intl.DateTimeFormat('en-US', { ...options, timeZone: zone }).formatToParts(
+    new Date(utcMs),
+  );
+  return Object.fromEntries(parts.map((part) => [part.type, part.value]));
 }

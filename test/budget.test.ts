@@ -5,10 +5,18 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { UsageAccumulator } from '../src/core/budget/accumulator.js';
-import { createFakeBackend, initLine, resultLine, type FakeBackend } from '../src/core/backend/fake.js';
+import {
+  authRefusalLine,
+  createFakeBackend,
+  initLine,
+  rateLimitRefusalLine,
+  resultLine,
+  type FakeBackend,
+} from '../src/core/backend/fake.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { readEvents, readStatus, readUsage, resolveRun } from '../src/core/journal/reader.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
+import { ExitCode } from '../src/core/errors.js';
 import type { Config } from '../src/core/config/resolve.js';
 import { BudgetStateSchema, UsageReportSchema, type Usage } from '../src/core/journal/schema.js';
 import { makeProject, type Project } from './helpers.js';
@@ -43,6 +51,25 @@ function stepStatus(result: RunResult, job: string, step: string): string {
   const found = status.jobs.find((item) => item.id === job)?.steps.find((item) => item.id === step);
   assert.ok(found !== undefined, `шаг ${job}/${step} не найден в состоянии`);
   return found.status;
+}
+
+/** Дождаться появления события в журнале прогона, ещё идущего. */
+async function waitForRunEvent(
+  runsRoot: string,
+  projectRoot: string,
+  kind: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      if (readEvents(resolveRun(runsRoot, projectRoot)).some((event) => event.kind === kind)) return;
+    } catch {
+      // Журнал прогона ещё не создан — рано, пробуем снова.
+    }
+    if (Date.now() > deadline) throw new Error(`событие ${kind} не появилось за ${timeoutMs}мс`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 describe('judge-budget: расход судьи виден в отчёте', () => {
@@ -672,6 +699,257 @@ jobs:
 
     controller.abort();
     await promise;
+  });
+});
+
+describe('backend-refusal: упор в лимит подписки бэкенда и отказ аутентификации', () => {
+  const WAIT_REFUSAL_PIPELINE = `
+version: 1
+kind: pipeline
+name: backend-refusal-wait
+jobs:
+  build:
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        budget:
+          on_exceed: wait
+        attempts:
+          max: 2
+        expect:
+          - exit_code: 0
+`;
+
+  const STOP_REFUSAL_PIPELINE = `
+version: 1
+kind: pipeline
+name: backend-refusal-stop
+jobs:
+  build:
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        expect:
+          - exit_code: 0
+`;
+
+  it('усыпляет прогон и переисполняет шаг, когда объявлен on_exceed: wait', async () => {
+    const project = makeProject({ 'stepcast.yml': WAIT_REFUSAL_PIPELINE });
+    const resetAt = Date.now() + 3_000;
+    const fake = createFakeBackend({
+      hangMs: 1_000,
+      lines: (index) =>
+        index === 0
+          ? [initLine(), rateLimitRefusalLine({ resetText: `resets ${new Date(resetAt).toISOString()}` })]
+          : [initLine(), resultLine({ text: 'план готов' })],
+    });
+
+    const result = await run(project, { fake }, { configOverride: { maxWaitMs: 60_000 } });
+
+    assert.equal(result.status, 'success');
+    assert.equal(fake.invocations.length, 2, 'шаг должен быть переисполнен целиком');
+
+    const events = readEvents(result.journal.paths);
+    assert.equal(events.some((event) => event.kind === 'backend.refused'), true);
+    assert.equal(events.some((event) => event.kind === 'budget.waiting'), true);
+    assert.equal(events.some((event) => event.kind === 'budget.resumed'), true);
+  });
+
+  it('расход прерванной попытки остаётся учтённым после ожидания и переисполнения', async () => {
+    // Ключ расхода — `job/step#attempt`: без запечатывания перед
+    // переисполнением вторая попытка легла бы под тем же ключом, и разностный
+    // учёт вычел бы из потолков расход прерванной попытки.
+    const project = makeProject({ 'stepcast.yml': WAIT_REFUSAL_PIPELINE });
+    const resetAt = Date.now() + 1_000;
+    const fake = createFakeBackend({
+      lines: (index) =>
+        index === 0
+          ? [
+              initLine(),
+              rateLimitRefusalLine({
+                resetText: `resets ${new Date(resetAt).toISOString()}`,
+                tokensIn: 700,
+                tokensOut: 0,
+              }),
+            ]
+          : [initLine(), resultLine({ text: 'план готов', tokensIn: 300, tokensOut: 0 })],
+    });
+
+    const result = await run(project, { fake }, { configOverride: { maxWaitMs: 60_000 } });
+    assert.equal(result.status, 'success');
+
+    const usage = readUsage(result.journal.paths);
+    assert.equal(usage.jobs.build?.steps.plan?.billable_tokens, 1000, 'расход обеих попыток учтён');
+    assert.equal(usage.jobs.build?.billable_tokens, 1000);
+    assert.equal(usage.total.billable_tokens, 1000);
+  });
+
+  it('бюджет внутренней области без on_exceed не отменяет объявленный снаружи wait', async () => {
+    // `on_exceed: stop` материализуется в каждом объявленном бюджете как
+    // умолчание — режим ищется у ближайшей области, которая его написала.
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: backend-refusal-inherited-wait
+budget:
+  on_exceed: wait
+jobs:
+  build:
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        budget:
+          tokens: 50k
+        expect:
+          - exit_code: 0
+`,
+    });
+    const resetAt = Date.now() + 1_000;
+    const fake = createFakeBackend({
+      lines: (index) =>
+        index === 0
+          ? [initLine(), rateLimitRefusalLine({ resetText: `resets ${new Date(resetAt).toISOString()}` })]
+          : [initLine(), resultLine({ text: 'план готов' })],
+    });
+
+    const result = await run(project, { fake }, { configOverride: { maxWaitMs: 60_000 } });
+
+    assert.equal(result.status, 'success');
+    assert.equal(fake.invocations.length, 2, 'шаг должен быть переисполнен после ожидания');
+  });
+
+  it('без объявленного on_exceed: wait останавливает прогон с budget_exceeded', async () => {
+    const project = makeProject({ 'stepcast.yml': STOP_REFUSAL_PIPELINE });
+    const fake = createFakeBackend({ lines: [rateLimitRefusalLine({ resetText: 'подождите' })] });
+
+    const result = await run(project, { fake });
+
+    assert.equal(result.status, 'budget_exceeded');
+    assert.equal(result.exitCode, ExitCode.budgetExceeded);
+    const status = readStatus(result.journal.paths);
+    const build = status.jobs.find((job) => job.id === 'build');
+    assert.equal(build?.cause, 'backend_rate_limited');
+  });
+
+  it('нераспознанный момент сброса останавливает прогон, даже когда объявлен wait', async () => {
+    const project = makeProject({ 'stepcast.yml': WAIT_REFUSAL_PIPELINE });
+    const fake = createFakeBackend({ lines: [rateLimitRefusalLine({ resetText: 'скоро' })] });
+
+    const result = await run(project, { fake });
+
+    assert.equal(result.status, 'budget_exceeded');
+    const status = readStatus(result.journal.paths);
+    const reason = status.jobs.find((job) => job.id === 'build')?.reason ?? '';
+    assert.match(reason, /момент сброса/);
+  });
+
+  it('момент сброса дальше предела ожидания останавливает прогон', async () => {
+    const project = makeProject({ 'stepcast.yml': WAIT_REFUSAL_PIPELINE });
+    const resetAt = Date.now() + 60_000;
+    const fake = createFakeBackend({
+      lines: [rateLimitRefusalLine({ resetText: `resets ${new Date(resetAt).toISOString()}` })],
+    });
+
+    const result = await run(project, { fake }, { configOverride: { maxWaitMs: 100 } });
+
+    assert.equal(result.status, 'budget_exceeded');
+    const status = readStatus(result.journal.paths);
+    const reason = status.jobs.find((job) => job.id === 'build')?.reason ?? '';
+    assert.match(reason, /предел ожидания/);
+  });
+
+  it('отчёт о расходе не содержит доли использования окна, которой бэкенд не сообщал', async () => {
+    const project = makeProject({ 'stepcast.yml': STOP_REFUSAL_PIPELINE });
+    const fake = createFakeBackend({ lines: [rateLimitRefusalLine({ resetText: 'подождите' })] });
+
+    const result = await run(project, { fake });
+
+    const usage = readUsage(result.journal.paths);
+    assert.equal(usage.jobs.build?.steps.plan?.billable_tokens, 0);
+  });
+
+  it('отмена во время сна по отказу бэкенда прекращает ожидание', async () => {
+    const project = makeProject({ 'stepcast.yml': WAIT_REFUSAL_PIPELINE });
+    const controller = new AbortController();
+    const resetAt = Date.now() + 60_000;
+    const fake = createFakeBackend({
+      hangMs: 4_000,
+      lines: [initLine(), rateLimitRefusalLine({ resetText: `resets ${new Date(resetAt).toISOString()}` })],
+    });
+
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const promise = runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: {
+        ...project.config,
+        runs: { ...project.config.runs, root: runsRoot },
+        defaults: { ...project.config.defaults, maxWaitMs: 3_600_000 },
+      },
+      projectRoot: project.root,
+      cwd: project.root,
+      signal: controller.signal,
+      adapterFor: (name) => {
+        assert.equal(name, 'fake');
+        return fake.adapter;
+      },
+    });
+
+    await waitForRunEvent(runsRoot, project.root, 'budget.waiting');
+    controller.abort();
+
+    const result = await promise;
+    assert.equal(result.status, 'canceled');
+  });
+
+  it('отказ аутентификации прекращает прогон даже при fail_fast: false', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: auth-fail-fast-false
+fail_fast: false
+jobs:
+  first:
+    steps:
+      - id: ask
+        agent: fake
+        prompt: "спроси"
+        expect: [{ exit_code: 0 }]
+  second:
+    steps:
+      - id: ask
+        agent: fake
+        prompt: "спроси"
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    const fake = createFakeBackend({ lines: [authRefusalLine()] });
+
+    const result = await run(project, { fake });
+
+    assert.equal(result.status, 'failed');
+    assert.equal(result.exitCode, ExitCode.backendUnavailable);
+    assert.equal(fake.invocations.length, 1, 'вторая работа не должна быть запущена');
+
+    const status = readStatus(result.journal.paths);
+    const first = status.jobs.find((job) => job.id === 'first');
+    const second = status.jobs.find((job) => job.id === 'second');
+    assert.equal(first?.cause, 'backend_unauthenticated');
+    assert.match(first?.reason ?? '', /аутентификации/);
+    assert.equal(second?.status, 'skipped');
+
+    // Способ починки должен быть в той же записи, которую читает `stepcast
+    // status`, — в причине последней попытки, а не только у работы.
+    const step = first?.steps.find((item) => item.id === 'ask');
+    const attempt = step?.attempts.at(-1);
+    for (const reason of [first?.reason, step?.reason, attempt?.reason]) {
+      assert.match(reason ?? '', /Failed to authenticate/);
+      assert.match(reason ?? '', /возобновите прогон командой stepcast resume/);
+    }
   });
 });
 

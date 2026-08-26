@@ -16,7 +16,14 @@ export interface Budget {
   readonly costMicroUsd?: number;
   readonly wallclockMs?: number;
   readonly rateLimitPct?: number;
+  /** Действующее значение: умолчание `stop` уже применено. */
   readonly onExceed: 'wait' | 'stop';
+  /**
+   * Значение, написанное в документе, — без умолчания. Нужно там, где режим
+   * ищется у ближайшей объявившей его области: бюджет без `on_exceed` не
+   * должен перекрывать режим внешней области своим умолчанием.
+   */
+  readonly declaredOnExceed?: 'wait' | 'stop';
 }
 
 export type ContextMode = 'inline' | 'reference' | 'auto';

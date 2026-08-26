@@ -54,6 +54,7 @@ function toBudget(raw: RawBudget, at: string): Budget {
       : { wallclockMs: parseDuration(raw.wallclock, `${at}.wallclock`) }),
     ...(raw.rate_limit_pct === undefined ? {} : { rateLimitPct: raw.rate_limit_pct }),
     onExceed,
+    ...(raw.on_exceed === undefined ? {} : { declaredOnExceed: raw.on_exceed }),
   };
 }
 

@@ -2,8 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { BackendAdapter } from '../backend/types.js';
-import { emptyUsage, mergeUsage, sumUsage } from '../backend/types.js';
+import type { BackendAdapter, BackendRefusal } from '../backend/types.js';
+import {
+  BACKEND_REFUSAL_PREDICATE,
+  describeRefusal,
+  emptyUsage,
+  extractRefusal,
+  mergeUsage,
+  sumUsage,
+} from '../backend/types.js';
 import type { AgentStep } from '../pipeline/model.js';
 import type { AttemptRecord, PredicateResult, StatusValue, Usage } from '../journal/schema.js';
 import { runAttempts, type AttemptPlan } from './attempts.js';
@@ -73,6 +80,8 @@ export interface AgentAttemptOutcome {
   readonly observedInputs: readonly string[];
   readonly backendInit: Record<string, unknown> | undefined;
   readonly failedByBackend: boolean;
+  /** Классификация неустранимого отказа бэкенда, если попытка на него упёрлась. */
+  readonly refusal?: BackendRefusal;
 }
 
 export interface AgentStepResult {
@@ -130,6 +139,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
       let structured: unknown;
       let backendInit: Record<string, unknown> | undefined;
       let failedByBackend = false;
+      let refusal: BackendRefusal | undefined;
       const observedInputs = new Set<string>();
       let carry = '';
 
@@ -164,6 +174,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
               options.onUsage?.(usage, plan.attempt);
             }
             if (event.failed === true) failedByBackend = true;
+            if (event.refusal !== undefined) refusal = event.refusal;
             break;
           case 'unparsed':
             options.onUnparsed?.(event.line);
@@ -210,8 +221,8 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
         observedInputs: [...observedInputs].sort(),
         backendInit,
         failedByBackend,
+        ...(refusal === undefined ? {} : { refusal }),
       };
-      last = outcome;
 
       const results =
         process_.outcome === 'exited'
@@ -227,6 +238,12 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
                     : 'Прогон отменён',
               } satisfies PredicateResult,
             ];
+
+      // Отказ судьи внутри `evaluate` классифицируется тем же путём, что и
+      // отказ самого шага, и кладёт себя в результаты предикатов тем же
+      // именем: место одно, и учитывать его дальше можно не различая источник.
+      const effectiveRefusal = outcome.refusal ?? extractRefusal(results);
+      last = effectiveRefusal === undefined ? outcome : { ...outcome, refusal: effectiveRefusal };
 
       allResults.push(results);
       for (const item of results) {
@@ -251,7 +268,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
       };
       records.push(record);
 
-      return { passed, value: record };
+      return { passed, value: record, terminal: effectiveRefusal !== undefined };
     },
   });
 
@@ -266,7 +283,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
     results: allResults,
     sessionId,
     last,
-  };
+  } satisfies AgentStepResult;
 }
 
 function writePrompt(stepDir: string, suffix: string, prompt: string): void {
@@ -297,6 +314,22 @@ function describeFailure(
 
 /** Умолчание: успех определяется кодом возврата и отсутствием отказа бэкенда. */
 function evaluateDefault(_step: AgentStep, outcome: AgentAttemptOutcome): PredicateResult[] {
+  // Неустранимый отказ проверяется раньше кода возврата и общей отметки об
+  // ошибке: у обоих настоящих конвертов отказа код возврата ненулевой, и без
+  // этой проверки первым по порядку в объяснении оказался бы он, а не то, что
+  // действительно произошло.
+  if (outcome.refusal !== undefined) {
+    return [
+      {
+        predicate: BACKEND_REFUSAL_PREDICATE,
+        passed: false,
+        hard: true,
+        detail: describeRefusal(outcome.refusal),
+        actual: outcome.refusal,
+      },
+    ];
+  }
+
   const passed = outcome.process.exitCode === 0 && !outcome.failedByBackend;
   return [
     {

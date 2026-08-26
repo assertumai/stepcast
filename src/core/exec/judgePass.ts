@@ -1,8 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
-import type { BackendAdapter } from '../backend/types.js';
-import { emptyUsage, mergeUsage } from '../backend/types.js';
+import type { BackendAdapter, BackendRefusal } from '../backend/types.js';
+import {
+  BACKEND_REFUSAL_PREDICATE,
+  describeRefusal,
+  emptyUsage,
+  mergeUsage,
+} from '../backend/types.js';
 import { judgeVerdictSchemaPath, parseVerdict } from '../expect/verdict.js';
 import type { PredicateResult, Usage } from '../journal/schema.js';
 import type { RunJournal } from '../journal/writer.js';
@@ -92,6 +97,9 @@ export async function runJudgePass(
 
     options.onUsage(call.usage);
     results[index] = call.result;
+    // Отказ бэкенда на судье — не вердикт: дальнейших судей звать незачем,
+    // они уперлись бы в тот же отказ.
+    if (call.result.predicate === BACKEND_REFUSAL_PREDICATE) break;
   }
 
   return results;
@@ -150,6 +158,7 @@ async function callJudge(options: CallJudgeOptions): Promise<CallJudgeResult> {
 
   let usage = emptyUsage(adapter.name, predicate.model, 0);
   let structured: unknown;
+  let refusal: BackendRefusal | undefined;
   let carry = '';
 
   const consume = (chunk: string): void => {
@@ -166,6 +175,7 @@ async function callJudge(options: CallJudgeOptions): Promise<CallJudgeResult> {
     } else if (event.kind === 'result') {
       if (event.structured !== undefined) structured = event.structured;
       usage = mergeUsage(usage, event.usage);
+      if (event.refusal !== undefined) refusal = event.refusal;
     }
   };
 
@@ -188,22 +198,34 @@ async function callJudge(options: CallJudgeOptions): Promise<CallJudgeResult> {
 
   const verdict = process_.outcome === 'exited' ? parseVerdict(structured) : undefined;
 
+  // Отказ бэкенда проверяется раньше разбора вердикта: и лимит подписки, и
+  // отказ аутентификации оставляют структурированный вывод пустым, и без этой
+  // проверки они попали бы в «судья не вернул вердикт по схеме» — отказ
+  // бэкенда, а не судьи.
   const result: PredicateResult =
-    verdict !== undefined
+    refusal !== undefined
       ? {
-          predicate: 'judge',
-          passed: verdict.pass,
-          hard: predicate.hard,
-          expected: predicate.claim,
-          detail: verdict.reason,
-        }
-      : {
-          predicate: 'judge',
+          predicate: BACKEND_REFUSAL_PREDICATE,
           passed: false,
-          hard: predicate.hard,
-          expected: predicate.claim,
-          detail: describeFailure(process_.outcome, options.timeoutMs),
-        };
+          hard: true,
+          detail: describeRefusal(refusal),
+          actual: refusal,
+        }
+      : verdict !== undefined
+        ? {
+            predicate: 'judge',
+            passed: verdict.pass,
+            hard: predicate.hard,
+            expected: predicate.claim,
+            detail: verdict.reason,
+          }
+        : {
+            predicate: 'judge',
+            passed: false,
+            hard: predicate.hard,
+            expected: predicate.claim,
+            detail: describeFailure(process_.outcome, options.timeoutMs),
+          };
 
   options.journal.writeStepJson(dir, 'verdict.json', {
     attempt: options.attempt,

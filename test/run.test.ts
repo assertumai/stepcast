@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { findStepDir, readEvents, readStatus } from '../src/core/journal/reader.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
+import { resolveExitCode, runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { HALT_CAUSES, HaltCause } from '../src/core/run/halt.js';
 import { ExitCode } from '../src/core/errors.js';
 import type { StatusValue, StepRecord } from '../src/core/journal/schema.js';
@@ -176,7 +176,7 @@ jobs:
 describe('pipeline-execution: перечень причин остановки', () => {
   // Перечень закрыт: изменение требует такого же обоснования, как изменение
   // кодов возврата, поэтому сверяется дословно.
-  it('содержит прежние причины и добавляет только until_not_met', () => {
+  it('содержит прежние причины и добавляет ровно три новые', () => {
     const before = [
       'expect_failed',
       'timeout',
@@ -184,8 +184,9 @@ describe('pipeline-execution: перечень причин остановки',
       'budget_exceeded',
       'canceled',
     ];
+    const added = ['until_not_met', 'backend_rate_limited', 'backend_unauthenticated'];
 
-    assert.deepEqual([...HALT_CAUSES].sort(), [...before, 'until_not_met'].sort());
+    assert.deepEqual([...HALT_CAUSES].sort(), [...before, ...added].sort());
   });
 
   it('не заводит причин вне перечня', () => {
@@ -193,6 +194,33 @@ describe('pipeline-execution: перечень причин остановки',
     for (const value of Object.values(HaltCause)) {
       assert.ok(declared.has(value), `причина ${value} должна быть в перечне`);
     }
+  });
+});
+
+describe('run-exit-code: код возврата по статусу и причине', () => {
+  it('отказ аутентификации переопределяет код возврата упавшего прогона', () => {
+    assert.equal(
+      resolveExitCode('failed', [{ cause: HaltCause.backendUnauthenticated }, {}]),
+      ExitCode.backendUnavailable,
+    );
+  });
+
+  it('отмена пользователем остаётся кодом 130, даже если работа упёрлась в отказ аутентификации', () => {
+    // Отмена — самая внешняя причина: `overallStatus` ставит её выше отказа,
+    // и код возврата не должен с ним расходиться.
+    assert.equal(
+      resolveExitCode('canceled', [{ cause: HaltCause.backendUnauthenticated }, { cause: HaltCause.canceled }]),
+      ExitCode.canceled,
+    );
+  });
+
+  it('прочие статусы сохраняют прежние коды', () => {
+    assert.equal(resolveExitCode('success', []), ExitCode.ok);
+    assert.equal(resolveExitCode('failed', [{ cause: HaltCause.expectFailed }]), ExitCode.jobFailed);
+    assert.equal(
+      resolveExitCode('budget_exceeded', [{ cause: HaltCause.backendRateLimited }]),
+      ExitCode.budgetExceeded,
+    );
   });
 });
 

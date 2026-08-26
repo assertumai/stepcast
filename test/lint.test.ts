@@ -361,7 +361,12 @@ jobs:
     assert.ok(warnings(diagnostics).some((message) => /changed_only/.test(message)));
   });
 
-  it('предупреждает о on_exceed: wait без rate_limit_pct', () => {
+  // `on_exceed: wait` без `rate_limit_pct` перестал быть бессмысленным: это
+  // ровно то, чем область объявляет режим ожидания для упора в лимит
+  // подписки бэкенда (requirement «Упор в лимит подписки — второе основание
+  // для ожидания сброса окна» в pipeline-execution/spec.md) — измеренный
+  // порог тут вообще ни при чём.
+  it('не предупреждает о on_exceed: wait без rate_limit_pct', () => {
     const diagnostics = lint(
       makeProject({
         'stepcast.yml': `
@@ -376,7 +381,7 @@ jobs:
 `,
       }),
     );
-    assert.ok(warnings(diagnostics).some((message) => /on_exceed: wait/.test(message)));
+    assert.equal(warnings(diagnostics).some((message) => /on_exceed: wait/.test(message)), false);
     assert.equal(hasErrors(diagnostics), false);
   });
 

@@ -34,6 +34,23 @@ export interface LaunchSpec {
   readonly env?: Readonly<Record<string, string>>;
 }
 
+/**
+ * Неустранимый отказ бэкенда: упор в окно лимита подписки или отказ
+ * аутентификации. Классов ровно два — большего перечень намеренно не несёт,
+ * потому что остальное движок обрабатывает как обычный отказ шага.
+ */
+export type BackendRefusalClass = 'rate_limit' | 'unauthenticated';
+
+export interface BackendRefusal {
+  readonly class: BackendRefusalClass;
+  /** Сообщение бэкенда как есть, без пересказа: причина шага должно быть его показывать. */
+  readonly message: string;
+  /** Код состояния ответа, если бэкенд его назвал. */
+  readonly statusCode?: number;
+  /** Разобранный момент сброса окна лимита, миллисекунды эпохи. */
+  readonly resetAt?: number;
+}
+
 export type BackendEvent =
   | { readonly kind: 'init'; readonly data: Record<string, unknown> }
   | {
@@ -52,9 +69,40 @@ export type BackendEvent =
       readonly structured?: unknown;
       readonly usage?: Partial<Usage>;
       readonly failed?: boolean;
+      readonly refusal?: BackendRefusal;
     }
   | { readonly kind: 'unparsed'; readonly line: string }
   | { readonly kind: 'ignored' };
+
+/** Имя предиката, которым отказ бэкенда попадает в результаты предикатов. */
+export const BACKEND_REFUSAL_PREDICATE = 'backend_refusal';
+
+/**
+ * Человекочитаемая причина отказа — одна на все места, где отказ виден
+ * пользователю: запись попытки, причина шага и работы, вывод `stepcast
+ * status`. Способ починки живёт здесь же: иначе он доходит только до той
+ * записи, где его написали, а до остальных — нет.
+ */
+export function describeRefusal(refusal: BackendRefusal): string {
+  if (refusal.class === 'unauthenticated') {
+    return `отказ аутентификации бэкенда: ${refusal.message}. Обновите аутентификацию бэкенда и возобновите прогон командой stepcast resume.`;
+  }
+  const resets =
+    refusal.resetAt === undefined ? '' : `; окно сбросится ${new Date(refusal.resetAt).toISOString()}`;
+  return `упор в окно лимита подписки бэкенда: ${refusal.message}${resets}`;
+}
+
+/**
+ * Достать классификацию отказа из результатов предикатов попытки. Работает
+ * одинаково для отказа самого шага и отказа судьи внутри него: оба кладут
+ * классификацию в `actual` записи с этим именем предиката.
+ */
+export function extractRefusal(
+  results: readonly { readonly predicate: string; readonly actual?: unknown }[],
+): BackendRefusal | undefined {
+  const found = results.find((item) => item.predicate === BACKEND_REFUSAL_PREDICATE);
+  return found?.actual as BackendRefusal | undefined;
+}
 
 export interface BackendAdapter {
   readonly name: string;

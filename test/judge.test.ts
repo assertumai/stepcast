@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createFakeBackend, resultLine } from '../src/core/backend/fake.js';
+import { authRefusalLine, createFakeBackend, rateLimitRefusalLine, resultLine } from '../src/core/backend/fake.js';
 import type { BackendAdapter } from '../src/core/backend/types.js';
 import { runJudgePass } from '../src/core/exec/judgePass.js';
 import { RunJournal } from '../src/core/journal/writer.js';
@@ -310,5 +310,52 @@ describe('agent-backend: вызов судьи', () => {
     assert.equal(firstVerdict.attempt, 1);
     assert.equal(secondVerdict.claim, secondClaim.claim);
     assert.equal(secondVerdict.attempt, 1);
+  });
+
+  // Requirement «Неустранимый отказ на вызове судьи не становится вердиктом»
+  // (agent-backend/spec.md): судья, упёршийся в лимит подписки или в отказ
+  // аутентификации, не даёт ни pass:true, ни pass:false — движок должен
+  // увидеть отказ бэкенда, а не суждение о претензии.
+  it('судья, упёршийся в лимит подписки, не даёт вердикта', async () => {
+    const { stepDir } = bed();
+    const backend = createFakeBackend({ lines: [rateLimitRefusalLine()], exitCode: 1 });
+
+    const results = await runJudgePass(baseOptions({ adapter: backend.adapter, stepDir }));
+
+    assert.equal(results[1]?.predicate, 'backend_refusal');
+    assert.equal((results[1] as { readonly actual?: { readonly class?: string } }).actual?.class, 'rate_limit');
+  });
+
+  it('судья, упёршийся в отказ аутентификации, не переисполняет оцениваемый шаг', async () => {
+    const { stepDir } = bed();
+    const backend = createFakeBackend({ lines: [authRefusalLine()], exitCode: 1 });
+
+    const results = await runJudgePass(baseOptions({ adapter: backend.adapter, stepDir }));
+
+    assert.equal(results[1]?.predicate, 'backend_refusal');
+    assert.equal(
+      (results[1] as { readonly actual?: { readonly class?: string } }).actual?.class,
+      'unauthenticated',
+    );
+  });
+
+  it('отказ первого судьи прекращает опрос остальных', async () => {
+    const { stepDir } = bed();
+    const backend = createFakeBackend({ lines: [rateLimitRefusalLine()], exitCode: 1 });
+    const secondClaim: Extract<Predicate, { kind: 'judge' }> = { ...CLAIM, claim: 'второе утверждение' };
+    const secondPlaceholder: PredicateResult = { ...JUDGE_PLACEHOLDER, expected: secondClaim.claim };
+
+    const results = await runJudgePass({
+      ...baseOptions({
+        adapter: backend.adapter,
+        stepDir,
+        firstPass: [STRUCTURAL_PASSED, JUDGE_PLACEHOLDER, secondPlaceholder],
+      }),
+      predicates: [...STRUCTURAL, CLAIM, secondClaim],
+    });
+
+    assert.equal(backend.invocations.length, 1, 'второй судья не звался — упор в тот же отказ бессмыслен');
+    assert.equal(results[1]?.predicate, 'backend_refusal');
+    assert.equal(results[2], secondPlaceholder, 'слот второго судьи остался заготовкой');
   });
 });
