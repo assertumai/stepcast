@@ -35,10 +35,10 @@ context:
       Это репозиторий самого stepcast. Правки движка проверяются командой
       npm run check — она гоняет типизацию, линт и тесты.
       Сгенерированное в dist/ не трогать: оно пересобирается сборкой.
-      Запрещено запускать npm run build или npm test напрямую: build
-      перестраивает dist/, пока этим же dist/ пользуется бегущий процесс
-      stepcast. Только npm run check и его отдельные части: npm run typecheck,
-      npm run lint, npm run test:only.
+      Для проверки кода используй только npm run check (или отдельные части:
+      npm run typecheck, npm run lint, npm run test:only). Не вызывай
+      npm run build и npm test напрямую — они пересобирают dist/ и
+      могут нарушить бегущий процесс stepcast.
 
 defaults:
   agent: claude
