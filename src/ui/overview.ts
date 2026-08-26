@@ -25,15 +25,32 @@ export interface RunOverview {
   readonly wakeAt?: string;
   /** Прогон после уборки: подробностей на диске уже нет. */
   readonly swept: boolean;
+  /** Продолжительность прогона: от старта до завершения, а у идущего — до сих пор. */
+  readonly durationMs?: number;
   /** Манифест или состояние не читаются — прогон показан, но неполно. */
   readonly unreadable: boolean;
   /** Отсутствует, если состояние прогона не прочиталось. */
   readonly usage?: RunUsageOverview;
 }
 
+/**
+ * Разрез токенов по видам. Есть только когда сводка прогона уже записана: на
+ * идущем прогоне состояние хранит одну оплачиваемую сумму, и раскладывать её
+ * по видам было бы выдумкой.
+ */
+export interface TokenBreakdown {
+  readonly tokensIn: number;
+  readonly tokensOut: number;
+  readonly cacheRead: number;
+  readonly cacheWrite: number;
+}
+
 export interface RunUsageOverview {
   readonly billableTokens: number;
   readonly wallclockMs: number;
+  readonly breakdown?: TokenBreakdown;
+  /** `null` — цена ни разу не сообщена, а не «потрачено ноль». */
+  readonly costUsd: number | null;
   /** Сводка расхода прочитана: `unreported` достоверен. */
   readonly aggregated: boolean;
   readonly unreported: readonly string[];
@@ -51,7 +68,20 @@ export interface Overview {
   readonly generatedAt: string;
 }
 
-function readRun(runsRoot: string, key: string, runId: string): RunOverview {
+/**
+ * Продолжительность прогона. У завершённого — по отметкам манифеста, у
+ * идущего — до текущего момента: замерший на нуле счётчик у часового прогона
+ * хуже, чем растущий.
+ */
+function duration(startedAt: string | undefined, finishedAt: string | undefined, now: Date): number | undefined {
+  if (startedAt === undefined) return undefined;
+  const from = new Date(startedAt).getTime();
+  const to = finishedAt === undefined ? now.getTime() : new Date(finishedAt).getTime();
+  if (Number.isNaN(from) || Number.isNaN(to)) return undefined;
+  return Math.max(0, to - from);
+}
+
+function readRun(runsRoot: string, key: string, runId: string, now: Date): RunOverview {
   const paths = runPaths(runsRoot, key, runId);
   const shortId = runId.slice(runId.lastIndexOf('-') + 1);
 
@@ -85,15 +115,29 @@ function readRun(runsRoot: string, key: string, runId: string): RunOverview {
     // схему, точнее — `status.budget` растёт по ходу прогона и не хранит
     // `unreported`; на идущем прогоне сводки ещё нет, и берётся состояние.
     const { summary } = readUsageSoft(paths);
+    const costUsd = summary?.total.cost_usd ?? state.budget.cost_used_usd;
     usage = {
       billableTokens: summary?.total.billable_tokens ?? state.budget.tokens_used,
       wallclockMs: summary?.total.wallclock_ms ?? state.budget.wallclock_ms,
+      ...(summary === undefined
+        ? {}
+        : {
+            breakdown: {
+              tokensIn: summary.total.tokens_in,
+              tokensOut: summary.total.tokens_out,
+              cacheRead: summary.total.cache_read,
+              cacheWrite: summary.total.cache_write,
+            },
+          }),
+      costUsd: costUsd === undefined ? null : costUsd,
       aggregated: summary !== undefined,
       unreported: summary?.unreported ?? [],
     };
   } catch {
     if (status === undefined) unreadable = true;
   }
+
+  const durationMs = duration(startedAt, finishedAt, now);
 
   return {
     runId,
@@ -104,6 +148,7 @@ function readRun(runsRoot: string, key: string, runId: string): RunOverview {
     ...(startedAt === undefined ? {} : { startedAt }),
     ...(finishedAt === undefined ? {} : { finishedAt }),
     ...(wakeAt === undefined ? {} : { wakeAt }),
+    ...(durationMs === undefined ? {} : { durationMs }),
     // Каталог работ исчезает только после уборки: движок создаёт его всегда.
     swept: !existsSync(paths.jobs),
     unreadable,
@@ -116,7 +161,7 @@ export function buildOverview(runsRoot: string, now: Date = new Date()): Overvie
     key: project.key,
     ...(project.path === undefined ? {} : { path: project.path }),
     runs: listRunsByKey(runsRoot, project.key).map((runId) =>
-      readRun(runsRoot, project.key, runId),
+      readRun(runsRoot, project.key, runId, now),
     ),
   }));
 

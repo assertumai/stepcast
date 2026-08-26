@@ -54,12 +54,19 @@ export function createFakeBackend(options: FakeBackendOptions): FakeBackend {
       // Печатаем заготовленный поток и выходим с заданным кодом: движок
       // работает с настоящим процессом, но без настоящей модели.
       const lines = typeof options.lines === 'function' ? options.lines(index) : options.lines;
-      const script = lines.map((line) => `printf '%s\\n' ${shellQuote(line)}`).join('\n');
-      // `sleep` реагирует на SIGTERM сам — этого достаточно, чтобы проверить
-      // прерывание по таймауту без настоящего висящего процесса.
-      const hang = options.hangMs === undefined ? '' : `sleep ${options.hangMs / 1000}\n`;
+      // Вывод уходит до зависания, а не вместе с ним. Прежде строки печатал
+      // `sh`, чей builtin буферизует запись в трубу: до движка они доходили
+      // лишь при выходе процесса, и проверка прерывания на середине зависела
+      // от того, успел ли буфер наполниться. Обратный вызов `write` даёт
+      // гарантию — таймер зависания заводится только после того, как данные
+      // отданы в трубу.
+      const payload = JSON.stringify(lines.map((line) => `${line}\n`).join(''));
+      // Узел завершается по SIGTERM умолчательным обработчиком — этого
+      // достаточно, чтобы проверить прерывание без настоящего висящего
+      // процесса.
+      const script = `process.stdout.write(${payload}, () => setTimeout(() => process.exit(${options.exitCode ?? 0}), ${options.hangMs ?? 0}));`;
       return {
-        command: ['sh', '-c', `${script}\n${hang}exit ${options.exitCode ?? 0}`],
+        command: [process.execPath, '-e', script],
         stdin: invocation.prompt,
       };
     },
@@ -67,10 +74,6 @@ export function createFakeBackend(options: FakeBackendOptions): FakeBackend {
   };
 
   return { adapter, invocations };
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /** Готовая строка результата с расходом — самый частый случай в тестах. */
@@ -81,6 +84,8 @@ export function resultLine(options: {
   readonly tokensOut?: number;
   readonly cacheRead?: number;
   readonly cacheWrite?: number;
+  /** Долларов США — тем же полем, каким его сообщает настоящий Claude Code. */
+  readonly costUsd?: number;
   /** Окна лимитов подписки: имя окна → процент и, опционально, момент сброса. */
   readonly rateLimits?: Readonly<Record<string, { readonly usedPct: number; readonly resetsAt?: number }>>;
 }): string {
@@ -89,6 +94,7 @@ export function resultLine(options: {
     subtype: 'success',
     ...(options.text === undefined ? {} : { result: options.text }),
     ...(options.structured === undefined ? {} : { structured_output: options.structured }),
+    ...(options.costUsd === undefined ? {} : { total_cost_usd: options.costUsd }),
     usage: {
       ...(options.tokensIn === undefined ? {} : { input_tokens: options.tokensIn }),
       ...(options.tokensOut === undefined ? {} : { output_tokens: options.tokensOut }),

@@ -1,5 +1,5 @@
 import { describeSource, resolveConfig, type ResolvedConfig } from '../../core/index.js';
-import { formatDuration, formatTokens } from '../../core/units.js';
+import { formatDuration, formatMoney, formatTokens } from '../../core/units.js';
 import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
 import { formatColumns } from '../output.js';
 import type { ParsedArgs } from '../args.js';
@@ -18,11 +18,13 @@ const DURATION_KEYS = new Set([
   'defaults.max_wait',
   'limits.wallclock',
 ]);
+const MONEY_KEYS = new Set(['limits.cost']);
 
 function renderValue(path: string, value: unknown): string {
   if (typeof value === 'number') {
     if (TOKEN_KEYS.has(path)) return formatTokens(value);
     if (DURATION_KEYS.has(path)) return formatDuration(value);
+    if (MONEY_KEYS.has(path)) return formatMoney(value);
   }
   if (Array.isArray(value)) return `${value.length} шаблонов`;
   return String(value);

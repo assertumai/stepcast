@@ -52,6 +52,7 @@ export interface Config {
   };
   readonly limits: {
     readonly tokens: number;
+    readonly costMicroUsd: number;
     readonly wallclockMs: number;
     readonly concurrency: number;
     readonly attempts: number;
@@ -90,8 +91,12 @@ export interface ResolveOptions {
   readonly flags?: Readonly<Record<string, unknown>>;
   /** Явный путь к глобальному конфигу, в обход домашнего каталога. */
   readonly globalPath?: string;
-  /** Явный путь к проектному конфигу. */
-  readonly projectPath?: string;
+  /**
+   * Явный путь к проектному конфигу. `null` — проектного слоя нет вовсе:
+   * так конфигурацию читает демон витрины, который не привязан к проекту и
+   * иначе подхватил бы чужой `.stepcast/config.yml` по случайному `cwd`.
+   */
+  readonly projectPath?: string | null;
 }
 
 /** Развернуть `~` в начале пути. Пути конфигурации пишутся людьми. */
@@ -209,7 +214,10 @@ function buildBackends(
 export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   const home = options.home ?? homedir();
   const globalPath = options.globalPath ?? join(home, '.stepcast', 'config.yml');
-  const projectPath = options.projectPath ?? join(options.cwd, '.stepcast', 'config.yml');
+  const projectPath =
+    options.projectPath === null
+      ? undefined
+      : (options.projectPath ?? join(options.cwd, '.stepcast', 'config.yml'));
 
   const layers: Layer[] = [{ source: { kind: 'builtin' }, values: BUILTIN_CONFIG as Record<string, unknown> }];
 
@@ -218,8 +226,8 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
     layers.push({ source: { kind: 'file', path: globalPath }, values: globalConfig as Record<string, unknown> });
   }
 
-  const projectConfig = readConfigFile(projectPath);
-  if (projectConfig !== undefined) {
+  const projectConfig = projectPath === undefined ? undefined : readConfigFile(projectPath);
+  if (projectConfig !== undefined && projectPath !== undefined) {
     rejectGlobalOnlyKeys(projectConfig, projectPath);
     layers.push({ source: { kind: 'file', path: projectPath }, values: projectConfig as Record<string, unknown> });
   }
@@ -264,6 +272,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
     },
     limits: {
       tokens: requireNumber(values, 'limits.tokens'),
+      costMicroUsd: requireNumber(values, 'limits.cost'),
       wallclockMs: requireNumber(values, 'limits.wallclock'),
       concurrency: requireNumber(values, 'limits.concurrency'),
       attempts: requireNumber(values, 'limits.attempts'),

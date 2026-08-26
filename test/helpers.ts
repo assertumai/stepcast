@@ -110,6 +110,8 @@ export interface SeedRunOptions {
   readonly usage?: UsageReport;
   /** Не писать `usage.json` вовсе: имитирует ещё не завершённый прогон. */
   readonly skipUsage?: boolean;
+  /** Переопределение `status.budget` — по умолчанию только токены и время. */
+  readonly budget?: RunStatus['budget'];
 }
 
 /**
@@ -152,7 +154,7 @@ export function seedRun(
     workspace: { mode: 'cwd' },
     inputs: {},
     jobs: options.jobs ?? [],
-    budget: { tokens_used: 0, wallclock_ms: 0 },
+    budget: options.budget ?? { tokens_used: 0, wallclock_ms: 0 },
     ...(options.wakeAt === undefined ? {} : { wake_at: options.wakeAt }),
     updated_at: '2026-08-01T00:05:00.000Z',
   });

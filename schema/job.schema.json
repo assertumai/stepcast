@@ -180,6 +180,16 @@
             }
           ]
         },
+        "cost": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
         "wallclock": {
           "anyOf": [
             {
@@ -432,6 +442,16 @@
                 "type": "object",
                 "properties": {
                   "tokens": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
+                  },
+                  "cost": {
                     "anyOf": [
                       {
                         "type": "string"
@@ -746,6 +766,16 @@
                 "type": "object",
                 "properties": {
                   "tokens": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
+                  },
+                  "cost": {
                     "anyOf": [
                       {
                         "type": "string"

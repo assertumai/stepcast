@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { formatBytes, formatDuration, formatTokens, parseDuration, parseTokens } from '../src/core/units.js';
+import { formatBytes, formatDuration, formatMoney, formatTokens, parseDuration, parseMoney, parseTokens } from '../src/core/units.js';
 import { StepcastError } from '../src/core/errors.js';
 
 describe('единицы измерения', () => {
@@ -62,5 +62,33 @@ describe('единицы измерения', () => {
     assert.equal(formatBytes(1536), '1.5 КБ');
     assert.equal(formatBytes(1024 * 1024), '1 МБ');
     assert.equal(formatBytes(1024 * 1024 * 1024 * 2.5), '2.5 ГБ');
+  });
+
+  // Спека stepcast-configuration: «Денежная единица»
+  it('разбирает денежные величины', () => {
+    assert.equal(parseMoney(12), 12_000_000);
+    assert.equal(parseMoney(12.5), 12_500_000);
+    assert.equal(parseMoney('12'), 12_000_000);
+    assert.equal(parseMoney('12.5'), 12_500_000);
+    assert.equal(parseMoney('$12.50'), 12_500_000);
+    assert.equal(parseMoney(' 12.50 '), 12_500_000);
+    assert.equal(parseMoney('$ 12.50'), 12_500_000);
+  });
+
+  it('отклоняет отрицательные, нечисловые и валютные денежные величины', () => {
+    assert.throws(() => parseMoney(-5), StepcastError);
+    assert.throws(() => parseMoney('-5'), StepcastError);
+    assert.throws(() => parseMoney(''), StepcastError);
+    assert.throws(() => parseMoney('   '), StepcastError);
+    assert.throws(() => parseMoney('много'), StepcastError);
+    assert.throws(() => parseMoney('12 EUR'), StepcastError);
+    assert.throws(() => parseMoney('€12'), StepcastError);
+  });
+
+  it('печатает денежные величины: два знака от доллара, четыре ниже', () => {
+    assert.equal(formatMoney(12_500_000), '$12.50');
+    assert.equal(formatMoney(1_000_000), '$1.00');
+    assert.equal(formatMoney(250_000), '$0.2500');
+    assert.equal(formatMoney(1), '$0.0000');
   });
 });

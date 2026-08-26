@@ -6,7 +6,7 @@ import { parseExpression, references } from './expr/parse.js';
 import { buildGraph } from './graph.js';
 import { isStepcastError } from './errors.js';
 import { workspacePathNeedsCopy } from './run/workspace.js';
-import { formatDuration, formatTokens } from './units.js';
+import { formatDuration, formatMoney, formatTokens } from './units.js';
 import type { ContextEntry, ExpandedPipeline, Job, Predicate, Step } from './pipeline/model.js';
 
 /**
@@ -541,6 +541,33 @@ function checkLimits(
         message: `budget.wallclock ${formatDuration(budget.wallclockMs)} превышает потолок limits.wallclock ${formatDuration(limits.wallclockMs)}`,
         file: pipeline.file,
         at: `${at}.wallclock`,
+      });
+    }
+  }
+
+  // Денежный потолок объявляется на трёх уровнях, включая шаг — тем и
+  // отличается от tokens/wallclock, которые лимитируются только сверху.
+  const costBudgets: Array<{ readonly at: string; readonly file: string; readonly budget: Job['budget'] }> = [
+    { at: 'budget', file: pipeline.file, budget: pipeline.budget },
+    ...pipeline.jobs.map((job) => ({ at: `jobs.${job.id}.budget`, file: job.source, budget: job.budget })),
+    ...pipeline.jobs.flatMap((job) =>
+      job.steps.map((step) => ({
+        at: `jobs.${job.id}.steps.${step.index - 1}.budget`,
+        file: job.source,
+        budget: step.budget,
+      })),
+    ),
+  ];
+
+  for (const { at, file, budget } of costBudgets) {
+    if (budget?.costMicroUsd === undefined) continue;
+    if (budget.costMicroUsd > limits.costMicroUsd) {
+      push({
+        severity: 'error',
+        message: `budget.cost ${formatMoney(budget.costMicroUsd)} превышает потолок limits.cost ${formatMoney(limits.costMicroUsd)}`,
+        file,
+        at: `${at}.cost`,
+        hint: 'Потолок снизу можно ужесточить, но не поднять',
       });
     }
   }

@@ -100,6 +100,7 @@ export function mergeUsage(base: Usage, patch: Partial<Usage> | undefined): Usag
  * только если оно таким было у обоих, иначе за него считается то, что есть.
  */
 export function sumUsage(base: Usage, addition: Usage): Usage {
+  const cost = sumOptional(base.reported_cost_usd, addition.reported_cost_usd);
   return {
     backend: base.backend,
     ...(base.model === undefined ? {} : { model: base.model }),
@@ -108,10 +109,19 @@ export function sumUsage(base: Usage, addition: Usage): Usage {
     cache_read: sumNullable(base.cache_read, addition.cache_read),
     cache_write: sumNullable(base.cache_write, addition.cache_write),
     wallclock_ms: base.wallclock_ms + addition.wallclock_ms,
+    ...(cost === undefined ? {} : { reported_cost_usd: cost }),
+    // rate_limits намеренно не складывается: у окна лимитов нечего суммировать
+    // — значение последнего сообщения и есть текущее состояние окна.
   };
 }
 
 function sumNullable(a: number | null, b: number | null): number | null {
   if (a === null && b === null) return null;
+  return (a ?? 0) + (b ?? 0);
+}
+
+/** Как `sumNullable`, но для необязательного поля (не сообщено — undefined, а не null). */
+function sumOptional(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined && b === undefined) return undefined;
   return (a ?? 0) + (b ?? 0);
 }

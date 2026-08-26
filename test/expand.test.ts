@@ -427,6 +427,87 @@ steps:
     assert.equal(job.budget?.tokens, 100_000);
   });
 
+  // Спека pipeline-definition: «Денежный потолок на трёх уровнях»
+  it('раскрывает budget.cost независимо на трёх уровнях', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { cost: 20 }
+jobs:
+  build:
+    budget: { cost: "$8" }
+    steps:
+      - id: s
+        agent: claude
+        prompt: hi
+        budget: { cost: 2.5 }
+`,
+    });
+
+    const { pipeline } = expand(project);
+    assert.equal(pipeline.budget?.costMicroUsd, 20_000_000);
+    const job = pipeline.jobs[0]!;
+    assert.equal(job.budget?.costMicroUsd, 8_000_000);
+    assert.equal(job.steps[0]!.budget?.costMicroUsd, 2_500_000);
+  });
+
+  it('cost рядом с tokens не отменяет его', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 500k, cost: 5 }
+jobs:
+  build:
+    steps:
+      - id: s
+        run: [echo, ok]
+`,
+    });
+
+    const { pipeline } = expand(project);
+    assert.equal(pipeline.budget?.tokens, 500_000);
+    assert.equal(pipeline.budget?.costMicroUsd, 5_000_000);
+  });
+
+  it('отклоняет отрицательный budget.cost с указанием места', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { cost: -5 }
+jobs:
+  build:
+    steps:
+      - id: s
+        run: [echo, ok]
+`,
+    });
+
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.at ?? '', /budget\.cost/);
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет валютный суффикс в budget.cost', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { cost: "12 EUR" }
+jobs:
+  build:
+    steps:
+      - id: s
+        run: [echo, ok]
+`,
+    });
+
+    assert.throws(() => expand(project), StepcastError);
+  });
+
   it('отклоняет output без from у работы без агентских шагов', () => {
     const project = makeProject({
       'stepcast.yml': `

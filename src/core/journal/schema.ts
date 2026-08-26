@@ -197,6 +197,10 @@ export const BudgetStateSchema = z
   .object({
     tokens_used: z.number(),
     tokens_limit: z.number().optional(),
+    cost_used_usd: z.number().optional(),
+    cost_limit_usd: z.number().optional(),
+    /** Попытки, чья цена неизвестна: объявленный денежный потолок мог не применяться. */
+    cost_unreported_attempts: z.number().optional(),
     wallclock_ms: z.number(),
     wallclock_limit_ms: z.number().optional(),
   })
@@ -233,6 +237,8 @@ export const UsageAttemptReportSchema = z
     model: z.string().optional(),
     billable_tokens: z.number(),
     wallclock_ms: z.number(),
+    /** Отсутствует, если ни один сообщённый расход попытки не содержал цены. */
+    cost_usd: z.number().optional(),
   })
   .strict();
 
@@ -247,6 +253,7 @@ export const UsageReportSchema = z
         cache_write: z.number(),
         billable_tokens: z.number(),
         wallclock_ms: z.number(),
+        cost_usd: z.number().optional(),
       })
       .strict(),
     /** Измерения, которых бэкенды не сообщили: учёт по ним неполон. */
@@ -257,12 +264,14 @@ export const UsageReportSchema = z
         .object({
           billable_tokens: z.number(),
           wallclock_ms: z.number(),
+          cost_usd: z.number().optional(),
           steps: z.record(
             z.string(),
             z
               .object({
                 billable_tokens: z.number(),
                 wallclock_ms: z.number(),
+                cost_usd: z.number().optional(),
                 // Прежняя форма сводки хранила число попыток. Разбивки в ней
                 // нет и взять её неоткуда, но остальная сводка старого прогона
                 // остаётся годной: терять её целиком ради поля, которого тогда
@@ -308,6 +317,9 @@ export const EventSchema = z.discriminatedUnion('kind', [
     wait_ms: z.number(),
   }).strict(),
   z.object({ ...eventBase, kind: z.literal('budget.resumed'), actual_ms: z.number() }).strict(),
+  // Первая завершившаяся попытка без цены при объявленном денежном потолке:
+  // молча довести прогон до конца значило бы соврать, что потолок применялся.
+  z.object({ ...eventBase, kind: z.literal('budget.cost_unreported'), job: z.string(), step: z.string(), attempt: z.number().int().positive() }).strict(),
   z.object({ ...eventBase, kind: z.literal('backend.degraded'), backend: z.string(), capability: z.string(), detail: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('backend.unparsed'), job: z.string(), step: z.string(), line: z.string() }).strict(),
   // Неудача внутреннего учёта. Статусов не меняет: см. core/run/bookkeeping.ts.

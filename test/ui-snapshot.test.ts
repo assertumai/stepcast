@@ -250,11 +250,11 @@ describe('ui-dashboard: детальный снимок прогона', () => {
     const { journal, key } = seed();
     const producer = buildSnapshot(journal.paths, key).jobs.find((job) => job.id === 'producer');
 
-    assert.deepEqual(producer?.usage, { billableTokens: 300, wallclockMs: 60_000 });
-    assert.deepEqual(producer?.steps[0]?.usage, { billableTokens: 300, wallclockMs: 60_000 });
+    assert.deepEqual(producer?.usage, { billableTokens: 300, wallclockMs: 60_000, costUsd: null });
+    assert.deepEqual(producer?.steps[0]?.usage, { billableTokens: 300, wallclockMs: 60_000, costUsd: null });
 
     const consumer = buildSnapshot(journal.paths, key).jobs.find((job) => job.id === 'consumer');
-    assert.deepEqual(consumer?.usage, { billableTokens: null, wallclockMs: null });
+    assert.deepEqual(consumer?.usage, { billableTokens: null, wallclockMs: null, costUsd: null });
   });
 
   // Сценарий: «Расход убранного прогона»
@@ -263,7 +263,7 @@ describe('ui-dashboard: детальный снимок прогона', () => {
     cleanupRun(journal.paths);
 
     const producer = buildSnapshot(journal.paths, key).jobs.find((job) => job.id === 'producer');
-    assert.deepEqual(producer?.usage, { billableTokens: 300, wallclockMs: 60_000 });
+    assert.deepEqual(producer?.usage, { billableTokens: 300, wallclockMs: 60_000, costUsd: null });
   });
 
   // Сценарий: «Прогон без записанной сводки»
@@ -279,6 +279,6 @@ describe('ui-dashboard: детальный снимок прогона', () => {
 
     const snapshot = buildSnapshot(journal.paths, projectKey(bed.projectRoot));
     const producer = snapshot.jobs.find((job) => job.id === 'producer');
-    assert.deepEqual(producer?.usage, { billableTokens: null, wallclockMs: null });
+    assert.deepEqual(producer?.usage, { billableTokens: null, wallclockMs: null, costUsd: null });
   });
 });

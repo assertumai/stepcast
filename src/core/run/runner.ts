@@ -41,6 +41,7 @@ import type {
   ContextEntry,
   ExpandedPipeline,
   Job,
+  Pipeline,
   Step,
 } from '../pipeline/model.js';
 import type {
@@ -86,6 +87,11 @@ export interface RunResult {
   readonly journal: RunJournal;
   readonly status: StatusValue;
   readonly exitCode: ExitCodeValue;
+  /**
+   * Денежный потолок объявлен, но ни одна попытка за прогон не сообщила
+   * цены: потолок фактически не применялся. Код возврата от этого не меняется.
+   */
+  readonly costLimitUnapplied: boolean;
 }
 
 const EXIT_BY_STATUS: Record<string, ExitCodeValue> = {
@@ -194,6 +200,13 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
       budget: {
         tokens_used: usage.runTokens(),
         ...(pipeline.budget?.tokens === undefined ? {} : { tokens_limit: pipeline.budget.tokens }),
+        cost_used_usd: usage.runCostMicroUsd() / 1_000_000,
+        ...(pipeline.budget?.costMicroUsd === undefined
+          ? {}
+          : { cost_limit_usd: pipeline.budget.costMicroUsd / 1_000_000 }),
+        ...(usage.costUnreportedAttemptCount() === 0
+          ? {}
+          : { cost_unreported_attempts: usage.costUnreportedAttemptCount() }),
         wallclock_ms: usage.elapsedMs(),
         ...(pipeline.budget?.wallclockMs === undefined
           ? {}
@@ -261,7 +274,9 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   });
   journal.event({ kind: 'run.finished', status: result.status, exit_code: exitCode });
 
-  return { journal, status: result.status, exitCode };
+  const costLimitUnapplied = anyCostBudgetDeclared(pipeline) && usage.runCostNeverReported();
+
+  return { journal, status: result.status, exitCode, costLimitUnapplied };
 }
 
 interface RunContext extends RunOptions {
@@ -944,6 +959,36 @@ function stepAbort(context: RunContext): {
   return state;
 }
 
+/** Денежный потолок объявлен хоть на одном из трёх уровней, охватывающих шаг. */
+function costBudgetDeclared(context: RunContext, job: Job, step: Step): boolean {
+  return (
+    step.budget?.costMicroUsd !== undefined ||
+    job.budget?.costMicroUsd !== undefined ||
+    context.expanded.pipeline.budget?.costMicroUsd !== undefined
+  );
+}
+
+/** Денежный потолок объявлен хоть где-то в пайплайне: пайплайн, работа или шаг. */
+function anyCostBudgetDeclared(pipeline: Pipeline): boolean {
+  if (pipeline.budget?.costMicroUsd !== undefined) return true;
+  return pipeline.jobs.some(
+    (job) =>
+      job.budget?.costMicroUsd !== undefined ||
+      job.steps.some((step) => step.budget?.costMicroUsd !== undefined),
+  );
+}
+
+/**
+ * Вызывается ровно там, где расход попытки уже окончателен — после того как
+ * и сам шаг, и все его судьи отчитались. Раньше отсюда цена ещё не пришла бы
+ * никогда: она приходит один раз, в финальной записи попытки.
+ */
+function checkCostUnreported(context: RunContext, job: Job, step: Step, attempt: number): void {
+  if (context.usage.takeCostUnreportedEvent(costBudgetDeclared(context, job, step))) {
+    context.journal.event({ kind: 'budget.cost_unreported', job: job.id, step: step.id, attempt });
+  }
+}
+
 async function runCommandStep(
   step: Extract<Step, { kind: 'run' }>,
   job: Job,
@@ -989,7 +1034,7 @@ async function runCommandStep(
         // Командный шаг сам расхода не несёт: расход попытки — это расход
         // судей, накапливаемый по мере их вызовов, а не заменяемый последним.
         let attemptUsage: Usage | undefined;
-        return runJudgePass({
+        const judgeResults = await runJudgePass({
           predicates: target.expect,
           firstPass,
           task: describeStepTask(target),
@@ -1020,6 +1065,8 @@ async function runCommandStep(
             abort.trigger(found);
           },
         });
+        if (attemptUsage !== undefined) checkCostUnreported(context, job, step, plan.attempt);
+        return judgeResults;
       },
       onStall,
       onExpectFailed: (plan, failure) =>
@@ -1196,7 +1243,10 @@ async function runAgentStep(
         changedPaths: changedPaths(),
       });
 
-      if (!target.expect.some((predicate) => predicate.kind === 'judge')) return firstPass;
+      if (!target.expect.some((predicate) => predicate.kind === 'judge')) {
+        checkCostUnreported(context, job, step, plan.attempt);
+        return firstPass;
+      }
 
       // Расход попытки уже включает расход самого шага (`outcome.usage`) —
       // судьи добавляются к нему, а не подменяют его.
@@ -1232,6 +1282,7 @@ async function runAgentStep(
           abort.trigger(found);
         },
       });
+      checkCostUnreported(context, job, step, plan.attempt);
       return results;
     },
     onUsage: (current, attempt) => {

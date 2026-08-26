@@ -525,6 +525,43 @@ jobs:
     assert.ok(errors(diagnostics).length >= 4, `собрано ошибок: ${errors(diagnostics).length}`);
   });
 
+  // Спека stepcast-configuration: «budget.cost выше limits.cost»
+  it('даёт ошибку при budget.cost выше limits.cost на уровне пайплайна', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { cost: 999 }
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+    const messages = errors(lint(project));
+    assert.ok(messages.some((message) => message.includes('budget.cost') && message.includes('limits.cost')));
+  });
+
+  it('даёт ошибку при budget.cost выше limits.cost на уровне шага', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: s
+        agent: claude
+        prompt: hi
+        budget: { cost: 999 }
+`,
+    });
+    const messages = errors(lint(project));
+    assert.ok(messages.some((message) => message.includes('budget.cost')));
+  });
+
+  it('не даёт ошибку, когда budget.cost не объявлен', () => {
+    const diagnostics = lint(makeProject({ 'stepcast.yml': OK_PIPELINE }));
+    assert.deepEqual(errors(diagnostics), []);
+  });
+
   it('ошибка раскрытия остаётся фатальной и одиночной', () => {
     const project = makeProject({
       'stepcast.yml': `

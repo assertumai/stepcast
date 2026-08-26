@@ -140,4 +140,53 @@ describe('ui-dashboard: обзор всех проектов и прогонов
     assert.equal(going?.usage?.aggregated, false);
     assert.equal(going?.usage?.billableTokens, 0);
   });
+
+  // Требование: «Прогон показывает расход с разрезом по видам токенов»
+  it('раскладывает токены по видам у прогона со сводкой и молчит о разрезе без неё', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'aggregated',
+      usage: {
+        run_id: 'aggregated',
+        total: {
+          tokens_in: 100,
+          tokens_out: 50,
+          cache_read: 900,
+          cache_write: 30,
+          billable_tokens: 180,
+          wallclock_ms: 5_000,
+        },
+        unreported: [],
+        jobs: {},
+      },
+    });
+    seedRun(runsRoot, projectRoot, { runId: 'going', status: 'running', skipUsage: true });
+
+    const runs = buildOverview(runsRoot).projects[0]?.runs ?? [];
+    assert.deepEqual(runs.find((run) => run.runId === 'aggregated')?.usage?.breakdown, {
+      tokensIn: 100,
+      tokensOut: 50,
+      cacheRead: 900,
+      cacheWrite: 30,
+    });
+    // На идущем прогоне разреза нет: состояние хранит одну сумму, и
+    // разложить её по видам можно было бы только выдумкой.
+    assert.equal(runs.find((run) => run.runId === 'going')?.usage?.breakdown, undefined);
+  });
+
+  it('считает продолжительность по отметкам манифеста, а у идущего — до сих пор', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'finished' });
+    seedRun(runsRoot, projectRoot, {
+      runId: 'going',
+      status: 'running',
+      manifest: { started_at: '2026-08-01T00:00:00.000Z', finished_at: undefined },
+    });
+
+    const now = new Date('2026-08-01T00:10:00.000Z');
+    const runs = buildOverview(runsRoot, now).projects[0]?.runs ?? [];
+
+    assert.equal(runs.find((run) => run.runId === 'finished')?.durationMs, 5 * 60_000);
+    assert.equal(runs.find((run) => run.runId === 'going')?.durationMs, 10 * 60_000);
+  });
 });

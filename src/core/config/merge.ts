@@ -1,4 +1,4 @@
-import { parseDuration, parseTokens } from '../units.js';
+import { parseDuration, parseMoney, parseTokens } from '../units.js';
 
 /** Откуда пришло значение. Печатается в `stepcast config`. */
 export type Source =
@@ -53,9 +53,13 @@ const DURATION_VALUED = new Set([
   'limits.wallclock',
 ]);
 
-export function valueKind(path: string): 'tokens' | 'duration' | 'plain' {
+/** Путь ключа, в котором величина задаётся деньгами. */
+const MONEY_VALUED = new Set(['limits.cost']);
+
+export function valueKind(path: string): 'tokens' | 'duration' | 'money' | 'plain' {
   if (TOKEN_VALUED.has(path)) return 'tokens';
   if (DURATION_VALUED.has(path)) return 'duration';
+  if (MONEY_VALUED.has(path)) return 'money';
   return 'plain';
 }
 
@@ -67,6 +71,8 @@ export function normalizeValue(path: string, value: unknown): unknown {
       return parseTokens(value as string | number, path);
     case 'duration':
       return parseDuration(value as string | number, path);
+    case 'money':
+      return parseMoney(value as string | number, path);
     case 'plain':
       return value;
   }

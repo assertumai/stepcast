@@ -172,7 +172,8 @@ describe('run-journal: расход и бюджет', () => {
   it('помечает измерения, которых бэкенд не сообщил', () => {
     const accumulator = new UsageAccumulator(() => 0.1);
     accumulator.record('build', 'compile', 1, usageOf({ cache_write: null }));
-    assert.deepEqual(accumulator.report('r').unreported, ['cache_write']);
+    // Цена тоже не сообщена в этой записи — попадает в тот же перечень.
+    assert.deepEqual(accumulator.report('r').unreported, ['cache_write', 'reported_cost_usd']);
   });
 
   // Сценарий: «Превышение бюджета шага»

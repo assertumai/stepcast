@@ -10,7 +10,7 @@ import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { readEvents, readStatus, readUsage, resolveRun } from '../src/core/journal/reader.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import type { Config } from '../src/core/config/resolve.js';
-import type { Usage } from '../src/core/journal/schema.js';
+import { BudgetStateSchema, UsageReportSchema, type Usage } from '../src/core/journal/schema.js';
 import { makeProject, type Project } from './helpers.js';
 
 /** См. test/judge-attempt.test.ts: один поддельный бэкенд на объявленное имя. */
@@ -217,18 +217,17 @@ jobs:
           },
         }),
       ],
-      // Зависание заведомо длинное, а порог — с большим запасом: в удачном
-      // случае прогон завершается за десятки миллисекунд, и длина зависания
-      // ничего не стоит. Узкий запас же ловил не регресс, а задержку чтения
-      // потока под нагрузкой параллельных тестов.
-      hangMs: 10_000,
+      // Зависание длинное, порог — с запасом на запуск процесса: прерывание
+      // срабатывает за десятки миллисекунд, поэтому длина зависания ничего не
+      // стоит, а запас ловит регресс, а не задержку под нагрузкой.
+      hangMs: 5_000,
     });
 
     const started = Date.now();
     const result = await run(project, { fake });
 
     assert.equal(result.status, 'budget_exceeded');
-    assert.ok(Date.now() - started < 6_000, 'лимит должен остановить процесс, не дожидаясь hangMs');
+    assert.ok(Date.now() - started < 2_000, 'лимит должен остановить процесс, не дожидаясь hangMs');
   });
 });
 
@@ -341,13 +340,8 @@ describe('budget-wait-on-exceed: аккумулятор', () => {
 
 /**
  * Окно сброса во всех тестах ниже заведомо шире, чем зависание фейкового
- * процесса.
- *
- * Фейк печатает строки и только потом спит, но вывод идёт в трубу и
- * буферизуется: под нагрузкой строка с лимитом доходит до движка не сразу, а
- * иногда лишь при выходе процесса. Если окно уже, чем зависание, то первый
- * путь даёт сон, а второй — нулевой, и тест мигает не из-за движка, а из-за
- * буферизации. Запас `resetsAt - hangMs` держит сон измеримым на обоих путях.
+ * процесса: запас `resetsAt - hangMs` держит сон измеримым, даже если
+ * обнаружение придётся на самый конец зависания.
  */
 describe('budget-wait-on-exceed: ожидание сброса окна лимита в прогоне', () => {
   const WAIT_PIPELINE = `
@@ -728,5 +722,348 @@ jobs:
 
     assert.ok((step?.wallclock_ms ?? 0) > 0, 'у шага есть измеренная длительность, а не нуль');
     assert.ok((usage.jobs.build?.wallclock_ms ?? 0) > 0, 'у работы тоже');
+  });
+});
+
+describe('cost-budget: применение денежного потолка', () => {
+  // Спека pipeline-execution: «Денежный потолок шага, работы, пайплайна»
+  it('превышение денежного потолка шага останавливает шаг с budget_exceeded', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: cost-step
+jobs:
+  build:
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        budget:
+          cost: 1
+        expect:
+          - exit_code: 0
+`,
+    });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 10, tokensOut: 0, costUsd: 2 })],
+    });
+
+    const result = await run(project, { fake });
+    assert.equal(stepStatus(result, 'build', 'plan'), 'budget_exceeded');
+
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.find((job) => job.id === 'build')?.steps.find((s) => s.id === 'plan');
+    assert.match(step?.reason ?? '', /потрачено \$2\.00.*потолке \$1\.00/);
+    // Цена приходит один раз, в финальной записи попытки: остановка не может
+    // случиться раньше — перерасход не больше цены одной попытки.
+    assert.equal(fake.invocations.length, 1, 'потолок связал после единственной попытки, а не переисполнил шаг');
+  });
+
+  it('превышение денежного потолка работы останавливает шаг с budget_exceeded', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: cost-job
+jobs:
+  build:
+    budget:
+      cost: 1
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        expect:
+          - exit_code: 0
+`,
+    });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 10, tokensOut: 0, costUsd: 2 })],
+    });
+
+    const result = await run(project, { fake });
+    assert.equal(stepStatus(result, 'build', 'plan'), 'budget_exceeded');
+  });
+
+  it('превышение денежного потолка пайплайна останавливает шаг с budget_exceeded', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: cost-pipeline
+budget:
+  cost: 1
+jobs:
+  build:
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        expect:
+          - exit_code: 0
+`,
+    });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 10, tokensOut: 0, costUsd: 2 })],
+    });
+
+    const result = await run(project, { fake });
+    assert.equal(stepStatus(result, 'build', 'plan'), 'budget_exceeded');
+  });
+
+  // Спека pipeline-execution: «Сосуществование денежного и токенного потолков»
+  it('денежный потолок, исчерпанный раньше токенного, останавливает по cost', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: cost-before-tokens
+jobs:
+  build:
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        budget:
+          tokens: 10000
+          cost: 1
+        expect:
+          - exit_code: 0
+`,
+    });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 10, tokensOut: 0, costUsd: 5 })],
+    });
+
+    const result = await run(project, { fake });
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.find((job) => job.id === 'build')?.steps.find((s) => s.id === 'plan');
+    assert.equal(step?.status, 'budget_exceeded');
+    assert.match(step?.reason ?? '', /\$/);
+  });
+
+  it('токенный потолок, исчерпанный раньше денежного, останавливает по tokens', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: tokens-before-cost
+jobs:
+  build:
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        budget:
+          tokens: 5
+          cost: 1000
+        expect:
+          - exit_code: 0
+`,
+    });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 40, tokensOut: 0, costUsd: 0.01 })],
+    });
+
+    const result = await run(project, { fake });
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.find((job) => job.id === 'build')?.steps.find((s) => s.id === 'plan');
+    assert.equal(step?.status, 'budget_exceeded');
+    assert.doesNotMatch(step?.reason ?? '', /\$/);
+  });
+
+  // Спека pipeline-execution: «on_exceed: wait не применяется к деньгам»
+  it('on_exceed: wait с денежным превышением останавливает прогон без ожидания', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: cost-wait
+jobs:
+  build:
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        budget:
+          cost: 1
+          on_exceed: wait
+        expect:
+          - exit_code: 0
+`,
+    });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 10, tokensOut: 0, costUsd: 2 })],
+    });
+
+    const result = await run(project, { fake });
+
+    assert.equal(result.status, 'budget_exceeded');
+    assert.equal(fake.invocations.length, 1, 'денежный потолок не ждёт и не переисполняет шаг');
+
+    const events = readEvents(result.journal.paths);
+    assert.equal(events.some((event) => event.kind === 'budget.waiting'), false);
+  });
+
+  // Спека pipeline-execution: «Цена судьи входит в потолок»
+  it('цена вызова судьи входит в цену попытки и в потолок шага', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: cost-judge
+jobs:
+  build:
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        budget:
+          cost: 1
+        expect:
+          - exit_code: 0
+          - judge: "план полный"
+            hard: true
+            agent: critic
+`,
+    });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 10, tokensOut: 0, costUsd: 0.6 })],
+    });
+    const critic = createFakeBackend({
+      lines: [resultLine({ structured: { pass: true, reason: 'ок' }, tokensIn: 5, tokensOut: 0, costUsd: 0.6 })],
+    });
+
+    const result = await run(project, { fake, critic });
+    assert.equal(stepStatus(result, 'build', 'plan'), 'budget_exceeded');
+
+    const usage = readUsage(result.journal.paths);
+    const step = usage.jobs.build?.steps.plan;
+    assert.ok(step !== undefined);
+    assert.ok(Math.abs((step.cost_usd ?? 0) - 1.2) < 1e-9, 'цена шага и судьи сложились');
+  });
+
+  // Спека run-journal: «Попытка без сообщённой цены»
+  it('попытка без цены не входит в сумму, а отчёт называет её несообщённой', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: cost-unreported
+jobs:
+  build:
+    budget:
+      cost: 100
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        expect:
+          - exit_code: 0
+`,
+    });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 10, tokensOut: 0 })],
+    });
+
+    const result = await run(project, { fake });
+    assert.equal(result.status, 'success');
+
+    const usage = readUsage(result.journal.paths);
+    assert.equal(usage.total.cost_usd, undefined, 'ни одна попытка не сообщила цены');
+    assert.ok(usage.unreported.includes('reported_cost_usd'));
+
+    const status = readStatus(result.journal.paths);
+    assert.equal(status.budget.cost_unreported_attempts, 1);
+  });
+
+  // Спека pipeline-execution: «Полностью несообщённая цена»
+  it('денежный потолок при полностью несообщённой цене: событие, предупреждение, прогон доведён до конца', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: cost-silent
+jobs:
+  build:
+    steps:
+      - id: plan
+        agent: fake
+        prompt: "Сделай план"
+        budget:
+          cost: 5
+        expect:
+          - exit_code: 0
+`,
+    });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 10, tokensOut: 0 })],
+    });
+
+    const result = await run(project, { fake });
+    assert.equal(result.status, 'success', 'прогон доведён до конца тем же кодом возврата');
+    assert.equal(result.costLimitUnapplied, true);
+
+    const events = readEvents(result.journal.paths);
+    const unreportedEvents = events.filter((event) => event.kind === 'budget.cost_unreported');
+    assert.equal(unreportedEvents.length, 1, 'событие ровно одно за прогон');
+  });
+
+  // Спека run-journal: «Частично несообщённая цена»
+  it('часть попыток без цены: потолок применяется по учтённой части, число неучтённых названо', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: cost-partial
+jobs:
+  a:
+    steps:
+      - id: s
+        agent: fake
+        prompt: "a"
+        expect:
+          - exit_code: 0
+  b:
+    steps:
+      - id: s
+        agent: fake2
+        prompt: "b"
+        expect:
+          - exit_code: 0
+`,
+    });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 10, tokensOut: 0, costUsd: 0.5 })],
+    });
+    const fake2 = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 10, tokensOut: 0 })],
+    });
+
+    const result = await run(project, { fake, fake2 });
+    assert.equal(result.status, 'success');
+
+    const usage = readUsage(result.journal.paths);
+    assert.ok(Math.abs((usage.total.cost_usd ?? 0) - 0.5) < 1e-9, 'сумма по учтённой части');
+
+    const status = readStatus(result.journal.paths);
+    assert.equal(status.budget.cost_unreported_attempts, 1);
+  });
+
+  // Спека run-journal: «Сводка и состояние прежней формы» — прочерк, не отказ схемы
+  it('старая сводка и состояние без денежных полей проходят схему без изменений', () => {
+    const emptyUsageReport = {
+      run_id: 'run-old',
+      total: { tokens_in: 1, tokens_out: 1, cache_read: 0, cache_write: 0, billable_tokens: 2, wallclock_ms: 10 },
+      unreported: [],
+      jobs: {},
+    };
+    const parsedUsage = UsageReportSchema.safeParse(emptyUsageReport);
+    assert.equal(parsedUsage.success, true);
+
+    const emptyBudgetState = { tokens_used: 2, wallclock_ms: 10 };
+    const parsedBudget = BudgetStateSchema.safeParse(emptyBudgetState);
+    assert.equal(parsedBudget.success, true);
   });
 });

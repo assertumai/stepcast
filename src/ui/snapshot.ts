@@ -5,6 +5,7 @@ import { findStepDir, readStatus, readUsageSoft } from '../core/journal/reader.j
 import type { RunPaths } from '../core/journal/paths.js';
 import { ContextReportSchema, type StatusValue, type UsageReport } from '../core/journal/schema.js';
 import { readLockJobs, type LockJob, type LockStep } from './lock.js';
+import { layoutJobs, type JobGraph } from './graph.js';
 import { readJournalJson } from './file.js';
 
 /**
@@ -36,11 +37,15 @@ export interface JournalFileRef {
 export interface UsageSnapshot {
   readonly billableTokens: number | null;
   readonly wallclockMs: number | null;
+  /** `null` также означает «ни одна попытка не сообщила цены», а не ноль. */
+  readonly costUsd: number | null;
 }
 
 export interface StepSnapshot {
   readonly id: string;
   readonly kind: 'agent' | 'run';
+  readonly agent?: string;
+  readonly model?: string;
   readonly status?: StatusValue;
   readonly reason?: string;
   readonly attempts: number;
@@ -61,6 +66,9 @@ export interface JobSnapshot {
   readonly status?: StatusValue;
   readonly reason?: string;
   readonly needs: readonly string[];
+  /** Условие исполнения работы: показывает, почему работа может не выполниться. */
+  readonly if?: string;
+  readonly on: 'success' | 'failure' | 'always';
   readonly context: readonly string[];
   /** Выходы предшественников, доступные этой работе. */
   readonly inputs: readonly JournalFileRef[];
@@ -78,6 +86,8 @@ export interface RunSnapshot {
   readonly pipeline: string;
   readonly status?: StatusValue;
   readonly jobs: readonly JobSnapshot[];
+  /** Раскладка работ по зависимостям: браузеру остаётся отрисовка. */
+  readonly graph: JobGraph;
   /** Прогон убран: остались только манифест, состояние и расход. */
   readonly swept: boolean;
 }
@@ -123,6 +133,7 @@ function stepUsage(summary: UsageReport | undefined, jobId: string, stepId: stri
   return {
     billableTokens: step?.billable_tokens ?? null,
     wallclockMs: step?.wallclock_ms ?? null,
+    costUsd: step?.cost_usd ?? null,
   };
 }
 
@@ -131,6 +142,7 @@ function jobUsage(summary: UsageReport | undefined, jobId: string): UsageSnapsho
   return {
     billableTokens: job?.billable_tokens ?? null,
     wallclockMs: job?.wallclock_ms ?? null,
+    costUsd: job?.cost_usd ?? null,
   };
 }
 
@@ -152,6 +164,8 @@ function buildStep(
     ...(record?.status === undefined ? {} : { status: record.status }),
     ...(record?.reason === undefined ? {} : { reason: record.reason }),
     attempts: record?.attempts.length ?? 0,
+    ...(definition?.agent === undefined ? {} : { agent: definition.agent }),
+    ...(definition?.model === undefined ? {} : { model: definition.model }),
     ...(definition?.prompt === undefined ? {} : { prompt: definition.prompt }),
     ...(definition?.command === undefined ? {} : { command: definition.command }),
     context: definition?.context ?? [],
@@ -193,6 +207,8 @@ function buildJob(
     ...(record?.status === undefined ? {} : { status: record.status }),
     ...(record?.reason === undefined ? {} : { reason: record.reason }),
     needs,
+    ...(definition?.if === undefined ? {} : { if: definition.if }),
+    on: definition?.on ?? 'success',
     context: definition?.context ?? [],
     inputs,
     ...(output === undefined ? {} : { output }),
@@ -246,19 +262,30 @@ export function buildSnapshot(paths: RunPaths, projectKeyValue: string): RunSnap
     if (!ids.includes(record.id)) ids.push(record.id);
   }
 
+  const jobs = ids.map((id) =>
+    buildJob(
+      paths,
+      definitions.find((job) => job.id === id),
+      status?.jobs.find((job) => job.id === id),
+      published,
+      summary,
+    ),
+  );
+
   return {
     runId: paths.runId,
     projectKey: projectKeyValue,
     pipeline: status?.pipeline ?? '',
     ...(status?.status === undefined ? {} : { status: status.status }),
-    jobs: ids.map((id) =>
-      buildJob(
-        paths,
-        definitions.find((job) => job.id === id),
-        status?.jobs.find((job) => job.id === id),
-        published,
-        summary,
-      ),
+    jobs,
+    graph: layoutJobs(
+      jobs.map((job) => ({
+        id: job.id,
+        needs: job.needs,
+        on: job.on,
+        ...(job.if === undefined ? {} : { if: job.if }),
+        ...(job.status === undefined ? {} : { status: job.status }),
+      })),
     ),
     swept,
   };

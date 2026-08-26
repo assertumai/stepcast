@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { cleanupRun, dirSize, listCandidates, selectOlderThan } from '../src/core/run/cleanup.js';
+import {
+  cleanupRun,
+  dirSize,
+  listCandidates,
+  removeRun,
+  selectOlderThan,
+} from '../src/core/run/cleanup.js';
+import { projectKey } from '../src/core/journal/paths.js';
 import { RunJournal } from '../src/core/journal/writer.js';
 import type { RunManifest } from '../src/core/journal/schema.js';
 
@@ -153,5 +160,43 @@ describe('run-cleanup: отбор и удаление', () => {
     assert.ok(!existsSync(paths.lock));
     assert.ok(!existsSync(paths.events));
     assert.ok(!existsSync(paths.anchors));
+  });
+
+  it('удаление из истории сносит каталог прогона целиком', () => {
+    const { runsRoot, projectRoot } = bed();
+    const kept = makeRun(runsRoot, projectRoot, 'run-a');
+    const doomed = makeRun(runsRoot, projectRoot, 'run-b');
+
+    removeRun(runsRoot, projectKey(projectRoot), 'run-b');
+
+    assert.ok(!existsSync(doomed.paths.dir));
+    assert.ok(existsSync(kept.paths.manifest));
+  });
+
+  it('не оставляет ярлык latest указывать на удалённый прогон', () => {
+    const { runsRoot, projectRoot } = bed();
+    const kept = makeRun(runsRoot, projectRoot, 'run-a');
+    makeRun(runsRoot, projectRoot, 'run-b');
+    const link = join(kept.paths.projectDir, 'latest');
+
+    // Ярлык ведёт на новейший прогон — именно его и удаляем.
+    assert.equal(readlinkSync(link), 'run-b');
+    removeRun(runsRoot, projectKey(projectRoot), 'run-b');
+
+    assert.equal(readlinkSync(link), 'run-a');
+    assert.ok(existsSync(link));
+  });
+
+  it('снимает запись проекта из указателя, когда прогонов не осталось', () => {
+    const { runsRoot, projectRoot } = bed();
+    makeRun(runsRoot, projectRoot, 'run-a');
+    const key = projectKey(projectRoot);
+    const indexPath = join(runsRoot, 'projects.json');
+
+    assert.ok(key in (JSON.parse(readFileSync(indexPath, 'utf8')) as Record<string, unknown>));
+    removeRun(runsRoot, key, 'run-a');
+
+    assert.ok(!(key in (JSON.parse(readFileSync(indexPath, 'utf8')) as Record<string, unknown>)));
+    assert.ok(!existsSync(join(runsRoot, key)));
   });
 });

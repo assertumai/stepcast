@@ -90,6 +90,38 @@ export function parseDuration(input: string | number, at?: string): number {
   return Math.round(amount * multiplier);
 }
 
+const MONEY_PATTERN = /^\$?\s*(\d+(?:\.\d+)?)\s*$/;
+
+/**
+ * Деньги: число долларов либо строка с необязательным `$` и пробелами.
+ * Результат — целые микродоллары (1e-6 USD): сложение сотен значений с
+ * дробным числом центов в `number` даёт дрейф, из-за которого сравнение с
+ * потолком перестаёт быть воспроизводимым.
+ */
+export function parseMoney(input: string | number, at?: string): number {
+  if (typeof input === 'number') {
+    if (!Number.isFinite(input) || input < 0) {
+      fail(`Денежная величина должна быть неотрицательным числом, получено ${input}`, 'Например: 12, 12.5, "$12.50"', at);
+    }
+    return Math.round(input * 1_000_000);
+  }
+
+  const match = MONEY_PATTERN.exec(input.trim());
+  if (match === null) {
+    fail(`Не удалось разобрать денежную величину: ${input}`, 'Ожидается число долларов с необязательным знаком $, например 12.50 или "$12.50". Иная валюта не поддерживается.', at);
+  }
+
+  const [, digits] = match as unknown as [string, string];
+  return Math.round(Number(digits) * 1_000_000);
+}
+
+/** Обратное преобразование для отчётов: 12500000 → "$12.50", 250000 → "$0.2500". */
+export function formatMoney(microUsd: number): string {
+  const usd = microUsd / 1_000_000;
+  const digits = Math.abs(usd) >= 1 ? 2 : 4;
+  return `$${usd.toFixed(digits)}`;
+}
+
 /** Обратное преобразование для отчётов: 1_500_000 → "1.5M". */
 export function formatTokens(value: number): string {
   if (value >= 1_000_000) {

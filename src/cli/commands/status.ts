@@ -4,7 +4,7 @@ import type { RunPaths } from '../../core/journal/paths.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { readStatus, resolveRun } from '../../core/journal/reader.js';
 import { shortRunId } from '../../core/journal/paths.js';
-import { formatDuration, formatTokens } from '../../core/units.js';
+import { formatDuration, formatMoney, formatTokens } from '../../core/units.js';
 import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
 import { formatColumns } from '../output.js';
 import type { ParsedArgs } from '../args.js';
@@ -50,7 +50,15 @@ export function runStatusCommand(
   const budget = status.budget;
   const used = formatTokens(budget.tokens_used);
   const limit = budget.tokens_limit === undefined ? '—' : formatTokens(budget.tokens_limit);
-  write(`расход: ${used} из ${limit} токенов, ${formatDuration(budget.wallclock_ms)}`);
+  const costUsed = formatMoney(Math.round((budget.cost_used_usd ?? 0) * 1_000_000));
+  const costLimit =
+    budget.cost_limit_usd === undefined ? '—' : formatMoney(Math.round(budget.cost_limit_usd * 1_000_000));
+  write(
+    `расход: ${used} из ${limit} токенов, ${costUsed} из ${costLimit}, ${formatDuration(budget.wallclock_ms)}`,
+  );
+  if (budget.cost_unreported_attempts !== undefined && budget.cost_unreported_attempts > 0) {
+    write(`цена неполна: ${budget.cost_unreported_attempts} попыток без сообщённой цены`);
+  }
 
   if (status.resume !== undefined) {
     write(`продолжить: ${status.resume.command}`);

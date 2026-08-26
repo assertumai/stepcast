@@ -292,6 +292,56 @@ describe('CLI: stepcast usage', () => {
     assert.match(text, /не прочитана/);
   });
 
+  // Спека stepcast-configuration: «Денежный столбец на всех уровнях»
+  it('печатает денежный столбец у работы, шага и прогона из сводки', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const summary: UsageReport = {
+      ...RETRIED_SUMMARY('r'),
+      total: { ...RETRIED_SUMMARY('r').total, cost_usd: 0.42 },
+      jobs: {
+        implement: {
+          billable_tokens: 430,
+          wallclock_ms: 150_000,
+          cost_usd: 0.42,
+          steps: {
+            'write-code': {
+              billable_tokens: 430,
+              wallclock_ms: 150_000,
+              cost_usd: 0.42,
+              attempts: [
+                { attempt: 1, backend: 'claude', model: 'sonnet', billable_tokens: 150, wallclock_ms: 60_000 },
+                { attempt: 2, backend: 'claude', model: 'opus', billable_tokens: 280, wallclock_ms: 90_000, cost_usd: 0.42 },
+              ],
+            },
+          },
+        },
+      },
+    };
+    const journal = seedRun(runsRoot, projectRoot, { jobs: RETRIED_STEP, usage: summary });
+
+    const { lines, write } = capture();
+    withHome(home, () => runUsageCommand(args([journal.paths.runId]), write, projectRoot));
+
+    const text = lines.join('\n');
+    // Заголовок отчёта, строка работы и строка шага — три отдельных «$0.42».
+    assert.equal((text.match(/\$0\.4200/g) ?? []).length >= 3, true, text);
+  });
+
+  it('называет число попыток без цены отдельной строкой', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, {
+      jobs: RETRIED_STEP,
+      usage: RETRIED_SUMMARY('r'),
+      budget: { tokens_used: 430, wallclock_ms: 150_000, cost_used_usd: 0, cost_unreported_attempts: 2 },
+    });
+
+    const { lines, write } = capture();
+    withHome(home, () => runUsageCommand(args([journal.paths.runId]), write, projectRoot));
+
+    const text = lines.join('\n');
+    assert.match(text, /2 попытки без сообщённой цены/);
+  });
+
   // Сценарий: «Сводка прежней формы»
   it('сводка прежней формы читается: числовое attempts не обесценивает прогон', () => {
     const { runsRoot, projectRoot, home } = makeJournalBed();

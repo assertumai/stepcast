@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 
 import { createClaudeAdapter } from '../src/core/backend/claude.js';
 import { createFakeBackend, initLine, resultLine, toolUseLine } from '../src/core/backend/fake.js';
-import { emptyUsage, mergeUsage } from '../src/core/backend/types.js';
+import { emptyUsage, mergeUsage, sumUsage } from '../src/core/backend/types.js';
 import { createSessionRegistry, executeAgentStep } from '../src/core/exec/agentStep.js';
 import type { BackendConfig } from '../src/core/config/resolve.js';
 import type { AgentStep } from '../src/core/pipeline/model.js';
@@ -164,6 +164,34 @@ describe('agent-backend: разбор потока', () => {
 
     assert.equal(usage.tokens_in, 100);
     assert.equal(usage.cache_write, null, 'ноль превратил бы неполный учёт в мнимую точность');
+  });
+
+  // Спека stepcast-configuration: «sumUsage переносит цену»
+  it('parseLine читает цену судьи тем же полем total_cost_usd, что и цену шага', () => {
+    const event = adapter.parseLine(resultLine({ tokensIn: 1, costUsd: 0.42 }));
+    assert.equal(event.kind, 'result');
+    assert.equal(event.usage?.reported_cost_usd, 0.42);
+  });
+
+  it('sumUsage складывает цену шага и судьи', () => {
+    const step = mergeUsage(emptyUsage('claude', 'sonnet', 0), { reported_cost_usd: 0.1 });
+    const judge = mergeUsage(emptyUsage('claude', 'sonnet', 0), { reported_cost_usd: 0.05 });
+    const summed = sumUsage(step, judge);
+    assert.ok(Math.abs((summed.reported_cost_usd ?? 0) - 0.15) < 1e-9);
+  });
+
+  it('sumUsage не теряет цену шага при сложении с судьёй без цены', () => {
+    const step = mergeUsage(emptyUsage('claude', 'sonnet', 0), { reported_cost_usd: 0.1 });
+    const judgeNoCost = emptyUsage('claude', 'sonnet', 0);
+    const summed = sumUsage(step, judgeNoCost);
+    assert.equal(summed.reported_cost_usd, 0.1);
+  });
+
+  it('sumUsage двух слагаемых без цены даёт запись без поля', () => {
+    const a = emptyUsage('claude', 'sonnet', 0);
+    const b = emptyUsage('claude', 'sonnet', 0);
+    const summed = sumUsage(a, b);
+    assert.equal('reported_cost_usd' in summed, false);
   });
 
   // Сценарий: «Окна лимитов»

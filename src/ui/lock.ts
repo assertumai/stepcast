@@ -14,6 +14,10 @@ import { parse as parseYaml } from 'yaml';
 export interface LockStep {
   readonly id: string;
   readonly kind: 'agent' | 'run';
+  /** Бэкенд агентского шага. */
+  readonly agent?: string;
+  /** Модель, если шаг её назвал; иначе действует модель бэкенда. */
+  readonly model?: string;
   /** Промпт агентского шага целиком — лок хранит его раскрытым. */
   readonly prompt?: string;
   /** Команда командного шага, как она записана: строкой или списком argv. */
@@ -25,6 +29,10 @@ export interface LockJob {
   readonly id: string;
   readonly description?: string;
   readonly needs: readonly string[];
+  /** Условие исполнения работы, как записано в определении. */
+  readonly if?: string;
+  /** Исход предшественников, при котором работа запускается. */
+  readonly on: 'success' | 'failure' | 'always';
   /** Работа объявляет выход — значит, у неё может быть `artifacts/<id>.json`. */
   readonly publishesOutput: boolean;
   readonly context: readonly string[];
@@ -78,12 +86,16 @@ function toStep(value: unknown): LockStep | undefined {
 
   const prompt = asString(record.prompt);
   const command = commandLabel(record.run);
+  const agent = asString(record.agent);
+  const model = asString(record.model);
 
   return {
     id,
     // Вид шага определяется тем, какое из двух взаимоисключающих полей есть:
     // в локе `agent` и `run` не встречаются вместе.
     kind: prompt !== undefined ? 'agent' : 'run',
+    ...(agent === undefined ? {} : { agent }),
+    ...(model === undefined ? {} : { model }),
     ...(prompt === undefined ? {} : { prompt }),
     ...(command === undefined ? {} : { command }),
     context: contextLabels(record.context),
@@ -109,11 +121,15 @@ function toJob(value: unknown): LockJob | undefined {
     : [];
 
   const description = asString(record.description);
+  const condition = asString(record.if);
+  const on = asString(record.on);
 
   return {
     id,
     ...(description === undefined ? {} : { description }),
     needs,
+    ...(condition === undefined ? {} : { if: condition }),
+    on: on === 'failure' || on === 'always' ? on : 'success',
     publishesOutput: asRecord(record.output) !== undefined,
     context: contextLabels(record.context),
     steps,

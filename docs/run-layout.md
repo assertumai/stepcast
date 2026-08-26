@@ -207,10 +207,21 @@ plan/read-change       valid    — переиспользуется из 3f9a1c
     },
     "archive": { "status": "skipped", "reason": "on: success, зависимость упала" }
   },
-  "budget": { "tokens_used": 412000, "tokens_limit": 2000000 },
+  "budget": {
+    "tokens_used": 412000, "tokens_limit": 2000000,
+    "cost_used_usd": 6.42, "cost_limit_usd": 20,
+    "cost_unreported_attempts": 1
+  },
   "resume": { "command": "stepcast resume 3f9a1c --from typecheck" }
 }
 ```
+
+`budget.cost_used_usd` и `cost_limit_usd` — денежный аналог `tokens_used` и
+`tokens_limit`, в долларах (не в микродолларах — файл читают посторонние
+инструменты, и единица должна совпадать с той, в которой цену объявляют).
+`cost_unreported_attempts` — число попыток, чей известный на сейчас расход не
+содержит цены; поле появляется, только если такие попытки есть. Все три поля
+необязательны: `status.json` прежней формы, где их нет, читается без изменений.
 
 Прогон, ушедший в ожидание сброса окна лимита (`on_exceed: wait`), дописывает
 `status.json` до начала сна: статус остаётся `running`, а поле `wake_at`
@@ -318,7 +329,10 @@ stepcast diff <run-a> <run-b>
 есть только у Claude Code и только на подписке. Отсутствующее поле остаётся
 пустым и помечается как «не сообщается» — бюджет не досчитывает молча.
 
-`reported_cost_usd` записывается справочно и в бюджете не участвует.
+`reported_cost_usd` попытки — источник для `budget.cost` (см.
+[pipeline-format.md](pipeline-format.md#бюджет)): расход шага и вызванного им
+судьи складывается, а попытка, не сообщившая цены, в денежные счётчики не
+входит вовсе — вместо нуля.
 
 `usage.json` — агрегат снизу вверх, по прогону, работе, шагу и, внутри шага, по
 номеру попытки:
@@ -328,20 +342,20 @@ stepcast diff <run-a> <run-b>
   "run_id": "2026-08-25T16-00-00Z-demo",
   "total": {
     "tokens_in": 412300, "tokens_out": 88200, "cache_read": 900000, "cache_write": 40000,
-    "billable_tokens": 612300, "wallclock_ms": 940000
+    "billable_tokens": 612300, "wallclock_ms": 940000, "cost_usd": 6.42
   },
   "unreported": [],
   "jobs": {
     "implement": {
-      "billable_tokens": 612300, "wallclock_ms": 940000,
+      "billable_tokens": 612300, "wallclock_ms": 940000, "cost_usd": 6.42,
       "steps": {
         "write-code": {
-          "billable_tokens": 612300, "wallclock_ms": 940000,
+          "billable_tokens": 612300, "wallclock_ms": 940000, "cost_usd": 6.42,
           "attempts": [
             { "attempt": 1, "backend": "claude", "model": "sonnet",
               "billable_tokens": 180100, "wallclock_ms": 402000 },
             { "attempt": 2, "backend": "claude", "model": "opus",
-              "billable_tokens": 432200, "wallclock_ms": 538000 }
+              "billable_tokens": 432200, "wallclock_ms": 538000, "cost_usd": 6.42 }
           ]
         }
       }
@@ -349,6 +363,12 @@ stepcast diff <run-a> <run-b>
   }
 }
 ```
+
+`cost_usd` — в долларах, необязателен на каждом уровне (`total`, работа, шаг,
+попытка): отсутствует там, где ни одна вошедшая попытка не сообщила цены,
+вместо того чтобы печатать `0`. Несообщённая цена хотя бы одной завершившейся
+попытки пополняет `unreported` значением `"reported_cost_usd"` — тем же
+правилом, что и у токенных измерений.
 
 Запись шага несёт перечень попыток, а не голый счётчик: у каждой — номер,
 бэкенд, модель, billable-токены и время. Переисполнение одной и той же
@@ -363,17 +383,19 @@ stepcast diff <run-a> <run-b>
 ```
 $ stepcast usage a50755
 прогон a50755  self-improve  success
-расход: 612.3k токенов, 15m40s
-  implement                612.3k       15m40s
-    write-code              612.3k       15m40s
+расход: 612.3k токенов, 15m40s, $6.42
+  implement                612.3k       15m40s   $6.42
+    write-code              612.3k       15m40s   $6.42
       #1        claude  sonnet    100    50    900k   40k   6m42s   180.1k   —
-      #2        claude  opus      200    80    900k   40k   8m58s   432.2k   $0.4200
+      #2        claude  opus      200    80    900k   40k   8m58s   432.2k   $6.4200
 ```
 
-Несообщённое бэкендом измерение печатается прочерком, а не нулём; если
-`usage.json` ещё не записан (прогон идёт) или не проходит схему (сводка
-устаревшей формы), отчёт всё равно строится по `status.json`, а внизу
-поясняется, что именно недоступно.
+Несообщённое бэкендом измерение печатается прочерком, а не нулём — денежный
+столбец подчиняется тому же правилу на всех четырёх уровнях; если хотя бы одна
+попытка не сообщила цены, отдельная строка называет их число и напоминает, что
+денежная сумма неполна. Если `usage.json` ещё не записан (прогон идёт) или не
+проходит схему (сводка устаревшей формы), отчёт всё равно строится по
+`status.json`, а внизу поясняется, что именно недоступно.
 
 ## Логи и события
 
@@ -385,7 +407,9 @@ $ stepcast usage a50755
 `step.stalled`, `expect.failed`, `env.denied`, `budget.warning`,
 `budget.waiting`, `budget.resumed`, `context.note_truncated` (выдержка о
 прошлой итерации усечена по своему пределу — запись несёт работу, шаг,
-исходный и итоговый размер выдержки в токенах). UI читает хвост файла.
+исходный и итоговый размер выдержки в токенах), `budget.cost_unreported`
+(первая завершившаяся попытка без цены при объявленном `budget.cost` — работа,
+шаг и номер попытки; не чаще одного раза за прогон). UI читает хвост файла.
 
 ```bash
 stepcast logs <run-id> [<job>/<step>] [--follow]

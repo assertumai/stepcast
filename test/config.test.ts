@@ -119,6 +119,29 @@ describe('stepcast-configuration', () => {
     assert.equal(resolveIn(loosened).config.limits.tokens, 5_000_000);
   });
 
+  it('limits.cost по умолчанию $50 и участвует в слиянии как потолок', () => {
+    const builtin = resolveIn(sandbox({}));
+    assert.equal(builtin.config.limits.costMicroUsd, 50_000_000);
+
+    const tightened = sandbox({
+      global: 'limits:\n  cost: 20\n',
+      project: 'limits:\n  cost: 5\n',
+    });
+    assert.equal(resolveIn(tightened).config.limits.costMicroUsd, 5_000_000);
+
+    const loosened = sandbox({
+      global: 'limits:\n  cost: 20\n',
+      project: 'limits:\n  cost: 100\n',
+    });
+    assert.equal(resolveIn(loosened).config.limits.costMicroUsd, 20_000_000);
+  });
+
+  it('печатает limits.cost в отчёте stepcast config', () => {
+    const resolved = resolveIn(sandbox({}));
+    const lines = renderConfigReport(resolved);
+    assert.ok(lines.some((line) => line.includes('limits.cost') && line.includes('$50.00')));
+  });
+
   it('предел ожидания разбирается как длительность и переопределяется слоем', () => {
     const builtin = resolveIn(sandbox({}));
     assert.equal(builtin.config.defaults.maxWaitMs, 6 * 60 * 60 * 1000);

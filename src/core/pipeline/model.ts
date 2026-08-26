@@ -13,6 +13,7 @@ export interface Workspace {
 
 export interface Budget {
   readonly tokens?: number;
+  readonly costMicroUsd?: number;
   readonly wallclockMs?: number;
   readonly rateLimitPct?: number;
   readonly onExceed: 'wait' | 'stop';

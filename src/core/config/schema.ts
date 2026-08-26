@@ -42,6 +42,7 @@ export const RawDefaultsSchema = z
 export const RawLimitsSchema = z
   .object({
     tokens: amount.optional(),
+    cost: amount.optional(),
     wallclock: amount.optional(),
     concurrency: z.number().int().positive().optional(),
     attempts: z.number().int().positive().optional(),
@@ -116,6 +117,7 @@ export const UNION_LIST_KEYS = ['env_deny', 'context.deny'] as const;
 /** Потолки: между слоями берётся строжайшее значение, поднять их снизу нельзя. */
 export const TIGHTEN_ONLY_KEYS = [
   'limits.tokens',
+  'limits.cost',
   'limits.wallclock',
   'limits.concurrency',
   'limits.attempts',

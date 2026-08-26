@@ -1,4 +1,4 @@
-import { formatDuration, formatTokens } from '../units.js';
+import { formatDuration, formatMoney, formatTokens } from '../units.js';
 import type { Budget } from '../pipeline/model.js';
 import type { Usage, UsageReport } from '../journal/schema.js';
 
@@ -42,7 +42,7 @@ export type BudgetScope =
 
 export interface Exceeded {
   readonly scope: string;
-  readonly dimension: 'tokens' | 'wallclock' | 'rate_limit';
+  readonly dimension: 'tokens' | 'cost' | 'wallclock' | 'rate_limit';
   readonly used: number;
   readonly limit: number;
   /** Режим области, чей потолок упёрся: решает, ждать или остановиться. */
@@ -68,6 +68,9 @@ interface Counters {
   cacheRead: number;
   cacheWrite: number;
   billable: number;
+  costMicroUsd: number;
+  /** Число попыток в области, для которых цена известна: 0 отличает молчание от факта. */
+  costReportedAttempts: number;
   wallclockMs: number;
   attempts: number;
   backend: string;
@@ -81,6 +84,8 @@ function emptyCounters(): Counters {
     cacheRead: 0,
     cacheWrite: 0,
     billable: 0,
+    costMicroUsd: 0,
+    costReportedAttempts: 0,
     wallclockMs: 0,
     attempts: 0,
     backend: '',
@@ -94,6 +99,14 @@ export class UsageAccumulator {
   private readonly steps = new Map<string, Counters>();
   /** Измерения, которых бэкенд не сообщил: учёт по ним заведомо неполон. */
   private readonly unreported = new Set<string>();
+  /**
+   * Попытки, чей известный на сейчас расход не содержит цены: ключ уходит из
+   * множества, как только цена приходит, и остаётся, если попытка завершилась
+   * молча — денежные счётчики её не содержат, ноль вместо цены не подставлен.
+   */
+  private readonly costUnreportedAttempts = new Set<string>();
+  /** Событие `budget.cost_unreported` — не чаще одного раза за прогон. */
+  private costUnreportedEventEmitted = false;
   private readonly startedAt = Date.now();
   /** Интервалы ожидания сброса окна лимита за весь прогон. */
   private readonly waits: WaitInterval[] = [];
@@ -102,7 +115,26 @@ export class UsageAccumulator {
 
   constructor(private readonly cacheReadWeight: (backend: string) => number) {}
 
-  /** Заменить накопленное по попытке: расход приходит нарастающим итогом. */
+  /**
+   * Заменить накопленное по попытке: расход приходит нарастающим итогом —
+   * это верно для токенов (стрим одного вызова копит их сообщение за
+   * сообщением) и остаётся верным для цены. `total_cost_usd` приходит один
+   * раз, в финальной записи `result` (`src/core/backend/claude.ts`), и
+   * приходит за сам этот вызов, а не за сессию: `usage` в потоке Claude —
+   * посообщённая величина конкретного сообщения, а не накопительный итог
+   * сессии (тем же свойством уже пользуется учёт токенов при `session:
+   * shared` — иначе он давно бы задвоился). Разностный путь `apply()` от
+   * этого не отличается от токенного: цена входит в счётчики как слагаемое.
+   *
+   * Проверено на живых прогонах: в общей сессии вторая попытка шага стоит
+   * заметно меньше первой и соразмерна собственному расходу — $0.9215 против
+   * $2.8545 у `implement/write-code` и $1.2912 против $3.2340 у
+   * `fix-review/apply-fixes` (прогон 69d707). Накопительный итог дал бы
+   * вторую попытку не дешевле первой, поэтому цена — величина вызова, и
+   * входит в счётчики слагаемым. Если бэкенд когда-нибудь начнёт сообщать
+   * накопительный итог, разойдётся именно денежная сумма при `session:
+   * shared`, а не токены, и чинить нужно будет здесь — взяв цену диффом.
+   */
   record(jobId: string, stepId: string, attempt: number, usage: Usage): void {
     const key = `${jobId}/${stepId}#${attempt}`;
     const previous = this.steps.get(key) ?? emptyCounters();
@@ -110,6 +142,11 @@ export class UsageAccumulator {
 
     for (const field of ['tokens_in', 'tokens_out', 'cache_read', 'cache_write'] as const) {
       if (usage[field] === null) this.unreported.add(field);
+    }
+    if (usage.reported_cost_usd === undefined) {
+      this.costUnreportedAttempts.add(key);
+    } else {
+      this.costUnreportedAttempts.delete(key);
     }
 
     this.apply(this.run, previous, current);
@@ -123,6 +160,8 @@ export class UsageAccumulator {
     target.cacheRead += current.cacheRead - previous.cacheRead;
     target.cacheWrite += current.cacheWrite - previous.cacheWrite;
     target.billable += current.billable - previous.billable;
+    target.costMicroUsd += current.costMicroUsd - previous.costMicroUsd;
+    target.costReportedAttempts += current.costReportedAttempts - previous.costReportedAttempts;
     target.wallclockMs += current.wallclockMs - previous.wallclockMs;
     target.attempts += 1 - previous.attempts;
   }
@@ -145,6 +184,33 @@ export class UsageAccumulator {
 
   stepTokens(jobId: string, stepId: string, attempt: number): number {
     return this.steps.get(`${jobId}/${stepId}#${attempt}`)?.billable ?? 0;
+  }
+
+  runCostMicroUsd(): number {
+    return this.run.costMicroUsd;
+  }
+
+  /** Ни одна попытка за весь прогон не сообщила цены. */
+  runCostNeverReported(): boolean {
+    return this.run.costReportedAttempts === 0;
+  }
+
+  /** Число попыток, чей известный на сейчас расход не содержит цены. */
+  costUnreportedAttemptCount(): number {
+    return this.costUnreportedAttempts.size;
+  }
+
+  /**
+   * Отдать событие `budget.cost_unreported` не более одного раза за прогон:
+   * прогон без единой сообщённой цены при объявленном денежном потолке —
+   * это прогон без действующего потолка, и промолчать об этом значит соврать.
+   */
+  takeCostUnreportedEvent(costDeclared: boolean): boolean {
+    if (!costDeclared || this.costUnreportedEventEmitted || this.costUnreportedAttempts.size === 0) {
+      return false;
+    }
+    this.costUnreportedEventEmitted = true;
+    return true;
   }
 
   elapsedMs(): number {
@@ -178,8 +244,10 @@ export class UsageAccumulator {
     for (const [key, counters] of [...this.steps]) {
       if (!key.startsWith(prefix)) continue;
       this.sealCounter += 1;
+      const sealedKey = `${key}@seal${this.sealCounter}`;
       this.steps.delete(key);
-      this.steps.set(`${key}@seal${this.sealCounter}`, counters);
+      this.steps.set(sealedKey, counters);
+      if (this.costUnreportedAttempts.delete(key)) this.costUnreportedAttempts.add(sealedKey);
     }
   }
 
@@ -208,6 +276,20 @@ export class UsageAccumulator {
           used,
           limit: budget.tokens,
           onExceed: budget.onExceed,
+        };
+      }
+
+      const usedCost = this.usedCostFor(scope);
+      if (budget.costMicroUsd !== undefined && usedCost > budget.costMicroUsd) {
+        return {
+          scope: scope.name,
+          dimension: 'cost',
+          used: usedCost,
+          limit: budget.costMicroUsd,
+          // Цена приходит один раз, в финальной записи попытки: денежный
+          // потолок не может связывать посреди попытки, и ждать сброса окна
+          // лимитов по нему нечего — превышение всегда ведёт в остановку.
+          onExceed: 'stop',
         };
       }
 
@@ -277,13 +359,44 @@ export class UsageAccumulator {
     return total;
   }
 
+  private usedCostFor(scope: BudgetScope): number {
+    switch (scope.kind) {
+      case 'run':
+        return this.run.costMicroUsd;
+      case 'job':
+        return this.jobs.get(scope.jobId)?.costMicroUsd ?? 0;
+      case 'step':
+        return this.stepCostTotal(scope.jobId, scope.stepId);
+    }
+  }
+
+  private stepCostTotal(jobId: string, stepId: string): number {
+    let total = 0;
+    for (const [key, counters] of this.steps) {
+      if (key.startsWith(`${jobId}/${stepId}#`)) total += counters.costMicroUsd;
+    }
+    return total;
+  }
+
   report(runId: string): UsageReport {
     const jobs: UsageReport['jobs'] = {};
 
     for (const [jobId, counters] of this.jobs) {
       const steps: Record<
         string,
-        { billable_tokens: number; wallclock_ms: number; attempts: Map<number, UsageReport['jobs'][string]['steps'][string]['attempts'][number]> }
+        {
+          billable_tokens: number;
+          wallclock_ms: number;
+          costMicroUsd: number;
+          costReportedAttempts: number;
+          attempts: Map<
+            number,
+            UsageReport['jobs'][string]['steps'][string]['attempts'][number] & {
+              costMicroUsd: number;
+              costReportedAttempts: number;
+            }
+          >;
+        }
       > = {};
       for (const [key, step] of this.steps) {
         if (!key.startsWith(`${jobId}/`)) continue;
@@ -296,7 +409,8 @@ export class UsageAccumulator {
         const sealAt = attemptPart.indexOf('@');
         const attempt = Number(sealAt === -1 ? attemptPart : attemptPart.slice(0, sealAt));
 
-        const existing = steps[stepId] ?? { billable_tokens: 0, wallclock_ms: 0, attempts: new Map() };
+        const existing =
+          steps[stepId] ?? { billable_tokens: 0, wallclock_ms: 0, costMicroUsd: 0, costReportedAttempts: 0, attempts: new Map() };
         const priorAttempt = existing.attempts.get(attempt);
         existing.attempts.set(attempt, {
           attempt,
@@ -304,23 +418,34 @@ export class UsageAccumulator {
           ...(step.model === undefined ? {} : { model: step.model }),
           billable_tokens: (priorAttempt?.billable_tokens ?? 0) + step.billable,
           wallclock_ms: (priorAttempt?.wallclock_ms ?? 0) + step.wallclockMs,
+          costMicroUsd: (priorAttempt?.costMicroUsd ?? 0) + step.costMicroUsd,
+          costReportedAttempts: (priorAttempt?.costReportedAttempts ?? 0) + step.costReportedAttempts,
         });
         steps[stepId] = {
           billable_tokens: existing.billable_tokens + step.billable,
           wallclock_ms: existing.wallclock_ms + step.wallclockMs,
+          costMicroUsd: existing.costMicroUsd + step.costMicroUsd,
+          costReportedAttempts: existing.costReportedAttempts + step.costReportedAttempts,
           attempts: existing.attempts,
         };
       }
       jobs[jobId] = {
         billable_tokens: counters.billable,
         wallclock_ms: counters.wallclockMs,
+        ...(counters.costReportedAttempts > 0 ? { cost_usd: counters.costMicroUsd / 1_000_000 } : {}),
         steps: Object.fromEntries(
           Object.entries(steps).map(([stepId, step]) => [
             stepId,
             {
               billable_tokens: step.billable_tokens,
               wallclock_ms: step.wallclock_ms,
-              attempts: [...step.attempts.values()].sort((a, b) => a.attempt - b.attempt),
+              ...(step.costReportedAttempts > 0 ? { cost_usd: step.costMicroUsd / 1_000_000 } : {}),
+              attempts: [...step.attempts.values()]
+                .sort((a, b) => a.attempt - b.attempt)
+                .map(({ costMicroUsd, costReportedAttempts, ...attempt }) => ({
+                  ...attempt,
+                  ...(costReportedAttempts > 0 ? { cost_usd: costMicroUsd / 1_000_000 } : {}),
+                })),
             },
           ]),
         ),
@@ -336,8 +461,12 @@ export class UsageAccumulator {
         cache_write: this.run.cacheWrite,
         billable_tokens: this.run.billable,
         wallclock_ms: this.elapsedMs(),
+        ...(this.run.costReportedAttempts > 0 ? { cost_usd: this.run.costMicroUsd / 1_000_000 } : {}),
       },
-      unreported: [...this.unreported].sort(),
+      unreported: [
+        ...this.unreported,
+        ...(this.costUnreportedAttempts.size > 0 ? ['reported_cost_usd'] : []),
+      ].sort(),
       jobs,
     };
   }
@@ -360,6 +489,9 @@ function toCounters(usage: Usage, cacheReadWeight: number): Counters {
     cacheRead,
     cacheWrite,
     billable: Math.round(tokensIn + tokensOut + cacheWrite + cacheRead * cacheReadWeight),
+    costMicroUsd:
+      usage.reported_cost_usd === undefined ? 0 : Math.round(usage.reported_cost_usd * 1_000_000),
+    costReportedAttempts: usage.reported_cost_usd === undefined ? 0 : 1,
     wallclockMs: usage.wallclock_ms,
     attempts: 1,
     backend: usage.backend,
@@ -376,6 +508,8 @@ function describeExceededDimension(exceeded: Exceeded): string {
   switch (exceeded.dimension) {
     case 'tokens':
       return `${exceeded.scope}: израсходовано ${formatTokens(exceeded.used)} при потолке ${formatTokens(exceeded.limit)}`;
+    case 'cost':
+      return `${exceeded.scope}: потрачено ${formatMoney(exceeded.used)} при потолке ${formatMoney(exceeded.limit)}`;
     case 'wallclock':
       return `${exceeded.scope}: прошло ${formatDuration(exceeded.used)} при потолке ${formatDuration(exceeded.limit)}`;
     case 'rate_limit':

@@ -3,7 +3,7 @@ import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
 import type { Config } from '../config/resolve.js';
 import { StepcastError } from '../errors.js';
-import { parseDuration, parseTokens } from '../units.js';
+import { parseDuration, parseMoney, parseTokens } from '../units.js';
 import { interpolateTree, type Scope } from './interpolate.js';
 import { readYamlDocument, rejectWiringKeys, validateDocument } from './load.js';
 import { resolveParams, type ParamValue } from './params.js';
@@ -48,6 +48,7 @@ function toBudget(raw: RawBudget, at: string): Budget {
 
   return {
     ...(raw.tokens === undefined ? {} : { tokens: parseTokens(raw.tokens, `${at}.tokens`) }),
+    ...(raw.cost === undefined ? {} : { costMicroUsd: parseMoney(raw.cost, `${at}.cost`) }),
     ...(raw.wallclock === undefined
       ? {}
       : { wallclockMs: parseDuration(raw.wallclock, `${at}.wallclock`) }),

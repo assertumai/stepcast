@@ -42,6 +42,7 @@ const PredicateSchema = z.union([
 const BudgetSchema = z
   .object({
     tokens: amount.optional(),
+    cost: amount.optional(),
     wallclock: amount.optional(),
     rate_limit_pct: z.number().min(0).max(100).optional(),
     on_exceed: z.enum(['wait', 'stop']).optional(),

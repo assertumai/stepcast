@@ -117,6 +117,16 @@
             }
           ]
         },
+        "cost": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
         "wallclock": {
           "anyOf": [
             {
@@ -165,6 +175,16 @@
           ]
         },
         "max_tokens": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        "note_max_tokens": {
           "anyOf": [
             {
               "type": "string"

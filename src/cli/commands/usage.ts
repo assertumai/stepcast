@@ -2,7 +2,7 @@ import { resolveConfig } from '../../core/config/resolve.js';
 import { findProjectRoot, shortRunId } from '../../core/journal/paths.js';
 import { readStatus, readUsageSoft, resolveRun, type UsageSummaryUnavailable } from '../../core/journal/reader.js';
 import type { AttemptRecord, UsageAttemptReport, UsageReport } from '../../core/journal/schema.js';
-import { formatDuration, formatTokens } from '../../core/units.js';
+import { formatDuration, formatMoney, formatTokens } from '../../core/units.js';
 import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
 import { formatColumns } from '../output.js';
 import type { ParsedArgs } from '../args.js';
@@ -31,11 +31,17 @@ const COLUMNS = [
 
 const TIME_COLUMN = COLUMNS.indexOf('время');
 const BILLABLE_COLUMN = COLUMNS.indexOf('списано');
+const COST_COLUMN = COLUMNS.indexOf('цена');
 
-function totalCells(billable: number | undefined, wallclockMs: number | undefined): string[] {
+function totalCells(
+  billable: number | undefined,
+  wallclockMs: number | undefined,
+  costUsd: number | undefined,
+): string[] {
   const cells = COLUMNS.map(() => '');
   cells[TIME_COLUMN] = timeCell(wallclockMs);
   cells[BILLABLE_COLUMN] = tokensCell(billable);
+  cells[COST_COLUMN] = costCell(costUsd);
   return cells;
 }
 
@@ -61,17 +67,21 @@ export function runUsageCommand(
   const { summary, unavailable } = readUsageSoft(paths);
 
   write(`прогон ${shortRunId(status.run_id)}  ${status.pipeline}  ${status.status}`);
+  const costTotal = summary?.total.cost_usd ?? status.budget.cost_used_usd;
   write(
-    `расход: ${formatTokens(summary?.total.billable_tokens ?? status.budget.tokens_used)} токенов, ${formatDuration(summary?.total.wallclock_ms ?? status.budget.wallclock_ms)}`,
+    `расход: ${formatTokens(summary?.total.billable_tokens ?? status.budget.tokens_used)} токенов, ${formatDuration(summary?.total.wallclock_ms ?? status.budget.wallclock_ms)}, ${costTotal === undefined ? DASH : formatMoney(Math.round(costTotal * 1_000_000))}`,
   );
 
   const rows: string[][] = [['', ...COLUMNS]];
   for (const job of status.jobs) {
     const jobReport = summary?.jobs[job.id];
-    rows.push([`  ${job.id}`, ...totalCells(jobReport?.billable_tokens, jobReport?.wallclock_ms)]);
+    rows.push([`  ${job.id}`, ...totalCells(jobReport?.billable_tokens, jobReport?.wallclock_ms, jobReport?.cost_usd)]);
     for (const step of job.steps) {
       const stepReport = jobReport?.steps[step.id];
-      rows.push([`    ${step.id}`, ...totalCells(stepReport?.billable_tokens, stepReport?.wallclock_ms)]);
+      rows.push([
+        `    ${step.id}`,
+        ...totalCells(stepReport?.billable_tokens, stepReport?.wallclock_ms, stepReport?.cost_usd),
+      ]);
       for (const attempt of step.attempts) {
         rows.push([`      #${attempt.attempt}`, ...attemptCells(attempt, stepReport?.attempts)]);
       }
@@ -79,7 +89,7 @@ export function runUsageCommand(
   }
   for (const line of formatColumns(rows)) write(line);
 
-  for (const line of incompleteness(summary, unavailable)) write(line);
+  for (const line of incompleteness(summary, unavailable, status.budget.cost_unreported_attempts)) write(line);
 
   return ExitCode.ok;
 }
@@ -104,7 +114,7 @@ function attemptCells(
     tokensCell(usage.cache_write ?? undefined),
     timeCell(usage.wallclock_ms),
     tokensCell(billable?.billable_tokens),
-    usage.reported_cost_usd === undefined ? DASH : `$${usage.reported_cost_usd.toFixed(4)}`,
+    costCell(billable?.cost_usd ?? usage.reported_cost_usd),
   ];
 }
 
@@ -116,9 +126,15 @@ function timeCell(value: number | undefined): string {
   return value === undefined ? DASH : formatDuration(value);
 }
 
+/** Прочерк вместо нуля: несообщённая цена — не то же самое, что нулевая. */
+function costCell(usd: number | undefined): string {
+  return usd === undefined ? DASH : formatMoney(Math.round(usd * 1_000_000));
+}
+
 function incompleteness(
   summary: UsageReport | undefined,
   unavailable: UsageSummaryUnavailable | undefined,
+  costUnreportedAttempts: number | undefined,
 ): string[] {
   const lines: string[] = [];
 
@@ -130,5 +146,19 @@ function incompleteness(
     lines.push('', `учёт неполон: не сообщено — ${summary.unreported.join(', ')}`);
   }
 
+  if (costUnreportedAttempts !== undefined && costUnreportedAttempts > 0) {
+    lines.push(
+      `цена неполна: ${costUnreportedAttempts} ${pluralAttempts(costUnreportedAttempts)} без сообщённой цены`,
+    );
+  }
+
   return lines;
+}
+
+function pluralAttempts(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return 'попытка';
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'попытки';
+  return 'попыток';
 }

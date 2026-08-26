@@ -2,9 +2,13 @@ import assert from 'node:assert/strict';
 import { get, request } from 'node:http';
 import { describe, it, type TestContext } from 'node:test';
 
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';
-import { projectKey } from '../src/core/journal/paths.js';
+import { resolveConfig, type Config } from '../src/core/config/resolve.js';
+import { projectKey, runPaths } from '../src/core/journal/paths.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 
 /**
@@ -14,7 +18,7 @@ import { makeJournalBed, seedRun } from './helpers.js';
  */
 async function startServer(
   t: TestContext,
-  options: { runsRoot: string; watcher?: Watcher },
+  options: { runsRoot: string; watcher?: Watcher; config?: Config; home?: string },
 ): Promise<UiServer> {
   const server = await createUiServer({ ...options, port: 0 });
   t.after(() => server.close());
@@ -95,6 +99,43 @@ function openStream(t: TestContext, server: UiServer, path: string): Stream {
   t.after(() => req.destroy());
 
   return { events, close: () => req.destroy() };
+}
+
+/** Запрос произвольным методом: write-API проверяется тем же способом, что и чтение. */
+function send(
+  server: UiServer,
+  options: { method: string; path: string; body?: string; origin?: string },
+): Promise<Fetched> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        host: LOOPBACK,
+        port: server.port,
+        path: options.path,
+        method: options.method,
+        headers: {
+          'content-type': 'application/json',
+          ...(options.origin === undefined ? {} : { origin: options.origin }),
+        },
+      },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk: string) => (body += chunk));
+        res.on('end', () => resolve({ code: res.statusCode ?? 0, body }));
+      },
+    );
+    req.on('error', reject);
+    req.end(options.body ?? '');
+  });
+}
+
+async function sendJson(
+  server: UiServer,
+  options: { method: string; path: string; body?: string; origin?: string },
+): Promise<{ code: number; json: Json }> {
+  const { code, body } = await send(server, options);
+  return { code, json: JSON.parse(body === '' ? '{}' : body) as Json };
 }
 
 const settle = (ms = 80): Promise<void> => new Promise((done) => setTimeout(done, ms));
@@ -210,8 +251,8 @@ describe('ui-dashboard: HTTP-витрина', () => {
     assert.equal(pick(after.json, 'projects', 0, 'runs', 0, 'runId'), 'a');
   });
 
-  // Требование ui-daemon: «Наблюдение не изменяет журнал»
-  it('отклоняет методы, изменяющие состояние', async (t) => {
+  // Требование ui-daemon: изменения ограничены двумя названными действиями
+  it('отклоняет изменяющий метод на маршруте, где изменений не бывает', async (t) => {
     const { runsRoot } = makeJournalBed();
     const server = await startServer(t, { runsRoot });
 
@@ -228,5 +269,215 @@ describe('ui-dashboard: HTTP-витрина', () => {
     });
 
     assert.equal(code, 405);
+  });
+});
+
+/**
+ * Пайплайн для экрана пайплайнов: демон ищет его в самом проекте, а не в
+ * журнале, поэтому его приходится класть на диск проекта.
+ */
+const DEMO_PIPELINE = `version: 1
+kind: pipeline
+name: demo
+jobs:
+  build:
+    steps:
+      - id: compile
+        run: [echo, ok]
+  check:
+    needs: [build]
+    steps:
+      - id: verify
+        run: [echo, ok]
+`;
+
+describe('ui-dashboard: удаление прогона', () => {
+  it('снимает прогон с диска и из обзора', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    seedRun(runsRoot, projectRoot, { runId: 'b' });
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    const removed = await sendJson(server, {
+      method: 'DELETE',
+      path: `/api/run?run=${address(key, 'a')}`,
+    });
+    assert.equal(removed.code, 200);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), false);
+
+    const overview = await fetchJson(server, '/api/overview');
+    const ids = (pick(overview.json, 'projects', 0, 'runs') as Array<{ runId: string }>).map(
+      (run) => run.runId,
+    );
+    assert.deepEqual(ids, ['b']);
+  });
+
+  it('не удаляет идущий прогон', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a', status: 'running' });
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    const refused = await sendJson(server, {
+      method: 'DELETE',
+      path: `/api/run?run=${address(key, 'a')}`,
+    });
+    assert.equal(refused.code, 409);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), true);
+  });
+
+  it('отклоняет адрес, ведущий за пределы корня прогонов', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    const refused = await sendJson(server, {
+      method: 'DELETE',
+      path: `/api/run?run=${encodeURIComponent('../../etc/passwd')}`,
+    });
+    assert.equal(refused.code, 400);
+  });
+
+  it('отклоняет изменение, пришедшее со стороннего адреса', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    const refused = await sendJson(server, {
+      method: 'DELETE',
+      path: `/api/run?run=${address(key, 'a')}`,
+      origin: 'https://example.test',
+    });
+    assert.equal(refused.code, 403);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), true);
+  });
+});
+
+describe('ui-dashboard: настройки дефолтов', () => {
+  it('отдаёт действующие значения с их источниками', async (t) => {
+    const { runsRoot, home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+
+    const settings = await fetchJson(server, '/api/settings');
+    assert.equal(settings.code, 200);
+    assert.equal(pick(settings.json, 'agent', 'value'), 'claude');
+    assert.equal(pick(settings.json, 'agent', 'source'), 'встроенное умолчание');
+    assert.equal(pick(settings.json, 'model', 'value'), undefined);
+    assert.equal(settings.json.file, join(home, '.stepcast', 'config.yml'));
+    assert.equal(
+      (pick(settings.json, 'backends') as Array<{ name: string }>).some(
+        (backend) => backend.name === 'claude',
+      ),
+      true,
+    );
+  });
+
+  it('записывает модель в глобальный конфиг и сохраняет комментарии', async (t) => {
+    const { runsRoot, home } = makeJournalBed();
+    const file = join(home, '.stepcast', 'config.yml');
+    const before = readFileSync(file, 'utf8');
+    writeFileSync(file, `# корень прогонов задан тестом\n${before}`);
+    const server = await startServer(t, { runsRoot, home });
+
+    const saved = await sendJson(server, {
+      method: 'PUT',
+      path: '/api/settings',
+      body: JSON.stringify({ agent: 'claude', model: 'opus' }),
+    });
+    assert.equal(saved.code, 200);
+    assert.equal(pick(saved.json, 'model', 'value'), 'opus');
+    assert.equal(pick(saved.json, 'model', 'source'), file);
+
+    const text = readFileSync(file, 'utf8');
+    assert.match(text, /# корень прогонов задан тестом/);
+    assert.match(text, /model: opus/);
+
+    // Значение переживает перечитывание: правится файл, а не память демона.
+    const resolved = resolveConfig({ cwd: home, home, projectPath: null });
+    assert.equal(resolved.config.defaults.model, 'opus');
+  });
+
+  it('снимает модель пустым значением, возвращая пайплайны к модели бэкенда', async (t) => {
+    const { runsRoot, home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+
+    await sendJson(server, {
+      method: 'PUT',
+      path: '/api/settings',
+      body: JSON.stringify({ model: 'opus' }),
+    });
+    const cleared = await sendJson(server, {
+      method: 'PUT',
+      path: '/api/settings',
+      body: JSON.stringify({ model: null }),
+    });
+
+    assert.equal(cleared.code, 200);
+    assert.equal(pick(cleared.json, 'model', 'value'), undefined);
+    assert.doesNotMatch(readFileSync(join(home, '.stepcast', 'config.yml'), 'utf8'), /model:/);
+  });
+
+  it('отклоняет агента, которого не объявлял ни один бэкенд', async (t) => {
+    const { runsRoot, home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+
+    const refused = await sendJson(server, {
+      method: 'PUT',
+      path: '/api/settings',
+      body: JSON.stringify({ agent: 'нет-такого' }),
+    });
+
+    assert.equal(refused.code, 400);
+    assert.match(String(refused.json.error), /нет-такого/);
+    assert.doesNotMatch(readFileSync(join(home, '.stepcast', 'config.yml'), 'utf8'), /agent:/);
+  });
+});
+
+describe('ui-dashboard: пайплайны проектов', () => {
+  it('находит пайплайн проекта и показывает его работы', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.equal(pipelines.code, 200);
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'name'), 'demo');
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'file'), 'stepcast.yml');
+    assert.deepEqual(
+      (pick(pipelines.json, 'pipelines', 0, 'jobs') as Array<{ id: string }>).map((job) => job.id),
+      ['build', 'check'],
+    );
+    // Раскладка приходит готовой: браузеру остаётся отрисовка.
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'graph', 'nodes', 1, 'column'), 1);
+  });
+
+  it('показывает неразбираемый пайплайн с ошибкой, а не пропускает его молча', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), 'version: 1\nkind: pipeline\nname: broken\n');
+    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.equal(pipelines.code, 200);
+    assert.equal(typeof pick(pipelines.json, 'pipelines', 0, 'error'), 'string');
+  });
+
+  it('не принимает за пайплайн определение работы в том же каталоге', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(
+      join(projectRoot, 'stepcast.yml'),
+      'version: 1\nkind: job\nid: solo\nsteps: []\n',
+    );
+    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.deepEqual(pipelines.json.pipelines, []);
   });
 });

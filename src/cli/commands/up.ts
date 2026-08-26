@@ -38,7 +38,9 @@ export async function runUpCommand(
   if (args.flags.foreground === true) {
     let server;
     try {
-      server = await createUiServer({ runsRoot: config.runs.root, port });
+      // Конфигурация нужна витрине для разбора пайплайнов: раскрытие
+      // опирается на умолчания так же, как их применяет прогон.
+      server = await createUiServer({ runsRoot: config.runs.root, port, config });
     } catch (error) {
       if (isAddressInUse(error)) throw portBusyError(port, error);
       throw error;

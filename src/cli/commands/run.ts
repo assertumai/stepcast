@@ -55,6 +55,12 @@ export async function runRunCommand(
     write(`прогон ${runId}: ${result.status}`);
     write(`журнал: ${result.journal.paths.dir}`);
 
+    if (result.costLimitUnapplied) {
+      write(
+        'предупреждение: денежный потолок объявлен, но ни одна попытка не сообщила цены — потолок не применялся',
+      );
+    }
+
     // В изолированном режиме результат остался в стороне. Молча закончить —
     // значит оставить пользователя гадать, где его работа.
     const isolated = readStatus(result.journal.paths).jobs.filter(
