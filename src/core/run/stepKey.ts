@@ -25,6 +25,25 @@ export interface StepKeyInput {
   readonly upstream: readonly { readonly job: string; readonly value: unknown }[];
 }
 
+/**
+ * Составляющая `upstream` для ключа: выходы работ выше по графу.
+ *
+ * Порядок задаётся здесь, а не тем, как выходы накопились. Исполнитель
+ * складывает их в порядке завершения работ, планировщик возобновления — в
+ * порядке разбора прогона; разошедшийся порядок даёт разный JSON, то есть
+ * разный ключ при неизменном определении и одном и том же составе выходов.
+ * Сортировка по идентификатору работы снимает вопрос конструктивно: обе
+ * стороны подают одну и ту же последовательность независимо от того, как они
+ * до неё дошли.
+ */
+export function upstreamForKey(
+  outputs: readonly { readonly job: string; readonly value: unknown }[],
+): readonly { readonly job: string; readonly value: unknown }[] {
+  return [...outputs]
+    .map((output) => ({ job: output.job, value: output.value }))
+    .sort((left, right) => (left.job === right.job ? 0 : left.job < right.job ? -1 : 1));
+}
+
 export function computeStepKey(input: StepKeyInput): string {
   const { step } = input;
 

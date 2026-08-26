@@ -327,6 +327,9 @@ export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('iteration.finished'), job: z.string(), iteration: z.number().int().positive(), passed: z.boolean(), reason: z.string().optional() }).strict(),
   z.object({ ...eventBase, kind: z.literal('step.reused'), job: z.string(), step: z.string(), source: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('tree.restored'), anchor: z.string(), path: z.string() }).strict(),
+  // Состояние каталога прогона, оставленное переиспользованными шагами:
+  // перенесено из исходного прогона, потому что каталог нового пуст.
+  z.object({ ...eventBase, kind: z.literal('run_dir.carried'), path: z.string(), source: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('bookkeeping.failed'), operation: z.string(), job: z.string().optional(), step: z.string().optional(), detail: z.string() }).strict(),
 ]);
 

@@ -18,7 +18,8 @@ import type { JobRecord, RunManifest, RunStatus, StepRecord } from '../journal/s
 import { expandPipeline } from '../pipeline/expand.js';
 import { jobLockHash } from '../pipeline/lock.js';
 import { definitionFiles, type ExpandedPipeline, type Job, type Pipeline, type Step } from '../pipeline/model.js';
-import { computeStepKey } from './stepKey.js';
+import { buildGraph, executionOrder } from '../graph.js';
+import { computeStepKey, upstreamForKey } from './stepKey.js';
 
 /**
  * План переиспользования: что взять из прошлого прогона, что переисполнить и
@@ -99,9 +100,27 @@ export function parseFrom(value: string): ResumeFrom {
  */
 export type ChangedSince = readonly string[] | 'all';
 
-/** Последнее зафиксированное состояние дерева прошлого прогона. */
+/**
+ * Последнее зафиксированное состояние дерева прошлого прогона.
+ *
+ * Последняя — та, что **завершилась** последней, а не та, что стоит последней
+ * в состоянии прогона: работы перечислены там в порядке объявления, а
+ * исполняются в порядке графа. Взять анкер по месту в списке значило бы у
+ * пайплайна, где работа объявлена раньше своей зависимости, объявить конечным
+ * состоянием промежуточное — и весь вывод исполнившихся позже работ выглядел
+ * бы правкой пользователя.
+ */
 export function finalAnchorOf(status: RunStatus, fallback: AnchorKind): Anchor | undefined {
-  for (const job of [...status.jobs].reverse()) {
+  const byFinish = [...status.jobs]
+    .map((job, index) => ({ job, index }))
+    .sort((a, b) => {
+      const left = a.job.finished_at ?? '';
+      const right = b.job.finished_at ?? '';
+      return left === right ? a.index - b.index : left < right ? -1 : 1;
+    })
+    .map((item) => item.job);
+
+  for (const job of byFinish.reverse()) {
     for (const step of [...job.steps].reverse()) {
       if (step.tree_id !== undefined) {
         return { kind: step.anchor_kind ?? fallback, id: step.tree_id };
@@ -147,9 +166,12 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
   // их в множестве изменений значило бы гасить весь пайплайн любой правкой
   // любой работы.
   const changed = excludeDefinitionFiles(options.changed, pipeline, cwd);
+  // Порядок обхода — тот, в котором работы доходили до исполнения: от него
+  // зависят и каскад пересчёта, и состав выходов работ выше по графу.
+  const order = executionOrder(buildGraph(pipeline).graph);
   // Что произвёл сам исходный прогон: считается один раз на план, а не на
   // каждый шаг.
-  const producedFrom = attributionIndex(source, options.producedPaths);
+  const producedFrom = attributionIndex(source, options.producedPaths, order);
 
   const steps: StepPlan[] = [];
   const outputs = new Map<string, unknown>();
@@ -159,12 +181,14 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
   const produced = new Set<string>();
   let lastReused: StepRecord | undefined;
   let poisoned: string | undefined;
-  // Порядок работ исходного прогона совпадает с порядком объявления в
-  // текущем пайплайне: план проходит его один раз, отмечая точку `--from` по
-  // ходу дела.
+  // Обход идёт в порядке исполнения, а не объявления: и каскад пересчёта, и
+  // выходы работ выше по графу описывают то, что к этому моменту уже
+  // завершилось. Работа, объявленная раньше своей зависимости, в порядке
+  // объявления получила бы и пустой `upstream`, и невидимый каскад. Точка
+  // `--from` отмечается по ходу того же прохода.
   let reachedFrom = false;
 
-  for (const job of pipeline.jobs) {
+  for (const job of order) {
     const record = source.status.jobs.find((item) => item.id === job.id);
     // Работа объявила выход, и артефакт исходного прогона недоступен —
     // удалён уборкой или испорчен. Переиспользовать её значило бы отдать
@@ -296,14 +320,22 @@ function toProjectRelative(cwd: string, path: string): string {
  * шагами, исполнявшимися после него. Отпечаток входов шага снимался на
  * `tree_before`, и всё, что дерево получило позже от самого же прогона, ещё
  * не было его входом.
+ *
+ * «Позже» — по порядку исполнения, а не по порядку записей в состоянии
+ * прогона: состояние перечисляет работы в порядке объявления, и работа,
+ * объявленная раньше своей зависимости, отдала бы вывод исполнившейся до неё
+ * работы за чужую правку дерева.
  */
 function attributionIndex(
   source: SourceRun,
   producedPaths: BuildPlanOptions['producedPaths'],
+  order: readonly Job[],
 ): ReadonlyMap<string, ReadonlySet<string>> {
   const addresses: string[] = [];
   const own: (readonly string[])[] = [];
-  for (const job of source.status.jobs) {
+  for (const { id } of order) {
+    const job = source.status.jobs.find((item) => item.id === id);
+    if (job === undefined) continue;
     for (const step of job.steps) {
       addresses.push(`${job.id}/${step.id}`);
       own.push(producedPaths?.(step) ?? []);
@@ -329,6 +361,7 @@ interface ReasonOptions {
   readonly isAbove: boolean;
   readonly isFromPoint: boolean;
   readonly options: BuildPlanOptions;
+  /** Выходы работ, переиспользованных целиком, в порядке исполнения. */
   readonly upstream: readonly { job: string; value: unknown }[];
   readonly changed: ChangedSince;
   /** Пути, произведённые этим шагом и всеми шагами после него в источнике. */
@@ -387,7 +420,7 @@ function invalidationReason(input: ReasonOptions): ReasonOutcome {
     inputsFingerprint: previous.inputs_fingerprint,
     backendCommand:
       step.kind === 'agent' ? options.config.backends[step.agent]?.command : undefined,
-    upstream,
+    upstream: upstreamForKey(upstream),
   });
   const keyChanged = key !== previous.key;
 

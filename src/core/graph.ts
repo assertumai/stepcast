@@ -90,6 +90,49 @@ export function buildGraph(pipeline: Pipeline): GraphResult {
   return { graph: { main, terminal, dependencies, upstream, byId }, problems };
 }
 
+/**
+ * Порядок, в котором работы доходят до исполнения.
+ *
+ * Повторяет выбор планировщика: из множества готовых берётся первая в порядке
+ * объявления, основной граф исчерпывается прежде работ с `needs: all`. Порядок
+ * объявления сам по себе таким не является — работа может быть объявлена
+ * раньше своей зависимости, а вторая фаза идёт после первой независимо от
+ * места в документе.
+ *
+ * Нужен разбору прогона: решение о переиспользовании опирается на то, что к
+ * моменту работы уже завершилось, и обход в порядке объявления отвечал бы на
+ * этот вопрос иначе, чем сам прогон.
+ */
+export function executionOrder(graph: Graph): readonly Job[] {
+  const settled = new Set<string>();
+  const order: Job[] = [];
+
+  const drain = (jobs: readonly Job[]): void => {
+    for (;;) {
+      const next = jobs.find(
+        (job) =>
+          !settled.has(job.id) &&
+          (graph.dependencies.get(job.id) ?? []).every((id) => settled.has(id)),
+      );
+      if (next === undefined) return;
+      settled.add(next.id);
+      order.push(next);
+    }
+  };
+
+  drain(graph.main);
+  drain(graph.terminal);
+
+  // Работы, до которых очередь не дошла: цикл в `needs` либо зависимость от
+  // его участника. Такой пайплайн отклоняется проверкой графа, но обход
+  // обязан оставаться полным — иначе разбор молча теряет работу.
+  for (const job of [...graph.main, ...graph.terminal]) {
+    if (!settled.has(job.id)) order.push(job);
+  }
+
+  return order;
+}
+
 function findCycles(
   jobs: readonly Job[],
   dependencies: ReadonlyMap<string, readonly string[]>,

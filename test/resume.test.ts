@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -1232,6 +1232,367 @@ jobs:
           from: 'a/нет-такого',
         }),
       /Работа a не объявляет шаг нет-такого/,
+    );
+  });
+});
+
+// Работа пишет `${run.dir}/item.json` собственным шагом и тут же подключает
+// его контекстом того же шага: у величины `run.dir` нет иного места, откуда
+// она попадала бы в определение, кроме подстановки.
+const RUN_DIR_PIPELINE = `
+version: 1
+kind: pipeline
+name: подстановка-run-dir
+jobs:
+  работа:
+    session: per_step
+    steps:
+      - id: пишет
+        run: [sh, -c, 'echo "{\\"v\\":1}" > "$STEPCAST_RUN_DIR/item.json"']
+        expect: [{ exit_code: 0 }]
+      - id: думает
+        agent: fake
+        context: ["\${run.dir}/item.json"]
+        prompt: скажи привет
+        expect: [{ exit_code: 0 }]
+`;
+
+function runDirAdapter(): (name: string) => BackendAdapter {
+  const backend = createFakeBackend({ lines: [resultLine({ text: 'привет' })] });
+  return () => backend.adapter;
+}
+
+describe('run-resume: отложенные подстановки пространства run', () => {
+  // Сценарий: «Отложенная подстановка величины прогона не меняет ключ» /
+  // «Работа с подстановкой директории прогона переиспользуется»
+  it('переиспользует работу с ${run.dir} в контексте шага при возобновлении без правок', async () => {
+    const b = bed({ 'stepcast.yml': RUN_DIR_PIPELINE });
+    const first = await firstRun(b, runDirAdapter());
+    assert.equal(first.status, 'success');
+
+    const plan = planFor(b, first);
+    assert.deepEqual(decisions(plan), { 'работа/пишет': 'reuse', 'работа/думает': 'reuse' });
+
+    const second = await resume(b, first, undefined, runDirAdapter());
+    assert.equal(second.status, 'success');
+
+    const reused = steps(second).filter((step) => step.reused_from !== undefined);
+    assert.deepEqual(
+      reused.map((step) => step.id).sort(),
+      ['думает', 'пишет'],
+    );
+  });
+
+  // Сценарий: «Одинаковые условия дают одинаковый ключ» — прямее, чем через
+  // решение планировщика: сравниваются сами записанные ключи.
+  it('даёт совпадающие ключи шагов в двух независимых прогонах одной работы', async () => {
+    const b = bed({ 'stepcast.yml': RUN_DIR_PIPELINE });
+    const first = await firstRun(b, runDirAdapter());
+    assert.equal(first.status, 'success');
+
+    const second = await firstRun(b, runDirAdapter());
+    assert.equal(second.status, 'success');
+
+    assert.notEqual(first.journal.paths.runId, second.journal.paths.runId);
+
+    const firstKeys = Object.fromEntries(steps(first).map((step) => [step.id, step.key]));
+    const secondKeys = Object.fromEntries(steps(second).map((step) => [step.id, step.key]));
+    assert.deepEqual(firstKeys, secondKeys);
+  });
+
+  // Сценарий: «Состояние каталога прогона переносится вместе с
+  // переиспользованием». Шаг `пишет` переиспользуется, а `думает`
+  // переисполняется и читает `${run.dir}/item.json` — файл, которого в
+  // каталоге нового прогона никто не создавал.
+  it('переносит файл, оставленный переиспользованным шагом в каталоге прогона', async () => {
+    const b = bed({ 'stepcast.yml': RUN_DIR_PIPELINE });
+    const first = await firstRun(b, runDirAdapter());
+    assert.equal(first.status, 'success');
+
+    const plan = planFor(b, first, 'работа/думает');
+    assert.deepEqual(decisions(plan), { 'работа/пишет': 'reuse', 'работа/думает': 'rerun' });
+
+    const second = await resume(b, first, 'работа/думает', runDirAdapter());
+    assert.equal(second.status, 'success');
+
+    assert.ok(
+      existsSync(join(second.journal.paths.dir, 'item.json')),
+      'файл переиспользованного шага должен оказаться в каталоге нового прогона',
+    );
+    const думает = steps(second).find((step) => step.id === 'думает');
+    assert.equal(думает?.status, 'success');
+    assert.equal(думает?.reused_from, undefined);
+
+    // Сценарий: «Раскладка журнала не переносится». Журнал нового прогона
+    // написан им самим — иначе события исходного прогона оказались бы в
+    // ленте нового, а состояние описывало бы чужой прогон.
+    const начала = readEvents(second.journal.paths).filter((event) => event.kind === 'run.started');
+    assert.deepEqual(
+      начала.map((event) => (event as { run_id: string }).run_id),
+      [second.journal.paths.runId],
+    );
+    assert.equal(readStatus(second.journal.paths).run_id, second.journal.paths.runId);
+  });
+
+  // Сценарий: «Каскад не гасит нижележащие работы без причины» — точка
+  // возобновления ниже работы с `${run.dir}`, определение и дерево не менялись.
+  it('переиспользует работу с ${run.dir} при возобновлении с точки ниже неё', async () => {
+    const b = bed({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: run-dir-и-нижележащая
+jobs:
+  работа:
+    session: per_step
+    steps:
+      - id: пишет
+        run: [sh, -c, 'echo "{\\"v\\":1}" > "$STEPCAST_RUN_DIR/item.json"']
+        expect: [{ exit_code: 0 }]
+      - id: думает
+        agent: fake
+        context: ["\${run.dir}/item.json"]
+        prompt: скажи привет
+        expect: [{ exit_code: 0 }]
+  ниже:
+    needs: [работа]
+    session: per_step
+    steps:
+      - id: считает
+        run: [echo, готово]
+        expect: [{ exit_code: 0 }]
+`,
+    });
+
+    const first = await firstRun(b, runDirAdapter());
+    assert.equal(first.status, 'success');
+
+    const plan = planFor(b, first, 'ниже');
+    assert.deepEqual(decisions(plan), {
+      'работа/пишет': 'reuse',
+      'работа/думает': 'reuse',
+      'ниже/считает': 'rerun',
+    });
+
+    const second = await resume(b, first, 'ниже', runDirAdapter());
+    assert.equal(second.status, 'success');
+  });
+});
+
+// Требование run-journal: «Ключ MUST вычисляться из одинаково собранного
+// входа независимо от того, вычисляет его исполнитель или планировщик
+// возобновления». Расходится этот вход не в общей функции, а до неё — в
+// составляющей `upstream`, которую стороны накапливают по-разному.
+describe('run-resume: вход ключа собирают одинаково обе стороны', () => {
+  // Работа объявлена раньше своей зависимости: исполнитель идёт по графу и к
+  // её шагу уже знает выход `propose`, обход в порядке объявления не знал бы.
+  it('переиспользует работу, объявленную раньше своей зависимости', async () => {
+    const b = bed({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: объявлена-раньше-зависимости
+jobs:
+  implement:
+    needs: [propose]
+    session: per_step
+    steps:
+      - id: использует
+        run: [sh, -c, 'echo "\${jobs.propose.output.slug}" > slug.txt']
+        expect: [{ exit_code: 0 }]
+  propose:
+    output:
+      from: думает
+    session: per_step
+    steps:
+      - id: думает
+        agent: fake
+        prompt: "придумай"
+        expect: [{ exit_code: 0 }]
+`,
+    });
+
+    const adapter = (): (name: string) => BackendAdapter => {
+      const backend = createFakeBackend({
+        lines: [resultLine({ text: 'ок', structured: { slug: 'add-oauth' } })],
+      });
+      return () => backend.adapter;
+    };
+
+    const first = await firstRun(b, adapter());
+    assert.equal(first.status, 'success');
+
+    assert.deepEqual(decisions(planFor(b, first)), {
+      'propose/думает': 'reuse',
+      'implement/использует': 'reuse',
+    });
+  });
+});
+
+describe('run-resume: чувствительность ключа сохранена', () => {
+  const UPSTREAM_PIPELINE = `
+version: 1
+kind: pipeline
+name: чувствительность-к-выходу
+jobs:
+  propose:
+    output:
+      from: думает
+    session: per_step
+    steps:
+      - id: думает
+        agent: fake
+        prompt: "придумай"
+        expect: [{ exit_code: 0 }]
+  implement:
+    needs: [propose]
+    session: per_step
+    steps:
+      - id: использует
+        run: [sh, -c, 'echo "\${jobs.propose.output.slug}" > slug.txt']
+        expect: [{ exit_code: 0 }]
+`;
+
+  function proposeAdapter(): (name: string) => BackendAdapter {
+    const backend = createFakeBackend({
+      lines: [resultLine({ text: 'ок', structured: { slug: 'add-oauth' } })],
+    });
+    return () => backend.adapter;
+  }
+
+  // Сценарий: «Изменение выхода работы выше по графу меняет ключ»
+  it('смена выхода работы выше по графу меняет ключ шага, который его использует', async () => {
+    const b = bed({ 'stepcast.yml': UPSTREAM_PIPELINE });
+    const first = await firstRun(b, proposeAdapter());
+    assert.equal(first.status, 'success');
+
+    assert.ok(planFor(b, first).steps.every((item) => item.decision.kind === 'reuse'));
+
+    // Дерево и определение не менялись — меняем только то, что работа выше
+    // по графу *вернула бы*, подменив её сохранённый артефакт напрямую.
+    const artifactPath = join(first.journal.paths.artifacts, 'propose.json');
+    writeFileSync(artifactPath, JSON.stringify({ slug: 'другой-слаг' }));
+
+    const changedPlan = planFor(b, first);
+    assert.equal(changedPlan.steps.find((item) => item.job === 'propose')?.decision.kind, 'reuse');
+    const implementStep = changedPlan.steps.find((item) => item.job === 'implement');
+    assert.equal(implementStep?.decision.kind, 'rerun');
+  });
+
+  // Сценарий: «Изменение определения работы с отложенной подстановкой меняет
+  // ключ» — здесь же проверяется, что соседняя работа не задета.
+  it('правка файла работы с ${run.dir} меняет её ключи и не задевает шаги другой работы', async () => {
+    const b = bed(
+      {
+        'stepcast.yml': `
+kind: pipeline
+name: правка-работы-с-run-dir
+jobs:
+  другая:
+    uses: ./jobs/другая.yml
+  работа:
+    uses: ./jobs/работа.yml
+`,
+        'jobs/работа.yml': `
+kind: job
+session: per_step
+steps:
+  - id: пишет
+    run: [sh, -c, 'echo "{}" > "$STEPCAST_RUN_DIR/item.json"']
+    expect: [{ exit_code: 0 }]
+  - id: думает
+    agent: fake
+    context: ["\${run.dir}/item.json"]
+    prompt: скажи
+    expect: [{ exit_code: 0 }]
+`,
+        'jobs/другая.yml': `
+kind: job
+session: per_step
+steps:
+  - id: b
+    run: [echo, готово]
+    expect: [{ exit_code: 0 }]
+`,
+      },
+      { git: true },
+    );
+
+    const first = await firstRun(b, runDirAdapter());
+    assert.equal(first.status, 'success');
+
+    b.project.write(
+      'jobs/работа.yml',
+      `
+kind: job
+session: per_step
+steps:
+  - id: пишет
+    run: [sh, -c, 'echo "{}" > "$STEPCAST_RUN_DIR/item.json"']
+    expect: [{ exit_code: 0 }]
+  - id: думает
+    agent: fake
+    context: ["\${run.dir}/item.json"]
+    prompt: скажи иначе
+    expect: [{ exit_code: 0 }]
+`,
+    );
+
+    const plan = planFor(b, first);
+    assert.equal(plan.steps.find((item) => item.job === 'другая')?.decision.kind, 'reuse');
+    const workJobSteps = plan.steps.filter((item) => item.job === 'работа');
+    assert.ok(workJobSteps.every((item) => item.decision.kind === 'rerun'));
+  });
+
+  // Сценарий: «Изменение выхода работы выше по графу меняет ключ» — здесь
+  // источник изменения другой: значение `env` самой работы.
+  it('правка значения в env работы меняет ключ шага, который его подставляет', async () => {
+    const b = bed(
+      {
+        'stepcast.yml': `
+kind: pipeline
+name: правка-env
+jobs:
+  работа:
+    uses: ./jobs/работа.yml
+`,
+        'jobs/работа.yml': `
+kind: job
+session: per_step
+env:
+  ТОКЕН: секрет-1
+steps:
+  - id: печатает
+    run: [sh, -c, 'echo "\${env.ТОКЕН}"']
+    expect: [{ exit_code: 0 }]
+`,
+      },
+      { git: true },
+    );
+
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+    assert.ok(planFor(b, first).steps.every((item) => item.decision.kind === 'reuse'));
+
+    b.project.write(
+      'jobs/работа.yml',
+      `
+kind: job
+session: per_step
+env:
+  ТОКЕН: секрет-2
+steps:
+  - id: печатает
+    run: [sh, -c, 'echo "\${env.ТОКЕН}"']
+    expect: [{ exit_code: 0 }]
+`,
+    );
+
+    const plan = planFor(b, first);
+    assert.equal(plan.steps[0]?.decision.kind, 'rerun');
+    assert.match(
+      (plan.steps[0]?.decision as { reason: string }).reason,
+      /изменилось определение шага/,
     );
   });
 });

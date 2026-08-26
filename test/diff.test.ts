@@ -73,6 +73,30 @@ describe('run-diff: сопоставление по ключам', () => {
     assert.ok(describeComparison(comparison).some((line) => line.includes('различий нет')));
   });
 
+  // Сценарий: «Два прогона работы с подстановкой директории прогона»
+  it('относит шаги неизменной работы с ${run.dir} к совпавшим', async () => {
+    const b = bed({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: run-dir
+jobs:
+  работа:
+    session: per_step
+    steps:
+      - id: шаг
+        run: [echo, "\${run.dir}"]
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    const first = await run(b);
+    const second = await run(b);
+
+    const comparison = compare(b, first, second);
+    assert.equal(comparison.identical, true);
+    assert.equal(comparison.steps[0]?.category, 'same');
+  });
+
   // Сценарий: «Шаг изменился»
   it('относит шаг с разошедшимся ключом к различающимся', async () => {
     const b = bed({ 'сырьё.txt': 'вход', 'stepcast.yml': PIPELINE });

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { cpSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { basename, join } from 'node:path';
 
 import {
   createAnchorer,
@@ -30,7 +30,7 @@ import { HaltCause, type HaltCauseValue } from './halt.js';
 import { preflight } from './preflight.js';
 import { buildPreviousFailure } from './previousFailure.js';
 import type { ResumePlan, SourceRun, StepPlan } from './resumePlan.js';
-import { computeStepKey } from './stepKey.js';
+import { computeStepKey, upstreamForKey } from './stepKey.js';
 import { prepareWorkspace, type PreparedWorkspace } from './workspace.js';
 import { shortRunId } from '../journal/paths.js';
 import { findStepDir } from '../journal/reader.js';
@@ -232,6 +232,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   // артефакте путём, по которому файл ещё не записан, было бы ложью.
   if (options.resume !== undefined) {
     restoreForResume(options.resume, journal, options.cwd, anchorKind);
+    carryOverRunDir(options.resume, journal);
   }
 
   writeStatus('running');
@@ -417,7 +418,7 @@ async function executeJob(
         journal.event({ kind: 'iteration.started', job: job.id, iteration });
       }
 
-      const outcome = await runJobSteps(job, jobContext, anchorState, {
+      const outcome = await runJobSteps(job, declared, jobContext, anchorState, {
         jobStartedAt,
         ...(job.until === undefined ? {} : { iteration }),
         ...(previousCheck === undefined ? {} : { previousCheck }),
@@ -646,6 +647,7 @@ interface IterationOptions {
 
 async function runJobSteps(
   job: Job,
+  declared: Job,
   context: RunContext,
   anchorState: { anchorer: TreeAnchorer | undefined },
   iterationOptions: IterationOptions,
@@ -693,7 +695,22 @@ async function runJobSteps(
   /** `output.from` назвал переиспользованный шаг, а его выход не перенёсся. */
   let outputFromStepMissing = false;
 
-  for (const step of job.steps) {
+  for (const [position, step] of job.steps.entries()) {
+    // Ключ шага держится на нераскрытом определении: отложенные подстановки
+    // пространства `run` уникальны для каждого прогона, и раскрытый текст
+    // сделал бы ключ невоспроизводимым. Соответствие — позиционное:
+    // `resolveLate` обходит дерево работы, не добавляя, не убирая и не
+    // переставляя шаги. По `step.id` его устанавливать нельзя — идентификатор
+    // сам может содержать подстановку, и тогда раскрытый шаг не нашёл бы себя
+    // в нераскрытом определении, а при совпадающих идентификаторах ключ
+    // молча считался бы не от того шага.
+    const declaredStep = declared.steps[position];
+    if (declaredStep === undefined) {
+      throw new Error(
+        `внутренняя ошибка: шагу ${job.id}/${step.id} не найдено соответствие в нераскрытом определении работы`,
+      );
+    }
+
     const stepDirPath = journal.prepareStep(job.id, step.index, step.id, iteration);
 
     const planned = planFor(context, job.id, step.id);
@@ -832,14 +849,19 @@ async function runJobSteps(
       key: computeStepKey({
         // Хеш определения именно этой работы, а не всего пайплайна: правка
         // файла другой работы не должна менять ключ шагов, которые её не
-        // касаются.
-        lockHash: jobLockHash(context.expanded.pipeline, job),
+        // касаются. Оба входа — нераскрытые: раскрытие подставляет величины
+        // пространства `run`, уникальные для каждого прогона.
+        lockHash: jobLockHash(context.expanded.pipeline, declared),
         jobId: job.id,
-        step,
+        step: declaredStep,
         inputsFingerprint: fingerprint?.value,
         backendCommand:
-          step.kind === 'agent' ? context.config.backends[step.agent]?.command : undefined,
-        upstream: context.outputs,
+          declaredStep.kind === 'agent'
+            ? context.config.backends[declaredStep.agent]?.command
+            : undefined,
+        // Порядок завершения работ у исполнителя свой, у планировщика
+        // возобновления свой; общая функция приводит оба к одному виду.
+        upstream: upstreamForKey(context.outputs),
       }),
       status,
       ...(treeAfter === undefined
@@ -1481,6 +1503,55 @@ function transferStepOutput(
     return JSON.parse(raw) as unknown;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Перенести в новый прогон состояние каталога прогона, оставшееся от
+ * переиспользованных шагов.
+ *
+ * Каталог прогона — такая же среда исполнения, как рабочее дерево, только
+ * заведённая движком и своя у каждого прогона: шаг кладёт туда промежуточный
+ * файл (`$STEPCAST_RUN_DIR/item.json`, `${run.dir}/…`), а соседний шаг читает
+ * его оттуда же. Переиспользованный шаг ничего не кладёт — его побочный эффект
+ * остался в каталоге исходного прогона, — и переисполняемый читатель не
+ * находит файла, хотя ни определение, ни дерево не менялись. Рабочему дереву
+ * ту же задачу решает восстановление по якорю; здесь якорей нет, и отвечает ей
+ * копия.
+ *
+ * Копируется всё, чего нет в раскладке журнала: раскладку движок пишет сам, а
+ * остальное в каталоге прогона могло появиться только от шага. Переисполняемый
+ * шаг, который тот же путь пишет заново, перезаписывает копию до того, как её
+ * кто-нибудь прочитает: работа выше по графу завершается раньше нижележащей, а
+ * шаг — раньше следующего шага своей работы.
+ */
+function carryOverRunDir(resume: ResumeContext, journal: RunJournal): void {
+  if (!resume.plan.steps.some((step) => step.decision.kind === 'reuse')) return;
+
+  const paths = journal.paths;
+  // Имена раскладки берутся из самих путей, а не списком литералов: список
+  // разошёлся бы с раскладкой при первом же её пополнении, и новый служебный
+  // файл поехал бы из прогона в прогон как чужое состояние.
+  const own = new Set(
+    [paths.manifest, paths.lock, paths.status, paths.events, paths.usage, paths.artifacts, paths.jobs, paths.workspace, paths.anchors].map(
+      (path) => basename(path),
+    ),
+  );
+
+  try {
+    for (const entry of readdirSync(resume.source.paths.dir)) {
+      if (own.has(entry)) continue;
+      cpSync(join(resume.source.paths.dir, entry), join(paths.dir, entry), { recursive: true });
+      journal.event({ kind: 'run_dir.carried', path: entry, source: resume.source.manifest.run_id });
+    }
+  } catch (error) {
+    // Не отказ: без переноса переисполнится лишнее либо шаг честно упадёт на
+    // отсутствующем файле — ровно то, что было бы и без возобновления.
+    journal.event({
+      kind: 'bookkeeping.failed',
+      operation: 'перенос состояния каталога прогона',
+      detail: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

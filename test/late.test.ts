@@ -218,6 +218,36 @@ jobs:
     assert.equal(readFileSync(project.path('seen.txt'), 'utf8').trim(), 'success');
   });
 
+  // Подстановка в `id` шага схемой не запрещена, и такой пайплайн исполнялся
+  // всегда. Ключ шага считается от нераскрытого определения, и соответствие
+  // раскрытого шага нераскрытому здесь единственно возможное — позиционное:
+  // по идентификатору эти два шага не совпадают между собой.
+  it('исполняет шаг, идентификатор которого сам содержит подстановку', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: id-substitution
+workspace: { mode: cwd }
+jobs:
+  only:
+    env:
+      ИМЯ: печать
+    steps:
+      - id: "шаг-\${env.ИМЯ}"
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`,
+    });
+
+    const result = await run(project);
+
+    assert.equal(result.status, 'success');
+    const record = readStatus(result.journal.paths).jobs[0]?.steps[0];
+    assert.equal(record?.id, 'шаг-печать');
+    assert.equal(typeof record?.key, 'string');
+  });
+
   it('раскрытое определение работы попадает в журнал', async () => {
     const project = makeProject({
       'stepcast.yml': `
