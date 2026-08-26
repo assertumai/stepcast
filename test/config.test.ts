@@ -177,7 +177,7 @@ describe('stepcast-configuration', () => {
 
     assert.match(text, /defaults\.agent\s+claude\s+встроенное умолчание/);
     assert.match(text, new RegExp(`defaults\\.model\\s+sonnet\\s+${box.globalPath.replace(/[/\\]/g, '\\$&')}`));
-    assert.match(text, /limits\.tokens\s+5M/);
+    assert.match(text, /limits\.tokens\s+20M/);
     assert.match(text, /defaults\.step_timeout\s+30m/);
   });
 

@@ -298,7 +298,7 @@ jobs:
     const project = makeProject({
       'stepcast.yml': `
 kind: pipeline
-budget: { tokens: 9M }
+budget: { tokens: 90M }
 concurrency: 20
 jobs:
   build:
@@ -512,7 +512,7 @@ jobs:
       makeProject({
         'stepcast.yml': `
 kind: pipeline
-budget: { tokens: 9M }
+budget: { tokens: 90M }
 jobs:
   build:
     needs: [nope]
