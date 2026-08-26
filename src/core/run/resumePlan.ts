@@ -1,11 +1,23 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
 
-import type { Anchor, AnchorKind, TreeAnchorer } from '../anchor/index.js';
+import {
+  createAnchorer,
+  detectAnchorKind,
+  manifestStore,
+  type Anchor,
+  type AnchorKind,
+  type TreeAnchorer,
+} from '../anchor/index.js';
 import type { Config } from '../config/resolve.js';
+import { StepcastError } from '../errors.js';
 import type { RunPaths } from '../journal/paths.js';
 import { readManifest, readStatus } from '../journal/reader.js';
 import type { JobRecord, RunManifest, RunStatus, StepRecord } from '../journal/schema.js';
-import type { ExpandedPipeline, Job, Step } from '../pipeline/model.js';
+import { expandPipeline } from '../pipeline/expand.js';
+import { jobLockHash } from '../pipeline/lock.js';
+import { definitionFiles, type ExpandedPipeline, type Job, type Pipeline, type Step } from '../pipeline/model.js';
 import { computeStepKey } from './stepKey.js';
 
 /**
@@ -40,6 +52,11 @@ export interface ResumePlan {
   readonly outputs: ReadonlyMap<string, unknown>;
   /** Наблюдённые входы прошлого прогона: `<работа>/<шаг>` → пути. */
   readonly observedInputs: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Чужие правки выше точки `--from`, проигнорированные решением запускающего.
+   * Пусто, если `--from` не указан или выше точки правок не было.
+   */
+  readonly ignoredEdits: readonly string[];
   /**
    * Что и до какого состояния восстановить перед первым переисполнением.
    *
@@ -109,8 +126,9 @@ export interface BuildPlanOptions {
   readonly expanded: ExpandedPipeline;
   readonly config: Config;
   readonly source: SourceRun;
-  readonly lockHash: string;
   readonly changed: ChangedSince;
+  /** Каталог, относительно которого сравнение якорей отдаёт пути. */
+  readonly cwd: string;
   readonly from?: ResumeFrom;
   /**
    * Пути, которые шаг изменил в прошлом прогоне. Нужны, чтобы не переиспользовать
@@ -121,19 +139,45 @@ export interface BuildPlanOptions {
 }
 
 export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
-  const { expanded, source, from } = options;
+  const { expanded, source, from, cwd } = options;
   const { pipeline } = expanded;
+
+  // Файл пайплайна и файлы работ уже учтены ключом шага: их правка даёт
+  // несовпадение ключа ровно у тех шагов, чьё определение изменилось. Оставить
+  // их в множестве изменений значило бы гасить весь пайплайн любой правкой
+  // любой работы.
+  const changed = excludeDefinitionFiles(options.changed, pipeline, cwd);
+  // Что произвёл сам исходный прогон: считается один раз на план, а не на
+  // каждый шаг.
+  const producedFrom = attributionIndex(source, options.producedPaths);
 
   const steps: StepPlan[] = [];
   const outputs = new Map<string, unknown>();
   const observedInputs = new Map<string, readonly string[]>();
+  const ignoredEdits = new Set<string>();
   const upstream: { job: string; value: unknown }[] = [];
   const produced = new Set<string>();
   let lastReused: StepRecord | undefined;
   let poisoned: string | undefined;
+  // Порядок работ исходного прогона совпадает с порядком объявления в
+  // текущем пайплайне: план проходит его один раз, отмечая точку `--from` по
+  // ходу дела.
+  let reachedFrom = false;
 
   for (const job of pipeline.jobs) {
     const record = source.status.jobs.find((item) => item.id === job.id);
+    // Работа объявила выход, и артефакт исходного прогона недоступен —
+    // удалён уборкой или испорчен. Переиспользовать её значило бы отдать
+    // нижележащим `${jobs.<id>.output.*}`, разрешающийся в ничто.
+    //
+    // Работа, не опубликовавшая выход вовсе, сюда не относится: её запись
+    // пути к артефакту не содержит, и переиспользование воспроизводит ровно
+    // то состояние, в каком исходный прогон и был. Считать этот случай
+    // недоступностью значило бы вечно переисполнять работу, чей агентский шаг
+    // просто не вернул структурированный вывод, — с причиной, называющей
+    // несуществующую пропажу.
+    const outputUnrecoverable =
+      job.output !== undefined && record?.output !== undefined && outputValue(record) === undefined;
 
     for (const step of job.steps) {
       const previous = record?.steps.find((item) => item.id === step.id);
@@ -143,18 +187,45 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
         observedInputs.set(address, previous.observed_inputs);
       }
 
-      const reason = invalidationReason({ job, step, previous, poisoned, from, options, upstream });
+      const isFromPoint =
+        from !== undefined && from.job === job.id && (from.step ?? step.id) === step.id;
+      if (isFromPoint) reachedFrom = true;
+      // Всё до точки `--from` в порядке исходного прогона — «верх графа»:
+      // изменения дерева и каскад пересчёта его не касаются.
+      const isAbove = from !== undefined && !reachedFrom;
 
-      if (reason === undefined && previous !== undefined) {
+      const outcome = invalidationReason({
+        job,
+        step,
+        previous,
+        poisoned,
+        from,
+        isAbove,
+        isFromPoint,
+        options,
+        upstream,
+        changed,
+        producedAfter: producedFrom.get(address) ?? EMPTY_SET,
+        outputUnrecoverable,
+      });
+
+      for (const path of outcome.ignoredEdits ?? []) ignoredEdits.add(path);
+
+      if (outcome.reason === undefined && previous !== undefined) {
         steps.push({ job: job.id, step: step.id, decision: { kind: 'reuse', record: previous } });
         for (const path of options.producedPaths?.(previous) ?? []) produced.add(path);
         lastReused = previous;
         continue;
       }
 
-      steps.push({ job: job.id, step: step.id, decision: { kind: 'rerun', reason: reason ?? '' } });
+      steps.push({ job: job.id, step: step.id, decision: { kind: 'rerun', reason: outcome.reason ?? '' } });
       // Переисполненный шаг меняет дерево непредсказуемо: всё ниже по графу
-      // теряет основание для переиспользования.
+      // теряет основание для переиспользования. Выше точки `--from` каскад
+      // тоже нужен, и подавлять его там нельзя: дерево выше точки не судится,
+      // поэтому переисполнение там вызвано не правкой файлов, а существом —
+      // записи нет, ключ разошёлся, прошлый статус не success. Такой шаг
+      // производит новый вывод, и переиспользовать поверх него следующий
+      // значило бы объявить действительным заведомо устаревшее.
       poisoned ??= `пересчитан ${address}`;
     }
 
@@ -175,17 +246,27 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
       ? undefined
       : { kind: lastReused.anchor_kind ?? 'git', id: lastReused.tree_id };
 
+  // Чужая правка выше точки `--from` попадает в `produced` вместе с прочим
+  // выводом переиспользованного шага — по происхождению пути, а не по тому,
+  // тронул ли его кто-то после прогона. Восстановить такой путь значит стереть
+  // ровно ту правку, ради которой чаще всего и возобновляют: `--from` обещает
+  // её проигнорировать, а не отменить.
+  const restorable = [...produced].filter((path) => !ignoredEdits.has(path));
+
   return {
     sourceRunId: source.manifest.run_id,
     steps: coarsened,
     outputs,
     observedInputs,
-    ...(anyReuse && anchor !== undefined && produced.size > 0
-      ? { restore: { anchor, paths: [...produced].sort() } }
+    ignoredEdits: [...ignoredEdits].sort(),
+    ...(anyReuse && anchor !== undefined && restorable.length > 0
+      ? { restore: { anchor, paths: restorable.sort() } }
       : {}),
     fromScratch: !anyReuse,
   };
 }
+
+const EMPTY_SET: ReadonlySet<string> = new Set();
 
 function outputValue(record: JobRecord | undefined): unknown {
   if (record?.output === undefined || !existsSync(record.output)) return undefined;
@@ -196,50 +277,111 @@ function outputValue(record: JobRecord | undefined): unknown {
   }
 }
 
+/**
+ * Файлы определения прогона исключаются из множества изменений: их вклад уже
+ * учтён ключом шага, и правка одной работы не должна гасить остальные.
+ */
+function excludeDefinitionFiles(changed: ChangedSince, pipeline: Pipeline, cwd: string): ChangedSince {
+  if (changed === 'all') return 'all';
+  const definitions = new Set(definitionFiles(pipeline).map((path) => toProjectRelative(cwd, path)));
+  return changed.filter((path) => !definitions.has(path));
+}
+
+function toProjectRelative(cwd: string, path: string): string {
+  return relative(cwd, path).split('\\').join('/');
+}
+
+/**
+ * Для каждого шага исходного прогона — пути, произведённые им и всеми
+ * шагами, исполнявшимися после него. Отпечаток входов шага снимался на
+ * `tree_before`, и всё, что дерево получило позже от самого же прогона, ещё
+ * не было его входом.
+ */
+function attributionIndex(
+  source: SourceRun,
+  producedPaths: BuildPlanOptions['producedPaths'],
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const addresses: string[] = [];
+  const own: (readonly string[])[] = [];
+  for (const job of source.status.jobs) {
+    for (const step of job.steps) {
+      addresses.push(`${job.id}/${step.id}`);
+      own.push(producedPaths?.(step) ?? []);
+    }
+  }
+
+  const index = new Map<string, ReadonlySet<string>>();
+  let suffix = new Set<string>();
+  for (let i = addresses.length - 1; i >= 0; i -= 1) {
+    suffix = new Set(suffix);
+    for (const path of own[i] ?? []) suffix.add(path);
+    index.set(addresses[i] as string, suffix);
+  }
+  return index;
+}
+
 interface ReasonOptions {
   readonly job: Job;
   readonly step: Step;
   readonly previous: StepRecord | undefined;
   readonly poisoned: string | undefined;
   readonly from: ResumeFrom | undefined;
+  readonly isAbove: boolean;
+  readonly isFromPoint: boolean;
   readonly options: BuildPlanOptions;
   readonly upstream: readonly { job: string; value: unknown }[];
+  readonly changed: ChangedSince;
+  /** Пути, произведённые этим шагом и всеми шагами после него в источнике. */
+  readonly producedAfter: ReadonlySet<string>;
+  readonly outputUnrecoverable: boolean;
 }
 
-/** Почему шаг признан невалидным. `undefined` — шаг переиспользуется. */
-function invalidationReason(input: ReasonOptions): string | undefined {
-  const { job, step, previous, poisoned, from, options, upstream } = input;
+interface ReasonOutcome {
+  /** `undefined` — шаг переиспользуется. */
+  readonly reason?: string;
+  /** Чужие правки, задевающие шаг выше точки `--from`, но проигнорированные флагом. */
+  readonly ignoredEdits?: readonly string[];
+}
 
-  if (previous === undefined) return 'в прошлом прогоне шага не было';
-  if (previous.status !== 'success') return `в прошлом прогоне шаг завершился: ${previous.status}`;
+function invalidationReason(input: ReasonOptions): ReasonOutcome {
+  const {
+    job,
+    step,
+    previous,
+    poisoned,
+    from,
+    isAbove,
+    isFromPoint,
+    options,
+    upstream,
+    changed,
+    producedAfter,
+    outputUnrecoverable,
+  } = input;
+
+  if (previous === undefined) return { reason: 'в прошлом прогоне шага не было' };
+  if (previous.status !== 'success') return { reason: `в прошлом прогоне шаг завершился: ${previous.status}` };
   if (previous.anchor_missing !== undefined) {
-    return 'нет якоря состояния дерева — переиспользовать нечего';
+    return { reason: 'нет якоря состояния дерева — переиспользовать нечего' };
   }
-  if (poisoned !== undefined) return poisoned;
-
-  if (from !== undefined && from.job === job.id && (from.step ?? step.id) === step.id) {
-    return `указано --from ${from.job}${from.step === undefined ? '' : `/${from.step}`}`;
+  if (outputUnrecoverable) {
+    return { reason: 'выход работы не восстановить: артефакт исходного прогона недоступен' };
   }
 
-  const touched = touchedInputs(job, previous, options.changed);
-  if (touched !== undefined) return touched;
-
-  // Путь, который произвёл этот шаг, входит в число изменившихся после
-  // завершения прогона. Кто именно его тронул — неизвестно и не проверяется:
-  // сравнение чисто временное, по хешам содержимого между концом прогона и
-  // моментом возобновления. Автором может быть разработчик, хук, линтер или
-  // любой другой процесс — переиспользовать результат в любом из этих случаев
-  // значило бы объявить действительным то, чего в дереве уже нет.
-  if (options.changed !== 'all') {
-    const produced = options.producedPaths?.(previous) ?? [];
-    const clobbered = options.changed.filter((path) => produced.includes(path));
-    if (clobbered.length > 0) return `результат шага тронут после завершения прогона (${list(clobbered)})`;
+  // Каскад действует по обе стороны точки: он говорит о предшественнике,
+  // который уже переисполнен, а не о состоянии дерева. Сам флаг `--from` —
+  // решение о том, что случилось *ниже* точки; выше неё дерево не судится.
+  if (poisoned !== undefined) return { reason: poisoned };
+  if (!isAbove && isFromPoint) {
+    return { reason: `указано --from ${from?.job}${from?.step === undefined ? '' : `/${from.step}`}` };
   }
 
   // Отпечаток берётся из записи: он нейтрализует вклад дерева, и расхождение
   // ключа после этого означает изменение самого шага, а не состояния вокруг.
+  // Хеш определения — только этой работы: правка файла другой не должна
+  // задевать её ключ.
   const key = computeStepKey({
-    lockHash: options.lockHash,
+    lockHash: jobLockHash(options.expanded.pipeline, job),
     jobId: job.id,
     step,
     inputsFingerprint: previous.inputs_fingerprint,
@@ -247,39 +389,77 @@ function invalidationReason(input: ReasonOptions): string | undefined {
       step.kind === 'agent' ? options.config.backends[step.agent]?.command : undefined,
     upstream,
   });
+  const keyChanged = key !== previous.key;
 
-  return key === previous.key ? undefined : 'изменилось определение шага, промпт или бэкенд';
+  if (isAbove) {
+    // Ключ шага проверяется и выше точки: `--from` берёт на себя решение о
+    // дереве, но не о том, что источник описывает другой шаг.
+    if (keyChanged) return { reason: 'изменилось определение шага, промпт или бэкенд' };
+
+    const touched = touchedInputs(job, previous, changed, producedAfter);
+    const clobbered = clobberedPaths(previous, changed, options.producedPaths);
+    const ignored = dedupe([...(touched?.paths ?? []), ...clobbered]);
+    return ignored.length > 0 ? { ignoredEdits: ignored } : {};
+  }
+
+  const touched = touchedInputs(job, previous, changed, producedAfter);
+  if (touched !== undefined) return { reason: touched.reason };
+
+  // Путь, который произвёл этот шаг, входит в число изменившихся после
+  // завершения прогона. Кто именно его тронул — неизвестно и не проверяется:
+  // сравнение чисто временное, по хешам содержимого между концом прогона и
+  // моментом возобновления. Автором может быть разработчик, хук, линтер или
+  // любой другой процесс — переиспользовать результат в любом из этих случаев
+  // значило бы объявить действительным то, чего в дереве уже нет.
+  const clobbered = clobberedPaths(previous, changed, options.producedPaths);
+  if (clobbered.length > 0) {
+    return { reason: `результат шага тронут после завершения прогона (${list(clobbered)})` };
+  }
+
+  return keyChanged ? { reason: 'изменилось определение шага, промпт или бэкенд' } : {};
 }
 
 /**
  * Задевают ли изменения пользователя входы шага.
  *
- * Ширина входов определяется тем же трёхуровневым правилом, что и отпечаток:
- * объявленные пути работы, наблюдённые файлы прошлого исполнения, иначе — всё
- * дерево. Последнее означает, что любая правка обесценивает шаг: это заявленное
- * умолчание, а не дефект.
+ * Из множества изменений сперва вычитается то, что произвёл сам исходный
+ * прогон этим шагом и всеми последующими: это не входы шага, а его
+ * собственный либо более поздний вывод. Ширина оставшейся области — то же
+ * трёхуровневое правило, что и у отпечатка: объявленные пути работы,
+ * наблюдённые файлы прошлого исполнения, иначе — всё дерево.
  */
 function touchedInputs(
   job: Job,
   previous: StepRecord,
   changed: ChangedSince,
-): string | undefined {
-  if (changed === 'all') return 'состояние дерева установить не удалось — считаем изменённым';
-  if (changed.length === 0) return undefined;
-
-  const scope =
-    job.inputs.length > 0
-      ? job.inputs
-      : previous.inputs_origin === 'observed'
-        ? previous.observed_inputs
-        : undefined;
-
-  if (scope === undefined) {
-    return `дерево изменилось (${list(changed)})`;
+  producedAfter: ReadonlySet<string>,
+): { reason: string; paths: readonly string[] } | undefined {
+  if (changed === 'all') {
+    return { reason: 'состояние дерева установить не удалось — считаем изменённым', paths: [] };
   }
 
-  const hit = changed.filter((path) => scope.some((entry) => covers(entry, path)));
-  return hit.length === 0 ? undefined : `изменились входы шага (${list(hit)})`;
+  const attributable = changed.filter((path) => !producedAfter.has(path));
+  if (attributable.length === 0) return undefined;
+
+  const scope = job.inputs.length > 0 ? job.inputs : previous.observed_inputs;
+
+  if (scope === undefined) {
+    return { reason: `дерево изменилось (${list(attributable)})`, paths: attributable };
+  }
+
+  const hit = attributable.filter((path) => scope.some((entry) => covers(entry, path)));
+  return hit.length === 0 ? undefined : { reason: `изменились входы шага (${list(hit)})`, paths: hit };
+}
+
+/** Пути, произведённые самим шагом, которые кто-то тронул после прогона. */
+function clobberedPaths(
+  previous: StepRecord,
+  changed: ChangedSince,
+  producedPaths: BuildPlanOptions['producedPaths'],
+): readonly string[] {
+  if (changed === 'all') return [];
+  const produced = producedPaths?.(previous) ?? [];
+  return changed.filter((path) => produced.includes(path));
 }
 
 /** Совпадает ли объявленный вход с изменившимся путём: файл или его каталог. */
@@ -292,6 +472,10 @@ function list(paths: readonly string[]): string {
   return paths.length <= 3
     ? paths.join(', ')
     : `${paths.slice(0, 3).join(', ')} и ещё ${paths.length - 3}`;
+}
+
+function dedupe(paths: readonly string[]): readonly string[] {
+  return [...new Set(paths)].sort();
 }
 
 /**
@@ -331,16 +515,45 @@ function coarsenSharedSessions(jobs: readonly Job[], steps: readonly StepPlan[])
 /** Человекочитаемый отчёт: он же вывод `--dry-run`, он же основание решения. */
 export function describePlan(plan: ResumePlan): string[] {
   const width = Math.max(...plan.steps.map((step) => `${step.job}/${step.step}`.length), 0);
+  const jobs = [...new Set(plan.steps.map((step) => step.job))];
 
-  const lines = plan.steps.map((item) => {
-    const address = `${item.job}/${item.step}`.padEnd(width);
-    return item.decision.kind === 'reuse'
-      ? `${address}  переиспользуется из ${plan.sourceRunId.slice(-6)}`
-      : `${address}  переисполняется — ${item.decision.reason}`;
-  });
+  const lines: string[] = [];
+  for (const job of jobs) {
+    const jobSteps = plan.steps.filter((step) => step.job === job);
+    lines.push(jobVerdict(job, jobSteps, plan.sourceRunId));
+
+    for (const item of jobSteps) {
+      const address = `${item.job}/${item.step}`.padEnd(width);
+      lines.push(
+        item.decision.kind === 'reuse'
+          ? `  ${address}  переиспользуется из ${plan.sourceRunId.slice(-6)}`
+          : `  ${address}  переисполняется — ${item.decision.reason}`,
+      );
+    }
+  }
+
+  if (plan.ignoredEdits.length > 0) {
+    lines.push(`--from игнорирует чужие правки выше точки: ${list(plan.ignoredEdits)}`);
+  }
 
   if (plan.fromScratch) lines.push('переиспользовать нечего: пайплайн исполняется с начала');
   return lines;
+}
+
+/** Вердикт по работе: переиспользуется целиком, переисполняется целиком или с шага. */
+function jobVerdict(job: string, steps: readonly StepPlan[], sourceRunId: string): string {
+  if (steps.every((item) => item.decision.kind === 'reuse')) {
+    return `${job}  переиспользуется из ${sourceRunId.slice(-6)}`;
+  }
+
+  const firstRerun = steps.find((item) => item.decision.kind === 'rerun');
+  const reason = (firstRerun?.decision as { reason: string } | undefined)?.reason ?? '';
+
+  if (steps.every((item) => item.decision.kind === 'rerun')) {
+    return `${job}  переисполняется — ${reason}`;
+  }
+
+  return `${job}  переисполняется частично, с шага ${firstRerun?.step} — ${reason}`;
 }
 
 /**
@@ -361,4 +574,98 @@ export function producedBy(
     { kind, id: step.tree_id },
   );
   return comparison.comparable ? comparison.paths : undefined;
+}
+
+export interface ResumeRequest {
+  readonly cwd: string;
+  readonly config: Config;
+  readonly source: SourceRun;
+  /** `--set`: переопределение входов прошлого прогона. */
+  readonly overrides?: Readonly<Record<string, string>>;
+  /** `--from`, ещё не разобранный: команды получают его прямо из CLI-флагов. */
+  readonly from?: string;
+}
+
+export interface ResumePlanResult {
+  readonly expanded: ExpandedPipeline;
+  readonly plan: ResumePlan;
+}
+
+/**
+ * Собрать план возобновления от исходного прогона до готового `ResumePlan`.
+ *
+ * Общий путь для `stepcast resume` и `stepcast status --explain`: раскрытие
+ * пайплайна, снятие якоря дерева и вычисление изменений, вызов
+ * `buildResumePlan` — один и тот же код, чтобы объяснение и решение не могли
+ * разойтись.
+ */
+export function planResume(request: ResumeRequest): ResumePlanResult {
+  const { cwd, config, source } = request;
+
+  const inputs: Record<string, string> = {};
+  for (const [name, value] of Object.entries(source.manifest.inputs)) inputs[name] = String(value);
+  for (const [name, value] of Object.entries(request.overrides ?? {})) inputs[name] = value;
+
+  const expanded = expandPipeline({ pipelinePath: source.manifest.pipeline_file, config, inputs });
+
+  const from = request.from === undefined ? undefined : parseFrom(request.from);
+  if (from !== undefined) {
+    // Неизвестное имя обязано быть отказом, а не пустой точкой: точка `--from`
+    // отключает суд над деревом для всего, что выше неё, и точка, которая
+    // никогда не наступает, отключает его для всего пайплайна разом. Прогон
+    // тогда переиспользует всё и не исполняет ничего — молча и с видом успеха.
+    const target = expanded.pipeline.jobs.find((item) => item.id === from.job);
+    if (target === undefined) {
+      throw new StepcastError(`Работа ${from.job} в пайплайне не объявлена`, {
+        hint: `Доступны: ${expanded.pipeline.jobs.map((item) => item.id).join(', ')}`,
+      });
+    }
+    if (from.step !== undefined && !target.steps.some((item) => item.id === from.step)) {
+      throw new StepcastError(`Работа ${from.job} не объявляет шаг ${from.step}`, {
+        hint: `Шаги работы: ${target.steps.map((item) => item.id).join(', ')}`,
+      });
+    }
+  }
+  if (from?.step !== undefined) {
+    const job = expanded.pipeline.jobs.find((item) => item.id === from.job);
+    if (job !== undefined && job.session === 'shared') {
+      throw new StepcastError(
+        `Работа ${job.id} объявляет session: shared — возобновление с отдельного шага невозможно`,
+        { hint: `Результат шага зависит от диалога, которого при частичном повторе нет. Укажите --from ${job.id}` },
+      );
+    }
+  }
+
+  const anchorKind = detectAnchorKind(cwd);
+  const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-plan-'));
+  const anchorer = createAnchorer({
+    dir: cwd,
+    stateDir,
+    kind: anchorKind,
+    scope: 'plan',
+    readStores: [manifestStore(source.paths.anchors)],
+  });
+
+  let changed: ChangedSince;
+  try {
+    changed = changedSince(anchorer, finalAnchorOf(source.status, anchorKind), anchorer.capture());
+  } catch {
+    changed = 'all';
+  }
+
+  const plan = buildResumePlan({
+    expanded,
+    config,
+    source,
+    changed,
+    cwd,
+    producedPaths: (step) => producedBy(anchorer, step),
+    ...(from === undefined ? {} : { from }),
+  });
+
+  // Якорь нужен плану для вычисления произведённых путей, поэтому
+  // освобождается только теперь.
+  anchorer.dispose();
+
+  return { expanded, plan };
 }

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -32,8 +33,9 @@ import type { ResumePlan, SourceRun, StepPlan } from './resumePlan.js';
 import { computeStepKey } from './stepKey.js';
 import { prepareWorkspace, type PreparedWorkspace } from './workspace.js';
 import { shortRunId } from '../journal/paths.js';
+import { findStepDir } from '../journal/reader.js';
 import { RunJournal } from '../journal/writer.js';
-import { serializeLock } from '../pipeline/lock.js';
+import { jobLockHash, serializeLock } from '../pipeline/lock.js';
 import type {
   AgentStep,
   ContextEntry,
@@ -210,12 +212,13 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     } satisfies RunStatus);
   };
 
+  // Выходы переиспользованных работ публикуются не здесь, а по ходу
+  // исполнения: каждая работа проходит через `executeJob` в обычном порядке
+  // графа, даже если все её шаги переиспользованы, и публикует выход в
+  // `runJobSteps` — так же, как исполненная. Предзаполнение записи об
+  // артефакте путём, по которому файл ещё не записан, было бы ложью.
   if (options.resume !== undefined) {
     restoreForResume(options.resume, journal, options.cwd, anchorKind);
-    for (const [jobId, value] of options.resume.plan.outputs) {
-      const path = join(journal.paths.artifacts, `${jobId}.json`);
-      outputs.push({ job: jobId, path, value });
-    }
   }
 
   writeStatus('running');
@@ -672,6 +675,8 @@ async function runJobSteps(
   const steps: StepRecord[] = [];
   let lastAgentStructured: unknown;
   let outputFromStep: unknown;
+  /** `output.from` назвал переиспользованный шаг, а его выход не перенёсся. */
+  let outputFromStepMissing = false;
 
   for (const step of job.steps) {
     const stepDirPath = journal.prepareStep(job.id, step.index, step.id, iteration);
@@ -696,9 +701,20 @@ async function runJobSteps(
       });
       if (step.kind === 'agent' && planned.decision.record.status === 'success') {
         // Переиспользованный шаг не исполнялся, структурированного вывода у
-        // него в этом прогоне нет: он берётся из выхода работы, если тот был
-        // перенесён целиком.
-        lastAgentStructured = context.resume?.plan.outputs.get(job.id) ?? lastAgentStructured;
+        // него в этом прогоне нет: он переносится из исходного прогона —
+        // единственный источник `output.from` при частичном переиспользовании
+        // работы, когда выход работы целиком не перенесён.
+        const transferred = transferStepOutput(context, job.id, step.id, stepDirPath);
+        lastAgentStructured =
+          transferred ?? context.resume?.plan.outputs.get(job.id) ?? lastAgentStructured;
+        if (job.output?.from === step.id) {
+          // Перенос мог не удаться: файла выхода в исходном прогоне нет или он
+          // не разбирается. Отметку нужно сохранить — иначе ниже сработает
+          // запасной `lastAgentStructured`, и работа опубликует как свой выход
+          // другого, позже исполненного шага.
+          outputFromStep = transferred;
+          outputFromStepMissing = transferred === undefined;
+        }
       }
       treeAnchor =
         reused.tree_id === undefined
@@ -799,7 +815,10 @@ async function runJobSteps(
       index: step.index,
       kind: step.kind,
       key: computeStepKey({
-        lockHash: context.lockHash,
+        // Хеш определения именно этой работы, а не всего пайплайна: правка
+        // файла другой работы не должна менять ключ шагов, которые её не
+        // касаются.
+        lockHash: jobLockHash(context.expanded.pipeline, job),
         jobId: job.id,
         step,
         inputsFingerprint: fingerprint?.value,
@@ -854,6 +873,13 @@ async function runJobSteps(
         ...(cause === undefined ? {} : { cause }),
       };
     }
+  }
+
+  if (outputFromStepMissing) {
+    return {
+      status: 'failed',
+      reason: `выход шага ${job.output?.from} не перенесён из исходного прогона: файла нет или он не разбирается`,
+    };
   }
 
   const published = job.output === undefined ? undefined : (outputFromStep ?? lastAgentStructured);
@@ -1375,6 +1401,36 @@ function causeOf(
 /** Решение плана по конкретному шагу, если возобновление вообще идёт. */
 function planFor(context: RunContext, jobId: string, stepId: string): StepPlan | undefined {
   return context.resume?.plan.steps.find((item) => item.job === jobId && item.step === stepId);
+}
+
+/**
+ * Перенести структурированный выход переиспользованного шага из исходного
+ * прогона в директорию нового. Без этого файла `output.from` при частичном
+ * переиспользовании работы публикует пустоту: выход работы целиком
+ * переносится только когда переиспользована вся работа.
+ */
+function transferStepOutput(
+  context: RunContext,
+  jobId: string,
+  stepId: string,
+  stepDirPath: string,
+): unknown {
+  const source = context.resume?.source;
+  if (source === undefined) return undefined;
+
+  const sourceDir = findStepDir(source.paths, jobId, stepId);
+  if (sourceDir === undefined) return undefined;
+
+  const sourceFile = join(sourceDir, 'output.json');
+  if (!existsSync(sourceFile)) return undefined;
+
+  try {
+    const raw = readFileSync(sourceFile, 'utf8');
+    context.journal.writeStepFile(stepDirPath, 'output.json', raw);
+    return JSON.parse(raw) as unknown;
+  } catch {
+    return undefined;
+  }
 }
 
 /**

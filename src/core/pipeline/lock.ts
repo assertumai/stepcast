@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { stringify } from 'yaml';
 
@@ -63,7 +64,7 @@ function stepToPlain(step: Step): Record<string, unknown> {
   };
 }
 
-function jobToPlain(job: Job): Record<string, unknown> {
+export function jobToPlain(job: Job): Record<string, unknown> {
   return {
     id: job.id,
     ...(job.description === undefined ? {} : { description: job.description }),
@@ -104,6 +105,29 @@ export function pipelineToPlain(pipeline: Pipeline): Record<string, unknown> {
 
 export function serializeLock(pipeline: Pipeline): string {
   return stringify(pipelineToPlain(pipeline), { lineWidth: 0 });
+}
+
+/**
+ * Хеш определения одной работы: пайплайновые настройки, общие для всех
+ * работ, плюс определение именно этой. Ключ шага держится на нём, а не на
+ * хеше всего пайплайна, — иначе правка файла одной работы меняла бы ключи
+ * шагов всех остальных, чьи определения не менялись.
+ */
+export function jobLockHash(pipeline: Pipeline, job: Job): string {
+  const { jobs: _jobs, ...shared } = pipelineToPlain(pipeline);
+  return createHash('sha256')
+    .update(JSON.stringify({ shared, job: jobToPlain(job) }))
+    .digest('hex')
+    .slice(0, 16);
+}
+
+/**
+ * Хеш определения всего пайплайна. Ключ шага на нём больше не держится, но он
+ * остаётся отпечатком прогона в манифесте и опорой совместимости с записями,
+ * сделанными до перехода на хеш отдельной работы.
+ */
+export function pipelineLockHash(pipeline: Pipeline): string {
+  return createHash('sha256').update(serializeLock(pipeline)).digest('hex').slice(0, 16);
 }
 
 export function writeLock(pipeline: Pipeline, path: string): void {

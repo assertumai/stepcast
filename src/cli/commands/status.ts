@@ -1,20 +1,5 @@
-import { createHash } from 'node:crypto';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-import { createAnchorer, detectAnchorKind, manifestStore } from '../../core/anchor/index.js';
 import { resolveConfig, type Config } from '../../core/config/resolve.js';
-import { expandPipeline } from '../../core/pipeline/expand.js';
-import { serializeLock } from '../../core/pipeline/lock.js';
-import {
-  buildResumePlan,
-  changedSince,
-  describePlan,
-  finalAnchorOf,
-  producedBy,
-  readSourceRun,
-} from '../../core/run/resumePlan.js';
+import { describePlan, planResume, readSourceRun } from '../../core/run/resumePlan.js';
 import type { RunPaths } from '../../core/journal/paths.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { readStatus, resolveRun } from '../../core/journal/reader.js';
@@ -89,44 +74,9 @@ function explainInvalidation(
   cwd: string,
 ): string[] {
   const source = readSourceRun(paths);
-  const expanded = expandPipeline({
-    pipelinePath: source.manifest.pipeline_file,
-    config,
-    inputs: Object.fromEntries(
-      Object.entries(source.manifest.inputs).map(([name, value]) => [name, String(value)]),
-    ),
-  });
-
-  const anchorKind = detectAnchorKind(cwd);
-  const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-explain-'));
-  const anchorer = createAnchorer({
-    dir: cwd,
-    stateDir,
-    kind: anchorKind,
-    scope: 'explain',
-    readStores: [manifestStore(source.paths.anchors)],
-  });
-
-  let changed: ReturnType<typeof changedSince>;
-  try {
-    changed = changedSince(anchorer, finalAnchorOf(source.status, anchorKind), anchorer.capture());
-  } catch {
-    changed = 'all';
-  }
-
-  const plan = buildResumePlan({
-      expanded,
-      config,
-      source,
-      lockHash: createHash('sha256')
-        .update(serializeLock(expanded.pipeline))
-        .digest('hex')
-        .slice(0, 16),
-      changed,
-      producedPaths: (step) => producedBy(anchorer, step),
-  });
-  anchorer.dispose();
-
+  // Тот же код, что и у `resume --dry-run`: объяснение и решение не должны
+  // расходиться.
+  const { plan } = planResume({ cwd, config, source });
   return describePlan(plan);
 }
 

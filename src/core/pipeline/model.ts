@@ -165,3 +165,8 @@ export interface ExpandedPipeline {
   readonly pipeline: Pipeline;
   readonly substitutions: SubstitutionMap;
 }
+
+/** Файлы, из которых собрано определение прогона: пайплайн и работы. */
+export function definitionFiles(pipeline: Pipeline): readonly string[] {
+  return [...new Set([pipeline.file, ...pipeline.jobs.map((job) => job.source)])];
+}

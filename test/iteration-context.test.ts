@@ -346,6 +346,7 @@ jobs:
           ],
           outputs: new Map(),
           observedInputs: new Map(),
+          ignoredEdits: [],
           fromScratch: true,
         },
       },
