@@ -22,7 +22,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src test",
     "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
-    "check": "npm run typecheck && npm run lint && npm test",
+    "test:only": "node --test \"dist/test/**/*.test.js\"",
+    "check": "npm run typecheck && npm run lint && npm run build && npm run test:only",
     "schema": "npm run build && node dist/scripts/generate-schema.js"
   },
   "dependencies": {

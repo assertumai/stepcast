@@ -19,7 +19,12 @@ steps:
     timeout: 5m
     expect: [{ exit_code: 0 }]
 
+  - id: build
+    run: [npm, run, build]
+    timeout: 5m
+    expect: [{ exit_code: 0 }]
+
   - id: test
-    run: [npm, test]
+    run: [npm, run, test:only]
     timeout: 10m
     expect: [{ exit_code: 0 }]
