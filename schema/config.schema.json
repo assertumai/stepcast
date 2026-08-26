@@ -90,6 +90,16 @@
               "type": "number"
             }
           ]
+        },
+        "max_wait": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ]
         }
       },
       "additionalProperties": false

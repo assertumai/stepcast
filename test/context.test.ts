@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { runContextCommand } from '../src/cli/commands/context.js';
+import { assembleContext, type AssembleOptions } from '../src/core/context/assemble.js';
 import type { ParsedArgs } from '../src/cli/args.js';
 import { ExitCode, StepcastError } from '../src/core/errors.js';
 import { RunJournal } from '../src/core/journal/writer.js';
@@ -47,6 +48,23 @@ jobs:
         run: [echo, ok]
         expect: [{ exit_code: 0 }]
 `;
+
+/** Минимальная сборка контекста: одна текстовая запись шага и ничего больше. */
+function assembleBase(): AssembleOptions {
+  return {
+    workspace: process.cwd(),
+    pipeline: [],
+    job: [],
+    step: [{ kind: 'text', text: 'контекст шага' }],
+    upstream: [],
+    contextUpstream: 'none',
+    inherit: true,
+    exclude: [],
+    deny: [],
+    inlineThreshold: 2000,
+    maxTokens: 200_000,
+  };
+}
 
 function args(flags: ParsedArgs['flags'] = {}): ParsedArgs {
   return { command: 'context', positional: [], flags };
@@ -138,6 +156,27 @@ describe('CLI: stepcast context', () => {
         return true;
       },
     );
+  });
+
+  // Сценарий: «Предел контекста меньше предела выдержки»
+  it('отказывает, когда предел контекста шага меньше предела выдержки', () => {
+    assert.throws(
+      () => assembleContext({ ...assembleBase(), maxTokens: 100, noteMaxTokens: 4000 }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /100/);
+        assert.match(error.message, /4k/i);
+        return true;
+      },
+    );
+  });
+
+  // Шага без выдержки противоречие двух пределов не касается: узкий
+  // context_max_tokens сам по себе не повод отказывать.
+  it('не отказывает шагу с узким пределом, когда выдержки в контексте нет', () => {
+    const assembled = assembleContext({ ...assembleBase(), maxTokens: 100 });
+
+    assert.match(assembled.text, /контекст шага/);
   });
 
   // Сценарий: «Командный шаг»

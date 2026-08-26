@@ -37,7 +37,12 @@ export interface MergeResult {
 }
 
 /** Путь ключа, в котором величина задаётся в токенах. */
-const TOKEN_VALUED = new Set(['limits.tokens', 'context.inline_threshold', 'context.max_tokens']);
+const TOKEN_VALUED = new Set([
+  'limits.tokens',
+  'context.inline_threshold',
+  'context.max_tokens',
+  'context.note_max_tokens',
+]);
 
 /** Путь ключа, в котором величина задаётся длительностью. */
 const DURATION_VALUED = new Set([

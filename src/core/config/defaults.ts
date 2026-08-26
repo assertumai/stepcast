@@ -49,6 +49,9 @@ export const BUILTIN_CONFIG: RawConfig = {
   context: {
     inline_threshold: '4k',
     max_tokens: '120k',
+    // На порядок меньше max_tokens: выдержка о прошлой итерации — одна
+    // запись контекста среди прочих, а не весь его бюджет.
+    note_max_tokens: '4k',
     deny: ['**/.env*', '**/*.pem', '**/*.key', '**/id_rsa*', '**/.git/**'],
   },
   backends: {

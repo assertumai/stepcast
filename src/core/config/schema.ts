@@ -53,6 +53,7 @@ export const RawContextSchema = z
   .object({
     inline_threshold: amount.optional(),
     max_tokens: amount.optional(),
+    note_max_tokens: amount.optional(),
     deny: z.array(z.string()).optional(),
   })
   .strict();

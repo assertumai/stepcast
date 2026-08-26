@@ -237,6 +237,31 @@ describe('run-journal: раскладка и состояние', () => {
     assert.equal(events.some((event) => event.kind === 'budget.resumed'), true);
   });
 
+  // Сценарий: «Запись об усечении выдержки»
+  it('пишет событие об усечении выдержки с исходным и итоговым размером', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+
+    journal.event({
+      kind: 'context.note_truncated',
+      job: 'работа',
+      step: 'думает',
+      original_tokens: 9000,
+      final_tokens: 4000,
+    });
+
+    const events = readEvents(journal.paths);
+    const event = events.find((item) => item.kind === 'context.note_truncated');
+    assert.ok(event !== undefined);
+    assert.deepEqual(event, {
+      ...event,
+      job: 'работа',
+      step: 'думает',
+      original_tokens: 9000,
+      final_tokens: 4000,
+    });
+  });
+
   it('замена состояния атомарна: временных файлов не остаётся', () => {
     const { runsRoot, projectRoot } = bed();
     const journal = RunJournal.create({ runsRoot, projectRoot });

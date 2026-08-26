@@ -295,6 +295,7 @@ export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('env.denied'), name: z.string(), pattern: z.string(), scope: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('context.denied'), path: z.string(), pattern: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('context.downgraded'), job: z.string(), step: z.string(), path: z.string(), tokens: z.number() }).strict(),
+  z.object({ ...eventBase, kind: z.literal('context.note_truncated'), job: z.string(), step: z.string(), original_tokens: z.number(), final_tokens: z.number() }).strict(),
   z.object({ ...eventBase, kind: z.literal('budget.warning'), scope: z.string(), used: z.number(), limit: z.number() }).strict(),
   z.object({ ...eventBase, kind: z.literal('budget.exceeded'), scope: z.string(), used: z.number(), limit: z.number() }).strict(),
   z.object({

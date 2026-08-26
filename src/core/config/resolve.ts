@@ -61,6 +61,7 @@ export interface Config {
   readonly context: {
     readonly inlineThreshold: number;
     readonly maxTokens: number;
+    readonly noteMaxTokens: number;
     readonly deny: readonly string[];
   };
   readonly backends: Readonly<Record<string, BackendConfig>>;
@@ -272,6 +273,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
     context: {
       inlineThreshold: requireNumber(values, 'context.inline_threshold'),
       maxTokens: requireNumber(values, 'context.max_tokens'),
+      noteMaxTokens: requireNumber(values, 'context.note_max_tokens'),
       deny: (values.get('context.deny') as string[] | undefined) ?? [],
     },
     backends: buildBackends(values, home),

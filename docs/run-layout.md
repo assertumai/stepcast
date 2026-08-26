@@ -347,7 +347,9 @@ $ stepcast usage a50755
 
 `events.ndjson` — по строке на событие: `job.started`, `step.attempt`,
 `step.stalled`, `expect.failed`, `env.denied`, `budget.warning`,
-`budget.waiting`, `budget.resumed`. UI читает хвост файла.
+`budget.waiting`, `budget.resumed`, `context.note_truncated` (выдержка о
+прошлой итерации усечена по своему пределу — запись несёт работу, шаг,
+исходный и итоговый размер выдержки в токенах). UI читает хвост файла.
 
 ```bash
 stepcast logs <run-id> [<job>/<step>] [--follow]

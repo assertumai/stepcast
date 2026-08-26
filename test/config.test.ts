@@ -181,6 +181,18 @@ describe('stepcast-configuration', () => {
     assert.match(text, /defaults\.step_timeout\s+30m/);
   });
 
+  // Сценарий: предел выдержки о прошлой итерации виден наравне с остальными
+  // ключами context.*
+  it('показывает предел выдержки о прошлой итерации со значением и происхождением', () => {
+    const box = sandbox({});
+    const lines = renderConfigReport(resolveIn(box));
+    const line = lines.find((item) => item.startsWith('context.note_max_tokens'));
+
+    assert.ok(line !== undefined);
+    assert.match(line, /встроенное умолчание/);
+    assert.doesNotMatch(line, /\bundefined\b/);
+  });
+
   it('в отчёте нет неразрешённых значений ни по одному ключу', () => {
     // Отчёт когда-то читал значения из типизированной конфигурации через
     // таблицу псевдонимов и печатал undefined там, где имена расходились.

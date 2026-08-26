@@ -36,6 +36,12 @@ export interface AssembleOptions {
   readonly deny: readonly string[];
   readonly inlineThreshold: number;
   readonly maxTokens: number;
+  /**
+   * Предел, в который движок обязан уложить формируемые им самим записи.
+   * Объявляется только когда такая запись в контексте есть: шага без неё
+   * противоречие между двумя пределами не касается.
+   */
+  readonly noteMaxTokens?: number;
   readonly onDenied?: (path: string, pattern: string) => void;
   readonly onDowngraded?: (path: string, tokens: number) => void;
 }
@@ -220,6 +226,19 @@ function referenceTokens(item: Resolved): number {
  * результат, выглядящий нормальным.
  */
 function applyBudget(resolved: Resolved[], options: AssembleOptions): void {
+  // Заведомо противоречивая настройка: движок обещает уложить свои записи в
+  // noteMaxTokens, но предел контекста шага этого даже теоретически не
+  // допускает. Ловим это раньше, чем реальный размер — иначе отказ выглядел
+  // бы как случайное превышение, а не как ошибка настройки.
+  if (options.noteMaxTokens !== undefined && options.maxTokens < options.noteMaxTokens) {
+    throw new StepcastError(
+      `Предел контекста шага меньше предела выдержки: ${formatTokens(options.maxTokens)} против ${formatTokens(options.noteMaxTokens)}`,
+      {
+        hint: 'Поднимите context_max_tokens или снизьте context.note_max_tokens',
+      },
+    );
+  }
+
   const total = (): number =>
     resolved.reduce(
       (sum, item) => sum + (item.mode === 'inline' ? item.tokens : referenceTokens(item)),

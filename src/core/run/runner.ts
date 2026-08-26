@@ -24,6 +24,7 @@ import { runJudgePass } from '../exec/judgePass.js';
 import { evaluatePredicates } from '../expect/evaluate.js';
 import { buildGraph } from '../graph.js';
 import { bookkeep } from './bookkeeping.js';
+import { buildIterationNote, type IterationNoteTruncation } from './iterationNote.js';
 import { HaltCause, type HaltCauseValue } from './halt.js';
 import { preflight } from './preflight.js';
 import { buildPreviousFailure } from './previousFailure.js';
@@ -1066,6 +1067,11 @@ async function runAgentStep(
 
   const abort = stepAbort(context);
 
+  // Промпт собирается заново на каждой попытке шага, а выдержка на всех
+  // попытках одна и та же: событие об её усечении пишется однажды, иначе
+  // разбор по журналу насчитает усечений больше, чем их было.
+  let noteTruncationReported = false;
+
   const result = await executeAgentStep({
     step,
     adapter,
@@ -1081,11 +1087,28 @@ async function runAgentStep(
       const first = !contextSent.has(step.session);
       contextSent.add(step.session);
 
+      const stepEntries = withIterationNote(
+        context,
+        step.context,
+        context.iterationCheck,
+        (truncation) => {
+          if (noteTruncationReported) return;
+          noteTruncationReported = true;
+          journal.event({
+            kind: 'context.note_truncated',
+            job: job.id,
+            step: step.id,
+            original_tokens: truncation.originalTokens,
+            final_tokens: truncation.finalTokens,
+          });
+        },
+      );
+
       const assembled = assembleContext({
         workspace: context.cwd,
         pipeline: first ? pipeline.context : [],
         job: first ? job.context : [],
-        step: withIterationNote(context, step.context, context.iterationCheck),
+        step: stepEntries.entries,
         upstream: first ? context.outputs : [],
         contextUpstream: job.contextUpstream,
         inherit: step.contextInherit,
@@ -1093,6 +1116,10 @@ async function runAgentStep(
         deny: config.context.deny,
         inlineThreshold: config.context.inlineThreshold,
         maxTokens: step.contextMaxTokens ?? config.context.maxTokens,
+        // Предел выдержки объявляется сборке только тогда, когда выдержка в
+        // контексте есть: иначе шаг с узким пределом контекста отказывал бы
+        // из-за настройки, которая его не касается.
+        ...(stepEntries.hasNote ? { noteMaxTokens: config.context.noteMaxTokens } : {}),
         onDenied: (path, pattern) => journal.event({ kind: 'context.denied', path, pattern }),
         onDowngraded: (path, tokens) =>
           journal.event({
@@ -1399,22 +1426,18 @@ function withIterationNote(
   context: RunContext,
   own: readonly ContextEntry[],
   previousCheck: readonly PredicateResult[] | undefined,
-): readonly ContextEntry[] {
+  onTruncated: (truncation: IterationNoteTruncation) => void,
+): { entries: readonly ContextEntry[]; hasNote: boolean } {
   const entries = takeFailureNote(context, own);
-  if (previousCheck === undefined) return entries;
+  if (previousCheck === undefined) return { entries, hasNote: false };
 
   const failed = previousCheck.filter((item) => !item.passed && item.hard);
-  if (failed.length === 0) return entries;
+  if (failed.length === 0) return { entries, hasNote: false };
 
-  const text = [
-    '# Проверка предыдущей итерации не прошла',
-    '',
-    ...failed.map((item) => `- \`${item.predicate}\`: ${item.detail ?? 'не пройдена'}`),
-    '',
-    'Это та же работа, следующий заход. Почини причину.',
-  ].join('\n');
+  const { text, truncation } = buildIterationNote(failed, context.config.context.noteMaxTokens);
+  if (truncation !== undefined) onTruncated(truncation);
 
-  return [{ kind: 'text', text }, ...entries];
+  return { entries: [{ kind: 'text', text }, ...entries], hasNote: true };
 }
 
 /** Текст выдержки о прошлом отказе, если прошлый прогон её заслуживает. */

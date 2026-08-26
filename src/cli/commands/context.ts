@@ -73,6 +73,8 @@ export function runContextCommand(
     exclude: step.contextExclude,
     deny: config.context.deny,
     inlineThreshold: config.context.inlineThreshold,
+    // Выдержки о прошлой итерации в предпросмотре нет — её собирает прогон,
+    // так что и предел выдержки здесь ничего не ограничивает.
     maxTokens: step.contextMaxTokens ?? config.context.maxTokens,
   });
 

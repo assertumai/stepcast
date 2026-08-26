@@ -5,7 +5,12 @@ import { formatColumns } from '../output.js';
 import type { ParsedArgs } from '../args.js';
 
 /** Ключи, чьи значения хранятся числом, но читаются человеком в единицах. */
-const TOKEN_KEYS = new Set(['limits.tokens', 'context.inline_threshold', 'context.max_tokens']);
+const TOKEN_KEYS = new Set([
+  'limits.tokens',
+  'context.inline_threshold',
+  'context.max_tokens',
+  'context.note_max_tokens',
+]);
 const DURATION_KEYS = new Set([
   'runs.keep',
   'defaults.step_timeout',
