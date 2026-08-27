@@ -58,6 +58,8 @@ steps:
           - schema/**
           - scripts/**
           - package.json
+          # См. implement.yml: замок ходит вместе с package.json.
+          - package-lock.json
           - .gitattributes
           - .stepcast/prompts/**
           - .stepcast/jobs/**
