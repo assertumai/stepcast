@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
  * `dist/`, отказала бы именно в том случае, ради которого она и нужна.
  *
  *   node scripts/backlog.mjs list   [--file backlog.md]
- *   node scripts/backlog.mjs pick   [--file …] [--stale-hours 6] [--now ISO] [--out path]
+ *   node scripts/backlog.mjs pick   [--file …] [--stale-hours 6] [--now ISO] [--out path] [--slots N]
  *   node scripts/backlog.mjs finish <slug> --status done|failed [--reason …]
  */
 
@@ -78,6 +78,12 @@ function parse(text) {
         `пункт «${item.slug}»: неизвестный status «${status}», ожидался один из ${STATUSES.join(', ')}`,
       );
     }
+    const group = item.fields.get('group')?.value;
+    if (group !== undefined && !SLUG.test(group)) {
+      throw new BacklogError(
+        `пункт «${item.slug}»: группа «${group}» не является слагом в kebab-case`,
+      );
+    }
   }
 
   return items;
@@ -87,12 +93,18 @@ function field(item, name) {
   return item.fields.get(name)?.value;
 }
 
+/** Действующая группа пункта: объявленное значение `group` либо слаг пункта. */
+function effectiveGroup(item) {
+  return field(item, 'group') ?? item.slug;
+}
+
 function record(item) {
   return {
     slug: item.slug,
     title: field(item, 'title'),
     why: field(item, 'why'),
     done_when: field(item, 'done_when'),
+    group: effectiveGroup(item),
   };
 }
 
@@ -115,6 +127,41 @@ function isFree(item, nowMs, staleMs) {
   const startedMs = Date.parse(startedAt);
   if (Number.isNaN(startedMs)) return true;
   return nowMs - startedMs >= staleMs;
+}
+
+/**
+ * Держит ли пункт свою группу занятой: только `in_progress` и не протухший.
+ *
+ * `done` и `failed` не свободны для взятия (см. `isFree`), но это состояния
+ * терминальные — они не должны запирать группу от других её пунктов.
+ */
+function isBusy(item, nowMs, staleMs) {
+  return field(item, 'status') === 'in_progress' && !isFree(item, nowMs, staleMs);
+}
+
+/**
+ * Отобрать до `slots` пунктов сверху вниз, по одному на действующую группу.
+ *
+ * Занятые группы собираются заранее по всей очереди (занятый пункт держит
+ * свою группу, даже если сам он ниже места отбора), а затем пополняются по
+ * ходу отбора — так пункт одной группы с уже выбранным не берётся в том же
+ * проходе.
+ */
+function selectItems(items, slots, nowMs, staleMs) {
+  const busyGroups = new Set(
+    items.filter((item) => isBusy(item, nowMs, staleMs)).map(effectiveGroup),
+  );
+
+  const chosen = [];
+  for (const item of items) {
+    if (chosen.length >= slots) break;
+    if (!isFree(item, nowMs, staleMs)) continue;
+    const group = effectiveGroup(item);
+    if (busyGroups.has(group)) continue;
+    chosen.push(item);
+    busyGroups.add(group);
+  }
+  return chosen;
 }
 
 /**
@@ -167,15 +214,28 @@ function commandPick(argv) {
   const nowMs = Date.parse(now);
   if (Number.isNaN(nowMs)) throw new BacklogError(`ключ --now: «${now}» не разбирается как дата`);
 
+  const slotsOption = option(argv, 'slots', undefined);
+  const slots = slotsOption === undefined ? 1 : Number(slotsOption);
+  if (!Number.isInteger(slots) || slots <= 0) {
+    throw new BacklogError('ключ --slots требует целого положительного числа');
+  }
+
   const text = readFileSync(file, 'utf8');
-  const chosen = parse(text).find((item) => isFree(item, nowMs, staleHours * 3600_000));
-  if (chosen === undefined) {
+  const chosen = selectItems(parse(text), slots, nowMs, staleHours * 3600_000);
+  if (chosen.length === 0) {
     throw new BacklogError('свободных пунктов в очереди нет: все завершены либо взяты в работу');
   }
 
-  writeFileSync(file, withFields(text, chosen.slug, { status: 'in_progress', started_at: now }));
+  let updated = text;
+  for (const item of chosen) {
+    updated = withFields(updated, item.slug, { status: 'in_progress', started_at: now });
+  }
+  writeFileSync(file, updated);
 
-  const payload = `${JSON.stringify(record(chosen), null, 2)}\n`;
+  const payload =
+    slotsOption === undefined
+      ? `${JSON.stringify(record(chosen[0]), null, 2)}\n`
+      : `${JSON.stringify(chosen.map(record), null, 2)}\n`;
   const out = option(argv, 'out', undefined);
   if (out !== undefined) writeFileSync(out, payload);
   process.stdout.write(payload);
