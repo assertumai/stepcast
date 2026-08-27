@@ -286,8 +286,99 @@ jobs:
     assert.deepEqual(warnings(diagnostics), []);
   });
 
-  // Сценарий, тот же перечень, для подстановки ${jobs.<id>.*} вне `if`
-  it('предупреждает о подстановке выхода соседней работы при concurrency больше единицы', () => {
+  // Спека pipeline-definition: «Подстановка выхода работы вне
+  // предшественников отклоняется» — сценарий «Подстановка выхода соседа»
+  function neighborSubstitutionPipeline(concurrency: number): string {
+    return `
+version: 1
+kind: pipeline
+name: подстановка
+concurrency: ${concurrency}
+budget: { tokens: 100k }
+jobs:
+  propose:
+    output:
+      from: думает
+    steps:
+      - id: думает
+        agent: fake
+        prompt: придумай
+        expect: [{ exit_code: 0 }]
+  implement:
+    steps:
+      - id: использует
+        run: [sh, -c, 'echo "\${jobs.propose.output.slug}" > slug.txt']
+        expect: [{ exit_code: 0 }]
+`;
+  }
+
+  it('отклоняет ошибкой подстановку выхода соседней работы при concurrency больше единицы', () => {
+    const diagnostics = lint(
+      makeProject({ 'stepcast.yml': neighborSubstitutionPipeline(2) }),
+    );
+    assert.ok(
+      errors(diagnostics).some(
+        (message) =>
+          /Работа implement подставляет/.test(message) &&
+          /выход работы propose, не входящей/.test(message),
+      ),
+      'ошибка называет обе работы',
+    );
+  });
+
+  // Сценарий: «Последовательное исполнение не оправдывает ссылку»
+  it('отклоняет ту же подстановку и при concurrency: 1', () => {
+    const diagnostics = lint(
+      makeProject({ 'stepcast.yml': neighborSubstitutionPipeline(1) }),
+    );
+    assert.ok(
+      errors(diagnostics).some(
+        (message) =>
+          /Работа implement подставляет/.test(message) &&
+          /выход работы propose, не входящей/.test(message),
+      ),
+    );
+  });
+
+  // Сценарий: «Транзитивная предшественница допустима»
+  it('не отклоняет подстановку выхода транзитивной предшественницы', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+version: 1
+kind: pipeline
+name: подстановка
+concurrency: 2
+budget: { tokens: 100k }
+jobs:
+  propose:
+    output:
+      from: думает
+    steps:
+      - id: думает
+        agent: fake
+        prompt: придумай
+        expect: [{ exit_code: 0 }]
+  build:
+    needs: [propose]
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+  implement:
+    needs: [build]
+    steps:
+      - id: использует
+        run: [sh, -c, 'echo "\${jobs.propose.output.slug}" > slug.txt']
+        expect: [{ exit_code: 0 }]
+`,
+      }),
+    );
+    assert.deepEqual(
+      errors(diagnostics).filter((message) => /подставляет/.test(message)),
+      [],
+    );
+  });
+
+  // Сценарий: «Зависимость от всех допустима»
+  it('не отклоняет подстановку выхода любой работы при needs: all', () => {
     const diagnostics = lint(
       makeProject({
         'stepcast.yml': `
@@ -306,6 +397,7 @@ jobs:
         prompt: придумай
         expect: [{ exit_code: 0 }]
   implement:
+    needs: all
     steps:
       - id: использует
         run: [sh, -c, 'echo "\${jobs.propose.output.slug}" > slug.txt']
@@ -313,18 +405,14 @@ jobs:
 `,
       }),
     );
-    assert.ok(
-      warnings(diagnostics).some(
-        (message) =>
-          /Работа implement подставляет/.test(message) &&
-          /выход работы propose, не входящей/.test(message),
-      ),
-      'предупреждение называет обе работы',
+    assert.deepEqual(
+      errors(diagnostics).filter((message) => /подставляет/.test(message)),
+      [],
     );
   });
 
   // Сценарий: «Ссылка на зависимость не предупреждается», форма подстановки
-  it('не предупреждает о подстановке выхода объявленной зависимости', () => {
+  it('не отклоняет подстановку выхода объявленной зависимости', () => {
     const diagnostics = lint(
       makeProject({
         'stepcast.yml': `
@@ -352,9 +440,207 @@ jobs:
       }),
     );
     assert.deepEqual(
-      warnings(diagnostics).filter((message) => /подставляет/.test(message)),
+      errors(diagnostics).filter((message) => /подставляет/.test(message)),
       [],
     );
+  });
+
+  // Спека pipeline-definition: «Ссылка на несуществующую работу отклоняется»
+  // — сценарий «Опечатка в имени работы»
+  it('отклоняет опечатку в имени работы, подставленной через with', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  propose:
+    output:
+      from: думает
+    steps:
+      - id: думает
+        agent: fake
+        prompt: придумай
+        expect: [{ exit_code: 0 }]
+  build:
+    needs: [propose]
+    uses: ./jobs/build.yml
+    with: { change: "\${jobs.propse.output.slug}" }
+`,
+        'jobs/build.yml': `
+kind: job
+params:
+  change: { type: string, required: true }
+steps: [{ id: c, run: [echo, ok] }]
+`,
+      }),
+    );
+    const messages = errors(diagnostics);
+    assert.ok(
+      messages.some(
+        (message) => /jobs.propse.output.slug/.test(message) && /propse/.test(message),
+      ),
+    );
+  });
+
+  // Спека требует называть место объявления: у поля тела подключённой работы
+  // это её файл, а у `with` того же подключения — файл пайплайна.
+  it('называет файл объявления подстановки: тело работы и место подключения — разные файлы', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    uses: ./jobs/build.yml
+    with: { change: "\${jobs.wired.output.slug}" }
+`,
+      'jobs/build.yml': `
+kind: job
+params:
+  change: { type: string, required: true }
+steps:
+  - id: думает
+    agent: fake
+    prompt: "Слаг: \${jobs.inner.output.slug}"
+`,
+    });
+    const diagnostics = lint(project);
+
+    const inner = diagnostics.find((entry) => /jobs.inner.output.slug/.test(entry.message));
+    assert.ok(inner !== undefined, 'подстановка тела работы должна давать ошибку');
+    assert.equal(inner?.file, project.path('jobs/build.yml'));
+    assert.equal(inner?.at, 'jobs.build.steps.0.prompt');
+
+    const wired = diagnostics.find((entry) => /jobs.wired.output.slug/.test(entry.message));
+    assert.ok(wired !== undefined, 'подстановка в with должна давать ошибку');
+    assert.equal(wired?.file, project.path('stepcast.yml'));
+    assert.equal(wired?.at, 'jobs.build.with.change');
+  });
+
+  // Поле уровня пайплайна не принадлежит ни одной работе, и перебор по работам
+  // его не видит — но имя, которого в графе нет, не разрешится и в нём.
+  it('отклоняет несуществующее имя в подстановке поля пайплайна', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+context:
+  - "changes/\${jobs.nope.output.slug}/proposal.md"
+jobs:
+  build:
+    steps:
+      - id: думает
+        agent: fake
+        prompt: сделай
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    const diagnostics = lint(project);
+    const found = diagnostics.find((entry) => /jobs.nope.output.slug/.test(entry.message));
+    assert.ok(found !== undefined, 'ошибка называет выражение поля пайплайна');
+    assert.equal(found?.severity, 'error');
+    assert.equal(found?.file, project.path('stepcast.yml'));
+    assert.equal(found?.at, 'context.0');
+  });
+
+  // Сценарий: «Имя без суффикса дорожки в общем промпте» — воспроизведение
+  // прогона e1867e: общий файл промпта дорожек ссылается на работу без
+  // суффикса, которого в графе нет ни у одной из них.
+  it('отклоняет имя без суффикса дорожки, подставленное в общем файле промпта', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  propose-a:
+    lane: a
+    steps:
+      - id: думает
+        agent: fake
+        prompt: "file:./prompts/propose.md"
+        expect: [{ exit_code: 0 }]
+  propose-b:
+    lane: b
+    steps:
+      - id: думает
+        agent: fake
+        prompt: "file:./prompts/propose.md"
+        expect: [{ exit_code: 0 }]
+`,
+      'prompts/propose.md': 'Слаг: ${jobs.propose.output.slug}\n',
+    });
+    const diagnostics = lint(project);
+    const promptPath = project.path('prompts/propose.md');
+    const found = diagnostics.find(
+      (entry) => entry.severity === 'error' && entry.file === promptPath,
+    );
+    assert.ok(found !== undefined, 'ошибка называет путь к файлу промпта');
+    assert.match(found?.message ?? '', /propose/);
+    assert.match(found?.at ?? '', /^\d+:\d+$/, 'место — позиция строка:столбец в файле');
+    assert.match(found?.hint ?? '', /propose-a/);
+    assert.match(found?.hint ?? '', /propose-b/);
+  });
+
+  // Сценарий: «Несуществующее имя в условии при параллелизме»
+  it('отклоняет ошибкой несуществующее имя в if при concurrency больше единицы', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+concurrency: 2
+jobs:
+  build:
+    if: "jobs.propose.status == 'success'"
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+      }),
+    );
+    assert.ok(
+      errors(diagnostics).some(
+        (message) => /build/.test(message) && /propose/.test(message) && /несуществующ/.test(message),
+      ),
+    );
+    assert.equal(hasErrors(diagnostics), true);
+  });
+
+  // Сценарий: «Экранированное выражение» — из спеки «Ссылка на
+  // несуществующую работу отклоняется»
+  it('не отклоняет экранированную ссылку на несуществующую работу в промпте', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  ask:
+    steps:
+      - id: a
+        agent: claude
+        prompt: "file:./prompt.md"
+        expect: [{ exit_code: 0 }]
+`,
+        'prompt.md': 'Литерал: $${jobs.propose.output.slug}\n',
+      }),
+    );
+    assert.deepEqual(errors(diagnostics), []);
+  });
+
+  it('не отклоняет экранированную ссылку на несуществующую работу в поле документа', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    env: { NOTE: "$\${jobs.propose.output.slug}" }
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+      }),
+    );
+    assert.deepEqual(errors(diagnostics), []);
   });
 
   // Перечень context_upstream отбирает выходы из работ выше по графу: имя за

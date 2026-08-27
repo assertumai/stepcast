@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { parse as parseYaml } from 'yaml';
 
 import { expandPipeline } from '../src/core/pipeline/expand.js';
+import { interpolate, type Scope } from '../src/core/pipeline/interpolate.js';
 import { serializeLock } from '../src/core/pipeline/lock.js';
 import { StepcastError } from '../src/core/errors.js';
 import { asAgent, asRun, makeProject, MINIMAL_PIPELINE, type Project } from './helpers.js';
@@ -336,6 +337,132 @@ steps:
 
     const step = asAgent(expand(project).pipeline.jobs[0]!.steps[0]!);
     assert.equal(step.prompt.trim(), 'Расскажи про сессии.');
+  });
+
+  // Спека pipeline-definition: «Подстановки файлов промптов видны
+  // статической проверке» — сценарий «Подстановка внешнего промпта попадает в карту»
+  it('подстановка внешнего промпта попадает в карту под путём шага', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+inputs:
+  change: { type: string, default: x }
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: "file:./prompts/ask.md"
+`,
+      'prompts/ask.md': 'x=${inputs.change}\n',
+    });
+
+    const { substitutions } = expand(project);
+    const list = substitutions.get('jobs.ask.steps.0.prompt') ?? [];
+    const found = list.find((item) => item.namespace === 'inputs');
+    assert.ok(found !== undefined, 'подстановка из файла промпта должна быть записана');
+    assert.equal(found.origin, project.path('prompts/ask.md'));
+    assert.equal(found.line, 1);
+    assert.equal(found.column, 3);
+  });
+
+  // Сценарий: «Внутренний промпт учитывается как прежде»
+  it('подстановка внутреннего промпта записана под тем же путём и без origin', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+inputs:
+  change: { type: string, default: x }
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: "\${inputs.change}"
+`,
+    });
+
+    const { substitutions } = expand(project);
+    const list = substitutions.get('jobs.ask.steps.0.prompt') ?? [];
+    const found = list.find((item) => item.namespace === 'inputs');
+    assert.ok(found !== undefined);
+    assert.equal(found.origin, undefined);
+  });
+
+  it('подстановка в самом пути file: не теряется', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+inputs:
+  which: { type: string, default: ask }
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: "file:./prompts/\${inputs.which}.md"
+`,
+      'prompts/ask.md': 'спроси\n',
+    });
+
+    const { pipeline, substitutions } = expand(project);
+    assert.equal(asAgent(pipeline.jobs[0]!.steps[0]!).promptSource, project.path('prompts/ask.md'));
+    const list = substitutions.get('jobs.ask.steps.0.prompt') ?? [];
+    assert.ok(
+      list.some((item) => item.expression === 'inputs.which'),
+      'подстановка из пути остаётся в карте наравне с подстановками текста',
+    );
+  });
+
+  // Промпт документа раскрывается один раз, вместе с телом работы: второй
+  // проход снял бы экранирование ещё раз и продублировал бы записи в карте.
+  it('внутренний промпт не раскрывается дважды', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+inputs:
+  change: { type: string, default: x }
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: "литерал $\${inputs.change}, отложенное \${jobs.other.output.slug}"
+  other:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    const { pipeline, substitutions } = expand(project);
+    const text = asAgent(pipeline.jobs[0]!.steps[0]!).prompt;
+    assert.match(text, /литерал \$\{inputs\.change\}/, 'экранирование снято ровно один раз');
+
+    const list = substitutions.get('jobs.ask.steps.0.prompt') ?? [];
+    assert.deepEqual(
+      list.filter((item) => item.namespace === 'jobs').map((item) => item.expression),
+      ['jobs.other.output.slug'],
+    );
+  });
+
+  it('on_fail.prompt из файла тоже попадает в карту', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+inputs:
+  change: { type: string, default: x }
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, ok]
+        on_fail:
+          analyze: claude
+          prompt: "file:./prompts/fail.md"
+`,
+      'prompts/fail.md': 'x=${inputs.change}\n',
+    });
+
+    const { substitutions } = expand(project);
+    const list = substitutions.get('jobs.build.steps.0.on_fail.prompt') ?? [];
+    const found = list.find((item) => item.namespace === 'inputs');
+    assert.ok(found !== undefined);
+    assert.equal(found.origin, project.path('prompts/fail.md'));
   });
 
   it('применяет умолчания конфигурации и пайплайна к шагам', () => {
@@ -1136,5 +1263,49 @@ jobs:
       assert.match(error.message, /github/);
       return true;
     });
+  });
+});
+
+describe('pipeline-definition: позиция подстановки', () => {
+  const scope: Scope = { values: { params: { x: 'ok' } }, deferred: new Set() };
+
+  it('строка и столбец первой и последующих подстановок в многострочном тексте', () => {
+    const template = 'a: ${params.x}\nb: ${params.x} и ${params.x}\n';
+    const { substitutions } = interpolate(template, scope);
+
+    assert.equal(substitutions.length, 3);
+    assert.deepEqual(
+      substitutions.map((item) => [item.line, item.column]),
+      [
+        [1, 4],
+        [2, 4],
+        [2, 18],
+      ],
+    );
+  });
+
+  it('позиция считается по исходному шаблону, а не по результату', () => {
+    // Подставленное значение короче выражения — не он должен влиять на
+    // позицию второй подстановки в той же строке.
+    const template = '${params.x} затем ${params.x}';
+    const { substitutions } = interpolate(template, scope);
+
+    assert.equal(substitutions[1]?.column, 19);
+  });
+
+  it('экранированное $${...} позиции не порождает', () => {
+    const template = 'литерал $${params.x} и настоящая ${params.x}';
+    const { substitutions } = interpolate(template, scope);
+
+    assert.equal(substitutions.length, 1);
+    assert.equal(substitutions[0]?.expression, 'params.x');
+  });
+
+  it('origin у полей документа отсутствует, а при объявлении в scope — записывается', () => {
+    const withoutOrigin = interpolate('${params.x}', scope);
+    assert.equal(withoutOrigin.substitutions[0]?.origin, undefined);
+
+    const withOrigin = interpolate('${params.x}', { ...scope, origin: '/tmp/prompt.md' });
+    assert.equal(withOrigin.substitutions[0]?.origin, '/tmp/prompt.md');
   });
 });

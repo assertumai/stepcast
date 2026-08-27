@@ -124,6 +124,32 @@ describe('раскрытие отложенных подстановок', () =>
     ]);
   });
 
+  // Спека pipeline-definition: «Ссылка на несуществующую работу отклоняется»,
+  // сценарий «Экранированное выражение» — вторая половина: линт молчит, а в
+  // отправленном тексте остаётся литерал, а не значение.
+  it('оставляет экранированное в файле промпта литералом в отправленном тексте', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  probe:
+    steps:
+      - id: think
+        agent: claude
+        prompt: "file:./prompt.md"
+`,
+      'prompt.md': 'Литерал: $${jobs.plan.output.slug}\n',
+    });
+    const { pipeline } = expandPipeline({
+      pipelinePath: project.path('stepcast.yml'),
+      config: project.config,
+    });
+
+    const text = asAgent(resolveLate(pipeline.jobs[0] as Job, SCOPE).steps[0] as never).prompt;
+    assert.match(text, /Литерал: \$\{jobs\.plan\.output\.slug\}/);
+    assert.doesNotMatch(text, /add-oauth/);
+  });
+
   it('отказывает при обращении к незавершённой работе', () => {
     const job = expandJob(
       pipelineWith(`    steps:

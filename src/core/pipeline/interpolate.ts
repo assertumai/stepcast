@@ -39,6 +39,20 @@ export interface Scope {
    * отсутствующее поле, но означают разное.
    */
   readonly explain?: (expression: string, namespace: string, path: string) => string | undefined;
+  /**
+   * Файл, из которого пришёл разбираемый текст, — когда это не сам документ,
+   * а что-то подключённое им, например файл промпта. Записывается в каждую
+   * найденную подстановку как `origin`; без него подстановка считается частью
+   * документа, и место указывает точечный путь поля, а не файл и позиция.
+   */
+  readonly origin?: string;
+  /**
+   * Документ, чьи поля раскрываются в этой области видимости: файл пайплайна
+   * либо подключённый им файл работы. Записывается в каждую найденную
+   * подстановку как `file` и называет место объявления — в отличие от
+   * `origin`, называющего файл, откуда взят сам текст.
+   */
+  readonly file?: string;
 }
 
 export interface Interpolated {
@@ -66,13 +80,35 @@ function renderValue(value: unknown, expression: string, at: string | undefined)
   });
 }
 
+/**
+ * Строка и столбец начала выражения по смещению в исходном шаблоне, считая с
+ * единицы. Считается по шаблону, а не по результату: раскрытая подстановка
+ * обычно меняет длину текста, и позиция в результате указывала бы не туда.
+ */
+function positionAt(template: string, offset: number): { line: number; column: number } {
+  let line = 1;
+  let lastNewline = -1;
+  for (let i = 0; i < offset; i++) {
+    if (template[i] === '\n') {
+      line++;
+      lastNewline = i;
+    }
+  }
+  return { line, column: offset - lastNewline };
+}
+
 export function interpolate(template: string, scope: Scope, at?: string): Interpolated {
   const substitutions: Substitution[] = [];
   const late = scope.mode === 'late';
 
   const value = template.replace(
     PLACEHOLDER,
-    (match, escapedRaw: string | undefined, plainRaw: string | undefined) => {
+    (
+      match,
+      escapedRaw: string | undefined,
+      plainRaw: string | undefined,
+      offset: number,
+    ) => {
       if (match.startsWith('$${')) {
         // Экранирование снимает тот этап, который раскрывает это пространство.
         // Снять его раньше значит отдать позднему проходу литерал, от
@@ -90,9 +126,19 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
       const segments = expression.split('.');
       const namespace = segments[0] as string;
       const rest = segments.slice(1);
+      const { line, column } = positionAt(template, offset);
 
       if (scope.deferred.has(namespace)) {
-        substitutions.push({ expression, namespace, path: rest.join('.'), deferred: true });
+        substitutions.push({
+          expression,
+          namespace,
+          path: rest.join('.'),
+          deferred: true,
+          ...(scope.origin === undefined ? {} : { origin: scope.origin }),
+          ...(scope.file === undefined ? {} : { file: scope.file }),
+          line,
+          column,
+        });
         return match;
       }
 
@@ -117,7 +163,16 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
         });
       }
 
-      substitutions.push({ expression, namespace, path: rest.join('.'), deferred: false });
+      substitutions.push({
+        expression,
+        namespace,
+        path: rest.join('.'),
+        deferred: false,
+        ...(scope.origin === undefined ? {} : { origin: scope.origin }),
+        ...(scope.file === undefined ? {} : { file: scope.file }),
+        line,
+        column,
+      });
       return renderValue(resolved, expression, at);
     },
   );

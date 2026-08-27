@@ -213,13 +213,22 @@ function resolveDeclaredPath(value: string, declaringFile: string): string {
   return isAbsolute(value) ? value : resolvePath(dirname(declaringFile), value);
 }
 
-function readPrompt(value: string, declaringFile: string, scope: Scope, at: string): {
+function readPrompt(
+  value: string,
+  declaringFile: string,
+  scope: Scope,
+  at: string,
+): {
   text: string;
   source?: string;
+  substitutions: readonly Substitution[];
 } {
-  if (!value.startsWith('file:')) {
-    return { text: interpolateTree(value, scope, at).value };
-  }
+  // Промпт, объявленный прямо в документе, сюда приходит уже раскрытым: тело
+  // работы целиком проходит через `interpolateTree`, и его подстановки уже
+  // записаны в карту под этим же ключом. Второй проход дал бы их дубли с
+  // позициями по раскрытому тексту и вдобавок снял бы экранирование ещё раз,
+  // превратив литерал `$${inputs.x}` в значение.
+  if (!value.startsWith('file:')) return { text: value, substitutions: [] };
 
   const path = resolveDeclaredPath(value.slice('file:'.length), declaringFile);
   let raw: string;
@@ -232,7 +241,27 @@ function readPrompt(value: string, declaringFile: string, scope: Scope, at: stri
       cause: error,
     });
   }
-  return { text: interpolateTree(raw, scope, at).value, source: path };
+  // Происхождение объявляется только для этого текста: остальная область
+  // видимости раскрывает поля документа, у которых место — точечный путь, а
+  // не файл.
+  const fileScope: Scope = { ...scope, origin: path };
+  const result = interpolateTree(raw, fileScope, at);
+  return { text: result.value, source: path, substitutions: result.substitutions.get(at) ?? [] };
+}
+
+/**
+ * Дописать подстановки, найденные при раскрытии файла промпта, в карту под
+ * тем же ключом, что и у промпта, объявленного в документе, — вместо
+ * перезаписи: у поля документа уже могла быть записана подстановка из самого
+ * пути `file:...`, и её нельзя терять.
+ */
+function recordPromptSubstitutions(
+  substitutions: Map<string, readonly Substitution[]>,
+  key: string,
+  extra: readonly Substitution[],
+): void {
+  if (extra.length === 0) return;
+  substitutions.set(key, [...(substitutions.get(key) ?? []), ...extra]);
 }
 
 interface StepDefaults {
@@ -249,7 +278,7 @@ function toStep(
   scope: Scope,
   defaults: StepDefaults,
   config: Config,
-  substitutions: SubstitutionMap,
+  substitutions: Map<string, readonly Substitution[]>,
   at: string,
 ): Step {
   const common = {
@@ -274,25 +303,27 @@ function toStep(
   };
 
   if ('run' in raw) {
+    let onFail: { readonly analyze: string; readonly prompt: string } | undefined;
+    if (raw.on_fail !== undefined) {
+      const onFailKey = `${at}.on_fail.prompt`;
+      const onFailPrompt = readPrompt(raw.on_fail.prompt, declaringFile, scope, onFailKey);
+      recordPromptSubstitutions(substitutions, onFailKey, onFailPrompt.substitutions);
+      onFail = { analyze: raw.on_fail.analyze, prompt: onFailPrompt.text };
+    }
     return {
       ...common,
       kind: 'run',
       command: raw.run,
-      ...(raw.on_fail === undefined
-        ? {}
-        : {
-            onFail: {
-              analyze: raw.on_fail.analyze,
-              prompt: readPrompt(raw.on_fail.prompt, declaringFile, scope, `${at}.on_fail.prompt`).text,
-            },
-          }),
+      ...(onFail === undefined ? {} : { onFail }),
       ...(raw.output_schema === undefined
         ? {}
         : { outputSchemaPath: resolveDeclaredPath(raw.output_schema, declaringFile) }),
     };
   }
 
-  const prompt = readPrompt(raw.prompt, declaringFile, scope, `${at}.prompt`);
+  const promptKey = `${at}.prompt`;
+  const prompt = readPrompt(raw.prompt, declaringFile, scope, promptKey);
+  recordPromptSubstitutions(substitutions, promptKey, prompt.substitutions);
   const agent = raw.agent ?? defaults.agent;
   const backend = config.backends[agent];
   const model = raw.model ?? defaults.model ?? backend?.defaultModel;
@@ -337,6 +368,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   const pipelineScope: Scope = {
     values: { inputs },
     deferred: DEFERRED_NAMESPACES,
+    file: pipelinePath,
   };
 
   const substitutions = new Map<string, readonly Substitution[]>();
@@ -406,6 +438,9 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       bodyScope = {
         values: { params },
         deferred: DEFERRED_NAMESPACES,
+        // Поля тела объявлены в файле работы: диагностика должна называть его,
+        // а не пайплайн, где работа только подключена.
+        file: usesPath,
         hints: {
           // Работа не видит inputs намеренно: иначе она привязана к одному
           // пайплайну и перестаёт быть переиспользуемой.

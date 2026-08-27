@@ -169,7 +169,7 @@ ${AGENT_STEP}`),
     assert.deepEqual(
       errors(
         lint(`context:
-  - "changes/\${jobs.other.output.slug}/proposal.md"
+  - "changes/\${jobs.probe.output.slug}/proposal.md"
 ${AGENT_STEP}`),
       ),
       [],

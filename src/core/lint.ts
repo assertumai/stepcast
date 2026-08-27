@@ -9,7 +9,7 @@ import { workspaceInheritanceDiagnostics } from './run/inherit.js';
 import { workspacePathNeedsCopy } from './run/workspace.js';
 import { isKnownTimeZone, isSatisfiable, parseCron } from './trigger/cron.js';
 import { formatDuration, formatMoney, formatTokens } from './units.js';
-import type { ContextEntry, ExpandedPipeline, Job, Predicate, Step } from './pipeline/model.js';
+import type { ContextEntry, ExpandedPipeline, Job, Predicate, Step, Substitution } from './pipeline/model.js';
 
 /**
  * Статическая проверка раскрытого пайплайна.
@@ -176,6 +176,7 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
   const base = options.cwd ?? dirname(pipeline.file);
 
   checkContext(pipeline.context, base, pipeline.file, 'context', substitutions, push);
+  checkPipelineSubstitutions(substitutions, graph.byId, pipeline.file, push);
 
   for (const job of pipeline.jobs) {
     const at = `jobs.${job.id}`;
@@ -206,8 +207,8 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
     }
 
     const upstreamOf = graph.upstream.get(job.id) ?? new Set();
-    checkCondition(job, upstreamOf, declaredInputs, pipeline.concurrency, pipeline.file, push);
-    checkJobSubstitutions(job, upstreamOf, pipeline.concurrency, substitutions, pipeline.file, push);
+    checkCondition(job, upstreamOf, declaredInputs, graph.byId, pipeline.concurrency, pipeline.file, push);
+    checkJobSubstitutions(job, upstreamOf, substitutions, graph.byId, pipeline.file, push);
     checkContextUpstream(job, upstreamOf, push);
     checkEnv(job.env, envDenyMatchers, pipeline.envDeny, job.source, `${at}.env`, push);
 
@@ -284,6 +285,7 @@ function checkCondition(
   job: Job,
   upstream: ReadonlySet<string>,
   declaredInputs: ReadonlySet<string>,
+  byId: ReadonlyMap<string, Job>,
   concurrency: number,
   file: string,
   push: (diagnostic: Diagnostic) => void,
@@ -334,6 +336,21 @@ function checkCondition(
 
     if (namespace === 'jobs') {
       const other = path[1];
+
+      // Отсутствующее в графе имя не разрешится ни при каком порядке
+      // исполнения — это ошибка независимо от concurrency и needs, в отличие
+      // от существующего соседа ниже, чей исход просто ещё не гарантирован.
+      if (other !== undefined && !byId.has(other)) {
+        push({
+          severity: 'error',
+          message: `Условие работы ${job.id} обращается к несуществующей работе ${other}`,
+          file,
+          at,
+          hint: similarJobsHint(other, byId.keys()),
+        });
+        continue;
+      }
+
       // Условие вычисляется в момент готовности работы: до этого момента
       // известны исходы только тех работ, что выше по графу.
       if (other !== undefined && job.needs !== 'all' && !upstream.has(other)) {
@@ -368,29 +385,93 @@ function checkCondition(
 }
 
 /**
- * Подстановки `${jobs.<id>.*}` в определении работы (контекст, env, run,
- * бюджет — всё, что не `if`), называющие работу вне её зависимостей.
+ * Идентификаторы работ, похожие на отсутствующее имя, — для подсказки. Похож
+ * тот, чей префикс до первого дефиса совпадает: типичный промах — общий файл
+ * промпта на пайплайне с дорожками, называющий работу без её суффикса
+ * (`propose` вместо `propose-a`/`propose-b`).
+ */
+function similarJobsHint(missing: string, ids: Iterable<string>): string {
+  const all = [...ids];
+  const prefix = missing.split('-')[0];
+  const similar = all.filter((id) => id !== missing && id.split('-')[0] === prefix).sort();
+  if (similar.length > 0) return `Похожие идентификаторы: ${similar.join(', ')}`;
+  return `Объявлены: ${all.sort().join(', ') || 'нет'}`;
+}
+
+/**
+ * Место подстановки: для поля документа — объявивший его файл и точечный путь
+ * поля, для текста, взятого из подключённого файла (промпт), — сам этот файл и
+ * позиция выражения в нём.
  *
- * В отличие от `if`, эти подстановки читаются во время исполнения самого
- * шага, а не в момент готовности работы, — и при `concurrency: 1` часто
- * оказываются безобидными за счёт порядка объявления. Полагаться на этот
- * порядок явно не стоит, но и запрещать его как ошибку — значит гасить
- * пайплайны, которые до сих пор работали. Предупреждение годится ровно там,
- * где риск реален: при параллелизме, когда объявленный порядок ничего не
- * гарантирует.
+ * Объявивший файл берётся из самой подстановки: у тела подключённой работы это
+ * `jobs/*.yml`, а у `with` и прочей обвязки того же подключения — пайплайн,
+ * и по одному лишь ключу карты их не различить.
+ */
+function substitutionLocation(
+  item: Substitution,
+  key: string,
+  pipelineFile: string,
+): { file: string; at: string } {
+  if (item.origin === undefined) return { file: item.file ?? pipelineFile, at: key };
+  return { file: item.origin, at: `${item.line}:${item.column}` };
+}
+
+/**
+ * Подстановки `${jobs.<id>.*}` в полях самого пайплайна — контексте, env,
+ * бюджете: они принадлежат не работе, и перебор по работам их не видит.
+ *
+ * Проверяется только существование имени: у поля уровня пайплайна нет
+ * предшественниц, оно раскрывается в каждой работе отдельно, и «выше по графу»
+ * для него не определено. Отсутствующее же имя не разрешится ни у одной.
+ */
+function checkPipelineSubstitutions(
+  substitutions: ExpandedPipeline['substitutions'],
+  byId: ReadonlyMap<string, Job>,
+  pipelineFile: string,
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  const flagged = new Set<string>();
+
+  for (const [key, list] of substitutions) {
+    if (key.startsWith('jobs.')) continue;
+
+    for (const item of list) {
+      if (item.namespace !== 'jobs') continue;
+      const other = item.path.split('.')[0];
+      if (other === undefined || byId.has(other) || flagged.has(other)) continue;
+      flagged.add(other);
+      push({
+        severity: 'error',
+        message: `Пайплайн подставляет ${item.expression} — работы ${other} нет в пайплайне`,
+        ...substitutionLocation(item, key, pipelineFile),
+        hint: similarJobsHint(other, byId.keys()),
+      });
+    }
+  }
+}
+
+/**
+ * Подстановки `${jobs.<id>.*}` в определении работы (контекст, env, run,
+ * бюджет, промпт — всё, что не `if`).
+ *
+ * Имя, отсутствующее в графе, не разрешится ни при каком порядке исполнения —
+ * это ошибка независимо от concurrency и needs. Имя, которое в графе есть, но
+ * не входит в число предшественниц, — тоже ошибка, а не предупреждение: выход
+ * публикует работа выше по графу, и у работы вне предшественниц он на момент
+ * подстановки не опубликован ни при каком concurrency — в отличие от `if`,
+ * читающего исход, а не выход, где порядок объявления при concurrency: 1
+ * порой достаточен.
  */
 function checkJobSubstitutions(
   job: Job,
   upstream: ReadonlySet<string>,
-  concurrency: number,
   substitutions: ExpandedPipeline['substitutions'],
-  file: string,
+  byId: ReadonlyMap<string, Job>,
+  pipelineFile: string,
   push: (diagnostic: Diagnostic) => void,
 ): void {
-  if (concurrency <= 1) return;
-
   const prefix = `jobs.${job.id}.`;
-  const warned = new Set<string>();
+  const flagged = new Set<string>();
 
   for (const [key, list] of substitutions) {
     if (!key.startsWith(prefix)) continue;
@@ -400,17 +481,29 @@ function checkJobSubstitutions(
       // path подстановки уже без пространства: у `${jobs.propose.output.slug}`
       // это `propose.output.slug`, поэтому идентификатор работы — первый сегмент.
       const other = item.path.split('.')[0];
-      if (other === undefined || other === job.id) continue;
+      if (other === undefined || other === job.id || flagged.has(other)) continue;
+
+      const location = substitutionLocation(item, key, pipelineFile);
+
+      if (!byId.has(other)) {
+        flagged.add(other);
+        push({
+          severity: 'error',
+          message: `Работа ${job.id} подставляет ${item.expression} — работы ${other} нет в пайплайне`,
+          ...location,
+          hint: similarJobsHint(other, byId.keys()),
+        });
+        continue;
+      }
+
       if (job.needs === 'all' || upstream.has(other)) continue;
-      if (warned.has(other)) continue;
-      warned.add(other);
+      flagged.add(other);
 
       push({
-        severity: 'warning',
+        severity: 'error',
         message: `Работа ${job.id} подставляет ${item.expression} — выход работы ${other}, не входящей в её зависимости`,
-        file,
-        at: key,
-        hint: `При concurrency: ${concurrency} исход ${other} к этому моменту может быть ещё не известен — добавьте её в needs или используйте needs: all`,
+        ...location,
+        hint: `Добавьте ${other} в needs или используйте needs: all`,
       });
     }
   }
