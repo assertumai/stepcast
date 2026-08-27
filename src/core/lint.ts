@@ -5,6 +5,7 @@ import type { Config } from './config/resolve.js';
 import { parseExpression, references } from './expr/parse.js';
 import { buildGraph } from './graph.js';
 import { isStepcastError } from './errors.js';
+import { workspaceInheritanceDiagnostics } from './run/inherit.js';
 import { workspacePathNeedsCopy } from './run/workspace.js';
 import { isKnownTimeZone, isSatisfiable, parseCron } from './trigger/cron.js';
 import { formatDuration, formatMoney, formatTokens } from './units.js';
@@ -247,6 +248,8 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
       hint: `Работа объявляет workspace.mode: ${job.workspace.mode}`,
     });
   }
+
+  for (const diagnostic of workspaceInheritanceDiagnostics(pipeline, graph)) push(diagnostic);
 
   if (pipeline.workspace.mode === 'cwd' && pipeline.concurrency > 1) {
     push({

@@ -63,6 +63,16 @@ const WorkspaceSchema = z
   })
   .strict();
 
+/**
+ * `inherit` осмыслен только на работе — источник наследования выбирается для
+ * конкретной зависимой работы, а не для пайплайна целиком. На уровне
+ * пайплайна и в `defaults.workspace` он отклоняется `.strict()` схемы выше,
+ * которая этого ключа не знает.
+ */
+const JobWorkspaceSchema = WorkspaceSchema.extend({
+  inherit: z.string().optional(),
+});
+
 const PermissionsSchema = z
   .object({
     mode: z.string().optional(),
@@ -143,7 +153,7 @@ const JobBodyShape = {
   name: z.string().optional(),
   description: z.string().optional(),
   session: z.enum(['shared', 'per_step']).optional(),
-  workspace: WorkspaceSchema.optional(),
+  workspace: JobWorkspaceSchema.optional(),
   env: z.record(z.string(), z.string()).optional(),
   context: z.array(ContextEntrySchema).optional(),
   context_upstream: ContextUpstreamSchema.optional(),
@@ -179,7 +189,7 @@ const JobUseSchema = z
     ...WiringShape,
     description: z.string().optional(),
     session: z.enum(['shared', 'per_step']).optional(),
-    workspace: WorkspaceSchema.optional(),
+    workspace: JobWorkspaceSchema.optional(),
     env: z.record(z.string(), z.string()).optional(),
     context: z.array(ContextEntrySchema).optional(),
     context_upstream: ContextUpstreamSchema.optional(),

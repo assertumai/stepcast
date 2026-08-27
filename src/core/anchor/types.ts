@@ -60,6 +60,17 @@ export interface TreeAnchorer {
   dispose(): void;
 }
 
+/**
+ * Хранит ли якорь содержимое дерева, то есть можно ли привести к нему чужой
+ * каталог. Хеш-манифест отвечает только на вопрос «изменилось ли», содержимого
+ * файлов у него нет, и его `restore` объявленно отказывает
+ * (`anchor/manifest.ts`). Знание об этом собрано здесь, чтобы наследование
+ * дерева не выясняло его отказом посреди прогона.
+ */
+export function restorable(anchor: Anchor): boolean {
+  return anchor.kind === 'git';
+}
+
 export function sameAnchor(a: Anchor | undefined, b: Anchor | undefined): boolean {
   if (a === undefined || b === undefined) return false;
   return a.kind === b.kind && a.id === b.id;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { overallStatus, schedule, type JobOutcome } from '../src/core/run/scheduler.js';
+import { buildGraph } from '../src/core/graph.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { makeProject } from './helpers.js';
 import type { Pipeline } from '../src/core/pipeline/model.js';
@@ -380,5 +381,64 @@ jobs:
       'budget_exceeded',
     );
     assert.equal(overallStatus([{ id: 'a', status: 'skipped' }]), 'success');
+  });
+});
+
+describe('dependent-job-workspace: число потомков в графе', () => {
+  it('линейная цепочка — у каждой работы ровно один потомок', () => {
+    const { graph } = buildGraph(
+      pipelineOf(`
+kind: pipeline
+jobs:
+  a:
+    steps: [${STEP}]
+  b:
+    needs: [a]
+    steps: [${STEP}]
+  c:
+    needs: [b]
+    steps: [${STEP}]
+`),
+    );
+    assert.deepEqual(graph.dependents.get('a'), ['b']);
+    assert.deepEqual(graph.dependents.get('b'), ['c']);
+    assert.deepEqual(graph.dependents.get('c'), []);
+  });
+
+  it('развилка — у общего предшественника два потомка', () => {
+    const { graph } = buildGraph(
+      pipelineOf(`
+kind: pipeline
+jobs:
+  a:
+    steps: [${STEP}]
+  b:
+    needs: [a]
+    steps: [${STEP}]
+  c:
+    needs: [a]
+    steps: [${STEP}]
+`),
+    );
+    assert.deepEqual(graph.dependents.get('a'), ['b', 'c']);
+  });
+
+  it('needs: all не считается потомком — иначе цепочка неотличима от развилки', () => {
+    const { graph } = buildGraph(
+      pipelineOf(`
+kind: pipeline
+jobs:
+  a:
+    steps: [${STEP}]
+  b:
+    needs: [a]
+    steps: [${STEP}]
+  z:
+    needs: all
+    steps: [${STEP}]
+`),
+    );
+    assert.deepEqual(graph.dependents.get('a'), ['b']);
+    assert.deepEqual(graph.dependents.get('b'), []);
   });
 });

@@ -172,7 +172,17 @@ export const JobRecordSchema = z
      */
     last_check: z.array(PredicateResultSchema).optional(),
     /** Режим и путь рабочей директории работы: их нужно знать для apply. */
-    workspace: z.object({ mode: z.string(), path: z.string() }).strict().optional(),
+    workspace: z
+      .object({
+        mode: z.string(),
+        path: z.string(),
+        /** Работа, чьё дерево унаследовано. Отсутствует у работы без наследования. */
+        inherited_from: z.string().optional(),
+        /** Каталог продолжен, а не заведён заново — цепочка, а не развилка. */
+        continued: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
     started_at: z.string().optional(),
     finished_at: z.string().optional(),
     output: z.string().optional(),
@@ -365,6 +375,15 @@ export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('iteration.finished'), job: z.string(), iteration: z.number().int().positive(), passed: z.boolean(), reason: z.string().optional() }).strict(),
   z.object({ ...eventBase, kind: z.literal('step.reused'), job: z.string(), step: z.string(), source: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('tree.restored'), anchor: z.string(), path: z.string() }).strict(),
+  // Пишется до первого шага наследующей работы: объясняет, откуда в её
+  // каталоге чужие файлы и почему две работы делят один путь.
+  z.object({
+    ...eventBase,
+    kind: z.literal('workspace.inherited'),
+    job: z.string(),
+    source: z.string(),
+    via: z.enum(['continue', 'seed']),
+  }).strict(),
   // Состояние каталога прогона, оставленное переиспользованными шагами:
   // перенесено из исходного прогона, потому что каталог нового пуст.
   z.object({ ...eventBase, kind: z.literal('run_dir.carried'), path: z.string(), source: z.string() }).strict(),

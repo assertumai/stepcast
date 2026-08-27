@@ -24,9 +24,26 @@ export interface GitAnchorerOptions {
   readonly dir: string;
   /** Путь к индексному файлу. Живёт в директории прогона, не в репозитории. */
   readonly indexFile: string;
+  /**
+   * Репозиторий, чьей базой объектов пользоваться, если `dir` сам рабочим
+   * деревом git не является.
+   *
+   * Так фиксируется состояние рабочей копии в режиме `copy`: копия делается
+   * из рабочего дерева, но `.git` в неё не переносится, и без этого `git add`
+   * в ней отказал бы «not a git repository» — а вместе с ним молча пропали бы
+   * и якоря, и наследование дерева зависимой работой. Объекты пишутся в базу
+   * проекта — ровно как в режиме `worktree`, который делит её по устройству
+   * самого git.
+   */
+  readonly repoDir?: string;
 }
 
-function git(dir: string, args: readonly string[], indexFile?: string): string {
+function git(
+  dir: string,
+  args: readonly string[],
+  indexFile?: string,
+  external?: ExternalRepo,
+): string {
   // `core.quotePath=false`: иначе git экранирует не-ASCII пути в выводе
   // C-последовательностями, и предикат границ, объяснение инвалидации и
   // сравнение прогонов начинают показывать «\321\201...» вместо имени файла.
@@ -36,11 +53,17 @@ function git(dir: string, args: readonly string[], indexFile?: string): string {
     // Диагностика git попадает в исключение, а не в вывод процесса: ожидаемые
     // отказы (проба на репозиторий, недоступный объект) не должны шуметь.
     stdio: ['ignore', 'pipe', 'pipe'],
-    env:
-      indexFile === undefined
-        ? { ...process.env }
-        : { ...process.env, GIT_INDEX_FILE: indexFile },
+    env: {
+      ...process.env,
+      ...(indexFile === undefined ? {} : { GIT_INDEX_FILE: indexFile }),
+      ...(external === undefined ? {} : { GIT_DIR: external.gitDir, GIT_WORK_TREE: dir }),
+    },
   });
+}
+
+/** База объектов чужого репозитория, взятая напрокат для каталога вне git. */
+interface ExternalRepo {
+  readonly gitDir: string;
 }
 
 /** Является ли каталог рабочим деревом git. */
@@ -52,15 +75,38 @@ export function isGitWorktree(dir: string): boolean {
   }
 }
 
+/**
+ * База объектов для каталога, который сам рабочим деревом git не является.
+ *
+ * Отказ здесь громкий и немедленный: тихо снятый якорь «ни на чём» хуже
+ * отсутствующего — по нему нельзя ни восстановить дерево, ни объяснить, куда
+ * делся результат предшественника.
+ */
+function resolveExternalRepo(options: GitAnchorerOptions): ExternalRepo | undefined {
+  const { dir, repoDir } = options;
+  if (isGitWorktree(dir)) return undefined;
+  if (repoDir === undefined) {
+    throw new StepcastError(`Каталог ${dir} не является рабочим деревом git`, {
+      hint: 'Состояние такого каталога фиксируется хеш-манифестом, а не git',
+    });
+  }
+  try {
+    return { gitDir: git(repoDir, ['rev-parse', '--absolute-git-dir']).trim() };
+  } catch (error) {
+    throw new StepcastError(`Репозиторий git не найден рядом с ${repoDir}`, { cause: error });
+  }
+}
+
 export function createGitAnchorer(options: GitAnchorerOptions): TreeAnchorer {
   const { dir, indexFile } = options;
+  const external = resolveExternalRepo(options);
 
   return {
     kind: 'git',
 
     capture(): Anchor {
-      git(dir, ['add', '-A'], indexFile);
-      const id = git(dir, ['write-tree'], indexFile).trim();
+      git(dir, ['add', '-A'], indexFile, external);
+      const id = git(dir, ['write-tree'], indexFile, external).trim();
       return { kind: 'git', id };
     },
 
@@ -74,7 +120,7 @@ export function createGitAnchorer(options: GitAnchorerOptions): TreeAnchorer {
       // Объекты проверяются до записи: восстановление не имеет права оставить
       // дерево наполовину приведённым к чужому состоянию.
       try {
-        git(dir, ['cat-file', '-e', `${anchor.id}^{tree}`]);
+        git(dir, ['cat-file', '-e', `${anchor.id}^{tree}`], undefined, external);
       } catch (error) {
         throw new StepcastError(`Объекты состояния ${anchor.id} недоступны в этом репозитории`, {
           hint: 'Прогон мог быть снят в другом репозитории или объекты удалены уборкой git',
@@ -85,8 +131,8 @@ export function createGitAnchorer(options: GitAnchorerOptions): TreeAnchorer {
       // Индекс приводится к текущему рабочему дереву, и только потом дерево
       // переводится в целевое состояние: иначе `read-tree -u` не знает, какие
       // лишние файлы удалять.
-      git(dir, ['add', '-A'], indexFile);
-      git(dir, ['read-tree', '-u', '--reset', anchor.id], indexFile);
+      git(dir, ['add', '-A'], indexFile, external);
+      git(dir, ['read-tree', '-u', '--reset', anchor.id], indexFile, external);
     },
 
     restorePaths(anchor: Anchor, paths: readonly string[]): void {
@@ -98,7 +144,7 @@ export function createGitAnchorer(options: GitAnchorerOptions): TreeAnchorer {
       // Пути, которых в целевом состоянии нет, надо убрать, а не «восстановить»:
       // `checkout` о несуществующем файле сообщает ошибкой.
       const present = new Set(
-        git(dir, ['ls-tree', '-r', '--name-only', anchor.id])
+        git(dir, ['ls-tree', '-r', '--name-only', anchor.id], undefined, external)
           .split('\n')
           .filter((line) => line !== ''),
       );
@@ -106,7 +152,9 @@ export function createGitAnchorer(options: GitAnchorerOptions): TreeAnchorer {
       const restore = paths.filter((path) => present.has(path));
       const remove = paths.filter((path) => !present.has(path));
 
-      if (restore.length > 0) git(dir, ['checkout', anchor.id, '--', ...restore]);
+      if (restore.length > 0) {
+        git(dir, ['checkout', anchor.id, '--', ...restore], indexFile, external);
+      }
       for (const path of remove) rmSync(join(dir, path), { force: true });
     },
 
@@ -119,7 +167,12 @@ export function createGitAnchorer(options: GitAnchorerOptions): TreeAnchorer {
       }
       if (from.id === to.id) return { comparable: true, paths: [] };
 
-      const output = git(dir, ['diff-tree', '-r', '--name-only', '--no-commit-id', from.id, to.id]);
+      const output = git(
+        dir,
+        ['diff-tree', '-r', '--name-only', '--no-commit-id', from.id, to.id],
+        undefined,
+        external,
+      );
       return {
         comparable: true,
         paths: output.split('\n').filter((line) => line !== ''),
@@ -128,7 +181,7 @@ export function createGitAnchorer(options: GitAnchorerOptions): TreeAnchorer {
 
     diff(from: Anchor, to: Anchor): string | undefined {
       if (from.kind !== to.kind || from.id === to.id) return undefined;
-      const patch = git(dir, ['diff', '--binary', from.id, to.id]);
+      const patch = git(dir, ['diff', '--binary', from.id, to.id], undefined, external);
       return patch === '' ? undefined : patch;
     },
 

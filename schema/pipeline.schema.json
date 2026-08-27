@@ -151,6 +151,27 @@
         }
       ]
     },
+    "triggers": {
+      "type": "object",
+      "properties": {
+        "schedule": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "cron": {
+                "type": "string"
+              },
+              "timezone": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "defaults": {
       "type": "object",
       "properties": {
@@ -332,6 +353,9 @@
                     ]
                   },
                   "path": {
+                    "type": "string"
+                  },
+                  "inherit": {
                     "type": "string"
                   }
                 },
@@ -518,6 +542,9 @@
                     ]
                   },
                   "path": {
+                    "type": "string"
+                  },
+                  "inherit": {
                     "type": "string"
                   }
                 },

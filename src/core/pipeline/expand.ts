@@ -440,7 +440,24 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     }
 
     const sessionMode = (body.session as 'shared' | 'per_step' | undefined) ?? defaultSession;
-    const workspace = (body.workspace as Workspace | undefined) ?? pipelineWorkspace;
+    // Слияние, а не замена: работа обычно переопределяет только `inherit`
+    // (или только `path`), а режим объявлен один раз на пайплайне. Полная
+    // замена стёрла бы его и оставила `mode` неопределённым.
+    const rawWorkspace = body.workspace as Workspace | undefined;
+    const workspace: Workspace = ((): Workspace => {
+      if (rawWorkspace === undefined) return pipelineWorkspace;
+      const mode = rawWorkspace.mode ?? pipelineWorkspace.mode;
+      // Пайплайновый путь размещения принадлежит пайплайновому режиму: работа,
+      // сменившая режим, наследовать его не может — при режиме, отличном от
+      // `copy`, путь и вовсе запрещён. Свой путь работа объявляет сама.
+      const inheritedPath = mode === pipelineWorkspace.mode ? pipelineWorkspace.path : undefined;
+      const path = rawWorkspace.path ?? inheritedPath;
+      return {
+        mode,
+        ...(path === undefined ? {} : { path }),
+        ...(rawWorkspace.inherit === undefined ? {} : { inherit: rawWorkspace.inherit }),
+      };
+    })();
     const rawSteps = body.steps as RawStep[];
 
     const until = body.until as

@@ -30,10 +30,11 @@ import { buildStepEnv, injectedVariables } from '../exec/env.js';
 import { executeRunStep } from '../exec/runStep.js';
 import { runJudgePass } from '../exec/judgePass.js';
 import { evaluatePredicates } from '../expect/evaluate.js';
-import { buildGraph } from '../graph.js';
+import { buildGraph, type Graph } from '../graph.js';
 import { bookkeep } from './bookkeeping.js';
 import { buildIterationNote, type IterationNoteTruncation } from './iterationNote.js';
 import { HaltCause, type HaltCauseValue } from './halt.js';
+import { resolveInheritSource, type CompletedJob } from './inherit.js';
 import { preflight } from './preflight.js';
 import { buildPreviousFailure } from './previousFailure.js';
 import type { ResumePlan, SourceRun, StepPlan } from './resumePlan.js';
@@ -82,6 +83,7 @@ export interface RunOptions {
     readonly stateDir: string;
     readonly kind: AnchorKind;
     readonly scope: string;
+    readonly repoDir?: string;
   }) => TreeAnchorer;
 }
 
@@ -185,6 +187,11 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   const adapters = new Map<string, BackendAdapter>();
   const reportedDenials = new Set<string>();
   const graph = buildGraph(pipeline).graph;
+  // Каталог и последний якорь каждой завершившейся работы: источник, из
+  // которого наследование выбирает и разрешает дерево зависимой работы.
+  // Работы исполняются последовательно — карта читается только за работами,
+  // уже отдавшими исход.
+  const completedWorkspaces = new Map<string, CompletedJob>();
 
   // Момент пробуждения: дописывается на диск до начала сна и снимается после
   // продолжения — состояние спящего прогона доступно снаружи, пока он спит.
@@ -200,6 +207,9 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     reportedDenials,
     lockHash,
     anchorKind,
+    runCwd: options.cwd,
+    graph,
+    completedWorkspaces,
     failureNote: { pending: options.resume === undefined ? undefined : previousFailureText(options.resume) },
     ...(options.resume === undefined
       ? {}
@@ -319,6 +329,16 @@ interface RunContext extends RunOptions {
   readonly lockHash: string;
   /** Способ фиксации состояния: определён один раз на прогон. */
   readonly anchorKind: AnchorKind;
+  /**
+   * Каталог запуска. В отличие от `cwd`, который ниже по коду означает рабочую
+   * директорию текущей работы, этот остаётся каталогом прогона: якорю рабочей
+   * копии он нужен как репозиторий, чью базу объектов брать.
+   */
+  readonly runCwd: string;
+  /** Граф работ: наследованию нужны зависимости и число потомков. */
+  readonly graph: Graph;
+  /** Каталог и последний якорь уже завершившихся работ — источник наследования. */
+  readonly completedWorkspaces: Map<string, CompletedJob>;
   /** Наблюдённые входы шагов прошлого прогона: `<работа>/<шаг>` → пути. */
   readonly observedInputs?: ReadonlyMap<string, readonly string[]>;
   /**
@@ -396,9 +416,18 @@ async function executeJob(
   // Рабочая директория готовится до первого шага. Её отказ означает, что шаги
   // запустить негде, — это `spawn_failed` из закрытого перечня, а не новая
   // причина остановки.
+  const source = resolveInheritSource(context.graph, job, context.completedWorkspaces);
   let prepared: PreparedWorkspace;
   try {
-    prepared = prepareWorkspace({ job, cwd: context.cwd, runDir: journal.paths.dir });
+    prepared = prepareWorkspace({
+      job,
+      cwd: context.cwd,
+      runDir: journal.paths.dir,
+      source,
+      anchorKind: context.anchorKind,
+      anchorsDir: journal.paths.anchors,
+      ...(context.anchorerFor === undefined ? {} : { anchorerFor: context.anchorerFor }),
+    });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return {
@@ -410,8 +439,22 @@ async function executeJob(
 
   context.records.set(job.id, {
     ...(context.records.get(job.id) as JobRecord),
-    workspace: { mode: prepared.mode, path: prepared.dir },
+    workspace: {
+      mode: prepared.mode,
+      path: prepared.dir,
+      ...(prepared.inheritedFrom === undefined ? {} : { inherited_from: prepared.inheritedFrom }),
+      ...(prepared.continued === undefined ? {} : { continued: prepared.continued }),
+    },
   });
+
+  if (prepared.inheritedFrom !== undefined) {
+    journal.event({
+      kind: 'workspace.inherited',
+      job: job.id,
+      source: prepared.inheritedFrom,
+      via: prepared.continued === true ? 'continue' : 'seed',
+    });
+  }
 
   try {
     job = resolveLate(declared, {
@@ -435,7 +478,10 @@ async function executeJob(
 
   // Ниже по коду `context` — контекст работы: у него своя рабочая директория.
   const jobContext: RunContext = { ...context, cwd: prepared.dir };
-  const anchorState = { anchorer: undefined as TreeAnchorer | undefined };
+  const anchorState: { anchorer: TreeAnchorer | undefined; lastAnchor: Anchor | undefined } = {
+    anchorer: undefined,
+    lastAnchor: undefined,
+  };
   const jobStartedAt = Date.now();
   const maxIterations = job.until?.maxIterations ?? 1;
   let previousCheck: readonly PredicateResult[] | undefined;
@@ -513,6 +559,13 @@ async function executeJob(
       cause: HaltCause.spawnFailed,
     };
   } finally {
+    // Каталог и последний якорь записываются независимо от исхода: наследник
+    // может продолжить дерево даже упавшей работы, а работа без единого
+    // снятого якоря пропускается по цепочке (`resolveInheritSource`).
+    context.completedWorkspaces.set(job.id, {
+      dir: prepared.dir,
+      ...(anchorState.lastAnchor === undefined ? {} : { anchor: anchorState.lastAnchor }),
+    });
     // Индексный файл живёт ровно столько, сколько работа.
     anchorState.anchorer?.dispose();
   }
@@ -819,7 +872,7 @@ async function runJobSteps(
   job: Job,
   declared: Job,
   context: RunContext,
-  anchorState: { anchorer: TreeAnchorer | undefined },
+  anchorState: { anchorer: TreeAnchorer | undefined; lastAnchor: Anchor | undefined },
   iterationOptions: IterationOptions,
 ): Promise<JobOutcome> {
   const { journal } = context;
@@ -839,6 +892,9 @@ async function runJobSteps(
       stateDir: journal.paths.anchors,
       kind: context.anchorKind,
       scope: job.id,
+      // Рабочая копия сама рабочим деревом git не является: базу объектов ей
+      // даёт репозиторий прогона.
+      repoDir: context.runCwd,
     }),
   );
   anchorState.anchorer = anchorer;
@@ -852,6 +908,7 @@ async function runJobSteps(
         );
 
   let treeAnchor = capture();
+  anchorState.lastAnchor = treeAnchor;
 
   const sessions = createSessionRegistry();
   // Сессии, в которые уже отправлен унаследованный контекст. Отслеживание
@@ -922,6 +979,7 @@ async function runJobSteps(
         reused.tree_id === undefined
           ? treeAnchor
           : { kind: reused.anchor_kind ?? context.anchorKind, id: reused.tree_id };
+      anchorState.lastAnchor = treeAnchor;
       continue;
     }
 
@@ -1004,6 +1062,7 @@ async function runJobSteps(
     // бюджета: разбирать упавший прогон без состояния дерева нечем.
     const treeAfter = capture(step.id);
     treeAnchor = treeAfter ?? treeAnchor;
+    anchorState.lastAnchor = treeAnchor;
 
     if (anchorer !== undefined && treeBefore !== undefined && treeAfter !== undefined) {
       const patch = bookkeep({ ...scope, step: step.id }, 'вычисление diff.patch', () =>

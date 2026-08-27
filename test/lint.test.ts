@@ -844,3 +844,164 @@ jobs:
     assert.ok(found !== undefined, 'ошибка должна называть именно вторую запись (индекс 1)');
   });
 });
+
+describe('dependent-job-workspace: источник наследования рабочего дерева', () => {
+  // Сценарий: «Неизвестная работа в источнике»
+  it('отклоняет inherit, называющий несуществующую работу', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+workspace: { mode: worktree }
+budget: { tokens: 100k }
+jobs:
+  a:
+    steps: [{ id: c, run: [echo, a] }]
+  b:
+    needs: [a]
+    workspace: { inherit: ghost }
+    steps: [{ id: c, run: [echo, b] }]
+`,
+      }),
+    );
+    const message = errors(diagnostics).find((item) => /ghost/.test(item));
+    assert.ok(message !== undefined, 'ошибка должна называть несуществующую работу ghost');
+  });
+
+  // Сценарий: «Источник вне зависимостей»
+  it('отклоняет inherit, называющий работу вне зависимостей', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+workspace: { mode: worktree }
+budget: { tokens: 100k }
+jobs:
+  a:
+    steps: [{ id: c, run: [echo, a] }]
+  b:
+    steps: [{ id: c, run: [echo, b] }]
+  c:
+    needs: [b]
+    workspace: { inherit: a }
+    steps: [{ id: c, run: [echo, c] }]
+`,
+      }),
+    );
+    const message = errors(diagnostics).find((item) => /не входящей в её зависимости/.test(item));
+    assert.ok(message !== undefined);
+  });
+
+  // Сценарий: «Источник при режиме cwd»
+  it('отклоняет inherit при режиме cwd', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+workspace: { mode: cwd }
+budget: { tokens: 100k }
+jobs:
+  a:
+    steps: [{ id: c, run: [echo, a] }]
+  b:
+    needs: [a]
+    workspace: { inherit: a }
+    steps: [{ id: c, run: [echo, b] }]
+`,
+      }),
+    );
+    const message = errors(diagnostics).find((item) => /режиме cwd/.test(item));
+    assert.ok(message !== undefined);
+  });
+
+  // Сценарий: «Несколько зависимостей без объявленного источника»
+  it('отклоняет несколько зависимостей в изолирующем режиме без inherit', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+workspace: { mode: worktree }
+budget: { tokens: 100k }
+jobs:
+  a:
+    steps: [{ id: c, run: [echo, a] }]
+  b:
+    steps: [{ id: c, run: [echo, b] }]
+  c:
+    needs: [a, b]
+    steps: [{ id: c, run: [echo, c] }]
+`,
+      }),
+    );
+    const message = errors(diagnostics).find((item) => /не объявляет workspace\.inherit/.test(item));
+    assert.ok(message !== undefined);
+  });
+
+  // Сценарий: «Источник объявлен пайплайном» — `inherit` осмыслен только на
+  // работе: источник выбирается для конкретной зависимой работы, а не для
+  // пайплайна целиком. Отказ приходит из схемы, до линта, и называет ключ.
+  it('отклоняет workspace.inherit на уровне пайплайна, называя ключ', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+workspace: { mode: worktree, inherit: a }
+budget: { tokens: 100k }
+jobs:
+  a:
+    steps: [{ id: c, run: [echo, a] }]
+`,
+    });
+
+    assert.throws(
+      () => lint(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /inherit/);
+        assert.equal(error.at, 'workspace');
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет workspace.inherit в defaults.workspace, называя ключ', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+defaults: { workspace: { mode: worktree, inherit: a } }
+jobs:
+  a:
+    steps: [{ id: c, run: [echo, a] }]
+`,
+    });
+
+    assert.throws(
+      () => lint(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /inherit/);
+        return true;
+      },
+    );
+  });
+
+  // Сценарий: «Единственная зависимость объявления не требует»
+  it('принимает единственную зависимость без inherit', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+workspace: { mode: worktree }
+budget: { tokens: 100k }
+jobs:
+  a:
+    steps: [{ id: c, run: [echo, a] }]
+  b:
+    needs: [a]
+    steps: [{ id: c, run: [echo, b] }]
+`,
+      }),
+    );
+    assert.deepEqual(errors(diagnostics), []);
+  });
+});

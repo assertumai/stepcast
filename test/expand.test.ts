@@ -907,6 +907,66 @@ jobs:
     assert.equal(parsed.jobs[0]!.steps[0]!.timeout, '30m');
   });
 
+  // Сценарий: «Работа объявляет источник наследования»
+  it('раскрывает workspace.inherit и сохраняет его в локе', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+workspace: { mode: worktree }
+jobs:
+  a:
+    steps: [{ id: s, run: [echo, a] }]
+  b:
+    steps: [{ id: s, run: [echo, b] }]
+  c:
+    needs: [a, b]
+    workspace: { inherit: a }
+    steps: [{ id: s, run: [echo, c] }]
+`,
+    });
+
+    const { pipeline } = expand(project);
+    const c = pipeline.jobs.find((job) => job.id === 'c');
+    assert.equal(c?.workspace.inherit, 'a');
+    // Режим не переобъявлен на работе — унаследован от пайплайна, а не потерян
+    // при слиянии с частичным workspace работы.
+    assert.equal(c?.workspace.mode, 'worktree');
+
+    assert.match(serializeLock(pipeline), /inherit: a/);
+  });
+
+  // Слияние частичного workspace работы с пайплайновым не должно протаскивать
+  // в работу пайплайновый путь размещения копий: он принадлежит пайплайновому
+  // режиму, а при режиме, отличном от copy, и вовсе запрещён.
+  it('не наследует пайплайновый path работе, сменившей режим', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+workspace: { mode: copy, path: ./сборка }
+jobs:
+  a:
+    steps: [{ id: s, run: [echo, a] }]
+  b:
+    workspace: { mode: worktree }
+    steps: [{ id: s, run: [echo, b] }]
+`,
+    });
+
+    const { pipeline } = expand(project);
+    const a = pipeline.jobs.find((job) => job.id === 'a');
+    const b = pipeline.jobs.find((job) => job.id === 'b');
+    assert.equal(a?.workspace.path, './сборка', 'режим тот же — путь пайплайна в силе');
+    assert.equal(b?.workspace.mode, 'worktree');
+    assert.equal(b?.workspace.path, undefined);
+  });
+
+  it('раскрывает работу без inherit как прежде', () => {
+    const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
+    const { pipeline } = expand(project);
+    assert.equal(pipeline.jobs[0]!.workspace.inherit, undefined);
+    assert.doesNotMatch(serializeLock(pipeline), /inherit/);
+  });
+
   // Сценарий: «Пайплайн без триггеров не изменился»
   it('раскрывает пайплайн без triggers ровно как прежде', () => {
     const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });

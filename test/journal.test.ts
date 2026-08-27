@@ -41,7 +41,18 @@ import { RunStatusSchema, type RunStatus } from '../src/core/journal/schema.js';
 import { StepcastError } from '../src/core/errors.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline } from '../src/core/run/runner.js';
-import { makeProject, MINIMAL_PIPELINE } from './helpers.js';
+import { makeProject, MINIMAL_PIPELINE, type Project } from './helpers.js';
+
+function gitInit(project: Project): void {
+  const run = (...args: string[]): void => {
+    execFileSync('git', ['-C', project.root, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+  };
+  run('init', '--quiet', '--initial-branch=main');
+  run('config', 'user.email', 'test@example.com');
+  run('config', 'user.name', 'Тест');
+  run('add', '-A');
+  run('commit', '--quiet', '-m', 'первый');
+}
 
 interface Bed {
   readonly runsRoot: string;
@@ -701,6 +712,63 @@ describe('run-journal: идентификатор процесса прогон�
 
     const found = findAliveRun(runsRoot, projectRoot, pipelineFile);
     assert.equal(found?.runId, 'mine');
+  });
+});
+
+describe('dependent-job-workspace: источник наследования в журнале', () => {
+  async function runChain(): Promise<Awaited<ReturnType<typeof runPipeline>>> {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: наследование
+workspace: { mode: worktree }
+jobs:
+  a:
+    steps: [{ id: c, run: [echo, a], expect: [{ exit_code: 0 }] }]
+  b:
+    needs: [a]
+    steps: [{ id: c, run: [echo, b], expect: [{ exit_code: 0 }] }]
+`,
+    });
+    gitInit(project);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
+    return runPipeline({
+      expanded,
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+    });
+  }
+
+  it('запись наследующей работы несёт источник и признак продолженного каталога', async () => {
+    const result = await runChain();
+    const status = readStatus(result.journal.paths);
+    const b = status.jobs.find((job) => job.id === 'b');
+    assert.equal(b?.workspace?.inherited_from, 'a');
+    assert.equal(b?.workspace?.continued, true);
+  });
+
+  it('запись работы без наследования не несёт источника', async () => {
+    const result = await runChain();
+    const status = readStatus(result.journal.paths);
+    const a = status.jobs.find((job) => job.id === 'a');
+    assert.equal(a?.workspace?.inherited_from, undefined);
+    assert.equal(a?.workspace?.continued, undefined);
+  });
+
+  it('событие о наследовании дерева есть в потоке', async () => {
+    const result = await runChain();
+    const events = readEvents(result.journal.paths);
+    const inherited = events.find((event) => event.kind === 'workspace.inherited');
+    assert.ok(inherited !== undefined, 'событие workspace.inherited должно быть записано');
+    assert.deepEqual(inherited, {
+      ...inherited,
+      job: 'b',
+      source: 'a',
+      via: 'continue',
+    });
   });
 });
 

@@ -13,6 +13,15 @@ export interface Graph {
   readonly terminal: readonly Job[];
   /** Прямые зависимости работы. */
   readonly dependencies: ReadonlyMap<string, readonly string[]>;
+  /**
+   * Прямые потомки работы в основном графе — величина, по которой различается
+   * линейная цепочка (один потомок) и развилка (больше одного). Работы
+   * `needs: all` в счёт не идут: они зависят от всего графа разом, а не
+   * связаны отношением зависимости с конкретной работой, — иначе у любой
+   * работы пайплайна с терминальной работой на конце фан-аут был бы не меньше
+   * двух, и цепочка не отличалась бы от развилки никогда.
+   */
+  readonly dependents: ReadonlyMap<string, readonly string[]>;
   /** Все работы выше по графу, включая транзитивные. */
   readonly upstream: ReadonlyMap<string, ReadonlySet<string>>;
   readonly byId: ReadonlyMap<string, Job>;
@@ -87,7 +96,14 @@ export function buildGraph(pipeline: Pipeline): GraphResult {
     }
   }
 
-  return { graph: { main, terminal, dependencies, upstream, byId }, problems };
+  const dependents = new Map<string, string[]>(pipeline.jobs.map((job) => [job.id, []]));
+  for (const job of main) {
+    for (const dependency of dependencies.get(job.id) ?? []) {
+      dependents.get(dependency)?.push(job.id);
+    }
+  }
+
+  return { graph: { main, terminal, dependencies, dependents, upstream, byId }, problems };
 }
 
 /**

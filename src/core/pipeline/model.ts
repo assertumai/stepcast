@@ -9,6 +9,12 @@ export type WorkspaceMode = 'cwd' | 'worktree' | 'copy';
 export interface Workspace {
   readonly mode: WorkspaceMode;
   readonly path?: string;
+  /**
+   * Источник наследования рабочего дерева: идентификатор работы-зависимости
+   * либо `none`. Осмыслен только на работе, только в изолирующем режиме, и
+   * только при нескольких зависимостях — при одной источник очевиден.
+   */
+  readonly inherit?: string;
 }
 
 export interface Budget {
