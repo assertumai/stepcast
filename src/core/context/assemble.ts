@@ -3,7 +3,7 @@ import { isAbsolute, relative, resolve as resolvePath } from 'node:path';
 
 import { StepcastError } from '../errors.js';
 import { formatTokens } from '../units.js';
-import type { ContextEntry, ContextUpstream } from '../pipeline/model.js';
+import type { ContextEntry, ContextMode, ContextUpstream } from '../pipeline/model.js';
 import type { ContextEntryReport, ContextReport } from './report.js';
 import { matchesAnyGlob } from './glob.js';
 
@@ -52,13 +52,16 @@ export interface AssembledContext {
 }
 
 interface Resolved {
+  /** Уровень места записи: где склеенная запись фактически стоит в промпте. */
   readonly origin: Origin;
+  /** Уровни объявления в каноническом порядке, без повторов внутри уровня. */
+  readonly origins: Origin[];
   readonly kind: 'path' | 'text';
   readonly path?: string;
   readonly content: string;
   readonly tokens: number;
   /** Явное указание не понижается: иначе оно перестаёт что-либо значить. */
-  readonly pinned: boolean;
+  pinned: boolean;
   mode: 'inline' | 'reference';
 }
 
@@ -79,18 +82,32 @@ export function estimateTokens(text: string): number {
 
 export function assembleContext(options: AssembleOptions): AssembledContext {
   const resolved: Resolved[] = [];
+  // Тождество записей — разрешённый абсолютный путь. Реестр наполняется тем
+  // же проходом, что и `resolved`, поэтому повтор находит своё место без
+  // второго чтения файла: см. Решение 2 в design.md изменения context-dedup.
+  const registry = new Map<string, Resolved>();
+  // Отклонённые пути в реестр не попадают, но событие об отказе — такой же
+  // след одного файла, как и запись: путь под `context.deny`, названный на
+  // двух уровнях, обязан дать одно событие, а не по одному на объявление.
+  const denied = new Set<string>();
 
   for (const output of selectUpstream(options.upstream, options.contextUpstream)) {
+    const key = registryKey(output.path, options.workspace);
+    if (registry.has(key)) continue;
+
     const content = JSON.stringify(output.value, null, 2);
-    resolved.push({
+    const item: Resolved = {
       origin: 'upstream',
+      origins: ['upstream'],
       kind: 'path',
       path: output.path,
       content,
       tokens: estimateTokens(content),
       pinned: false,
       mode: 'inline',
-    });
+    };
+    resolved.push(item);
+    registry.set(key, item);
   }
 
   const levels: Array<readonly [Origin, readonly ContextEntry[]]> = options.inherit
@@ -103,7 +120,7 @@ export function assembleContext(options: AssembleOptions): AssembledContext {
 
   for (const [origin, entries] of levels) {
     for (const entry of entries) {
-      resolved.push(...resolveEntry(entry, origin, options));
+      resolveEntry(entry, origin, options, resolved, registry, denied);
     }
   }
 
@@ -118,6 +135,7 @@ export function assembleContext(options: AssembleOptions): AssembledContext {
         ...(item.path === undefined ? {} : { path: item.path }),
         mode: item.mode,
         tokens: item.mode === 'inline' ? item.tokens : referenceTokens(item),
+        ...(item.origins.length > 1 ? { declared_in: item.origins } : {}),
       })),
       total_tokens: resolved.reduce(
         (sum, item) => sum + (item.mode === 'inline' ? item.tokens : referenceTokens(item)),
@@ -125,6 +143,53 @@ export function assembleContext(options: AssembleOptions): AssembledContext {
       ),
     },
   };
+}
+
+/**
+ * Ключ тождества: нормализованный абсолютный путь, независимо от формы, в
+ * которой он объявлен. Относительный путь якорится на рабочей директории шага —
+ * той же, что `expandPaths`, иначе относительно объявленный выход
+ * предшественника тихо разошёлся бы с ключом уровня и склейка бы не сработала.
+ */
+function registryKey(path: string, workspace: string): string {
+  return resolvePath(workspace, path);
+}
+
+/**
+ * Сила объявления способа передачи: явный `inline` сильнее вставки,
+ * полученной из `auto` по порогу, а вставка сильнее передачи путём. Решение 3
+ * в design.md изменения context-dedup.
+ */
+function declarationStrength(mode: ContextMode, tokens: number, inlineThreshold: number): number {
+  if (mode === 'inline') return 2;
+  if (mode === 'reference') return 0;
+  return tokens <= inlineThreshold ? 1 : 0;
+}
+
+/** Сила уже разрешённой записи, восстановленная из её текущих `mode`/`pinned`. */
+function strengthOf(item: Resolved): number {
+  if (item.mode === 'reference') return 0;
+  return item.pinned ? 2 : 1;
+}
+
+/**
+ * Повторное объявление того же пути: дописывает уровень в `declared_in` и
+ * поднимает способ передачи, только если новое объявление строго сильнее —
+ * иначе исход не зависел бы от порядка обхода уровней.
+ */
+function mergeDeclaration(
+  existing: Resolved,
+  origin: Origin,
+  mode: ContextMode,
+  inlineThreshold: number,
+): void {
+  if (!existing.origins.includes(origin)) existing.origins.push(origin);
+
+  const strength = declarationStrength(mode, existing.tokens, inlineThreshold);
+  if (strength > strengthOf(existing)) {
+    existing.pinned = strength === 2;
+    existing.mode = strength === 0 ? 'reference' : 'inline';
+  }
 }
 
 function selectUpstream(
@@ -136,32 +201,50 @@ function selectUpstream(
   return outputs.filter((output) => selector.includes(output.job));
 }
 
-function resolveEntry(entry: ContextEntry, origin: Origin, options: AssembleOptions): Resolved[] {
+function resolveEntry(
+  entry: ContextEntry,
+  origin: Origin,
+  options: AssembleOptions,
+  resolved: Resolved[],
+  registry: Map<string, Resolved>,
+  denied: Set<string>,
+): void {
   if (entry.kind === 'text') {
-    return [
-      {
-        origin,
-        kind: 'text',
-        content: entry.text,
-        tokens: estimateTokens(entry.text),
-        pinned: true,
-        mode: 'inline',
-      },
-    ];
+    // `text` не участвует в склейке: у записи нет пути, а совпадение
+    // содержимого на двух уровнях — осознанное повторение, а не промах
+    // адресации (Non-Goals в design.md изменения context-dedup).
+    resolved.push({
+      origin,
+      origins: [origin],
+      kind: 'text',
+      content: entry.text,
+      tokens: estimateTokens(entry.text),
+      pinned: true,
+      mode: 'inline',
+    });
+    return;
   }
-
-  const out: Resolved[] = [];
 
   for (const path of expandPaths(entry.path, options.workspace)) {
     const relativePath = toRelative(path, options.workspace);
+    const key = registryKey(path, options.workspace);
 
-    const denied = matchesAnyGlob(relativePath, options.deny);
-    if (denied !== undefined) {
-      options.onDenied?.(relativePath, denied);
+    const denialPattern = matchesAnyGlob(relativePath, options.deny);
+    if (denialPattern !== undefined) {
+      if (!denied.has(key)) {
+        denied.add(key);
+        options.onDenied?.(relativePath, denialPattern);
+      }
       continue;
     }
 
     if (matchesAnyGlob(relativePath, options.exclude) !== undefined) continue;
+
+    const existing = registry.get(key);
+    if (existing !== undefined) {
+      mergeDeclaration(existing, origin, entry.mode, options.inlineThreshold);
+      continue;
+    }
 
     let content: string;
     try {
@@ -174,18 +257,20 @@ function resolveEntry(entry: ContextEntry, origin: Origin, options: AssembleOpti
     }
 
     const tokens = estimateTokens(content);
-    const pinned = entry.mode === 'inline';
-    const mode: 'inline' | 'reference' =
-      entry.mode === 'reference'
-        ? 'reference'
-        : pinned || tokens <= options.inlineThreshold
-          ? 'inline'
-          : 'reference';
-
-    out.push({ origin, kind: 'path', path: relativePath, content, tokens, pinned, mode });
+    const strength = declarationStrength(entry.mode, tokens, options.inlineThreshold);
+    const item: Resolved = {
+      origin,
+      origins: [origin],
+      kind: 'path',
+      path: relativePath,
+      content,
+      tokens,
+      pinned: strength === 2,
+      mode: strength === 0 ? 'reference' : 'inline',
+    };
+    resolved.push(item);
+    registry.set(key, item);
   }
-
-  return out;
 }
 
 /** Раскрытие глоба идёт с сортировкой: порядок должен быть воспроизводимым. */

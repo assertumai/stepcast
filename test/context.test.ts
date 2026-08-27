@@ -49,6 +49,40 @@ jobs:
         expect: [{ exit_code: 0 }]
 `;
 
+/** Пайплайн для теста склейки: один и тот же файл на пайплайне и на работе. */
+const DEDUP_PIPELINE = `
+version: 1
+kind: pipeline
+name: context-dedup-preview
+
+inputs:
+  topic: { type: string, required: true }
+
+context:
+  - CLAUDE.md
+
+defaults:
+  agent: claude
+
+jobs:
+  producer:
+    output:
+      from: emit
+    steps:
+      - id: emit
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+
+  consumer:
+    needs: [producer]
+    context:
+      - CLAUDE.md
+    steps:
+      - id: write-code
+        agent: claude
+        prompt: "Тема: \${inputs.topic}"
+`;
+
 /** Минимальная сборка контекста: одна текстовая запись шага и ничего больше. */
 function assembleBase(): AssembleOptions {
   return {
@@ -188,6 +222,456 @@ describe('CLI: stepcast context', () => {
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /командный/);
+        return true;
+      },
+    );
+  });
+
+  // Изменение context-dedup: повтор одного файла на пайплайне и на работе не
+  // должен удваивать величину уровня «работа».
+  it('повтор одного файла на пайплайне и на работе не удваивает величину уровня', () => {
+    const project = makeProject({
+      'stepcast.yml': DEDUP_PIPELINE,
+      'CLAUDE.md': 'а'.repeat(400),
+    });
+    const runsRoot = join(project.root, '..', 'runs');
+    mkdirSync(runsRoot, { recursive: true });
+    writeFileSync(join(project.home, '.stepcast', 'config.yml'), `runs:\n  root: ${runsRoot}\n`);
+
+    const lines: string[] = [];
+    const code = withHome(project.home, () =>
+      runContextCommand(
+        args({ job: 'consumer', step: 'write-code', input: { topic: 'т' } }),
+        (line) => lines.push(line),
+        project.root,
+      ),
+    );
+    const output = lines.join('\n');
+
+    assert.equal(code, ExitCode.ok);
+    const pipelineMatch = /пайплайн\s+(\d+)\s*ток\./.exec(output);
+    const jobMatch = /работа consumer\s+(\d+)\s*ток\./.exec(output);
+    const totalMatch = /итого\s+(\d+)\s*ток\./.exec(output);
+    assert.ok(pipelineMatch !== null && jobMatch !== null && totalMatch !== null, output);
+
+    const pipelineTokens = Number(pipelineMatch![1]);
+    const jobTokens = Number(jobMatch![1]);
+    const totalTokens = Number(totalMatch![1]);
+
+    assert.ok(pipelineTokens > 0);
+    assert.equal(jobTokens, 0);
+    assert.equal(totalTokens, pipelineTokens);
+
+    // Ноль у уровня «работа» без перечня склеенных записей не отличить от
+    // «на этом уровне ничего не объявлено».
+    assert.match(output, /склеенные записи/);
+    assert.match(output, /CLAUDE\.md\s+пайплайн, работа/);
+  });
+});
+
+describe('assembleContext: склейка повторов', () => {
+  it('файл, объявленный на пайплайне и на работе, входит один раз — в разделе пайплайна', () => {
+    const project = makeProject({ 'CLAUDE.md': '# claude\n' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [{ kind: 'path', path: 'CLAUDE.md', mode: 'auto' }],
+      job: [{ kind: 'path', path: 'CLAUDE.md', mode: 'auto' }],
+      step: [],
+    });
+
+    const entries = assembled.report.entries.filter((entry) => entry.path === 'CLAUDE.md');
+    assert.equal(entries.length, 1);
+    const entry = assembled.report.entries.find((item) => item.path === 'CLAUDE.md');
+    assert.equal(entry?.origin, 'pipeline');
+    assert.deepEqual(entry?.declared_in, ['pipeline', 'job']);
+    assert.equal(assembled.text.split('# claude').length - 1, 1);
+  });
+
+  it('повтор внутри одного уровня даёт одну запись', () => {
+    const project = makeProject({ 'AGENTS.md': 'привет' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [],
+      job: [
+        { kind: 'path', path: 'AGENTS.md', mode: 'auto' },
+        { kind: 'path', path: 'AGENTS.md', mode: 'auto' },
+      ],
+      step: [],
+    });
+
+    const entries = assembled.report.entries.filter((entry) => entry.path === 'AGENTS.md');
+    assert.equal(entries.length, 1);
+    const entry = assembled.report.entries.find((item) => item.path === 'AGENTS.md');
+    assert.equal(entry?.declared_in, undefined);
+  });
+
+  it('глоб работы, пересекающийся с явным путём пайплайна, включает пересечение один раз', () => {
+    const project = makeProject({
+      'docs/plan.md': 'план',
+      'docs/other.md': 'другое',
+    });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [{ kind: 'path', path: 'docs/plan.md', mode: 'auto' }],
+      job: [{ kind: 'path', path: 'docs/*.md', mode: 'auto' }],
+      step: [],
+    });
+
+    const planEntries = assembled.report.entries.filter((entry) => entry.path === 'docs/plan.md');
+    assert.equal(planEntries.length, 1);
+    const planEntry = assembled.report.entries.find((item) => item.path === 'docs/plan.md');
+    assert.equal(planEntry?.origin, 'pipeline');
+    assert.deepEqual(planEntry?.declared_in, ['pipeline', 'job']);
+
+    const otherEntries = assembled.report.entries.filter((entry) => entry.path === 'docs/other.md');
+    assert.equal(otherEntries.length, 1);
+    const otherEntry = assembled.report.entries.find((item) => item.path === 'docs/other.md');
+    assert.equal(otherEntry?.origin, 'job');
+  });
+
+  it('путь выхода предшественника, объявленный вдобавок в context работы, входит один раз — в блоке выходов', () => {
+    const project = makeProject({});
+    const artifactPath = join(project.root, 'artifacts', 'producer.json');
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      contextUpstream: 'all',
+      upstream: [{ job: 'producer', path: artifactPath, value: { fact: 1 } }],
+      pipeline: [],
+      job: [{ kind: 'path', path: artifactPath, mode: 'auto' }],
+      step: [],
+    });
+
+    const entries = assembled.report.entries.filter((entry) => entry.path === artifactPath);
+    assert.equal(entries.length, 1);
+    const entry = assembled.report.entries.find((item) => item.path === artifactPath);
+    assert.equal(entry?.origin, 'upstream');
+    assert.deepEqual(entry?.declared_in, ['upstream', 'job']);
+  });
+
+  // Ключ тождества якорится на рабочей директории шага, а не на process.cwd():
+  // выход предшественника, названный относительным путём, обязан склеиваться с
+  // тем же относительным объявлением уровня.
+  it('выход предшественника с относительным путём склеивается с объявлением уровня', () => {
+    const project = makeProject({ 'artifacts/producer.json': '{"fact":1}' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      contextUpstream: 'all',
+      upstream: [{ job: 'producer', path: 'artifacts/producer.json', value: { fact: 1 } }],
+      pipeline: [],
+      job: [{ kind: 'path', path: 'artifacts/producer.json', mode: 'auto' }],
+      step: [],
+    });
+
+    const entries = assembled.report.entries.filter(
+      (entry) => entry.path === 'artifacts/producer.json',
+    );
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.origin, 'upstream');
+    assert.deepEqual(entries[0]?.declared_in, ['upstream', 'job']);
+  });
+
+  it('записи text с одинаковым содержимым на двух уровнях остаются двумя записями', () => {
+    const assembled = assembleContext({
+      ...assembleBase(),
+      pipeline: [{ kind: 'text', text: 'то же самое' }],
+      job: [{ kind: 'text', text: 'то же самое' }],
+      step: [],
+    });
+
+    const entries = assembled.report.entries.filter((entry) => entry.kind === 'text');
+    assert.equal(entries.length, 2);
+    for (const entry of entries) assert.equal(entry.declared_in, undefined);
+  });
+
+  it('повтор на нижнем уровне не меняет собранный текст, если он не сильнее первого объявления', () => {
+    const project = makeProject({ 'CLAUDE.md': '# claude\n'.repeat(50) });
+
+    const once = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [{ kind: 'path', path: 'CLAUDE.md', mode: 'auto' }],
+      job: [],
+      step: [],
+    });
+    const withRepeat = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [{ kind: 'path', path: 'CLAUDE.md', mode: 'auto' }],
+      job: [{ kind: 'path', path: 'CLAUDE.md', mode: 'auto' }],
+      step: [],
+    });
+
+    assert.equal(once.text, withRepeat.text);
+  });
+});
+
+describe('assembleContext: способ передачи по силе объявления', () => {
+  it('reference на пайплайне и inline на работе дают вставку', () => {
+    const project = makeProject({ 'file.md': 'содержимое файла' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [{ kind: 'path', path: 'file.md', mode: 'reference' }],
+      job: [{ kind: 'path', path: 'file.md', mode: 'inline' }],
+      step: [],
+    });
+
+    const entry = assembled.report.entries.find((item) => item.path === 'file.md');
+    assert.equal(entry?.mode, 'inline');
+    assert.match(assembled.text, /содержимое файла/);
+  });
+
+  it('inline на пайплайне и reference на шаге оставляют вставку', () => {
+    const project = makeProject({ 'file.md': 'содержимое файла' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [{ kind: 'path', path: 'file.md', mode: 'inline' }],
+      job: [],
+      step: [{ kind: 'path', path: 'file.md', mode: 'reference' }],
+    });
+
+    const entry = assembled.report.entries.find((item) => item.path === 'file.md');
+    assert.equal(entry?.mode, 'inline');
+    assert.match(assembled.text, /содержимое файла/);
+  });
+
+  it('два auto дают тот же исход, что одно auto', () => {
+    const project = makeProject({ 'big.md': 'ы'.repeat(20_000) });
+
+    const once = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [{ kind: 'path', path: 'big.md', mode: 'auto' }],
+      job: [],
+      step: [],
+    });
+    const twice = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [{ kind: 'path', path: 'big.md', mode: 'auto' }],
+      job: [{ kind: 'path', path: 'big.md', mode: 'auto' }],
+      step: [],
+    });
+
+    assert.equal(once.text, twice.text);
+    const entry = twice.report.entries.find((item) => item.path === 'big.md');
+    assert.equal(entry?.mode, 'reference');
+  });
+
+  // Сценарий спеки «Крупный файл, объявленный вставкой на одном из уровней»:
+  // сверх порога `auto` даёт передачу путём (сила 0), а `inline` на работе —
+  // непонижаемую вставку (сила 2). Пара с контрольным случаем нужна, чтобы
+  // тест ловил именно закрепление: без него запись понизилась бы и уложилась.
+  it('inline на работе закрепляет вставку крупного файла, объявленного на пайплайне как auto', () => {
+    const project = makeProject({ 'big.md': 'ы'.repeat(20_000) });
+    const downgraded: string[] = [];
+
+    assert.throws(
+      () =>
+        assembleContext({
+          ...assembleBase(),
+          workspace: project.root,
+          pipeline: [{ kind: 'path', path: 'big.md', mode: 'auto' }],
+          job: [{ kind: 'path', path: 'big.md', mode: 'inline' }],
+          step: [],
+          maxTokens: 1000,
+          onDowngraded: (path) => downgraded.push(path),
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /big\.md|превышает предел/);
+        return true;
+      },
+    );
+    assert.deepEqual(downgraded, []);
+  });
+
+  it('inline с нижнего уровня превращает понижаемую вставку в непонижаемую', () => {
+    const project = makeProject({ 'small.md': 'а'.repeat(400) });
+
+    // Без `inline` запись — обычная вставка из `auto`: предел достигается
+    // понижением, отказа нет.
+    const downgraded: string[] = [];
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [{ kind: 'path', path: 'small.md', mode: 'auto' }],
+      job: [{ kind: 'path', path: 'small.md', mode: 'auto' }],
+      step: [],
+      maxTokens: 100,
+      onDowngraded: (path) => downgraded.push(path),
+    });
+    assert.deepEqual(downgraded, ['small.md']);
+    assert.equal(
+      assembled.report.entries.find((item) => item.path === 'small.md')?.mode,
+      'reference',
+    );
+
+    // С `inline` на работе та же запись понижению не подлежит.
+    const pinnedDowngraded: string[] = [];
+    assert.throws(
+      () =>
+        assembleContext({
+          ...assembleBase(),
+          workspace: project.root,
+          pipeline: [{ kind: 'path', path: 'small.md', mode: 'auto' }],
+          job: [{ kind: 'path', path: 'small.md', mode: 'inline' }],
+          step: [],
+          maxTokens: 100,
+          onDowngraded: (path) => pinnedDowngraded.push(path),
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        return true;
+      },
+    );
+    assert.deepEqual(pinnedDowngraded, []);
+  });
+});
+
+describe('assembleContext: отсев путей до склейки', () => {
+  it('путь под context.deny не порождает записи ни на одном уровне', () => {
+    const project = makeProject({ 'secret.env': 'КЛЮЧ=1', 'plain.md': 'обычный' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      deny: ['*.env'],
+      pipeline: [{ kind: 'path', path: 'secret.env', mode: 'auto' }],
+      job: [
+        { kind: 'path', path: 'secret.env', mode: 'inline' },
+        { kind: 'path', path: 'plain.md', mode: 'auto' },
+      ],
+      step: [],
+    });
+
+    assert.equal(
+      assembled.report.entries.filter((entry) => entry.path === 'secret.env').length,
+      0,
+    );
+    assert.doesNotMatch(assembled.text, /КЛЮЧ=1/);
+    assert.equal(assembled.report.entries.filter((entry) => entry.path === 'plain.md').length, 1);
+  });
+
+  it('отклонённый путь даёт одно событие об отказе, сколько бы раз он ни был объявлен', () => {
+    const project = makeProject({ 'secret.env': 'КЛЮЧ=1' });
+    const events: Array<[string, string]> = [];
+
+    assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      deny: ['*.env'],
+      pipeline: [{ kind: 'path', path: 'secret.env', mode: 'auto' }],
+      job: [{ kind: 'path', path: 'secret.env', mode: 'auto' }],
+      step: [{ kind: 'path', path: '*.env', mode: 'auto' }],
+      onDenied: (path, pattern) => events.push([path, pattern]),
+    });
+
+    assert.deepEqual(events, [['secret.env', '*.env']]);
+  });
+
+  it('путь под context_exclude не порождает записи ни на одном уровне', () => {
+    const project = makeProject({ 'docs/plan.md': 'план', 'docs/draft.md': 'черновик' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      exclude: ['docs/draft.md'],
+      pipeline: [{ kind: 'path', path: 'docs/draft.md', mode: 'inline' }],
+      job: [{ kind: 'path', path: 'docs/*.md', mode: 'auto' }],
+      step: [],
+    });
+
+    assert.equal(
+      assembled.report.entries.filter((entry) => entry.path === 'docs/draft.md').length,
+      0,
+    );
+    assert.doesNotMatch(assembled.text, /черновик/);
+    assert.equal(assembled.report.entries.filter((entry) => entry.path === 'docs/plan.md').length, 1);
+  });
+});
+
+describe('assembleContext: отчёт о составе после склейки', () => {
+  it('повтор на двух уровнях даёт одну запись с declared_in из двух уровней', () => {
+    const project = makeProject({ 'CLAUDE.md': 'текст' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [{ kind: 'path', path: 'CLAUDE.md', mode: 'auto' }],
+      job: [{ kind: 'path', path: 'CLAUDE.md', mode: 'auto' }],
+      step: [],
+    });
+
+    const entry = assembled.report.entries.find((item) => item.path === 'CLAUDE.md');
+    assert.deepEqual(entry?.declared_in, ['pipeline', 'job']);
+  });
+
+  it('запись без повторов не несёт declared_in', () => {
+    const project = makeProject({ 'CLAUDE.md': 'текст' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [{ kind: 'path', path: 'CLAUDE.md', mode: 'auto' }],
+      job: [],
+      step: [],
+    });
+
+    const entry = assembled.report.entries.find((item) => item.path === 'CLAUDE.md');
+    assert.equal(entry?.declared_in, undefined);
+  });
+});
+
+describe('assembleContext: предел размера считается по составу после склейки', () => {
+  it('файл, чей двойной учёт вывел бы контекст за предел, укладывается в предел без понижений и без отказа', () => {
+    const project = makeProject({ 'CLAUDE.md': 'а'.repeat(400) });
+    const downgraded: string[] = [];
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [{ kind: 'path', path: 'CLAUDE.md', mode: 'auto' }],
+      job: [{ kind: 'path', path: 'CLAUDE.md', mode: 'auto' }],
+      step: [],
+      maxTokens: 250,
+      onDowngraded: (path) => downgraded.push(path),
+    });
+
+    assert.deepEqual(downgraded, []);
+    assert.equal(assembled.report.total_tokens, 200);
+  });
+
+  it('сообщение об отказе не называет один путь дважды', () => {
+    const project = makeProject({ 'CLAUDE.md': 'а'.repeat(4000) });
+
+    assert.throws(
+      () =>
+        assembleContext({
+          ...assembleBase(),
+          workspace: project.root,
+          pipeline: [{ kind: 'path', path: 'CLAUDE.md', mode: 'inline' }],
+          job: [{ kind: 'path', path: 'CLAUDE.md', mode: 'inline' }],
+          step: [],
+          maxTokens: 10,
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        const hint = (error as StepcastError).hint ?? '';
+        assert.equal(hint.match(/CLAUDE\.md/g)?.length ?? 0, 1);
         return true;
       },
     );

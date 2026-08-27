@@ -95,6 +95,21 @@ export function runContextCommand(
   ];
   for (const line of formatColumns(rows)) write(line);
 
+  // Разрез по уровням относит склеенную запись целиком к уровню её места,
+  // поэтому уровень повторного объявления выглядит тоньше, чем объявлено.
+  // Без этого перечня разница между «не объявлено» и «объявлено, но склеено»
+  // из вывода не читается.
+  const merged = assembled.report.entries.filter((entry) => entry.declared_in !== undefined);
+  if (merged.length > 0) {
+    write('');
+    write('склеенные записи (объявлены на нескольких уровнях):');
+    const mergedRows = merged.map((entry) => [
+      `  ${entry.path ?? ''}`,
+      (entry.declared_in ?? []).map((level) => LEVEL_LABEL[level]).join(', '),
+    ]);
+    for (const line of formatColumns(mergedRows)) write(line);
+  }
+
   return ExitCode.ok;
 }
 

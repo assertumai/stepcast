@@ -62,6 +62,9 @@ steps:
           - .stepcast/prompts/**
           - .stepcast/jobs/**
           - .stepcast/pipelines/**
+          - ui/**
+          - vite.config.ts
+          - README.md
           - .stepcast/schemas/**
     attempts:
       max: 2

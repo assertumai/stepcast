@@ -86,6 +86,11 @@ steps:
           - .stepcast/jobs/**
           - .stepcast/pipelines/**
           - .stepcast/schemas/**
+          # Фронт витрины и его сборка: живут вне src/, но по сути — тот же
+          # код движка (ui-navigation переносит их с неслитой ветки).
+          - ui/**
+          - vite.config.ts
+          - README.md
     attempts:
       max: 3
       escalation:

@@ -77,6 +77,12 @@ export const ContextEntryReportSchema = z
     path: z.string().optional(),
     mode: z.enum(['inline', 'reference']),
     tokens: z.number(),
+    /**
+     * Уровни, на которых запись была объявлена, — только когда их больше
+     * одного. `origin` остаётся местом, где запись фактически вошла в
+     * контекст; запись, объявленная однажды, этого поля не несёт.
+     */
+    declared_in: z.array(z.enum(['upstream', 'pipeline', 'job', 'step'])).optional(),
   })
   .strict();
 
