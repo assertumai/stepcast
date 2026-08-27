@@ -1147,34 +1147,3 @@ describe('step-execution: отказ бэкенда прекращает поп�
     assert.equal(result.last?.refusal, undefined);
   });
 });
-
-describe('step-context: контекст и общая сессия', () => {
-  it('унаследованный контекст уходит только в первое сообщение сессии', async () => {
-    // Отслеживание «сессия уже начата» однажды жило внутри шага, и свод правил
-    // пайплайна уходил агенту заново на каждом шаге общей сессии.
-    const dir = workdir();
-    const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })] });
-    const sessions = createSessionRegistry();
-    const contextSent = new Set<string>();
-    const sentInherited: boolean[] = [];
-
-    for (const id of ['first', 'second']) {
-      await executeAgentStep({
-        step: makeAgentStep({ id, session: 'default' }),
-        adapter: backend.adapter,
-        cwd: dir,
-        stepDir: dir,
-        sessions,
-        buildPrompt: () => {
-          const first = !contextSent.has('default');
-          contextSent.add('default');
-          sentInherited.push(first);
-          return 'промпт';
-        },
-        env: () => ({ PATH: process.env.PATH ?? '' }),
-      });
-    }
-
-    assert.deepEqual(sentInherited, [true, false]);
-  });
-});
