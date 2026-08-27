@@ -8,9 +8,8 @@
  * сервера, проверяющие ответы. Зато вся граница видна в одном файле.
  *
  * Поля сверены построчно с `src/ui/overview.ts`, `src/ui/snapshot.ts`,
- * `src/ui/pipelines.ts` и `src/ui/graph.ts`. Экран настроек и удаление
- * прогонов в эту витрину не входят (см. `openspec/changes/ui-navigation`), и
- * их часть договора — `Settings`, `deleteRun` — сюда не перенесена.
+ * `src/ui/pipelines.ts`, `src/ui/graph.ts` и `src/ui/settings.ts`, а формы
+ * ответов на отбор и удаление — с обработчиками `src/ui/server.ts`.
  */
 
 export type StatusValue =
@@ -196,6 +195,65 @@ export interface FileContent {
   readonly truncated: boolean;
 }
 
+export interface SettingsValue {
+  readonly value?: string;
+  /** Откуда взято значение: встроенное умолчание или путь файла. */
+  readonly source: string;
+}
+
+export interface BackendView {
+  readonly name: string;
+  readonly command: string;
+  readonly enabled: boolean;
+  readonly defaultModel?: string;
+}
+
+export interface Settings {
+  readonly agent: SettingsValue;
+  readonly model: SettingsValue;
+  readonly backends: readonly BackendView[];
+  /** Файл, в который витрина пишет. Пользователь должен знать, что правит. */
+  readonly file: string;
+}
+
+export interface SettingsPatch {
+  readonly agent?: string;
+  /** `null` — снять значение и вернуться к модели бэкенда. */
+  readonly model?: string | null;
+}
+
+/** Признак отбора прогонов к уборке. Имена — те же, что принимает демон. */
+export type CleanupTrait = 'abandoned' | 'failed';
+
+export interface RunCandidate {
+  readonly address: string;
+  readonly sizeBytes: number;
+  readonly ageMs: number;
+  readonly endedAt?: string;
+  /** Журнал не прочитался: возраст взят по каталогу, статуса нет. */
+  readonly unreadable: boolean;
+}
+
+export interface RunSelection {
+  readonly runs: readonly RunCandidate[];
+  readonly count: number;
+  readonly totalBytes: number;
+}
+
+export type RemovalOutcomeKind = 'removed' | 'skipped_missing' | 'skipped_alive' | 'failed';
+
+export interface RemovalOutcome {
+  readonly address: string;
+  readonly outcome: RemovalOutcomeKind;
+  readonly sizeBytes?: number;
+  readonly reason?: string;
+}
+
+export interface RemovalSummary {
+  readonly outcomes: readonly RemovalOutcome[];
+  readonly freedBytes: number;
+}
+
 /** Ответ демона с внятной ошибкой: её текст показывается как есть. */
 async function json<T>(response: Response): Promise<T> {
   const data = (await response.json()) as T & { error?: string };
@@ -219,4 +277,56 @@ export async function fetchFile(address: string, path: string): Promise<FileCont
 
 export async function fetchPipelines(): Promise<PipelinesOverview> {
   return json<PipelinesOverview>(await fetch('/api/pipelines'));
+}
+
+export async function fetchSettings(): Promise<Settings> {
+  return json<Settings>(await fetch('/api/settings'));
+}
+
+/**
+ * Записать дефолты. Ответ — уже перечитанные настройки, а не эхо правки:
+ * значение могло лечь не так, как выглядела правка (снятая модель уходит к
+ * умолчанию бэкенда), и показывать надо то, что теперь в файле.
+ */
+export async function saveSettings(patch: SettingsPatch): Promise<Settings> {
+  return json<Settings>(
+    await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  );
+}
+
+/**
+ * Отбор прогонов к уборке. Ничего не удаляет: показывает, что удалится и
+ * сколько места освободится, — удаление идёт отдельным запросом по списку
+ * адресов, которые пользователь увидел здесь.
+ */
+export async function selectRuns(options: {
+  readonly traits: readonly CleanupTrait[];
+  readonly olderThan?: string;
+  readonly project?: string;
+}): Promise<RunSelection> {
+  const query = new URLSearchParams();
+  for (const trait of options.traits) query.append('trait', trait);
+  if (options.olderThan !== undefined && options.olderThan !== '') {
+    query.set('older-than', options.olderThan);
+  }
+  if (options.project !== undefined) query.set('project', options.project);
+  return json<RunSelection>(await fetch(`/api/runs?${query.toString()}`));
+}
+
+export async function deleteRun(address: string): Promise<{ readonly removed: string }> {
+  return json(await fetch(`/api/run?run=${encodeURIComponent(address)}`, { method: 'DELETE' }));
+}
+
+export async function deleteRuns(addresses: readonly string[]): Promise<RemovalSummary> {
+  return json<RemovalSummary>(
+    await fetch('/api/runs', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ runs: addresses }),
+    }),
+  );
 }

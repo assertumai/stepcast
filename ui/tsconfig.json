@@ -23,6 +23,7 @@
     "src/**/*.tsx",
     "../src/ui/routes.ts",
     "../src/ui/grouping.ts",
+    "../src/ui/format.ts",
     "../vite.config.ts"
   ]
 }

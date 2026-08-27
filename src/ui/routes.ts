@@ -13,7 +13,22 @@
 
 export type Route =
   | { readonly page: 'pipelines' }
+  | { readonly page: 'settings' }
+  | { readonly page: 'cleanup' }
   | { readonly page: 'run'; readonly projectKey: string; readonly runId: string };
+
+/**
+ * Экраны верхнего меню в порядке показа.
+ *
+ * Список здесь, а не в разметке: меню и разбор адреса обязаны знать об одних и
+ * тех же экранах, и разъехаться им негде, пока имя пункта берётся оттуда же,
+ * откуда маршрут.
+ */
+export const MENU: readonly { readonly page: Route['page']; readonly href: string; readonly title: string }[] = [
+  { page: 'pipelines', href: '/', title: 'Пайплайны' },
+  { page: 'cleanup', href: '/cleanup', title: 'Уборка' },
+  { page: 'settings', href: '/settings', title: 'Настройки' },
+];
 
 /**
  * Сегмент раскладки журнала: ключ проекта или идентификатор прогона. Оба идут
@@ -47,6 +62,11 @@ export function runHref(projectKey: string, runId: string): string {
  */
 export function parseRoute(pathname: string): Route {
   const parts = pathname.split('/').filter((part) => part !== '');
+
+  if (parts.length === 1) {
+    if (parts[0] === 'settings') return { page: 'settings' };
+    if (parts[0] === 'cleanup') return { page: 'cleanup' };
+  }
 
   if (parts[0] === 'runs' && parts.length === 3) {
     const rawKey = parts[1] as string;

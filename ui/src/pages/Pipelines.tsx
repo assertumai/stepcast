@@ -1,7 +1,7 @@
 import { useEffect, useState, type JSX } from 'react';
 
 import { groupProjects, type PipelineGroup } from '../../../src/ui/grouping';
-import { fetchPipelines, type Overview, type PipelineView, type RunOverview } from '../api';
+import { deleteRun, fetchPipelines, type Overview, type PipelineView, type RunOverview } from '../api';
 import { fmtDuration, fmtTime } from '../format';
 import { runHref } from '../router';
 
@@ -17,6 +17,14 @@ import { runHref } from '../router';
  * своего проекта.
  */
 
+/**
+ * Строка прогона — ячейка к ячейке с соседними строками.
+ *
+ * Колонки заданы сеткой на списке, а не потоком внутри строки: статусы разной
+ * длины (`failed` против `budget_exceeded`) на потоке разъезжали, и колонка
+ * времени гуляла по горизонтали от строки к строке. Пустые ячейки поэтому
+ * остаются в разметке пустыми, а не пропадают.
+ */
 function RunRow({
   projectKey,
   run,
@@ -27,9 +35,32 @@ function RunRow({
   readonly navigate: (href: string) => void;
 }): JSX.Element {
   const href = runHref(projectKey, run.runId);
+  const address = `${projectKey}/${run.runId}`;
+  // Удаление необратимо, поэтому идёт в два нажатия. Подтверждение живёт в
+  // строке: модальное окно ради одного прогона отняло бы у списка контекст,
+  // из-за которого прогон и удаляют.
+  const [asking, setAsking] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+
+  const remove = (): void => {
+    setBusy(true);
+    setError(undefined);
+    // Строка не убирается своей рукой: демон пересобирает обзор сразу после
+    // удаления, и прогон уходит с экрана живым потоком — тем же путём, каким
+    // появился.
+    deleteRun(address)
+      .catch((failure: Error) => setError(failure.message))
+      .finally(() => {
+        setBusy(false);
+        setAsking(false);
+      });
+  };
+
   return (
     <div className="run-row">
       <a
+        className="run-id"
         href={href}
         onClick={(event) => {
           // Средняя кнопка и Cmd/Ctrl-клик должны открывать вкладку: перехватывается только обычный переход.
@@ -38,14 +69,45 @@ function RunRow({
           navigate(href);
         }}
       >
-        <span className="run-id">{run.shortId}</span>
+        {run.shortId}
       </a>
+
       <span className={`badge ${run.status ?? ''}`}>{run.status ?? 'неизвестно'}</span>
-      {run.swept ? <span className="badge">убран</span> : null}
-      {run.unreadable ? <span className="badge">не читается</span> : null}
-      {run.abandoned ? <span className="badge">оборван</span> : null}
+
+      <span className="marks">
+        {run.swept ? <span className="badge">убран</span> : null}
+        {run.unreadable ? <span className="badge">не читается</span> : null}
+        {run.abandoned ? <span className="badge">оборван</span> : null}
+      </span>
+
       <span className="small dim">{fmtTime(run.startedAt)}</span>
       <span className="small dim mono">{fmtDuration(run.durationMs)}</span>
+
+      <span className="actions">
+        {asking ? (
+          <>
+            <button className="danger plain" disabled={busy} onClick={remove}>
+              {busy ? 'удаление…' : 'да, удалить'}
+            </button>
+            <button className="plain" disabled={busy} onClick={() => setAsking(false)}>
+              нет
+            </button>
+          </>
+        ) : (
+          <button
+            className="plain quiet"
+            title={`Удалить прогон ${run.shortId} из истории`}
+            onClick={() => setAsking(true)}
+          >
+            удалить
+          </button>
+        )}
+      </span>
+
+      {/* Отказ демона — во всю ширину строки, а не в колонке действий: он
+          называет причину целой фразой («прогон идёт»), и в колонке шириной с
+          кнопку эта фраза легла бы поверх соседних колонок. */}
+      {error === undefined ? null : <span className="run-error error small">{error}</span>}
     </div>
   );
 }
