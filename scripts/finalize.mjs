@@ -7,8 +7,8 @@ import { join } from 'node:path';
  * Завершение захода петли: проставить `failed` каждому взятому пункту, чей
  * исход ещё не проставлен.
  *
- * Слаги берутся из файлов `item-<дорожка>.json`, записанных `backlog.mjs pick
- * --lanes` в каталог прогона, — по одному на занятую дорожку; дорожка без
+ * Слаги берутся из файлов `item-<дорожка>.json`, записанных `stepcast backlog
+ * pick --lanes` в каталог прогона, — по одному на занятую дорожку; дорожка без
  * пункта файла не оставляет и здесь не упоминается. Коммит сведения дорожки
  * — забота `merge-lanes.mjs`: он же и переводит пункт в `done` до коммита.
  * `finalize` эту работу не дублирует и коммитов не создаёт: дерево, отменённое
@@ -77,7 +77,7 @@ function main(argv) {
   }
 
   const file = option(argv, 'file', DEFAULT_FILE);
-  const backlogScript = new URL('backlog.mjs', import.meta.url).pathname;
+  const stepcastBin = process.env.STEPCAST_BIN ?? 'stepcast';
 
   const itemFiles = existsSync(runDir)
     ? readdirSync(runDir).filter((name) => /^item-.+\.json$/.test(name))
@@ -106,12 +106,16 @@ function main(argv) {
 
     const reason = failureReason(runDir, lane);
     const result = spawnSync(
-      process.execPath,
-      [backlogScript, 'finish', slug, '--file', file, '--status', 'failed', '--reason', reason],
+      stepcastBin,
+      ['backlog', 'finish', slug, '--file', file, '--status', 'failed', '--reason', reason],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
     if (result.status !== 0) {
-      throw new FinalizeError(`backlog.mjs finish ${slug} завершилась кодом ${result.status}: ${result.stderr.trim()}`);
+      // Отказ бухгалтерии обязан быть виден в логе шага целой фразой — код
+      // возврата и stderr, — а не проглочен: молчащая бухгалтерия хуже громкой.
+      throw new FinalizeError(
+        `backlog finish ${slug} завершилась кодом ${result.status}: ${result.stderr.trim()}`,
+      );
     }
     finalized += 1;
     process.stdout.write(`пункт «${slug}» (дорожка ${lane}) помечен failed: ${reason}\n`);

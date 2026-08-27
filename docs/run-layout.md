@@ -602,6 +602,7 @@ stepcast config
 stepcast gc [--older-than 30d]
 stepcast up [--foreground]                       поднять витрину наблюдения
 stepcast down                                    остановить витрину
+stepcast backlog list|pick|finish                очередь улучшений backlog.md, см. docs/backlog.md
 ```
 
 Коды возврата: `0` — успех, `1` — работа завершилась отказом, `2` — ошибка

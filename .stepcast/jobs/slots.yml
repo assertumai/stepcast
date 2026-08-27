@@ -12,7 +12,7 @@ description: Проверить чистоту дерева и раздать с
 
 output:
   from: pick-lanes
-  schema: ../schemas/slots.json
+  schema: ../../schema/backlog-slots.schema.json
 
 steps:
   - id: guard-clean-tree
@@ -29,8 +29,8 @@ steps:
   # остаётся в пайплайне и проходит по ветке пропуска (filled == false),
   # которая проверяется этим же заходом; вернуть a,b — правка одной строки.
   - id: pick-lanes
-    run: [sh, -c, 'node scripts/backlog.mjs pick --lanes a --run-dir "$STEPCAST_RUN_DIR"']
+    run: [sh, -c, '"$STEPCAST_BIN" backlog pick --lanes a --run-dir "$STEPCAST_RUN_DIR"']
     timeout: 1m
-    output_schema: ../schemas/slots.json
+    output_schema: ../../schema/backlog-slots.schema.json
     expect:
-      - schema: ../schemas/slots.json
+      - schema: ../../schema/backlog-slots.schema.json

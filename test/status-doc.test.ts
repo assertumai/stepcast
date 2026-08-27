@@ -8,7 +8,7 @@ import { describe, it } from 'node:test';
 
 /**
  * Сборщик — обычный `.mjs` без сборки, поэтому тест зовёт его отдельным
- * процессом, как `test/backlog.test.ts` зовёт `scripts/backlog.mjs`. Путь
+ * процессом, как `test/finalize.test.ts` зовёт `scripts/finalize.mjs`. Путь
  * считается от собранного файла теста (`dist/test/`), а не от рабочего
  * каталога.
  */

@@ -2,6 +2,7 @@ import { ExitCode, type ExitCodeValue } from '../core/errors.js';
 import { parseArgs, type CommandSpec } from './args.js';
 import { reportError } from './output.js';
 import { runApplyCommand } from './commands/apply.js';
+import { runBacklogCommand } from './commands/backlog.js';
 import { runConfigCommand } from './commands/config.js';
 import { runContextCommand } from './commands/context.js';
 import { runDiffCommand } from './commands/diff.js';
@@ -118,6 +119,25 @@ export const COMMANDS: Record<string, CommandSpec> = {
     description: 'показать расход прогона по работам, шагам и попыткам',
     positional: ['run'],
   },
+  backlog: {
+    description: 'вести очередь улучшений backlog.md: list|pick|finish, см. docs/backlog.md',
+    positional: ['action', 'slug'],
+    flags: {
+      file: { kind: 'string', description: 'путь к файлу очереди, по умолчанию backlog.md в рабочем каталоге' },
+      slots: { kind: 'number', description: 'pick: сколько пунктов взять за раз, по умолчанию 1' },
+      lanes: { kind: 'string', description: 'pick: раздать по дорожкам, имена через запятую — a,b' },
+      'stale-hours': {
+        kind: 'number',
+        description: 'pick: порог давности зависшего in_progress в часах, по умолчанию 6',
+      },
+      'run-dir': {
+        kind: 'string',
+        description: 'pick --lanes: каталог для файлов item-<дорожка>.json на каждую заполненную дорожку',
+      },
+      status: { kind: 'string', description: 'finish: исход done либо failed' },
+      reason: { kind: 'string', description: 'finish --status failed: причина отказа' },
+    },
+  },
 };
 
 export interface CliIo {
@@ -158,6 +178,8 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
         return runDownCommand(args, io.out, io.cwd);
       case 'usage':
         return runUsageCommand(args, io.out, io.cwd);
+      case 'backlog':
+        return runBacklogCommand(args, io.out, io.cwd);
       default:
         return ExitCode.configError;
     }

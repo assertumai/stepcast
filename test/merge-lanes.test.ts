@@ -44,17 +44,29 @@ function commitCount(dir: string): number {
 /**
  * Фальшивый `stepcast`: `apply --lane <lane> <runId>` — либо создаёт файл
  * дорожки (успех), либо отказывает кодом 1 (конфликт), смотря по
- * `FAKE_APPLY_FAIL`.
+ * `FAKE_APPLY_FAIL`; `backlog finish <slug> --file … --status done` —
+ * настоящий `stepcast backlog finish` подменять незачем, но `merge-lanes.mjs`
+ * зовёт его перед коммитом, и без ветки здесь `runOrThrow` уронит все
+ * проверки сведения кодом отказа неизвестной команды.
  */
 const FAKE_STEPCAST = `#!/usr/bin/env node
-import { writeFileSync } from 'node:fs';
-const [, , cmd, flag, lane] = process.argv;
+import { readFileSync, writeFileSync } from 'node:fs';
+const [, , cmd, flag, arg] = process.argv;
 if (cmd === 'apply' && flag === '--lane') {
-  if (process.env.FAKE_APPLY_FAIL === lane) {
-    process.stderr.write('дорожка ' + lane + ' не сошлась с текущим деревом\\n');
+  if (process.env.FAKE_APPLY_FAIL === arg) {
+    process.stderr.write('дорожка ' + arg + ' не сошлась с текущим деревом\\n');
     process.exit(1);
   }
-  writeFileSync(lane + '.txt', 'от дорожки ' + lane + '\\n');
+  writeFileSync(arg + '.txt', 'от дорожки ' + arg + '\\n');
+  process.exit(0);
+}
+if (cmd === 'backlog' && flag === 'finish') {
+  const slug = arg;
+  const file = process.argv[process.argv.indexOf('--file') + 1];
+  const status = process.argv[process.argv.indexOf('--status') + 1];
+  const text = readFileSync(file, 'utf8');
+  const pattern = new RegExp('(## ' + slug + '\\\\n\\\\nstatus: )[a-z_]+');
+  writeFileSync(file, text.replace(pattern, '$1' + status));
   process.exit(0);
 }
 process.exit(1);

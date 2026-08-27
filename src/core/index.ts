@@ -96,3 +96,23 @@ export {
   type Exceeded,
   type UsageSnapshot,
 } from './budget/accumulator.js';
+export {
+  parse,
+  effectiveGroup,
+  toRecord,
+  isFree,
+  selectItems,
+  withFields,
+  DEFAULT_STALE_HOURS,
+  BacklogSlugSchema,
+  BacklogStatusSchema,
+  BACKLOG_STATUSES,
+  BacklogItemSchema,
+  BacklogRecordSchema,
+  BacklogSlotsResponseSchema,
+  type BacklogEntry,
+  type BacklogFieldPosition,
+  type BacklogItem,
+  type BacklogRecord,
+  type BacklogSlotsResponse,
+} from './backlog/index.js';

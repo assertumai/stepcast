@@ -1,0 +1,47 @@
+{
+  "title": "stepcast backlog item",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "pending",
+        "in_progress",
+        "done",
+        "failed"
+      ]
+    },
+    "title": {
+      "type": "string"
+    },
+    "why": {
+      "type": "string"
+    },
+    "done_when": {
+      "type": "string"
+    },
+    "group": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "started_at": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "slug",
+    "status",
+    "title",
+    "why",
+    "done_when"
+  ],
+  "additionalProperties": {}
+}

@@ -1,12 +1,22 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
 const SCRIPT = fileURLToPath(new URL('../../scripts/finalize.mjs', import.meta.url));
+/**
+ * Исход проставляется настоящим `stepcast backlog finish` собранного движка
+ * (`dist/src/bin.js`), а не заглушкой: команда простая и быстрая, и подмена
+ * здесь только прятала бы регрессию на стыке скрипта и CLI.
+ */
+const STEPCAST_BIN = fileURLToPath(new URL('../src/bin.js', import.meta.url));
+// Job-шаги зовут `"$STEPCAST_BIN" …` напрямую, без `node` перед ним (design.md
+// «Вызов из петли — через $STEPCAST_BIN»), поэтому сам файл обязан быть
+// исполняемым; `tsc` этот бит не проставляет, а публикуемый бинарь — да.
+chmodSync(STEPCAST_BIN, 0o755);
 
 interface Bed {
   readonly repo: string;
@@ -57,7 +67,7 @@ function finalize(bed_: Bed): { code: number; stdout: string; stderr: string } {
   const result = spawnSync(process.execPath, [SCRIPT], {
     cwd: bed_.repo,
     encoding: 'utf8',
-    env: { ...process.env, STEPCAST_RUN_DIR: bed_.runDir },
+    env: { ...process.env, STEPCAST_RUN_DIR: bed_.runDir, STEPCAST_BIN },
   });
   return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
 }
@@ -161,5 +171,29 @@ describe('finalize: исход по всем взятым пунктам', () =>
     finalize(bed_);
 
     assert.equal(commitCount(bed_.repo), 1);
+  });
+
+  it('отказ backlog finish не проглатывается: код и stderr видны в выводе шага', () => {
+    const bed_ = bed([backlogItem('a-item', 'in_progress')]);
+    seedItemFile(bed_.runDir, 'a', 'a-item');
+
+    const fakeBin = join(bed_.repo, '..', 'fake-stepcast.mjs');
+    writeFileSync(
+      fakeBin,
+      "#!/usr/bin/env node\nprocess.stderr.write('пункт заперт другим прогоном\\n');\nprocess.exit(2);\n",
+    );
+    chmodSync(fakeBin, 0o755);
+
+    const result = spawnSync(process.execPath, [SCRIPT], {
+      cwd: bed_.repo,
+      encoding: 'utf8',
+      env: { ...process.env, STEPCAST_RUN_DIR: bed_.runDir, STEPCAST_BIN: fakeBin },
+    });
+
+    assert.equal(result.status, 1);
+    // Именно код отказавшего вызова, а не любая двойка в выводе: без этого
+    // проверка совпала бы и с молчащей бухгалтерией, называющей что угодно.
+    assert.match(result.stderr, /кодом 2/);
+    assert.match(result.stderr, /пункт заперт другим прогоном/);
   });
 });

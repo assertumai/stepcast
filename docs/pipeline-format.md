@@ -250,7 +250,7 @@ jobs:
 читается ключом `--lane` команды `stepcast apply` (там же).
 
 Третья одновременная дорожка — правка самого пайплайна (третья цепочка
-`propose → … → verify` с `lane: c`, третий слот в `backlog.mjs pick --lanes`,
+`propose → … → verify` с `lane: c`, третий слот в `stepcast backlog pick --lanes`,
 третья ветвь в `merge-lanes.mjs`), а не параметр движка. Одновременных
 агентских сессий при этом становится больше, и прежде чем поднимать
 `concurrency` пайплайна, поднимите на столько же `backends.claude.concurrency`

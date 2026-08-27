@@ -6,7 +6,7 @@ import { join } from 'node:path';
  * Сборка `docs/status.md` из базы `docs/status.base.md` и фрагментов
  * изменений `status.md` внутри `openspec/changes`.
  *
- * Обычный Node без сборки и без зависимостей, как `scripts/backlog.mjs`:
+ * Обычный Node без сборки и без зависимостей, как `scripts/finalize.mjs`:
  * пересборка входит в `npm run check` и не должна требовать `npm run build`.
  *
  *   node scripts/status.mjs --write [--root каталог]

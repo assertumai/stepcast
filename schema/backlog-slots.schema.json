@@ -1,0 +1,77 @@
+{
+  "title": "stepcast backlog pick --lanes",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "lanes": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "filled": {
+            "type": "boolean"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string"
+          },
+          "item": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "slug": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "why": {
+                    "type": "string"
+                  },
+                  "done_when": {
+                    "type": "string"
+                  },
+                  "group": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "slug",
+                  "title",
+                  "why",
+                  "done_when",
+                  "group"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "filled",
+          "slug",
+          "title",
+          "group",
+          "item"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "lanes"
+  ],
+  "additionalProperties": false
+}

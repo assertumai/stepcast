@@ -13,7 +13,7 @@ import { join } from 'node:path';
  * или красная проверка после наложения останавливают сведение целиком:
  * дальнейшие дорожки не трогаются, а причина называет дорожку и путь к её
  * рабочему дереву — их разбор идёт по status.json того же прогона, что и
- * `backlog.mjs pick --lanes`.
+ * `stepcast backlog pick --lanes`.
  *
  *   node scripts/merge-lanes.mjs --lanes a,b [--file backlog.md] [--run <run-id>]
  */
@@ -91,7 +91,6 @@ function main(argv) {
   if (stepcastBin === undefined) throw new MergeError('переменная STEPCAST_BIN не задана');
 
   const file = option(argv, 'file', 'backlog.md');
-  const backlogScript = new URL('backlog.mjs', import.meta.url).pathname;
 
   const merged = [];
   const skipped = [];
@@ -141,7 +140,7 @@ function main(argv) {
 
     // Отметка исхода идёт до коммита — улучшение и его бухгалтерия остаются
     // одним событием, которое `git revert` снимает вместе.
-    runOrThrow(process.execPath, [backlogScript, 'finish', item.slug, '--file', file, '--status', 'done']);
+    runOrThrow(stepcastBin, ['backlog', 'finish', item.slug, '--file', file, '--status', 'done']);
     runOrThrow('git', ['add', '-A']);
     runOrThrow('git', ['commit', '-m', `${item.slug}: ${item.title ?? 'улучшение из очереди'}`]);
 

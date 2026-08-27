@@ -1,29 +1,17 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
+import { StepcastError } from '../src/core/errors.js';
+import { parse, effectiveGroup, toRecord, isFree, selectItems, withFields } from '../src/core/backlog/index.js';
+import type { BacklogEntry } from '../src/core/backlog/index.js';
+
 /**
- * Скрипт очереди — обычный `.mjs` без сборки, поэтому тест зовёт его так же,
- * как это делает пайплайн: отдельным процессом, по коду возврата и stdout.
- * Путь считается от собранного файла теста (`dist/test/`), а не от рабочего
- * каталога: иначе тест зависел бы от того, откуда его запустили.
+ * Ядро очереди не делает ввода-вывода, поэтому тест не заводит ни временных
+ * каталогов, ни подпроцессов: фикстуры — обычные строки, проверки — прямые
+ * вызовы `parse`/`selectItems`/`withFields`.
  */
-const SCRIPT = fileURLToPath(new URL('../../scripts/backlog.mjs', import.meta.url));
-
-interface Result {
-  readonly code: number;
-  readonly stdout: string;
-  readonly stderr: string;
-}
-
-function backlog(args: readonly string[]): Result {
-  const result = spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' });
-  return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
-}
 
 function item(slug: string, fields: Readonly<Record<string, string>>): string {
   const body = Object.entries(fields)
@@ -34,607 +22,337 @@ function item(slug: string, fields: Readonly<Record<string, string>>): string {
 
 const COMPLETE = { status: 'pending', title: 'т', why: 'з', done_when: 'к' } as const;
 
-/** Записать очередь во временный файл и вернуть путь к ней. */
-function fixture(...items: readonly string[]): string {
-  const dir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-'));
-  const path = join(dir, 'backlog.md');
-  writeFileSync(path, `# Очередь\n\nПреамбула: не разбирается.\n\n${items.join('\n')}`);
-  return path;
+function backlogText(...items: readonly string[]): string {
+  return `# Очередь\n\nПреамбула: не разбирается.\n\n| ключ | значение |\n|---|---|\n\n${items.join('\n')}`;
 }
 
-function statusOf(path: string, slug: string): string | undefined {
-  const section = readFileSync(path, 'utf8').split(`## ${slug}\n`)[1]?.split('\n## ')[0] ?? '';
-  return /^status:\s*(.*)$/m.exec(section)?.[1];
+function entryOf(entries: readonly BacklogEntry[], slug: string): BacklogEntry {
+  const entry = entries.find((candidate) => candidate.slug === slug);
+  assert.ok(entry !== undefined, `пункт «${slug}» не найден среди разобранных`);
+  return entry;
 }
 
-function fieldOf(path: string, slug: string, name: string): string | undefined {
-  const section = readFileSync(path, 'utf8').split(`## ${slug}\n`)[1]?.split('\n## ')[0] ?? '';
-  return new RegExp(`^${name}:\\s*(.*)$`, 'm').exec(section)?.[1];
-}
+describe('backlog: разбор', () => {
+  it('разбирает пункты со всеми полями в порядке файла', () => {
+    const entries = parse(backlogText(item('first-item', COMPLETE), item('second-item', { ...COMPLETE, title: 'вторая' })));
 
-describe('разбор очереди улучшений', () => {
-  it('возвращает пункты со всеми полями', () => {
-    const path = fixture(item('first-item', COMPLETE), item('second-item', COMPLETE));
-    const result = backlog(['list', '--file', path]);
-
-    assert.equal(result.code, 0);
-    const parsed = JSON.parse(result.stdout) as readonly { slug: string; title: string }[];
     assert.deepEqual(
-      parsed.map((entry) => entry.slug),
+      entries.map((entry) => entry.slug),
       ['first-item', 'second-item'],
     );
-    assert.equal(parsed[0]?.title, 'т');
+    assert.equal(entries[0]?.data.title, 'т');
+    assert.equal(entries[1]?.data.title, 'вторая');
   });
 
-  it('преамбула до первого пункта не разбирается', () => {
-    const path = fixture(item('only-item', COMPLETE));
-    const result = backlog(['list', '--file', path]);
+  it('преамбула, в том числе с «ключ: значение» и таблицей, не разбирается', () => {
+    const entries = parse(backlogText(item('only-item', COMPLETE)));
 
-    assert.equal(result.code, 0);
-    assert.equal((JSON.parse(result.stdout) as readonly unknown[]).length, 1);
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.slug, 'only-item');
   });
 
-  it('отказывает при отсутствии обязательного поля', () => {
-    const path = fixture(item('broken-item', { status: 'pending', title: 'т', why: 'з' }));
-    const result = backlog(['list', '--file', path]);
+  it('отказывает на строке, не разбираемой как «ключ: значение», называя её номер', () => {
+    const text = `${backlogText(item('broken-item', COMPLETE))}просто текст без двоеточия\n`;
+    // Номер считается от самого текста: сценарий спеки требует и слаг, и
+    // строку, а строка, названная наугад, хуже неназванной.
+    const line = text.split('\n').indexOf('просто текст без двоеточия') + 1;
 
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /broken-item/);
-    assert.match(result.stderr, /done_when/);
+    assert.throws(() => parse(text), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /broken-item/);
+      assert.match(error.message, /ключ: значение/);
+      assert.match(error.message, new RegExp(`строка ${line}\\b`));
+      return true;
+    });
   });
 
-  it('отказывает при неизвестном статусе', () => {
-    const path = fixture(item('broken-item', { ...COMPLETE, status: 'выполняется' }));
-    const result = backlog(['list', '--file', path]);
+  it('пример пункта в огороженном блоке преамбулы пунктом не становится', () => {
+    const text = [
+      '# Очередь',
+      '',
+      'Формат пункта:',
+      '',
+      '```markdown',
+      '## example-item',
+      '',
+      'status: pending',
+      '```',
+      '',
+      item('real-item', COMPLETE),
+    ].join('\n');
 
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /status/);
-    assert.match(result.stderr, /выполняется/);
+    assert.deepEqual(parse(text).map((entry) => entry.slug), ['real-item']);
+  });
+
+  it('отказывает на неизвестном статусе, называя перечень допустимых', () => {
+    const text = backlogText(item('broken-item', { ...COMPLETE, status: 'постановлено' }));
+
+    assert.throws(() => parse(text), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /broken-item/);
+      assert.match(error.message, /постановлено/);
+      assert.match(error.message, /pending/);
+      return true;
+    });
+  });
+
+  it('отказывает при отсутствии обязательного поля, называя его имя', () => {
+    const text = backlogText(item('broken-item', { status: 'pending', title: 'т', why: 'з' }));
+
+    assert.throws(() => parse(text), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /broken-item/);
+      assert.match(error.message, /done_when/);
+      return true;
+    });
   });
 
   it('отказывает на заголовке, не являющемся слагом', () => {
-    const path = fixture(item('Формат записи', COMPLETE));
-    const result = backlog(['list', '--file', path]);
+    const text = backlogText(item('Формат записи', COMPLETE));
 
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /kebab-case/);
+    assert.throws(() => parse(text), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /Формат записи/);
+      assert.match(error.message, /kebab-case/);
+      return true;
+    });
+  });
+
+  it('отказывает на группе, не являющейся слагом', () => {
+    const text = backlogText(item('some-item', { ...COMPLETE, group: 'Не Слаг' }));
+
+    assert.throws(() => parse(text), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /some-item/);
+      assert.match(error.message, /Не Слаг/);
+      return true;
+    });
   });
 
   it('отказывает на повторяющемся слаге', () => {
-    const path = fixture(item('same-item', COMPLETE), item('same-item', COMPLETE));
-    const result = backlog(['list', '--file', path]);
+    const text = backlogText(item('same-item', COMPLETE), item('same-item', COMPLETE));
 
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /дважды/);
+    assert.throws(() => parse(text), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /same-item/);
+      assert.match(error.message, /дважды/);
+      return true;
+    });
   });
 
-  it('отказывает на строке, не являющейся полем', () => {
-    const path = fixture(`${item('broken-item', COMPLETE)}просто текст\n`);
-    const result = backlog(['list', '--file', path]);
+  it('действующая группа — объявленный group либо слаг пункта', () => {
+    const entries = parse(
+      backlogText(item('with-group', { ...COMPLETE, group: 'queue' }), item('without-group', COMPLETE)),
+    );
 
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /ключ: значение/);
+    assert.equal(effectiveGroup(entryOf(entries, 'with-group')), 'queue');
+    assert.equal(effectiveGroup(entryOf(entries, 'without-group')), 'without-group');
   });
 
-  it('возвращает объявленную группу пункта', () => {
-    const path = fixture(item('backlog-groups', { ...COMPLETE, group: 'backlog-queue' }));
-    const result = backlog(['list', '--file', path]);
+  it('toRecord несёт слаг, title, why, done_when и действующую группу', () => {
+    const entries = parse(backlogText(item('an-item', { ...COMPLETE, group: 'queue' })));
 
-    assert.equal(result.code, 0);
-    const [entry] = JSON.parse(result.stdout) as readonly { group: string }[];
-    assert.equal(entry?.group, 'backlog-queue');
-  });
-
-  it('действующая группа равна слагу, если group не объявлен', () => {
-    const path = fixture(item('backlog-groups', COMPLETE));
-    const result = backlog(['list', '--file', path]);
-
-    assert.equal(result.code, 0);
-    const [entry] = JSON.parse(result.stdout) as readonly { group: string }[];
-    assert.equal(entry?.group, 'backlog-groups');
-  });
-
-  it('отказывает на группе не в kebab-case', () => {
-    const path = fixture(item('some-item', { ...COMPLETE, group: 'Backlog Queue' }));
-    const result = backlog(['list', '--file', path]);
-
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /some-item/);
-    assert.match(result.stderr, /Backlog Queue/);
-  });
-
-  it('отказывает на пустой группе', () => {
-    const path = fixture(item('some-item', { ...COMPLETE, group: '' }));
-    const result = backlog(['list', '--file', path]);
-
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /some-item/);
+    assert.deepEqual(toRecord(entryOf(entries, 'an-item')), {
+      slug: 'an-item',
+      title: 'т',
+      why: 'з',
+      done_when: 'к',
+      group: 'queue',
+    });
   });
 });
 
-describe('выбор пункта очереди', () => {
-  const NOW = '2026-08-23T12:00:00.000Z';
+describe('backlog: свобода пункта', () => {
+  const NOW = Date.parse('2026-08-23T12:00:00.000Z');
+  const STALE_MS = 6 * 3600_000;
 
-  it('берёт первый свободный сверху и помечает его в работе', () => {
-    const path = fixture(
-      item('done-item', { ...COMPLETE, status: 'done' }),
-      item('first-free', COMPLETE),
-      item('second-free', COMPLETE),
-    );
-    const result = backlog(['pick', '--file', path, '--now', NOW]);
+  function freeOf(status: string, fields: Readonly<Record<string, string>> = {}): boolean {
+    const entries = parse(backlogText(item('some-item', { ...COMPLETE, status, ...fields })));
+    return isFree(entryOf(entries, 'some-item'), NOW, STALE_MS);
+  }
 
-    assert.equal(result.code, 0);
-    assert.equal((JSON.parse(result.stdout) as { slug: string }).slug, 'first-free');
-    assert.equal(statusOf(path, 'first-free'), 'in_progress');
-    assert.equal(fieldOf(path, 'first-free', 'started_at'), NOW);
-    assert.equal(statusOf(path, 'second-free'), 'pending');
+  it('pending свободен', () => {
+    assert.equal(freeOf('pending'), true);
   });
 
-  it('отказывает, когда свободных пунктов нет', () => {
-    const path = fixture(
-      item('done-item', { ...COMPLETE, status: 'done' }),
-      item('failed-item', { ...COMPLETE, status: 'failed' }),
-    );
-    const result = backlog(['pick', '--file', path, '--now', NOW]);
-
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /свободных пунктов/);
+  it('свежий in_progress занят', () => {
+    assert.equal(freeOf('in_progress', { started_at: '2026-08-23T11:00:00.000Z' }), false);
   });
 
-  it('пропускает пункт, взятый в работу недавно', () => {
-    const path = fixture(
-      item('busy-item', {
-        ...COMPLETE,
-        status: 'in_progress',
-        started_at: '2026-08-23T11:50:00.000Z',
-      }),
-      item('free-item', COMPLETE),
-    );
-    const result = backlog(['pick', '--file', path, '--now', NOW]);
-
-    assert.equal(result.code, 0);
-    assert.equal((JSON.parse(result.stdout) as { slug: string }).slug, 'free-item');
-    assert.equal(fieldOf(path, 'busy-item', 'started_at'), '2026-08-23T11:50:00.000Z');
+  it('зависший in_progress снова свободен', () => {
+    assert.equal(freeOf('in_progress', { started_at: '2026-08-23T05:00:00.000Z' }), true);
   });
 
-  it('берёт зависший пункт заново и обновляет отметку времени', () => {
-    const path = fixture(
-      item('stale-item', {
-        ...COMPLETE,
-        status: 'in_progress',
-        started_at: '2026-08-23T03:00:00.000Z',
-      }),
-    );
-    const result = backlog(['pick', '--file', path, '--now', NOW]);
-
-    assert.equal(result.code, 0);
-    assert.equal((JSON.parse(result.stdout) as { slug: string }).slug, 'stale-item');
-    assert.equal(fieldOf(path, 'stale-item', 'started_at'), NOW);
+  it('in_progress без started_at свободен', () => {
+    assert.equal(freeOf('in_progress'), true);
   });
 
-  it('отказывает, когда единственный незавершённый пункт занят', () => {
-    const path = fixture(
-      item('busy-item', {
-        ...COMPLETE,
-        status: 'in_progress',
-        started_at: '2026-08-23T11:50:00.000Z',
-      }),
-      item('done-item', { ...COMPLETE, status: 'done' }),
-    );
-    const result = backlog(['pick', '--file', path, '--now', NOW]);
-
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /свободных пунктов/);
+  it('in_progress с неразбираемым started_at свободен', () => {
+    assert.equal(freeOf('in_progress', { started_at: 'не дата' }), true);
   });
 
-  it('порог протухания задаётся ключом', () => {
-    const path = fixture(
-      item('busy-item', {
-        ...COMPLETE,
-        status: 'in_progress',
-        started_at: '2026-08-23T11:00:00.000Z',
-      }),
-    );
-
-    assert.equal(backlog(['pick', '--file', path, '--now', NOW]).code, 1);
-    assert.equal(
-      backlog(['pick', '--file', path, '--now', NOW, '--stale-hours', '0.5']).code,
-      0,
-    );
-  });
-
-  it('записывает выбранный пункт в файл при --out', () => {
-    const path = fixture(item('free-item', COMPLETE));
-    const out = join(mkdtempSync(join(tmpdir(), 'stepcast-out-')), 'item.json');
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--out', out]);
-
-    assert.equal(result.code, 0);
-    assert.equal((JSON.parse(readFileSync(out, 'utf8')) as { slug: string }).slug, 'free-item');
-    assert.equal(readFileSync(out, 'utf8'), result.stdout);
-  });
-
-  it('выдача одного пункта называет его действующую группу', () => {
-    const path = fixture(item('free-item', { ...COMPLETE, group: 'queue' }));
-    const result = backlog(['pick', '--file', path, '--now', NOW]);
-
-    assert.equal(result.code, 0);
-    assert.equal((JSON.parse(result.stdout) as { group: string }).group, 'queue');
-  });
-});
-
-describe('занятость группы при выборе одного пункта', () => {
-  const NOW = '2026-08-23T12:00:00.000Z';
-
-  it('пропускает свободный пункт занятой группы в пользу пункта ниже', () => {
-    const path = fixture(
-      item('alpha', {
-        ...COMPLETE,
-        status: 'in_progress',
-        started_at: '2026-08-23T11:50:00.000Z',
-        group: 'queue',
-      }),
-      item('beta', { ...COMPLETE, group: 'queue' }),
-      item('gamma', COMPLETE),
-    );
-    const result = backlog(['pick', '--file', path, '--now', NOW]);
-
-    assert.equal(result.code, 0);
-    assert.equal((JSON.parse(result.stdout) as { slug: string }).slug, 'gamma');
-    assert.equal(statusOf(path, 'beta'), 'pending');
-  });
-
-  it('отказывает, когда свободны только пункты занятой группы', () => {
-    const path = fixture(
-      item('alpha', {
-        ...COMPLETE,
-        status: 'in_progress',
-        started_at: '2026-08-23T11:50:00.000Z',
-        group: 'queue',
-      }),
-      item('beta', { ...COMPLETE, group: 'queue' }),
-    );
-    const before = readFileSync(path, 'utf8');
-    const result = backlog(['pick', '--file', path, '--now', NOW]);
-
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /свободных пунктов/);
-    assert.equal(readFileSync(path, 'utf8'), before);
-  });
-
-  it('завершённый пункт свою группу не держит', () => {
+  it('done и failed не свободны независимо от started_at', () => {
     for (const status of ['done', 'failed']) {
-      const path = fixture(
-        item('alpha', { ...COMPLETE, status, reason: 'п', group: 'queue' }),
-        item('beta', { ...COMPLETE, group: 'queue' }),
-      );
-      const result = backlog(['pick', '--file', path, '--now', NOW]);
-
-      assert.equal(result.code, 0, `status=${status}: ${result.stderr}`);
-      assert.equal((JSON.parse(result.stdout) as { slug: string }).slug, 'beta');
+      assert.equal(freeOf(status, { started_at: '2026-08-23T05:00:00.000Z' }), false, `status=${status}`);
+      assert.equal(freeOf(status), false, `status=${status} без started_at`);
     }
   });
+});
 
-  it('протухший пункт освобождает свою группу', () => {
-    const path = fixture(
-      item('alpha', {
-        ...COMPLETE,
-        status: 'in_progress',
-        started_at: '2026-08-23T00:00:00.000Z',
-        group: 'queue',
-      }),
-      item('beta', { ...COMPLETE, group: 'queue' }),
-    );
-    const result = backlog(['pick', '--file', path, '--now', NOW]);
+describe('backlog: отбор по действующим группам', () => {
+  const NOW = Date.parse('2026-08-23T12:00:00.000Z');
+  const STALE_MS = 6 * 3600_000;
 
-    assert.equal(result.code, 0);
-    assert.equal((JSON.parse(result.stdout) as { slug: string }).slug, 'alpha');
+  function select(text: string, slots: number): readonly BacklogEntry[] {
+    return selectItems(parse(text), slots, NOW, STALE_MS);
+  }
+
+  it('пункт без группы образует свою и отбирается', () => {
+    const chosen = select(backlogText(item('lonely-item', COMPLETE)), 1);
+    assert.deepEqual(chosen.map((entry) => entry.slug), ['lonely-item']);
   });
 
-  it('пропуск не меняет приоритет: пункт выбирается первым после освобождения группы', () => {
-    const path = fixture(
-      item('alpha', {
+  it('занятая группа не выдаётся: свободный пункт той же группы ниже пропускается', () => {
+    const text = backlogText(
+      item('busy-in-queue', {
         ...COMPLETE,
         status: 'in_progress',
         started_at: '2026-08-23T11:50:00.000Z',
         group: 'queue',
       }),
-      item('beta', { ...COMPLETE, group: 'queue' }),
-      item('gamma', COMPLETE),
+      item('free-in-queue', { ...COMPLETE, group: 'queue' }),
+      item('other', COMPLETE),
     );
-    backlog(['pick', '--file', path, '--now', NOW]);
-    backlog(['finish', 'alpha', '--file', path, '--status', 'done']);
 
-    const result = backlog(['pick', '--file', path, '--now', NOW]);
-    assert.equal(result.code, 0);
-    assert.equal((JSON.parse(result.stdout) as { slug: string }).slug, 'beta');
-  });
-});
-
-describe('выдача нескольких слотов', () => {
-  const NOW = '2026-08-23T12:00:00.000Z';
-
-  it('без --slots поведение прежнее: объект и один пункт', () => {
-    const path = fixture(item('first-free', COMPLETE), item('second-free', COMPLETE));
-    const result = backlog(['pick', '--file', path, '--now', NOW]);
-
-    assert.equal(result.code, 0);
-    const parsed = JSON.parse(result.stdout) as { slug: string };
-    assert.equal(parsed.slug, 'first-free');
-    assert.equal(statusOf(path, 'second-free'), 'pending');
+    const chosen = select(text, 2);
+    assert.deepEqual(chosen.map((entry) => entry.slug), ['other']);
   });
 
-  it('трёх слотов на четырёх пунктах разных групп хватает на первые три', () => {
-    const path = fixture(
-      item('a', { ...COMPLETE, group: 'a' }),
-      item('b', { ...COMPLETE, group: 'b' }),
-      item('c', { ...COMPLETE, group: 'c' }),
-      item('d', { ...COMPLETE, group: 'd' }),
+  it('занятый пункт ниже места отбора всё равно запирает свою группу', () => {
+    const text = backlogText(
+      item('free-in-queue', { ...COMPLETE, group: 'queue' }),
+      item('busy-in-queue', {
+        ...COMPLETE,
+        status: 'in_progress',
+        started_at: '2026-08-23T11:50:00.000Z',
+        group: 'queue',
+      }),
+      item('other', COMPLETE),
     );
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--slots', '3']);
 
-    assert.equal(result.code, 0);
-    const parsed = JSON.parse(result.stdout) as readonly { slug: string }[];
-    assert.deepEqual(
-      parsed.map((entry) => entry.slug),
-      ['a', 'b', 'c'],
+    const chosen = select(text, 2);
+    assert.deepEqual(chosen.map((entry) => entry.slug), ['other']);
+  });
+
+  it('два свободных пункта одной группы за проход: берётся только верхний, второй — из другой группы', () => {
+    const text = backlogText(
+      item('queue-a', { ...COMPLETE, group: 'queue' }),
+      item('queue-b', { ...COMPLETE, group: 'queue' }),
+      item('other', COMPLETE),
     );
-    assert.equal(statusOf(path, 'd'), 'pending');
+
+    const chosen = select(text, 2);
+    assert.deepEqual(chosen.map((entry) => entry.slug), ['queue-a', 'other']);
   });
 
-  it('смежные пункты одной группы не выдаются вместе', () => {
-    const path = fixture(
-      item('a', { ...COMPLETE, group: 'queue' }),
-      item('b', { ...COMPLETE, group: 'queue' }),
-      item('c', { ...COMPLETE, group: 'queue' }),
-      item('d', { ...COMPLETE, group: 'other' }),
-    );
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--slots', '3']);
+  it('завершённый пункт группу не запирает', () => {
+    for (const status of ['done', 'failed']) {
+      const text = backlogText(
+        item('finished', { ...COMPLETE, status, ...(status === 'failed' ? { reason: 'п' } : {}), group: 'queue' }),
+        item('free-in-queue', { ...COMPLETE, group: 'queue' }),
+      );
 
-    assert.equal(result.code, 0);
-    const parsed = JSON.parse(result.stdout) as readonly { slug: string }[];
-    assert.deepEqual(
-      parsed.map((entry) => entry.slug),
-      ['a', 'd'],
-    );
-  });
-
-  it('частичная выдача завершается успешно', () => {
-    const path = fixture(item('a', { ...COMPLETE, group: 'a' }), item('b', { ...COMPLETE, group: 'b' }));
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--slots', '3']);
-
-    assert.equal(result.code, 0);
-    const parsed = JSON.parse(result.stdout) as readonly { slug: string }[];
-    assert.equal(parsed.length, 2);
-  });
-
-  it('пустая выдача отказывает и не меняет файл', () => {
-    const path = fixture(item('done-item', { ...COMPLETE, status: 'done' }));
-    const before = readFileSync(path, 'utf8');
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--slots', '3']);
-
-    assert.equal(result.code, 1);
-    assert.equal(readFileSync(path, 'utf8'), before);
-  });
-
-  it('--slots 1 даёт массив из одной записи', () => {
-    const path = fixture(item('only-item', COMPLETE));
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--slots', '1']);
-
-    assert.equal(result.code, 0);
-    const parsed = JSON.parse(result.stdout) as readonly { slug: string }[];
-    assert.ok(Array.isArray(parsed));
-    assert.equal(parsed.length, 1);
-    assert.equal(parsed[0]?.slug, 'only-item');
-  });
-
-  it('некорректное число слотов отказывает без правки файла', () => {
-    const path = fixture(item('only-item', COMPLETE));
-    const before = readFileSync(path, 'utf8');
-
-    for (const slots of ['0', '-1', '1.5', 'abc']) {
-      const result = backlog(['pick', '--file', path, '--now', NOW, '--slots', slots]);
-      assert.equal(result.code, 1, `slots=${slots}`);
+      const chosen = select(text, 1);
+      assert.deepEqual(chosen.map((entry) => entry.slug), ['free-in-queue'], `status=${status}`);
     }
-    assert.equal(readFileSync(path, 'utf8'), before);
   });
 
-  it('каждая запись массива называет действующую группу пункта', () => {
-    const path = fixture(
-      item('a', { ...COMPLETE, group: 'queue' }),
-      item('b', COMPLETE),
-    );
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--slots', '2']);
+  it('свободных пунктов меньше запрошенного — не отказ, а частичная выдача', () => {
+    const text = backlogText(item('only-free', { ...COMPLETE, group: 'a' }), item('done-item', { ...COMPLETE, status: 'done' }));
 
-    assert.equal(result.code, 0);
-    const parsed = JSON.parse(result.stdout) as readonly { group: string }[];
-    assert.deepEqual(
-      parsed.map((entry) => entry.group),
-      ['queue', 'b'],
-    );
+    const chosen = select(text, 2);
+    assert.deepEqual(chosen.map((entry) => entry.slug), ['only-free']);
   });
 
-  it('--out пишет тот же текст, что и stdout, в массивной форме', () => {
-    const path = fixture(
-      item('a', { ...COMPLETE, group: 'a' }),
-      item('b', { ...COMPLETE, group: 'b' }),
-    );
-    const out = join(mkdtempSync(join(tmpdir(), 'stepcast-out-')), 'item.json');
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--slots', '2', '--out', out]);
-
-    assert.equal(result.code, 0);
-    assert.equal(readFileSync(out, 'utf8'), result.stdout);
-  });
-
-  it('всем выданным пунктам проставляется одна метка started_at', () => {
-    const path = fixture(
-      item('a', { ...COMPLETE, group: 'a' }),
-      item('b', { ...COMPLETE, group: 'b' }),
-    );
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--slots', '2']);
-
-    assert.equal(result.code, 0);
-    assert.equal(fieldOf(path, 'a', 'started_at'), NOW);
-    assert.equal(fieldOf(path, 'b', 'started_at'), NOW);
+  it('порядок в файле — единственный приоритет: свободных пунктов нет', () => {
+    const text = backlogText(item('done-item', { ...COMPLETE, status: 'done' }));
+    assert.deepEqual(select(text, 3), []);
   });
 });
 
-describe('проставление исхода', () => {
-  it('переводит пункт в done', () => {
-    const path = fixture(item('some-item', { ...COMPLETE, status: 'in_progress' }));
-    const result = backlog(['finish', 'some-item', '--file', path, '--status', 'done']);
+describe('backlog: правка полей', () => {
+  it('переписывает существующее поле на месте, не меняя число строк пункта', () => {
+    const before = backlogText(item('some-item', COMPLETE));
+    const linesBefore = before.split('\n').length;
 
-    assert.equal(result.code, 0);
-    assert.equal(statusOf(path, 'some-item'), 'done');
+    const after = withFields(before, 'some-item', { status: 'in_progress' });
+
+    assert.equal(after.split('\n').length, linesBefore);
+    assert.equal(entryOf(parse(after), 'some-item').data.status, 'in_progress');
   });
 
-  it('переводит пункт в failed с причиной', () => {
-    const path = fixture(item('some-item', { ...COMPLETE, status: 'in_progress' }));
-    const result = backlog([
-      'finish',
-      'some-item',
-      '--file',
-      path,
-      '--status',
-      'failed',
-      '--reason',
-      'сборка не сошлась',
-    ]);
+  it('дописывает новое поле сразу за последним полем пункта', () => {
+    const before = backlogText(item('some-item', COMPLETE));
+    const after = withFields(before, 'some-item', { started_at: '2026-08-23T12:00:00.000Z' });
 
-    assert.equal(result.code, 0);
-    assert.equal(statusOf(path, 'some-item'), 'failed');
-    assert.equal(fieldOf(path, 'some-item', 'reason'), 'сборка не сошлась');
+    const entry = entryOf(parse(after), 'some-item');
+    assert.equal(entry.data.started_at, '2026-08-23T12:00:00.000Z');
+    assert.equal(entry.fields.get('started_at')?.line, entry.fields.get('done_when')!.line + 1);
   });
 
-  it('отказывает при неизвестном слаге', () => {
-    const path = fixture(item('some-item', COMPLETE));
-    const result = backlog(['finish', 'other-item', '--file', path, '--status', 'done']);
+  it('неизвестное поле переживает правку', () => {
+    const before = backlogText(item('some-item', { ...COMPLETE, custom_field: 'значение' }));
+    const after = withFields(before, 'some-item', { status: 'done' });
 
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /other-item/);
-    assert.equal(statusOf(path, 'some-item'), 'pending');
+    assert.match(after, /custom_field: значение/);
+    assert.equal(entryOf(parse(after), 'some-item').data.status, 'done');
   });
 
-  it('отказывает на failed без причины', () => {
-    const path = fixture(item('some-item', COMPLETE));
-    const result = backlog(['finish', 'some-item', '--file', path, '--status', 'failed']);
+  it('соседние пункты и преамбула остаются посимвольно неизменными', () => {
+    const before = backlogText(item('alpha', COMPLETE), item('beta', { ...COMPLETE, group: 'g' }), item('gamma', COMPLETE));
+    const after = withFields(before, 'beta', { status: 'done' });
 
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /reason/);
-  });
+    const beforeLines = before.split('\n');
+    const afterLines = after.split('\n');
+    const betaEntry = entryOf(parse(before), 'beta');
+    const betaAfterEntry = entryOf(parse(after), 'beta');
 
-  it('отказывает на неизвестном исходе', () => {
-    const path = fixture(item('some-item', COMPLETE));
-    const result = backlog(['finish', 'some-item', '--file', path, '--status', 'canceled']);
-
-    assert.equal(result.code, 1);
-    assert.match(result.stderr, /done/);
-  });
-
-  // Спека pipeline-lanes: «Защита проставленного исхода»
-  it('finish на уже done ничего не перезаписывает и завершается кодом 0', () => {
-    const path = fixture(item('some-item', { ...COMPLETE, status: 'done' }));
-    const before = readFileSync(path, 'utf8');
-    const result = backlog(['finish', 'some-item', '--file', path, '--status', 'failed', '--reason', 'поздно']);
-
-    assert.equal(result.code, 0);
-    assert.equal(readFileSync(path, 'utf8'), before);
-  });
-
-  it('finish на уже failed ничего не перезаписывает и завершается кодом 0', () => {
-    const path = fixture(item('some-item', { ...COMPLETE, status: 'failed', reason: 'прежняя причина' }));
-    const before = readFileSync(path, 'utf8');
-    const result = backlog(['finish', 'some-item', '--file', path, '--status', 'done']);
-
-    assert.equal(result.code, 0);
-    assert.equal(readFileSync(path, 'utf8'), before);
-  });
-});
-
-describe('выдача слотов по дорожкам', () => {
-  const NOW = '2026-08-23T12:00:00.000Z';
-
-  it('раздаёт по одному пункту на дорожку в порядке дорожек', () => {
-    const path = fixture(
-      item('a', { ...COMPLETE, group: 'a' }),
-      item('b', { ...COMPLETE, group: 'b' }),
-    );
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--lanes', 'a-lane,b-lane']);
-
-    assert.equal(result.code, 0);
-    const parsed = JSON.parse(result.stdout) as {
-      lanes: Record<string, { filled: boolean; slug: string }>;
-    };
-    assert.equal(parsed.lanes['a-lane']?.filled, true);
-    assert.equal(parsed.lanes['a-lane']?.slug, 'a');
-    assert.equal(parsed.lanes['b-lane']?.filled, true);
-    assert.equal(parsed.lanes['b-lane']?.slug, 'b');
-    assert.equal(statusOf(path, 'a'), 'in_progress');
-    assert.equal(statusOf(path, 'b'), 'in_progress');
-  });
-
-  it('дорожка без подходящего пункта получает пустые значения полей', () => {
-    const path = fixture(item('a', { ...COMPLETE, group: 'a' }));
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--lanes', 'a-lane,b-lane']);
-
-    assert.equal(result.code, 0);
-    const parsed = JSON.parse(result.stdout) as {
-      lanes: Record<string, { filled: boolean; slug: string; title: string; group: string; item: unknown }>;
-    };
-    assert.equal(parsed.lanes['a-lane']?.filled, true);
-    assert.equal(parsed.lanes['b-lane']?.filled, false);
-    assert.equal(parsed.lanes['b-lane']?.slug, '');
-    assert.equal(parsed.lanes['b-lane']?.title, '');
-    assert.equal(parsed.lanes['b-lane']?.group, '');
-    assert.equal(parsed.lanes['b-lane']?.item, null);
-  });
-
-  it('отсутствие подходящих пунктов не отказывает: все дорожки пустые', () => {
-    const path = fixture(item('a', { ...COMPLETE, status: 'done' }));
-    const before = readFileSync(path, 'utf8');
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--lanes', 'a-lane,b-lane']);
-
-    assert.equal(result.code, 0);
-    assert.equal(readFileSync(path, 'utf8'), before);
-    const parsed = JSON.parse(result.stdout) as { lanes: Record<string, { filled: boolean }> };
-    assert.equal(parsed.lanes['a-lane']?.filled, false);
-    assert.equal(parsed.lanes['b-lane']?.filled, false);
-  });
-
-  it('отказывает на некорректном перечне дорожек и не трогает файл', () => {
-    const path = fixture(item('a', COMPLETE));
-    const before = readFileSync(path, 'utf8');
-
-    for (const lanes of ['', 'a-lane,a-lane', 'Дорожка A', 'a-lane,']) {
-      const result = backlog(['pick', '--file', path, '--now', NOW, '--lanes', lanes]);
-      assert.equal(result.code, 1, `lanes=${lanes}`);
+    for (let index = 0; index < beforeLines.length; index += 1) {
+      const insideBeta = index >= betaEntry.headingLine && index <= betaAfterEntry.lastFieldLine;
+      if (insideBeta) continue;
+      assert.equal(afterLines[index], beforeLines[index], `строка ${index} изменилась вне правки`);
     }
-    assert.equal(readFileSync(path, 'utf8'), before);
   });
 
-  it('пишет пункт каждой занятой дорожки файлом item-<дорожка>.json в каталог прогона', () => {
-    const path = fixture(
-      item('a', { ...COMPLETE, group: 'a' }),
-      item('b', { ...COMPLETE, group: 'b' }),
-    );
-    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-rundir-'));
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--lanes', 'a-lane,b-lane', '--run-dir', runDir]);
+  it('отказывает на значении с переводом строки: поле очереди однострочно', () => {
+    const before = backlogText(item('some-item', COMPLETE));
 
-    assert.equal(result.code, 0);
-    const itemA = JSON.parse(readFileSync(join(runDir, 'item-a-lane.json'), 'utf8')) as { slug: string };
-    const itemB = JSON.parse(readFileSync(join(runDir, 'item-b-lane.json'), 'utf8')) as { slug: string };
-    assert.equal(itemA.slug, 'a');
-    assert.equal(itemB.slug, 'b');
+    for (const value of ['первая\nвторая', 'первая\r\nвторая']) {
+      assert.throws(() => withFields(before, 'some-item', { reason: value }), (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /reason/);
+        assert.match(error.message, /одну строку/);
+        return true;
+      });
+    }
   });
 
-  it('общая метка started_at у всех занятых дорожек', () => {
-    const path = fixture(
-      item('a', { ...COMPLETE, group: 'a' }),
-      item('b', { ...COMPLETE, group: 'b' }),
-    );
-    const result = backlog(['pick', '--file', path, '--now', NOW, '--lanes', 'a-lane,b-lane']);
+  it('отказывает на отсутствующем слаге', () => {
+    const before = backlogText(item('some-item', COMPLETE));
+    assert.throws(() => withFields(before, 'missing-item', { status: 'done' }), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /missing-item/);
+      return true;
+    });
+  });
+});
 
-    assert.equal(result.code, 0);
-    assert.equal(fieldOf(path, 'a', 'started_at'), NOW);
-    assert.equal(fieldOf(path, 'b', 'started_at'), NOW);
+describe('backlog: очередь этого репозитория', () => {
+  it('backlog.md разбирается движком как есть, без единого отказа схемы', () => {
+    const path = fileURLToPath(new URL('../../backlog.md', import.meta.url));
+    const text = readFileSync(path, 'utf8');
+
+    const entries = parse(text);
+    assert.ok(entries.length > 0);
   });
 });
