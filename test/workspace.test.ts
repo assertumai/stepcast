@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -66,6 +66,15 @@ function workspaceOfJob(result: RunResult, jobId: string): { mode: string; path:
   const job = readStatus(result.journal.paths).jobs.find((item) => item.id === jobId);
   assert.ok(job?.workspace !== undefined, `у работы ${jobId} должна быть рабочая директория`);
   return job.workspace;
+}
+
+/**
+ * Каталог рабочих директорий прогона в той же форме, в какой пути печатает
+ * `git worktree list`: ссылки разрешены (каталог временных файлов на macOS —
+ * символическая ссылка), иначе сравнение путей не совпадало бы никогда.
+ */
+function workspacesDir(result: RunResult): string {
+  return realpathSync(join(workspaceOfJob(result, 'a').path, '..'));
 }
 
 function graphOf(yaml: string) {
@@ -679,9 +688,17 @@ jobs:
     const dirs = execFileSync('git', ['-C', project.root, 'worktree', 'list'], {
       encoding: 'utf8',
     });
-    const workspaces = join(workspaceOfJob(result, 'a').path, '..');
+    const workspaces = workspacesDir(result);
+    // Учёт проверяется по настоящему пути worktree, а не по `runsRoot/<работа>`:
+    // между корнем прогонов и рабочими каталогами лежат ключ проекта и
+    // идентификатор прогона, и ключ — двенадцать шестнадцатеричных цифр, которые
+    // с заметной вероятностью начинаются на `b` или `c`. Такое сравнение по
+    // вхождению строки срабатывало на самом ключе и роняло тест случайным
+    // образом. Строка каталога работы `a` подтверждает форму сравнения: без неё
+    // проверка отсутствия `b` и `c` проходила бы вхолостую.
+    assert.ok(dirs.includes(join(workspaces, 'a')), 'worktree работы a в учёте git есть');
     for (const id of ['b', 'c']) {
-      assert.equal(dirs.includes(join(runsRoot, id)), false);
+      assert.equal(dirs.includes(join(workspaces, id)), false, `worktree ${id} снят с учёта`);
       assert.equal(existsSync(join(workspaces, id)), false, `каталог ${id} убран`);
     }
   });
@@ -739,14 +756,17 @@ jobs:
     });
 
     assert.equal(result.status, 'failed');
-    const workspaces = join(workspaceOfJob(result, 'a').path, '..');
+    const workspaces = workspacesDir(result);
     for (const id of ['b', 'c']) {
       assert.equal(existsSync(join(workspaces, id)), false, `каталог ${id} убран и без git`);
     }
     const dirs = execFileSync('git', ['-C', project.root, 'worktree', 'list'], {
       encoding: 'utf8',
     });
-    for (const id of ['b', 'c']) assert.equal(dirs.includes(join(runsRoot, id)), false);
+    assert.ok(dirs.includes(join(workspaces, 'a')), 'worktree работы a в учёте git есть');
+    for (const id of ['b', 'c']) {
+      assert.equal(dirs.includes(join(workspaces, id)), false, `worktree ${id} снят с учёта`);
+    }
   });
 
   // Сценарий: «Каталог цепочки один» / «Неотслеживаемое содержимое переходит по цепочке»
