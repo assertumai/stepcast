@@ -291,9 +291,10 @@ jobs:
 `jobs.<id>.output.*`. Сравнения, `and`, `or`, `not`, обращение к полям. Всё
 остальное выносится в `run`-шаг, печатающий результат в stdout.
 
-Пространство `run.*`: `run.id`, `run.dir`, `run.workspace`. Величины уровня
-шага им не предоставляются — на уровне работы у них нет значения; каталоги
-работы и шага приходят переменными `STEPCAST_JOB_DIR` и `STEPCAST_STEP_DIR`.
+Пространство `run.*`: `run.id`, `run.dir`, `run.workspace`, `run.scratch`.
+Величины уровня шага им не предоставляются — на уровне работы у них нет
+значения; каталоги работы и шага приходят переменными `STEPCAST_JOB_DIR` и
+`STEPCAST_STEP_DIR`.
 
 ### Когда что раскрывается
 
@@ -845,13 +846,25 @@ env_deny: ["AWS_*", "*_PRIVATE_KEY"]
 
 `STEPCAST_RUN_ID`, `STEPCAST_RUN_DIR`, `STEPCAST_BIN`, `STEPCAST_JOB`, `STEPCAST_JOB_DIR`,
 `STEPCAST_STEP`, `STEPCAST_STEP_DIR`, `STEPCAST_ITERATION`, `STEPCAST_ATTEMPT`,
-`STEPCAST_WORKSPACE`, `STEPCAST_ARTIFACTS`, `STEPCAST_PREV_FAILURE`.
+`STEPCAST_WORKSPACE`, `STEPCAST_ARTIFACTS`, `STEPCAST_SCRATCH`, `STEPCAST_PREV_FAILURE`.
 
 `STEPCAST_BIN` — путь к точке входа исполняющего процесса stepcast
 (`process.argv[1]`). Даёт шагу вызвать `stepcast` рекурсивно тем же движком,
 которым он сам исполняется, — например, командный шаг, сводящий дорожки,
 зовёт им `$STEPCAST_BIN apply --lane <имя> <run-id>`, не полагаясь на то, что
 `stepcast` вообще есть в `PATH` шага.
+
+`STEPCAST_SCRATCH` (и та же величина подстановкой `${run.scratch}`) — каталог
+черновиков работы: общий на все её шаги и итерации, лежит вне рабочего дерева
+при любом режиме `workspace` и потому не идёт против `changed_only`. Пустым не
+сохраняется — движок снимает его сам по завершении работы.
+
+Командному шагу каталог доступен всегда. Агентскому — насколько его пускает
+бэкенд: под `permissions.enforce: strict` (см. шаг `agent`) движок объявляет
+каталог доступным явно (адаптер Claude добавляет `--add-dir`), а вне жёсткого
+режима границы записи ставит сам бэкенд по своим настройкам, и попытка писать
+за пределы рабочей директории может упереться в его отказ. Агентскому шагу,
+которому черновики нужны, объявляйте `enforce: strict`.
 
 ## Контекст
 

@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { resolveLate, type LateScope } from '../src/core/pipeline/late.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
+import { jobScratchDir } from '../src/core/journal/paths.js';
 import { readStatus } from '../src/core/journal/reader.js';
 import { asAgent, asRun, makeProject, type Project } from './helpers.js';
 import type { Job } from '../src/core/pipeline/model.js';
@@ -17,7 +18,7 @@ const SCOPE: LateScope = {
     empty: { status: 'success' },
     broken: { status: 'failed' },
   },
-  run: { id: 'run-1', dir: '/runs/run-1', workspace: '/work' },
+  run: { id: 'run-1', dir: '/runs/run-1', workspace: '/work', scratch: '/runs/run-1/jobs/probe/scratch' },
   env: { NODE_ENV: 'test' },
 };
 
@@ -71,6 +72,40 @@ describe('раскрытие отложенных подстановок', () =>
     );
   });
 
+  // Задача 3.2: черновики агента должны идти в каталог, объявленный движком,
+  // а не в системный временный (заход 616c1b), и промпт — тот текст, из
+  // которого агент узнаёт этот путь.
+  it('раскрывает ${run.scratch} в тексте промпта', () => {
+    const job = expandJob(
+      pipelineWith(`    steps:
+      - id: think
+        agent: claude
+        prompt: "черновики клади в \${run.scratch}"`),
+    );
+
+    assert.equal(
+      asAgent(resolveLate(job, SCOPE).steps[0] as never).prompt,
+      'черновики клади в /runs/run-1/jobs/probe/scratch',
+    );
+  });
+
+  it('раскрывает ${run.scratch} в пути контекста', () => {
+    const job = expandJob(
+      pipelineWith(`    context:
+      - \${run.scratch}/заметка.md
+    steps:
+      - id: think
+        agent: claude
+        prompt: ok`),
+    );
+
+    const entry = resolveLate(job, SCOPE).context[0];
+    assert.equal(
+      entry?.kind === 'path' ? entry.path : undefined,
+      '/runs/run-1/jobs/probe/scratch/заметка.md',
+    );
+  });
+
   it('раскрывает аргументы командного шага', () => {
     const job = expandJob(
       pipelineWith(`    steps:
@@ -81,6 +116,19 @@ describe('раскрытие отложенных подстановок', () =>
     assert.deepEqual(asRun(resolveLate(job, SCOPE).steps[0] as never).command, [
       'echo',
       '/runs/run-1/item.json',
+    ]);
+  });
+
+  it('раскрывает ${run.scratch} в аргументе командного шага', () => {
+    const job = expandJob(
+      pipelineWith(`    steps:
+      - id: show
+        run: [echo, "\${run.scratch}/черновик.txt"]`),
+    );
+
+    assert.deepEqual(asRun(resolveLate(job, SCOPE).steps[0] as never).command, [
+      'echo',
+      '/runs/run-1/jobs/probe/scratch/черновик.txt',
     ]);
   });
 
@@ -200,7 +248,7 @@ jobs:
     assert.throws(
       () => resolveLate(job, SCOPE),
       (error: Error & { hint?: string }) =>
-        /STEPCAST_STEP_DIR/.test(error.hint ?? '') && /id, dir, workspace/.test(error.hint ?? ''),
+        /STEPCAST_STEP_DIR/.test(error.hint ?? '') && /id, dir, workspace, scratch/.test(error.hint ?? ''),
     );
   });
 });
@@ -298,6 +346,33 @@ jobs:
     assert.deepEqual(asRun(resolved.steps[0] as never).command, [
       'echo',
       result.journal.paths.runId,
+    ]);
+  });
+
+  it('${run.scratch} в прогоне раскрывается в каталог черновиков работы', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: scratch-late
+workspace: { mode: cwd }
+jobs:
+  only:
+    steps:
+      - id: show
+        run: [echo, "\${run.scratch}"]
+        expect: [{ exit_code: 0 }]
+`,
+    });
+
+    const result = await run(project);
+    const resolved = JSON.parse(
+      readFileSync(join(result.journal.paths.dir, 'jobs', 'only', 'resolved.json'), 'utf8'),
+    ) as Job;
+
+    assert.deepEqual(asRun(resolved.steps[0] as never).command, [
+      'echo',
+      jobScratchDir(result.journal.paths, 'only'),
     ]);
   });
 

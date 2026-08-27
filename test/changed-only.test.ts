@@ -58,6 +58,44 @@ describe('result-contract: предикат границ изменений', ()
     assert.match(step?.reason ?? '', /package\.json/);
   });
 
+  // Заход 616c1b: агент клал черновики живой проверки в системный временный
+  // каталог, но описывал их относительным путём — они ложились внутрь
+  // рабочего дерева и заваливали границу правок. Теперь для черновиков есть
+  // объявленный каталог вне дерева (`$STEPCAST_JOB_DIR/scratch`); шаг,
+  // писавший только туда, обязан пройти `changed_only`, а перечисленных путей
+  // в отказе быть не должно — черновики в якорь не входят.
+  it('черновики в $STEPCAST_JOB_DIR/scratch не идут против changed_only', async () => {
+    const project = makeProject({
+      'stepcast.yml': bounded(
+        'mkdir -p src && echo код > src/a.ts && echo черновик > "$STEPCAST_JOB_DIR/scratch/verify.log"',
+        '["src/**"]',
+      ),
+    });
+    const result = await run(project);
+
+    assert.equal(result.status, 'success');
+    const step = readStatus(result.journal.paths).jobs[0]?.steps[0];
+    assert.equal(step?.reason, undefined);
+  });
+
+  // Тот же черновик, но положенный внутрь рабочего дерева, — сегодняшнее
+  // поведение до заведения каталога черновиков, и оно обязано остаться
+  // отказом: только вынос черновика за дерево чинит границу, а не ослабление
+  // предиката списком исключений.
+  it('тот же черновик внутри рабочего дерева по-прежнему проваливает предикат', async () => {
+    const project = makeProject({
+      'stepcast.yml': bounded(
+        'mkdir -p src .verify-scratch && echo код > src/a.ts && echo черновик > .verify-scratch/verify.log',
+        '["src/**"]',
+      ),
+    });
+    const result = await run(project);
+
+    assert.equal(result.status, 'failed');
+    const step = readStatus(result.journal.paths).jobs[0]?.steps[0];
+    assert.match(step?.reason ?? '', /verify-scratch/);
+  });
+
   // Сценарий: «Шаг ничего не изменил»
   it('проходит для шага, не изменившего дерево', async () => {
     const project = makeProject({ 'stepcast.yml': bounded('true', '["src/**"]') });

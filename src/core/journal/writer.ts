@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { StepcastError } from '../errors.js';
 import {
   jobDir,
+  jobScratchDir,
   judgeCallDir,
   makeRunId,
   projectKey,
@@ -174,10 +175,15 @@ export class RunJournal {
     atomicWrite(this.paths.lock, content);
   }
 
-  /** Создать каталог работы и вернуть его путь. */
+  /**
+   * Создать каталог работы и вернуть его путь. Каталог черновиков заводится
+   * тут же, до первого шага: обещание переменной `STEPCAST_SCRATCH` не должно
+   * зависеть от того, обратится ли к ней хоть один шаг.
+   */
   prepareJob(jobId: string): string {
     const dir = jobDir(this.paths, jobId);
     mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+    mkdirSync(jobScratchDir(this.paths, jobId), { recursive: true, mode: DIR_MODE });
     return dir;
   }
 

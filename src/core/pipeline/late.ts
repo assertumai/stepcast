@@ -23,6 +23,8 @@ export interface RunScope {
   readonly id: string;
   readonly dir: string;
   readonly workspace: string;
+  /** Каталог черновиков работы — тот же, что доходит до шага `STEPCAST_SCRATCH`. */
+  readonly scratch: string;
 }
 
 export interface JobScopeEntry {
@@ -37,7 +39,7 @@ export interface LateScope {
   readonly env: Readonly<Record<string, string>>;
 }
 
-const RUN_NAMES = ['id', 'dir', 'workspace'];
+const RUN_NAMES = ['id', 'dir', 'workspace', 'scratch'];
 
 /**
  * Почему значения нет. Отсутствующее поле выглядит одинаково во всех трёх

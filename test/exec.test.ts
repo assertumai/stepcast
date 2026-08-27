@@ -9,6 +9,10 @@ import { BUILTIN_CONFIG } from '../src/core/config/defaults.js';
 import { runProcess } from '../src/core/exec/process.js';
 import { planAttempt, runAttempts } from '../src/core/exec/attempts.js';
 import { executeRunStep } from '../src/core/exec/runStep.js';
+import { jobScratchDir } from '../src/core/journal/paths.js';
+import { expandPipeline } from '../src/core/pipeline/expand.js';
+import { runPipeline } from '../src/core/run/runner.js';
+import { makeProject, testBaseEnv } from './helpers.js';
 import type { Attempts, RunStep } from '../src/core/pipeline/model.js';
 
 function workdir(): string {
@@ -142,6 +146,7 @@ describe('step-execution: окружение', () => {
       attempt: 2,
       workspace: '/work',
       artifacts: '/runs/r1/artifacts',
+      scratch: '/runs/r1/jobs/build/scratch',
     });
 
     const { env } = buildStepEnv({
@@ -161,6 +166,7 @@ describe('step-execution: окружение', () => {
     assert.equal(env.STEPCAST_ATTEMPT, '2');
     assert.equal(env.STEPCAST_WORKSPACE, '/work');
     assert.equal(env.STEPCAST_BIN, '/usr/local/lib/node_modules/stepcast/dist/src/bin.js');
+    assert.equal(env.STEPCAST_SCRATCH, '/runs/r1/jobs/build/scratch');
   });
 
   // Сценарий: «Инжектируемые переменные не переопределяются»
@@ -170,13 +176,18 @@ describe('step-execution: окружение', () => {
       envFiles: [],
       pipeline: {},
       job: {},
-      step: { STEPCAST_JOB: 'подделка', STEPCAST_BIN: 'подделка' },
-      injected: { STEPCAST_JOB: 'build', STEPCAST_BIN: '/real/bin.js' },
+      step: { STEPCAST_JOB: 'подделка', STEPCAST_BIN: 'подделка', STEPCAST_SCRATCH: 'подделка' },
+      injected: {
+        STEPCAST_JOB: 'build',
+        STEPCAST_BIN: '/real/bin.js',
+        STEPCAST_SCRATCH: '/runs/r1/jobs/build/scratch',
+      },
       deny: [],
       cwd: '/tmp',
     });
     assert.equal(env.STEPCAST_JOB, 'build');
     assert.equal(env.STEPCAST_BIN, '/real/bin.js');
+    assert.equal(env.STEPCAST_SCRATCH, '/runs/r1/jobs/build/scratch');
   });
 
   it('переменные stepcast не попадают под запреты', () => {
@@ -186,11 +197,12 @@ describe('step-execution: окружение', () => {
       pipeline: {},
       job: {},
       step: {},
-      injected: { STEPCAST_RUN_ID: 'r1' },
+      injected: { STEPCAST_RUN_ID: 'r1', STEPCAST_SCRATCH: '/runs/r1/jobs/build/scratch' },
       deny: ['STEPCAST_*'],
       cwd: '/tmp',
     });
     assert.equal(env.STEPCAST_RUN_ID, 'r1');
+    assert.equal(env.STEPCAST_SCRATCH, '/runs/r1/jobs/build/scratch');
     assert.deepEqual(denied, []);
   });
 });
@@ -499,5 +511,107 @@ describe('step-execution: шаг целиком', () => {
 
     assert.equal(result.status, 'failed');
     assert.match(result.reason ?? '', /не завершился/);
+  });
+});
+
+describe('step-execution: STEPCAST_SCRATCH в прогоне', () => {
+  it('доходит до командного шага', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: scratch-env
+workspace: { mode: cwd }
+jobs:
+  build:
+    steps:
+      - id: show
+        run: [sh, -c, 'echo "$STEPCAST_SCRATCH" > seen.txt']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      baseEnv: testBaseEnv(),
+    });
+
+    assert.equal(result.status, 'success');
+    assert.equal(
+      readFileSync(project.path('seen.txt'), 'utf8').trim(),
+      jobScratchDir(result.journal.paths, 'build'),
+    );
+  });
+
+  // Сценарий: «Каталог общий для шагов работы». Каталог заведён у работы, а не
+  // у шага, — иначе живая проверка не может ни разложить черновик заранее, ни
+  // забрать его на следующем шаге.
+  it('открывает следующему шагу работы то, что записал предыдущий', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: scratch-shared
+workspace: { mode: cwd }
+jobs:
+  build:
+    steps:
+      - id: write
+        run: [sh, -c, 'echo черновик > "$STEPCAST_SCRATCH/заметка.txt"']
+        expect: [{ exit_code: 0 }]
+      - id: read
+        run: [sh, -c, 'cat "$STEPCAST_SCRATCH/заметка.txt" > прочитано.txt']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      baseEnv: testBaseEnv(),
+    });
+
+    assert.equal(result.status, 'success');
+    assert.equal(readFileSync(project.path('прочитано.txt'), 'utf8').trim(), 'черновик');
+  });
+
+  // Каталог черновиков общий на всю работу, а не на итерацию: шаг должен
+  // видеть один и тот же путь на каждом проходе цикла.
+  it('остаётся тем же путём на каждой итерации работы', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: scratch-env-loop
+workspace: { mode: cwd }
+jobs:
+  looped:
+    until:
+      max_iterations: 2
+      check:
+        - cmd: 'false'
+    steps:
+      - id: append
+        run: [sh, -c, 'echo "$STEPCAST_SCRATCH" >> seen.txt']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      baseEnv: testBaseEnv(),
+    });
+
+    const scratch = jobScratchDir(result.journal.paths, 'looped');
+    const lines = readFileSync(project.path('seen.txt'), 'utf8').trim().split('\n');
+    assert.deepEqual(lines, [scratch, scratch]);
   });
 });

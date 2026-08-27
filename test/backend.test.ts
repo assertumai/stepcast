@@ -184,6 +184,38 @@ describe('agent-backend: сборка запуска', () => {
     );
   });
 
+  // Задача 4.2: черновики агента должны уместиться в дозволенное дерево
+  // жёсткого режима, иначе первая же запись в них ловит отказ прав (заход
+  // 616c1b, но уже с каталогом, а не системным временным).
+  it('strict объявляет каталог черновиков через --add-dir', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      permissions: { allow: ['Read'], enforce: 'strict' },
+      scratchDir: '/runs/r1/jobs/build/scratch',
+    });
+
+    const occurrences = spec.command.filter((token) => token === '--add-dir').length;
+    assert.equal(occurrences, 1, 'путь передан ровно один раз');
+    assert.equal(
+      spec.command[spec.command.indexOf('--add-dir') + 1],
+      '/runs/r1/jobs/build/scratch',
+    );
+    assert.ok(!spec.command.includes('/tmp'), 'рабочее дерево не должно попадать в дополнительные каталоги');
+  });
+
+  it('без strict --add-dir не появляется, даже если каталог черновиков передан', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      scratchDir: '/runs/r1/jobs/build/scratch',
+    });
+
+    assert.ok(!spec.command.includes('--add-dir'));
+  });
+
   it('strict с явным запрещающим режимом шага сохраняет режим шага', () => {
     const spec = createClaudeAdapter(BACKEND).launch({
       prompt: 'p',
@@ -670,6 +702,24 @@ describe('agent-backend: исполнение шага', () => {
     assert.equal(backend.invocations[1]?.resumeSession, false);
   });
 
+  it('передаёт каталог черновиков в вызов бэкенда', async () => {
+    const dir = workdir();
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })] });
+
+    await executeAgentStep({
+      step: makeAgentStep(),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      scratchDir: '/runs/r1/jobs/build/scratch',
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(backend.invocations[0]?.scratchDir, '/runs/r1/jobs/build/scratch');
+  });
+
   it('сохраняет промпт целиком и снимает расход из потока', async () => {
     const dir = workdir();
     const backend = createFakeBackend({
@@ -950,34 +1000,47 @@ describe('agent-backend: предел одновременных вызовов'
 
   it('разные бэкенды не делят предел', async () => {
     const slots = createBackendSlots(() => 1);
-    const claude = createFakeBackend({ lines: [resultLine({ text: 'ок' })], hangMs: 120 });
-    const codex: typeof claude = { ...claude, adapter: { ...claude.adapter, name: 'codex' } };
+    const codex = createFakeBackend({ lines: [resultLine({ text: 'ок' })] });
+    const codexAdapter = { ...codex.adapter, name: 'codex' };
 
-    const started = Date.now();
-    await Promise.all([
-      executeAgentStep({
-        step: makeAgentStep({ id: 'a', session: 'a' }),
-        adapter: claude.adapter,
-        cwd: workdir(),
-        stepDir: workdir(),
-        sessions: createSessionRegistry(),
-        backendSlots: slots,
-        buildPrompt: () => 'промпт',
-        env: () => ({ PATH: process.env.PATH ?? '' }),
-      }),
-      executeAgentStep({
-        step: makeAgentStep({ id: 'b', session: 'b' }),
-        adapter: codex.adapter,
-        cwd: workdir(),
-        stepDir: workdir(),
-        sessions: createSessionRegistry(),
-        backendSlots: slots,
-        buildPrompt: () => 'промпт',
-        env: () => ({ PATH: process.env.PATH ?? '' }),
-      }),
-    ]);
-    const elapsed = Date.now() - started;
-    assert.ok(elapsed < 220, `разные бэкенды не должны сериализоваться: прошло ${elapsed}мс`);
+    // Единственное место бэкенда `fake` занято и держится до конца проверки:
+    // дели бэкенды предел, шаг соседнего бэкенда не начался бы вовсе. Часами
+    // это не меряется — разница между «пошли разом» и «пошли по очереди»
+    // складывалась бы из времени запуска процесса, и порог отделял бы одно от
+    // другого лишь на незанятой машине.
+    let release = (): void => {};
+    const held = slots.run(
+      'fake',
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+
+    let stuck: NodeJS.Timeout | undefined;
+    const guard = new Promise<'ждёт чужого места'>((resolve) => {
+      stuck = setTimeout(() => resolve('ждёт чужого места'), 5_000);
+    });
+
+    const step = executeAgentStep({
+      step: makeAgentStep({ id: 'b', session: 'b' }),
+      adapter: codexAdapter,
+      cwd: workdir(),
+      stepDir: workdir(),
+      sessions: createSessionRegistry(),
+      backendSlots: slots,
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    const outcome = await Promise.race([step, guard]);
+    clearTimeout(stuck);
+    assert.equal(slots.active('fake'), 1, 'чужое место всё это время занято');
+    release();
+    await held;
+    await step;
+
+    assert.notEqual(outcome, 'ждёт чужого места', 'вызов не должен ждать места другого бэкенда');
   });
 
   it('ожидание места не даёт timeout: отсчёт начинается после получения места', async () => {

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync, readdirSync, rmdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
 
 import {
@@ -51,7 +51,7 @@ import type { ResumePlan, SourceRun, StepPlan } from './resumePlan.js';
 import { computeStepKey, upstreamForKey } from './stepKey.js';
 import { prepareWorkspace, type PreparedWorkspace } from './workspace.js';
 import { createWaitState } from './waitState.js';
-import { shortRunId } from '../journal/paths.js';
+import { jobScratchDir, shortRunId } from '../journal/paths.js';
 import { findStepDir } from '../journal/reader.js';
 import { RunJournal } from '../journal/writer.js';
 import { jobLockHash, serializeLock } from '../pipeline/lock.js';
@@ -485,12 +485,56 @@ function adapterOf(name: string, context: RunContext): BackendAdapter {
 }
 
 /**
- * Работа целиком: подготовка рабочей директории и внешний цикл `until`.
+ * Работа целиком: заведение каталогов работы, её исполнение и снятие пустого
+ * каталога черновиков.
+ *
+ * Каталог черновиков заводится в `prepareJob` — до подготовки рабочей
+ * директории и до раскрытия подстановок, каждое из которых может отказать.
+ * Поэтому его снятие висит здесь, на общем `finally` вокруг всей работы, а не
+ * внутри `runJob`: иначе работа, отказавшая на подготовке, оставляла бы в
+ * раскладке пустой каталог, а правило «пустого нет — значит не писал»
+ * держалось бы только на удачных путях.
+ */
+async function executeJob(
+  declared: Job,
+  scope: Record<string, unknown>,
+  context: RunContext,
+): Promise<JobOutcome> {
+  const { journal } = context;
+
+  journal.prepareJob(declared.id);
+  journal.event({ kind: 'job.started', job: declared.id });
+  context.records.set(declared.id, {
+    ...(context.records.get(declared.id) as JobRecord),
+    status: 'running',
+    started_at: new Date().toISOString(),
+  });
+
+  try {
+    return await runJob(declared, scope, context);
+  } finally {
+    // Пустой каталог черновиков не несёт материала для разбора и не должен
+    // копиться в раскладке прогона годами; непустой остаётся — в нём мог лечь
+    // след отказа. Отказ снятия — учётная операция, не исход работы: агент,
+    // которому запрещено трогать что-либо за пределами дерева, права на
+    // уборку здесь и не давалось.
+    bookkeep({ journal, job: declared.id }, 'снятие каталога черновиков', () => {
+      const dir = jobScratchDir(journal.paths, declared.id);
+      // Убрать каталог за собой шагу никто не запрещал, и сделанное им — не
+      // отказ учёта: жаловаться в журнал на достигнутый результат незачем.
+      if (!existsSync(dir)) return;
+      if (readdirSync(dir).length === 0) rmdirSync(dir);
+    });
+  }
+}
+
+/**
+ * Исполнение работы: подготовка рабочей директории и внешний цикл `until`.
  *
  * Работа без цикла — вырожденный случай с одной итерацией и без уровня
  * итерации в раскладке журнала.
  */
-async function executeJob(
+async function runJob(
   declared: Job,
   scope: Record<string, unknown>,
   context: RunContext,
@@ -502,14 +546,6 @@ async function executeJob(
   // раньше он неизвестен. До этого момента работа адресуется объявленной —
   // подстановок в идентификаторе и топологии не бывает по устройству формата.
   let job = declared;
-
-  journal.prepareJob(job.id);
-  journal.event({ kind: 'job.started', job: job.id });
-  context.records.set(job.id, {
-    ...(context.records.get(job.id) as JobRecord),
-    status: 'running',
-    started_at: new Date().toISOString(),
-  });
 
   // Рабочая директория готовится до первого шага. Её отказ означает, что шаги
   // запустить негде, — это `spawn_failed` из закрытого перечня, а не новая
@@ -557,7 +593,12 @@ async function executeJob(
   try {
     job = resolveLate(declared, {
       jobs: (scope.jobs ?? {}) as Readonly<Record<string, JobScopeEntry>>,
-      run: { id: journal.paths.runId, dir: journal.paths.dir, workspace: prepared.dir },
+      run: {
+        id: journal.paths.runId,
+        dir: journal.paths.dir,
+        workspace: prepared.dir,
+        scratch: jobScratchDir(journal.paths, job.id),
+      },
       env: declared.env,
     });
   } catch (error) {
@@ -713,6 +754,7 @@ function jobEnv(job: Job, context: RunContext): Record<string, string> {
       attempt: 1,
       workspace: context.cwd,
       artifacts: context.journal.paths.artifacts,
+      scratch: jobScratchDir(context.journal.paths, job.id),
     }),
     deny: pipeline.envDeny,
     cwd: context.cwd,
@@ -1605,6 +1647,7 @@ async function runAgentStep(
     adapter,
     cwd: context.cwd,
     stepDir: stepDirPath,
+    scratchDir: jobScratchDir(journal.paths, job.id),
     sessions,
     backendSlots: context.backendSlots,
     stallTimeoutMs: config.defaults.stallTimeoutMs,
@@ -1914,6 +1957,7 @@ function stepEnv(
       attempt,
       workspace: context.cwd,
       artifacts: context.journal.paths.artifacts,
+      scratch: jobScratchDir(context.journal.paths, job.id),
     }),
     deny: pipeline.envDeny,
     cwd: context.cwd,

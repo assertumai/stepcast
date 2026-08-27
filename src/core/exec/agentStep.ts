@@ -49,6 +49,8 @@ export interface AgentStepOptions {
   readonly adapter: BackendAdapter;
   readonly cwd: string;
   readonly stepDir: string;
+  /** Каталог черновиков работы: доходит до `adapter.launch`, а не в `cwd`. */
+  readonly scratchDir?: string;
   readonly sessions: SessionRegistry;
   /**
    * Место бэкенда: вызов ждёт его перед запуском процесса и освобождает по
@@ -143,6 +145,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
           ? {}
           : { outputSchemaPath: step.outputSchemaPath }),
         ...(step.permissions === undefined ? {} : { permissions: step.permissions }),
+        ...(options.scratchDir === undefined ? {} : { scratchDir: options.scratchDir }),
       });
 
       const suffix = plan.attempt === 1 ? '' : `.${plan.attempt}`;

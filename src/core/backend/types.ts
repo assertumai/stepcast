@@ -27,6 +27,8 @@ export interface AgentInvocation {
   readonly resumeSession: boolean;
   readonly outputSchemaPath?: string;
   readonly permissions?: Permissions;
+  /** Каталог черновиков работы: доступен бэкенду, только когда права заявлены жёстким режимом. */
+  readonly scratchDir?: string;
 }
 
 export interface LaunchSpec {

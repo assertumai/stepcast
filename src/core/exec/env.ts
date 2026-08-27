@@ -112,6 +112,8 @@ export interface InjectedContext {
   readonly attempt: number;
   readonly workspace: string;
   readonly artifacts: string;
+  /** Каталог черновиков работы — общий на все её шаги и итерации. */
+  readonly scratch: string;
   readonly iteration?: number;
   readonly previousFailurePath?: string;
 }
@@ -128,6 +130,7 @@ export function injectedVariables(context: InjectedContext): Record<string, stri
     STEPCAST_ATTEMPT: String(context.attempt),
     STEPCAST_WORKSPACE: context.workspace,
     STEPCAST_ARTIFACTS: context.artifacts,
+    STEPCAST_SCRATCH: context.scratch,
     ...(context.iteration === undefined ? {} : { STEPCAST_ITERATION: String(context.iteration) }),
     ...(context.previousFailurePath === undefined
       ? {}

@@ -59,6 +59,10 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
       if (permissions?.enforce === 'strict') {
         command.push('--setting-sources', 'project');
         if (permissions.mode === undefined) command.push('--permission-mode', 'manual');
+        // Каталог черновиков объявляется доступным только здесь: вне жёсткого
+        // режима settings обычные, и добавлять исключение туда, где отсечения
+        // ещё нет, было бы менять поведение шага, который strict не объявлял.
+        if (invocation.scratchDir !== undefined) command.push('--add-dir', invocation.scratchDir);
       }
       if (permissions?.mode !== undefined) command.push('--permission-mode', permissions.mode);
       if (permissions?.allow !== undefined && permissions.allow.length > 0) {
