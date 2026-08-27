@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { createAnchorer } from '../src/core/anchor/index.js';
@@ -679,8 +679,74 @@ jobs:
     const dirs = execFileSync('git', ['-C', project.root, 'worktree', 'list'], {
       encoding: 'utf8',
     });
-    assert.equal(dirs.includes(join(runsRoot, 'b')), false);
-    assert.equal(existsSync(join(workspaceOfJob(result, 'a').path, '..', 'b')), false);
+    const workspaces = join(workspaceOfJob(result, 'a').path, '..');
+    for (const id of ['b', 'c']) {
+      assert.equal(dirs.includes(join(runsRoot, id)), false);
+      assert.equal(existsSync(join(workspaces, id)), false, `каталог ${id} убран`);
+    }
+  });
+
+  // Сценарий: «Приведение не удалось» при недоступном учёте git. Работы,
+  // засеваемые от одного предшественника, идут параллельно и зовут `git
+  // worktree remove` в одном общем репозитории; отказ этой команды — не
+  // повод оставить каталог на диске. Здесь учётная запись worktree исчезает
+  // ровно перед уборкой (так выглядит чужой prune, успевший первым), и
+  // `worktree remove` отказывает — каталог всё равно обязан уйти.
+  it('убирает каталог развилки, даже когда git worktree remove отказал', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+workspace: { mode: worktree }
+fail_fast: false
+jobs:
+  a:
+    steps: [{ id: c, run: [sh, -c, 'echo из-a > от-a.txt'], expect: [{ exit_code: 0 }] }]
+  b:
+    needs: [a]
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+  c:
+    needs: [a]
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+    });
+    gitInit(project);
+    commit(project, 'первый');
+
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const expanded = expandPipeline({
+      pipelinePath: project.path('stepcast.yml'),
+      config: project.config,
+    });
+    const result = await runPipeline({
+      expanded,
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      anchorerFor: (options) => {
+        const real = createAnchorer(options);
+        return {
+          ...real,
+          restore: () => {
+            rmSync(join(project.root, '.git', 'worktrees', basename(options.dir)), {
+              recursive: true,
+              force: true,
+            });
+            throw new StepcastError('объекты состояния недоступны');
+          },
+        };
+      },
+    });
+
+    assert.equal(result.status, 'failed');
+    const workspaces = join(workspaceOfJob(result, 'a').path, '..');
+    for (const id of ['b', 'c']) {
+      assert.equal(existsSync(join(workspaces, id)), false, `каталог ${id} убран и без git`);
+    }
+    const dirs = execFileSync('git', ['-C', project.root, 'worktree', 'list'], {
+      encoding: 'utf8',
+    });
+    for (const id of ['b', 'c']) assert.equal(dirs.includes(join(runsRoot, id)), false);
   });
 
   // Сценарий: «Каталог цепочки один» / «Неотслеживаемое содержимое переходит по цепочке»

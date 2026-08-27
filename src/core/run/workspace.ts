@@ -169,13 +169,38 @@ export function prepareWorkspace(options: PrepareOptions): PreparedWorkspace {
  * отказа подготовки, а не жалоба уборки за ней. Незарегистрированный worktree
  * оставил бы за собой запись в `.git/worktrees` и мешал бы следующему прогону
  * занять то же имя.
+ *
+ * Уборка идёт в три приёма и не полагается на успех первого: `git worktree
+ * remove` — это команда в общем на весь прогон репозитории, и параллельные
+ * работы зовут её одновременно. Отказ одной из них (а `--force` спасает от
+ * грязного дерева, но не от занятого чужой командой репозитория) оставлял бы
+ * каталог на диске — то самое, чего эта функция обязана не допустить. Поэтому
+ * каталог сносится средствами файловой системы в любом случае, а запись в
+ * `.git/worktrees`, осиротевшую после сноса, убирает `worktree prune`.
  */
 function discardWorkspaceDir(dir: string, cwd: string, mode: Workspace['mode']): void {
+  if (mode === 'worktree') {
+    try {
+      git(cwd, ['worktree', 'remove', '--force', dir]);
+    } catch {
+      // Ниже каталог снимается напрямую, а учёт git приводит в порядок prune.
+    }
+  }
+
   try {
-    if (mode === 'worktree') git(cwd, ['worktree', 'remove', '--force', dir]);
-    else rmSync(dir, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
   } catch {
-    // Уборка не удалась — каталог останется в директории прогона.
+    // Каталог останется в директории прогона: сказать об этом уже нечем.
+  }
+
+  if (mode !== 'worktree') return;
+  try {
+    // Безопасно для соседних работ: `worktree add` держит свою запись
+    // помеченной как заводимую, и prune такую запись не трогает.
+    git(cwd, ['worktree', 'prune']);
+  } catch {
+    // Запись останется указывать на снесённый каталог — её снимет любой
+    // следующий prune, свой или чужой.
   }
 }
 
