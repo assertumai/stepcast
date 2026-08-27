@@ -50,9 +50,13 @@ function readStatus(runDir) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
-/** Работа verify дорожки: по соглашению разводки дорожек — фиксированный id. */
+/**
+ * Работа verify дорожки. Имя работы в пайплайне несёт суффикс дорожки
+ * (`verify-a`, `verify-b`) — поля `lane` для поиска мало: сравнение с голым
+ * `verify` не совпадает ни с одной работой и молча теряет зелёную дорожку.
+ */
 function verifyJobOf(status, lane) {
-  return status.jobs.find((job) => job.lane === lane && job.id === 'verify');
+  return status.jobs.find((job) => job.lane === lane && job.id === `verify-${lane}`);
 }
 
 function readItem(runDir, lane) {

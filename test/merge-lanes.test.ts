@@ -96,8 +96,19 @@ function writeItem(runDir: string, lane: string, slug: string, title: string): v
   writeFileSync(join(runDir, `item-${lane}.json`), JSON.stringify({ slug, title }));
 }
 
+/**
+ * Работа verify дорожки — ровно с тем именем, каким её заводит
+ * `.stepcast/pipelines/self-improve.yml`: `verify-a`, `verify-b`. Голый
+ * `verify` здесь был бы мок, которого в настоящем прогоне не бывает, и он
+ * скрыл бы отказ поиска работы по имени без суффикса дорожки.
+ */
 function verifyJob(lane: string, status: string): Record<string, unknown> {
-  return { id: 'verify', lane, status, workspace: { mode: 'worktree', path: `/tmp/worktree-${lane}` } };
+  return {
+    id: `verify-${lane}`,
+    lane,
+    status,
+    workspace: { mode: 'worktree', path: `/tmp/worktree-${lane}` },
+  };
 }
 
 function backlogItem(slug: string): string {
