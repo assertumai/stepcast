@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -188,5 +188,71 @@ describe('ui-dashboard: обзор всех проектов и прогонов
 
     assert.equal(runs.find((run) => run.runId === 'finished')?.durationMs, 5 * 60_000);
     assert.equal(runs.find((run) => run.runId === 'going')?.durationMs, 10 * 60_000);
+  });
+
+  // Сценарий: «Оборванный и идущий рядом»
+  it('отличает оборванный прогон от живого идущего', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'alive',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: process.pid },
+    });
+    seedRun(runsRoot, projectRoot, {
+      runId: 'abandoned',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: 999_999_999 },
+    });
+
+    const runs = buildOverview(runsRoot).projects[0]?.runs ?? [];
+
+    assert.equal(runs.find((run) => run.runId === 'alive')?.running, true);
+    assert.equal(runs.find((run) => run.runId === 'alive')?.abandoned, false);
+    assert.equal(runs.find((run) => run.runId === 'abandoned')?.running, true);
+    assert.equal(runs.find((run) => run.runId === 'abandoned')?.abandoned, true);
+  });
+
+  // Сценарий: «Завершённый прогон не оборван»
+  it('признак оборванности ложен у завершённого прогона', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'done', status: 'success' });
+
+    const run = buildOverview(runsRoot).projects[0]?.runs[0];
+    assert.equal(run?.abandoned, false);
+  });
+
+  // Сценарий: «Обзор не считает размеров»
+  it('не считает размеров каталогов', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+
+    const run = buildOverview(runsRoot).projects[0]?.runs[0];
+    assert.ok(run !== undefined);
+    assert.ok(!('sizeBytes' in run), 'размер не место обзору: он нужен только в подтверждении');
+
+    // Обход каталога делает `dirSize` из cleanup.ts. Подменить функцию
+    // встроенного модуля в ESM нельзя — как process.kill выше, — поэтому
+    // проверяется то, что проверке доступно: обзор о ней вовсе не знает, и
+    // её появление здесь заметит именно эта проверка.
+    const source = readFileSync(new URL('../src/ui/overview.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(source, /dirSize|run\/cleanup/);
+  });
+
+  it('не проверяет живость процесса для прогона вне running', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'done', status: 'success' });
+
+    // Живость проверяется через process.kill; для прогона вне running
+    // isRunAlive не должен даже дойти до сигнала процессу.
+    const originalKill = process.kill;
+    process.kill = (() => {
+      throw new Error('process.kill не должен звонить для прогона вне running');
+    }) as typeof process.kill;
+    try {
+      const run = buildOverview(runsRoot).projects[0]?.runs[0];
+      assert.equal(run?.abandoned, false);
+    } finally {
+      process.kill = originalKill;
+    }
   });
 });

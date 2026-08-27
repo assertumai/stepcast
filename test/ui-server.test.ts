@@ -108,6 +108,7 @@ function send(
   options: { method: string; path: string; body?: string; origin?: string },
 ): Promise<Fetched> {
   return new Promise((resolve, reject) => {
+    const body = options.body ?? '';
     const req = request(
       {
         host: LOOPBACK,
@@ -116,6 +117,9 @@ function send(
         method: options.method,
         headers: {
           'content-type': 'application/json',
+          // DELETE без явного Content-Length теряет тело в http.request:
+          // клиент отправляет запрос вовсе без него, будто тела не было.
+          'content-length': Buffer.byteLength(body),
           ...(options.origin === undefined ? {} : { origin: options.origin }),
         },
       },
@@ -127,7 +131,7 @@ function send(
       },
     );
     req.on('error', reject);
-    req.end(options.body ?? '');
+    req.end(body);
   });
 }
 
@@ -334,9 +338,68 @@ describe('ui-dashboard: удаление прогона', () => {
     assert.deepEqual(ids, ['b']);
   });
 
-  it('не удаляет идущий прогон', async (t) => {
+  // Сценарий: «Идущий прогон» — живость определяется процессом, не статусом.
+  it('не удаляет прогон с живым процессом', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'a',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: process.pid },
+    });
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    const refused = await sendJson(server, {
+      method: 'DELETE',
+      path: `/api/run?run=${address(key, 'a')}`,
+    });
+    assert.equal(refused.code, 409);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), true);
+  });
+
+  // Сценарий: «Оборванный прогон»
+  it('удаляет прогон, застрявший в running после гибели процесса', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'a',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: 999_999_999 },
+    });
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    const removed = await sendJson(server, {
+      method: 'DELETE',
+      path: `/api/run?run=${address(key, 'a')}`,
+    });
+    assert.equal(removed.code, 200);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), false);
+  });
+
+  // Сценарий: «Прогон прежней формы без идентификатора процесса»
+  it('удаляет прогон в running без pid в манифесте', async (t) => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a', status: 'running' });
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    const removed = await sendJson(server, {
+      method: 'DELETE',
+      path: `/api/run?run=${address(key, 'a')}`,
+    });
+    assert.equal(removed.code, 200);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), false);
+  });
+
+  // Сценарий: «Спящий прогон»
+  it('не удаляет спящий прогон с живым процессом', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'a',
+      status: 'running',
+      wakeAt: '2026-08-23T22:00:00.000Z',
+      manifest: { started_at: new Date().toISOString(), pid: process.pid },
+    });
     const key = projectKey(projectRoot);
     const server = await startServer(t, { runsRoot });
 
@@ -372,6 +435,277 @@ describe('ui-dashboard: удаление прогона', () => {
       origin: 'https://example.test',
     });
     assert.equal(refused.code, 403);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), true);
+  });
+});
+
+describe('ui-dashboard: отбор прогонов к удалению', () => {
+  // Сценарии: «Отбор оборванных», «Отбор отказавших», «Прогон под двумя признаками»
+  it('отбирает по каждому признаку и по их набору', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, {
+      runId: 'abandoned',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: 999_999_999 },
+    });
+    seedRun(runsRoot, projectRoot, { runId: 'failed', status: 'failed' });
+    seedRun(runsRoot, projectRoot, { runId: 'success', status: 'success' });
+    const server = await startServer(t, { runsRoot });
+
+    const abandoned = await fetchJson(server, '/api/runs?trait=abandoned');
+    assert.equal(abandoned.code, 200);
+    assert.deepEqual(
+      (abandoned.json.runs as Array<{ address: string }>).map((r) => r.address),
+      [`${key}/abandoned`],
+    );
+
+    const both = await fetchJson(server, '/api/runs?trait=abandoned&trait=failed');
+    assert.equal(both.json.count, 2);
+    assert.deepEqual(
+      (both.json.runs as Array<{ address: string }>).map((r) => r.address).sort(),
+      [`${key}/abandoned`, `${key}/failed`].sort(),
+    );
+  });
+
+  // Сценарий: «Отбор по сроку»
+  it('отбирает по сроку старше указанного', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, {
+      runId: 'old',
+      manifest: {
+        started_at: '2026-07-01T00:00:00.000Z',
+        finished_at: '2026-07-01T00:05:00.000Z',
+      },
+    });
+    const server = await startServer(t, { runsRoot });
+
+    const selected = await fetchJson(server, '/api/runs?older-than=7d');
+    assert.deepEqual(
+      (selected.json.runs as Array<{ address: string }>).map((r) => r.address),
+      [`${key}/old`],
+    );
+  });
+
+  // Сценарии: «Размер отобранного прогона», «Число и объём в подтверждении»
+  it('называет размер каждого отобранного прогона и суммарный объём', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'failed', status: 'failed' });
+    writeFileSync(join(runPaths(runsRoot, key, 'failed').dir, 'груз.bin'), 'x'.repeat(10_000));
+    const server = await startServer(t, { runsRoot });
+
+    const selected = await fetchJson(server, '/api/runs?trait=failed');
+    const runs = selected.json.runs as Array<{ address: string; sizeBytes: number }>;
+
+    assert.equal(selected.json.count, 1);
+    assert.ok(
+      (runs[0]?.sizeBytes ?? 0) >= 10_000,
+      'подтверждение без объёма не отвечает на «сколько места уйдёт»',
+    );
+    assert.equal(selected.json.totalBytes, runs[0]?.sizeBytes);
+  });
+
+  // Сценарий: «Отбор по всем проектам»
+  it('без указания проекта берёт прогоны обоих проектов корня', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const other = makeJournalBed();
+    const key = projectKey(projectRoot);
+    const otherKey = projectKey(other.projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'failed-a', status: 'failed' });
+    seedRun(runsRoot, other.projectRoot, { runId: 'failed-b', status: 'failed' });
+    const server = await startServer(t, { runsRoot });
+
+    const selected = await fetchJson(server, '/api/runs?trait=failed');
+    assert.deepEqual(
+      (selected.json.runs as Array<{ address: string }>).map((r) => r.address).sort(),
+      [`${key}/failed-a`, `${otherKey}/failed-b`].sort(),
+    );
+  });
+
+  // Сценарий: «Отбор одного проекта»
+  it('сужает отбор до указанного проекта', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const other = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'failed-a', status: 'failed' });
+    seedRun(runsRoot, other.projectRoot, { runId: 'failed-b', status: 'failed' });
+    const server = await startServer(t, { runsRoot });
+
+    const selected = await fetchJson(server, `/api/runs?trait=failed&project=${key}`);
+    assert.deepEqual(
+      (selected.json.runs as Array<{ address: string }>).map((r) => r.address),
+      [`${key}/failed-a`],
+    );
+  });
+
+  // Сценарий: «Ключ проекта за пределами корня»
+  it('отклоняет ключ проекта, уводящий за пределы корня прогонов', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    const refused = await fetchJson(
+      server,
+      `/api/runs?older-than=0s&project=${encodeURIComponent('../..')}`,
+    );
+    assert.equal(refused.code, 400);
+    assert.equal(refused.json.runs, undefined, 'чужие каталоги не должны перечисляться');
+  });
+
+  // Сценарий: «Пустой отбор»
+  it('пустой отбор отдаёт нулевые число и сумму', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const server = await startServer(t, { runsRoot });
+
+    const selected = await fetchJson(server, '/api/runs?trait=failed');
+    assert.equal(selected.code, 200);
+    assert.equal(selected.json.count, 0);
+    assert.equal(selected.json.totalBytes, 0);
+    assert.deepEqual(selected.json.runs, []);
+  });
+
+  it('отклоняет неизвестный признак', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const server = await startServer(t, { runsRoot });
+
+    const refused = await fetchJson(server, '/api/runs?trait=zombie');
+    assert.equal(refused.code, 400);
+  });
+
+  it('отклоняет неразбираемый срок', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const server = await startServer(t, { runsRoot });
+
+    const refused = await fetchJson(server, `/api/runs?older-than=${encodeURIComponent('скоро')}`);
+    assert.equal(refused.code, 400);
+  });
+
+  // Сценарий: «Отбор ничего не удаляет»
+  it('не удаляет ни одного каталога', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'failed', status: 'failed' });
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    await fetchJson(server, '/api/runs?trait=failed');
+
+    assert.equal(existsSync(runPaths(runsRoot, key, 'failed').dir), true);
+  });
+});
+
+describe('ui-dashboard: групповое удаление прогонов', () => {
+  // Сценарий: «Уборка оборванных разом»
+  it('снимает группу прогонов одним запросом', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    seedRun(runsRoot, projectRoot, { runId: 'b' });
+    seedRun(runsRoot, projectRoot, { runId: 'c' });
+    const server = await startServer(t, { runsRoot });
+
+    const result = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/runs',
+      body: JSON.stringify({ runs: [`${key}/a`, `${key}/b`, `${key}/c`] }),
+    });
+    assert.equal(result.code, 200);
+    const outcomes = result.json.outcomes as Array<{ address: string; outcome: string }>;
+    assert.equal(outcomes.length, 3);
+    assert.ok(outcomes.every((o) => o.outcome === 'removed'));
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), false);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'b').dir), false);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'c').dir), false);
+  });
+
+  // Сценарий: «Живой прогон в списке»
+  it('пропускает живой прогон и удаляет остальные', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, {
+      runId: 'alive',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: process.pid },
+    });
+    seedRun(runsRoot, projectRoot, { runId: 'done' });
+    const server = await startServer(t, { runsRoot });
+
+    const result = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/runs',
+      body: JSON.stringify({ runs: [`${key}/alive`, `${key}/done`] }),
+    });
+    assert.equal(result.code, 200);
+    const outcomes = result.json.outcomes as Array<{ address: string; outcome: string }>;
+    assert.equal(outcomes.find((o) => o.address === `${key}/alive`)?.outcome, 'skipped_alive');
+    assert.equal(outcomes.find((o) => o.address === `${key}/done`)?.outcome, 'removed');
+    assert.equal(existsSync(runPaths(runsRoot, key, 'alive').dir), true);
+  });
+
+  // Сценарий: «Прогон исчез до удаления»
+  it('отсутствующий адрес даёт skipped_missing, а не отказ запроса', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    const result = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/runs',
+      body: JSON.stringify({ runs: [`${key}/нет-такого`] }),
+    });
+    assert.equal(result.code, 200);
+    assert.equal(
+      (result.json.outcomes as Array<{ outcome: string }>)[0]?.outcome,
+      'skipped_missing',
+    );
+  });
+
+  it('отклоняет адрес неверной формы без единого удаления', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    const result = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/runs',
+      body: JSON.stringify({ runs: [`${key}/a`, 'однасегмент'] }),
+    });
+    assert.equal(result.code, 400);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), true);
+  });
+
+  // Сценарий: «Список сверх предела»
+  it('отклоняет список сверх предела без единого удаления', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    const runs = Array.from({ length: 501 }, (_, i) => `${key}/нет-${i}`);
+    const result = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/runs',
+      body: JSON.stringify({ runs }),
+    });
+    assert.equal(result.code, 413);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), true);
+  });
+
+  it('отклоняет запрос со стороннего Origin', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    const result = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/runs',
+      body: JSON.stringify({ runs: [`${key}/a`] }),
+      origin: 'https://example.test',
+    });
+    assert.equal(result.code, 403);
     assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), true);
   });
 });

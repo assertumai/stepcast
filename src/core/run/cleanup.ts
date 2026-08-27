@@ -9,8 +9,9 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 
-import { listRuns, listRunsByKey, readManifest } from '../journal/reader.js';
+import { isRunAlive, listProjects, listRuns, listRunsByKey, readManifest, readStatus } from '../journal/reader.js';
 import { projectKey, runPaths, type RunPaths } from '../journal/paths.js';
+import { isFailure, type StatusValue } from '../journal/schema.js';
 
 /**
  * Уборка прогонов.
@@ -60,10 +61,75 @@ export function dirSize(path: string): number {
 export interface RunCandidate {
   readonly runId: string;
   readonly paths: RunPaths;
-  /** Момент, от которого считается возраст: `finished_at`, иначе `started_at`. */
+  /**
+   * Момент, от которого считается возраст: `finished_at`, иначе `started_at`,
+   * а у прогона с нечитаемым манифестом — время его каталога.
+   */
   readonly endedAt: string;
   readonly ageMs: number;
   readonly sizeBytes: number;
+  /** Манифест не читается: возраст взят по времени каталога, а не по журналу. */
+  readonly unreadable: boolean;
+}
+
+/** Время каталога прогона: последняя опора для возраста, когда журнала нет. */
+function dirTime(path: string, now: Date): string {
+  try {
+    return statSync(path).mtime.toISOString();
+  } catch {
+    return now.toISOString();
+  }
+}
+
+/**
+ * Прогон как кандидат на уборку: момент возраста, сам возраст, размер на
+ * диске. Общая точка для `listCandidates` и отбора по признаку — иначе два
+ * места считали бы возраст и размер каждое по-своему и разошлись бы при
+ * первой же правке.
+ *
+ * Нечитаемый манифест кандидата не отменяет: прогон с испорченным журналом —
+ * ровно тот мусор, ради которого уборка и заводится, и выпасть из отбора он
+ * не должен. Возраст такого прогона считается по времени его каталога.
+ */
+function candidateOf(paths: RunPaths, runId: string, now: Date): RunCandidate {
+  let endedAt: string | undefined;
+  try {
+    const manifest = readManifest(paths);
+    endedAt = manifest.finished_at ?? manifest.started_at;
+  } catch {
+    endedAt = undefined;
+  }
+
+  const moment = endedAt ?? dirTime(paths.dir, now);
+  return {
+    runId,
+    paths,
+    endedAt: moment,
+    // Отрицательного возраста не бывает: время файловой системы точнее
+    // миллисекунды и может округлиться вперёд относительно `now`, и тогда
+    // только что созданный прогон не подпадал бы под нулевой порог.
+    ageMs: Math.max(0, now.getTime() - new Date(moment).getTime()),
+    sizeBytes: dirSize(paths.dir),
+    unreadable: endedAt === undefined,
+  };
+}
+
+/**
+ * Статус прогона: состояние точнее манифеста у идущего, но у прогона с
+ * испорченным `status.json` манифест — единственное, что о нём известно.
+ * Молчаливое «статуса нет» увело бы такой прогон из-под признаков.
+ */
+function statusOf(paths: RunPaths): StatusValue | undefined {
+  try {
+    return readStatus(paths).status;
+  } catch {
+    // Состояние не читается — остаётся манифест.
+  }
+  try {
+    return readManifest(paths).status;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Прогоны проекта как кандидаты на уборку, новейшие первыми — как listRuns. */
@@ -73,18 +139,9 @@ export function listCandidates(
   now: Date = new Date(),
 ): RunCandidate[] {
   const key = projectKey(projectRoot);
-  return listRuns(runsRoot, projectRoot).map((runId) => {
-    const paths = runPaths(runsRoot, key, runId);
-    const manifest = readManifest(paths);
-    const endedAt = manifest.finished_at ?? manifest.started_at;
-    return {
-      runId,
-      paths,
-      endedAt,
-      ageMs: now.getTime() - new Date(endedAt).getTime(),
-      sizeBytes: dirSize(paths.dir),
-    };
-  });
+  return listRuns(runsRoot, projectRoot).map((runId) =>
+    candidateOf(runPaths(runsRoot, key, runId), runId, now),
+  );
 }
 
 /** Кандидаты старше указанного порога, в мс. */
@@ -93,6 +150,120 @@ export function selectOlderThan(
   thresholdMs: number,
 ): RunCandidate[] {
   return candidates.filter((candidate) => candidate.ageMs >= thresholdMs);
+}
+
+/** Кандидат отбора по признаку: адресуется парой ключ проекта / прогон. */
+export interface AddressedCandidate extends RunCandidate {
+  readonly key: string;
+  readonly address: string;
+}
+
+export interface SelectTraits {
+  readonly abandoned?: boolean;
+  readonly failed?: boolean;
+  readonly olderThanMs?: number;
+}
+
+export interface SelectOptions {
+  /** Ключ проекта: без него отбор идёт по всем проектам корня. */
+  readonly project?: string;
+  readonly now?: Date;
+}
+
+/**
+ * Отбор прогонов корня к полному снятию по признакам — оборванные, отказавшие,
+ * старше срока, — объединённым по «или». Прогон под несколькими признаками
+ * назван один раз. Ничего на диске отбор не меняет.
+ */
+export function selectCandidates(
+  runsRoot: string,
+  traits: SelectTraits,
+  options: SelectOptions = {},
+): AddressedCandidate[] {
+  const now = options.now ?? new Date();
+  const keys =
+    options.project !== undefined
+      ? [options.project]
+      : listProjects(runsRoot).map((project) => project.key);
+
+  const selected: AddressedCandidate[] = [];
+  for (const key of keys) {
+    for (const runId of listRunsByKey(runsRoot, key)) {
+      const paths = runPaths(runsRoot, key, runId);
+      const candidate = candidateOf(paths, runId, now);
+      const status = statusOf(paths);
+
+      const matches =
+        (traits.abandoned === true &&
+          status === 'running' &&
+          !isRunAlive(paths, now.getTime())) ||
+        (traits.failed === true && status !== undefined && isFailure(status)) ||
+        (traits.olderThanMs !== undefined && candidate.ageMs >= traits.olderThanMs);
+
+      if (!matches) continue;
+      selected.push({ ...candidate, key, address: `${key}/${runId}` });
+    }
+  }
+  return selected;
+}
+
+export interface RunAddress {
+  readonly key: string;
+  readonly runId: string;
+  /**
+   * Размер, снятый отбором. Вызывающий, у которого он уже есть, избавляет
+   * снятие от повторного обхода каталога; без него размер меряется здесь —
+   * после `rmSync` мерить уже нечего, а освобождённое место назвать надо.
+   */
+  readonly sizeBytes?: number;
+}
+
+export type RemovalOutcome =
+  | { readonly address: string; readonly outcome: 'removed'; readonly sizeBytes: number }
+  | { readonly address: string; readonly outcome: 'skipped_alive' }
+  | { readonly address: string; readonly outcome: 'skipped_missing' }
+  | { readonly address: string; readonly outcome: 'failed'; readonly reason: string };
+
+export interface RemovalSummary {
+  readonly outcomes: readonly RemovalOutcome[];
+  readonly freedBytes: number;
+}
+
+/**
+ * Снять список прогонов, по одному исходу на адрес. Живость перепроверяется
+ * заново перед каждым снятием: список адресов приходит с отбора, сделанного
+ * раньше показа подтверждения, а прогон за это время мог перезапуститься.
+ * Отказ на одном адресе не останавливает снятие остальных.
+ */
+export function removeRuns(runsRoot: string, addresses: readonly RunAddress[]): RemovalSummary {
+  const outcomes: RemovalOutcome[] = [];
+  let freedBytes = 0;
+
+  for (const { key, runId, sizeBytes: known } of addresses) {
+    const address = `${key}/${runId}`;
+    const paths = runPaths(runsRoot, key, runId);
+
+    if (!existsSync(paths.dir)) {
+      outcomes.push({ address, outcome: 'skipped_missing' });
+      continue;
+    }
+
+    if (isRunAlive(paths)) {
+      outcomes.push({ address, outcome: 'skipped_alive' });
+      continue;
+    }
+
+    try {
+      const sizeBytes = known ?? dirSize(paths.dir);
+      removeRun(runsRoot, key, runId);
+      freedBytes += sizeBytes;
+      outcomes.push({ address, outcome: 'removed', sizeBytes });
+    } catch (error) {
+      outcomes.push({ address, outcome: 'failed', reason: (error as Error).message });
+    }
+  }
+
+  return { outcomes, freedBytes };
 }
 
 /** Удалить всё содержимое прогона, кроме минимума, переживающего уборку. */

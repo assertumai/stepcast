@@ -2,9 +2,10 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { existsSync } from 'node:fs';
 
 import { runPaths } from '../core/journal/paths.js';
-import { readStatus } from '../core/journal/reader.js';
-import { removeRun } from '../core/run/cleanup.js';
+import { isRunAlive } from '../core/journal/reader.js';
+import { removeRun, removeRuns, selectCandidates, type RunAddress, type SelectTraits } from '../core/run/cleanup.js';
 import { isStepcastError } from '../core/errors.js';
+import { parseDuration } from '../core/units.js';
 import type { Config } from '../core/config/resolve.js';
 import { dashboardHtml } from './assets.js';
 import { readJournalFile } from './file.js';
@@ -28,6 +29,11 @@ export const LOOPBACK = '127.0.0.1';
 
 /** Потолок тела запроса: витрина принимает настройки, а не файлы. */
 const MAX_BODY_BYTES = 64 * 1024;
+
+/** Потолок числа адресов в групповом удалении: список сверх него — ошибка, не частичная работа. */
+const MAX_RUN_ADDRESSES = 500;
+
+const KNOWN_TRAITS = new Set(['abandoned', 'failed']);
 
 export interface UiServerOptions {
   readonly runsRoot: string;
@@ -59,14 +65,22 @@ function sendJson(res: ServerResponse, code: number, body: unknown): void {
   res.end(text);
 }
 
+/**
+ * Сегмент раскладки журнала, пришедший из запроса: ключ проекта или
+ * идентификатор прогона. Оба идут прямо в путь, поэтому ни разделителя, ни
+ * шага вверх по дереву в них быть не должно.
+ */
+function isSafeSegment(value: string): boolean {
+  return value !== '' && !value.includes('..') && !value.includes('/') && !value.includes('\\');
+}
+
 /** Адрес прогона в API — `<projectKey>/<runId>`: принадлежность проекту часть адреса. */
 function parseRunAddress(value: string | null): { key: string; runId: string } | undefined {
   if (value === null) return undefined;
   const parts = value.split('/').filter((part) => part !== '');
   if (parts.length !== 2) return undefined;
   const [key, runId] = parts as [string, string];
-  // Ни ключ, ни идентификатор не должны утаскивать резолв вверх по дереву.
-  if (key.includes('..') || runId.includes('..')) return undefined;
+  if (!isSafeSegment(key) || !isSafeSegment(runId)) return undefined;
   return { key, runId };
 }
 
@@ -166,15 +180,11 @@ function handleDelete(runsRoot: string, url: URL, watcher: Watcher, res: ServerR
     return;
   }
 
-  try {
-    if (readStatus(paths).status === 'running') {
-      sendJson(res, 409, {
-        error: 'Прогон идёт: остановите его, прежде чем удалять',
-      });
-      return;
-    }
-  } catch {
-    // Прогон без читаемого состояния удалить можно: он и так уже не описан.
+  if (isRunAlive(paths)) {
+    sendJson(res, 409, {
+      error: 'Прогон идёт: остановите его, прежде чем удалять',
+    });
+    return;
   }
 
   removeRun(runsRoot, parsed.key, parsed.runId);
@@ -182,6 +192,122 @@ function handleDelete(runsRoot: string, url: URL, watcher: Watcher, res: ServerR
   // следующего опроса, и пользователь решит, что удаление не сработало.
   watcher.poll();
   sendJson(res, 200, { removed: `${parsed.key}/${parsed.runId}` });
+}
+
+/**
+ * Отбор прогонов к групповому удалению по признаку.
+ *
+ * Только отчёт: ничего не удаляется здесь, только показывается, что удалится
+ * и сколько места освободится, — подтверждение пользователь даёт отдельным
+ * запросом со списком адресов, увиденных здесь.
+ */
+function handleSelectRuns(runsRoot: string, url: URL, res: ServerResponse): void {
+  const traits: { -readonly [K in keyof SelectTraits]: SelectTraits[K] } = {};
+
+  for (const trait of url.searchParams.getAll('trait')) {
+    if (!KNOWN_TRAITS.has(trait)) {
+      sendJson(res, 400, {
+        error: `Неизвестный признак отбора: ${trait}`,
+        hint: 'Допустимые признаки: abandoned, failed',
+      });
+      return;
+    }
+    if (trait === 'abandoned') traits.abandoned = true;
+    if (trait === 'failed') traits.failed = true;
+  }
+
+  const olderThan = url.searchParams.get('older-than');
+  if (olderThan !== null) {
+    try {
+      traits.olderThanMs = parseDuration(olderThan, 'older-than');
+    } catch (error) {
+      const message = isStepcastError(error) ? error.message : 'Не удалось разобрать срок';
+      sendJson(res, 400, { error: message });
+      return;
+    }
+  }
+
+  const project = url.searchParams.get('project');
+  // Ключ проекта уходит в путь так же, как ключ из адреса прогона: без этой
+  // проверки `?project=../..` перечислял бы каталоги вне корня прогонов.
+  if (project !== null && !isSafeSegment(project)) {
+    sendJson(res, 400, { error: 'Ключ проекта должен быть одним сегментом раскладки' });
+    return;
+  }
+
+  const selected = selectCandidates(runsRoot, traits, project === null ? {} : { project });
+
+  sendJson(res, 200, {
+    runs: selected.map((candidate) => ({
+      address: candidate.address,
+      sizeBytes: candidate.sizeBytes,
+      ageMs: candidate.ageMs,
+      endedAt: candidate.endedAt,
+      // Журнал прогона не читается: возраст взят по каталогу, статуса нет.
+      // Пользователь должен видеть, почему такой прогон назван, а не гадать.
+      unreadable: candidate.unreadable,
+    })),
+    count: selected.length,
+    totalBytes: selected.reduce((sum, candidate) => sum + candidate.sizeBytes, 0),
+  });
+}
+
+/**
+ * Групповое удаление по явному списку адресов.
+ *
+ * Список приходит с отбора, увиденного пользователем в подтверждении, а не с
+ * признака: между показом и принятием отбор мог измениться, а удалиться
+ * должно ровно то, что пользователь видел. Отказ на одном адресе не
+ * останавливает остальные — каждый получает свой исход в ответе.
+ */
+async function handleDeleteRuns(
+  runsRoot: string,
+  req: IncomingMessage,
+  watcher: Watcher,
+  res: ServerResponse,
+): Promise<void> {
+  let body: string;
+  try {
+    body = await readBody(req);
+  } catch {
+    sendJson(res, 413, { error: 'Тело запроса слишком велико' });
+    return;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body === '' ? '{}' : body);
+  } catch {
+    sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
+    return;
+  }
+
+  const list = (parsed as { runs?: unknown }).runs;
+  if (!Array.isArray(list) || list.some((item) => typeof item !== 'string')) {
+    sendJson(res, 400, { error: 'Тело запроса должно нести список адресов: { "runs": string[] }' });
+    return;
+  }
+
+  if (list.length > MAX_RUN_ADDRESSES) {
+    sendJson(res, 413, { error: `Список адресов превышает предел в ${MAX_RUN_ADDRESSES}` });
+    return;
+  }
+
+  const addresses: RunAddress[] = [];
+  for (const value of list as string[]) {
+    const address = parseRunAddress(value);
+    if (address === undefined) {
+      sendJson(res, 400, { error: `Адрес прогона должен иметь вид <проект>/<прогон>: ${value}` });
+      return;
+    }
+    addresses.push(address);
+  }
+
+  const summary = removeRuns(runsRoot, addresses);
+  // Одна пересборка на всю группу, а не на каждый прогон: наблюдатель не
+  // должен просыпаться сотни раз за один запрос.
+  watcher.poll();
+  sendJson(res, 200, summary);
 }
 
 async function handleSettingsWrite(
@@ -281,6 +407,11 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
       return;
     }
 
+    if (method === 'DELETE' && url.pathname === '/api/runs') {
+      void handleDeleteRuns(runsRoot, req, watcher, res);
+      return;
+    }
+
     if (method === 'PUT' && url.pathname === '/api/settings') {
       void handleSettingsWrite(req, res, home);
       return;
@@ -300,6 +431,9 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
         return;
       case '/api/file':
         handleFile(runsRoot, url, res);
+        return;
+      case '/api/runs':
+        handleSelectRuns(runsRoot, url, res);
         return;
       case '/api/pipelines':
         if (config === undefined) {

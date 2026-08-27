@@ -1,6 +1,13 @@
 import { existsSync } from 'node:fs';
 
-import { listProjects, listRunsByKey, readManifest, readStatus, readUsageSoft } from '../core/journal/reader.js';
+import {
+  isRunAlive,
+  listProjects,
+  listRunsByKey,
+  readManifest,
+  readStatus,
+  readUsageSoft,
+} from '../core/journal/reader.js';
 import { runPaths } from '../core/journal/paths.js';
 import type { StatusValue } from '../core/journal/schema.js';
 
@@ -19,6 +26,8 @@ export interface RunOverview {
   /** Отсутствует, если ни манифест, ни состояние прочитать не удалось. */
   readonly status?: StatusValue;
   readonly running: boolean;
+  /** Состояние осталось `running`, но процесс мёртв. Ложно вне `running`. */
+  readonly abandoned: boolean;
   readonly startedAt?: string;
   readonly finishedAt?: string;
   /** Прогон спит до сброса окна лимита: отличает сон от зависания. */
@@ -138,6 +147,9 @@ function readRun(runsRoot: string, key: string, runId: string, now: Date): RunOv
   }
 
   const durationMs = duration(startedAt, finishedAt, now);
+  // Живость проверяется только для идущих: на завершённом прогоне
+  // `isRunAlive` неизбежно ложно и лишь тратит чтение файлов впустую.
+  const abandoned = status === 'running' && !isRunAlive(paths, now.getTime());
 
   return {
     runId,
@@ -145,6 +157,7 @@ function readRun(runsRoot: string, key: string, runId: string, now: Date): RunOv
     pipeline,
     ...(status === undefined ? {} : { status }),
     running: status === 'running',
+    abandoned,
     ...(startedAt === undefined ? {} : { startedAt }),
     ...(finishedAt === undefined ? {} : { finishedAt }),
     ...(wakeAt === undefined ? {} : { wakeAt }),
