@@ -56,6 +56,18 @@ export function JobGraph({ graph, selected, onSelect, subtitle }: JobGraphProps)
   return (
     <div className="graph">
       <svg width={width} height={height} role="img" aria-label="Граф работ">
+        {/*
+         * Обрезка по рамке узла. Ни имя работы, ни подпись под ним не
+         * ограничены длиной: имя приходит из пайплайна, подпись — из статуса
+         * или списка шагов, и достаточно длинной любая из них вылезает за
+         * рамку и наезжает на соседний узел. Обрезка внутри перенесённой
+         * группы, поэтому одного описания хватает на все узлы.
+         */}
+        <defs>
+          <clipPath id="job-node-box">
+            <rect width={NODE_WIDTH - 6} height={NODE_HEIGHT} rx={7} />
+          </clipPath>
+        </defs>
         {graph.edges.map((edge) => {
           const from = byId.get(edge.from);
           const to = byId.get(edge.to);
@@ -91,11 +103,11 @@ export function JobGraph({ graph, selected, onSelect, subtitle }: JobGraphProps)
               onClick={() => onSelect?.(node.id)}
             >
               <rect width={NODE_WIDTH} height={NODE_HEIGHT} rx={7} />
-              <text x={10} y={sub === undefined ? 27 : 20}>
+              <text x={10} y={sub === undefined ? 27 : 20} clipPath="url(#job-node-box)">
                 {node.id}
               </text>
               {sub === undefined ? null : (
-                <text className="sub" x={10} y={35}>
+                <text className="sub" x={10} y={35} clipPath="url(#job-node-box)">
                   {sub}
                 </text>
               )}

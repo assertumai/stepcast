@@ -17,19 +17,20 @@ describe('ui-routes: разбор адресов', () => {
   });
 
   it('неизвестный путь даёт маршрут первого экрана', () => {
-    assert.deepEqual(parseRoute('/что-то-ещё'), { page: 'pipelines' });
-    assert.deepEqual(parseRoute('/'), { page: 'pipelines' });
+    assert.deepEqual(parseRoute('/что-то-ещё'), { page: 'runs' });
+    assert.deepEqual(parseRoute('/'), { page: 'runs' });
   });
 
   it('/runs/<проект> без идентификатора прогона не признаётся адресом прогона', () => {
-    assert.deepEqual(parseRoute('/runs/a'), { page: 'pipelines' });
+    assert.deepEqual(parseRoute('/runs/a'), { page: 'runs' });
   });
 
   it('/runs/<проект>/<прогон>/<хвост> не признаётся адресом прогона', () => {
-    assert.deepEqual(parseRoute('/runs/a/b/c'), { page: 'pipelines' });
+    assert.deepEqual(parseRoute('/runs/a/b/c'), { page: 'runs' });
   });
 
   it('экраны меню разбираются каждый в свой маршрут', () => {
+    assert.deepEqual(parseRoute('/pipelines'), { page: 'pipelines' });
     assert.deepEqual(parseRoute('/settings'), { page: 'settings' });
     assert.deepEqual(parseRoute('/cleanup'), { page: 'cleanup' });
   });
@@ -43,7 +44,17 @@ describe('ui-routes: разбор адресов', () => {
   });
 
   it('хвост за именем экрана адресом экрана не признаётся', () => {
-    assert.deepEqual(parseRoute('/settings/что-то'), { page: 'pipelines' });
+    assert.deepEqual(parseRoute('/settings/что-то'), { page: 'runs' });
+  });
+
+  it('страница прогона подсвечивает пункт «Прогоны»', () => {
+    // Своего пункта у неё нет: пункт, на котором её не видно, оставил бы
+    // открытый экран без отметки в меню вовсе.
+    const owners = MENU.filter((item) => item.pages.includes('run'));
+    assert.deepEqual(
+      owners.map((item) => item.page),
+      ['runs'],
+    );
   });
 
   it('/api/... не признаётся адресом страницы', () => {

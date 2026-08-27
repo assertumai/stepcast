@@ -175,7 +175,7 @@ export function RunDetail({
                 navigate('/');
               }}
             >
-              ← к пайплайнам
+              ← к прогонам
             </a>
           </p>
         </>
@@ -196,7 +196,7 @@ export function RunDetail({
             navigate('/');
           }}
         >
-          ← к пайплайнам
+          ← к прогонам
         </a>
       </p>
       <h1>

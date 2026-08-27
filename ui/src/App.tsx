@@ -6,19 +6,22 @@ import { useRoute } from './router';
 import { Cleanup } from './pages/Cleanup';
 import { Pipelines } from './pages/Pipelines';
 import { RunDetail } from './pages/RunDetail';
+import { Runs } from './pages/Runs';
 import { Settings } from './pages/Settings';
 
 /**
- * Каркас витрины: экраны меню, страница прогона и один живой поток на вкладку.
+ * Каркас витрины: боковое меню слева, экран справа, один живой поток на
+ * вкладку.
+ *
+ * Меню сбоку, а не полосой сверху: пунктов четыре, и колонка держит их в
+ * одном столбце, не отнимая ширины у содержимого экрана и не завися от того,
+ * сколько их станет. Признак живой связи стоит в подвале той же колонки —
+ * он относится ко всей витрине, а не к текущему экрану.
  *
  * `useLive` подписан на адрес текущего прогона, когда он открыт, — и ни на
  * что, когда открыт любой из экранов меню. Переключение экрана меняет этот
  * адрес и тем самым пересоздаёт подписку: второй `EventSource` на вкладке не
  * заводится.
- *
- * Страница прогона в меню не значится намеренно: пункт меню — место, куда
- * можно уйти в любой момент, а прогон открывается из списка и живёт под
- * пунктом «Пайплайны».
  */
 export function App(): JSX.Element {
   const { route, navigate } = useRoute();
@@ -30,17 +33,14 @@ export function App(): JSX.Element {
     offline: 'нет связи с демоном',
   }[state];
 
-  // Страница прогона подсвечивает пункт, из которого на неё приходят: иначе
-  // меню на ней выглядит так, будто открыт не относящийся к нему экран.
-  const activePage = route.page === 'run' ? 'pipelines' : route.page;
-
   return (
     <div className="shell">
-      <header className="topbar">
+      <nav className="sidebar">
         <a
           className="brand"
           href="/"
           onClick={(event) => {
+            if (event.metaKey || event.ctrlKey) return;
             event.preventDefault();
             navigate('/');
           }}
@@ -48,29 +48,28 @@ export function App(): JSX.Element {
           stepcast
         </a>
 
-        <nav className="menu">
-          {MENU.map((item) => (
-            <a
-              key={item.page}
-              className={item.page === activePage ? 'menu-item current' : 'menu-item'}
-              href={item.href}
-              aria-current={item.page === activePage ? 'page' : undefined}
-              onClick={(event) => {
-                // Cmd/Ctrl-клик должен открывать вкладку: перехватывается только обычный переход.
-                if (event.metaKey || event.ctrlKey) return;
-                event.preventDefault();
-                navigate(item.href);
-              }}
-            >
-              {item.title}
-            </a>
-          ))}
-        </nav>
+        {MENU.map((item) => (
+          <a
+            key={item.page}
+            className={item.pages.includes(route.page) ? 'nav-item active' : 'nav-item'}
+            href={item.href}
+            aria-current={item.pages.includes(route.page) ? 'page' : undefined}
+            onClick={(event) => {
+              // Cmd/Ctrl-клик должен открывать вкладку: перехватывается только обычный переход.
+              if (event.metaKey || event.ctrlKey) return;
+              event.preventDefault();
+              navigate(item.href);
+            }}
+          >
+            {item.title}
+          </a>
+        ))}
 
-        <span className={state === 'live' ? 'live on' : 'live off'}>{liveLabel}</span>
-      </header>
+        <div className={state === 'live' ? 'live on' : 'live off'}>{liveLabel}</div>
+      </nav>
 
       <main className="content">
+        {route.page === 'runs' ? <Runs overview={overview} navigate={navigate} /> : null}
         {route.page === 'pipelines' ? <Pipelines overview={overview} navigate={navigate} /> : null}
         {route.page === 'cleanup' ? <Cleanup overview={overview} /> : null}
         {route.page === 'settings' ? <Settings /> : null}

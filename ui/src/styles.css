@@ -41,46 +41,50 @@ body {
 
 a { color: inherit; text-decoration: none; }
 
-.shell { min-height: 100vh; }
+.shell { display: flex; min-height: 100vh; }
 
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  padding: .8rem 1.8rem;
-  border-bottom: 1px solid var(--border);
+/* Боковое меню: колонка постоянной ширины, содержимое занимает остальное. */
+.sidebar {
+  width: 13rem;
+  flex: none;
+  border-right: 1px solid var(--border);
+  padding: 1.2rem .8rem;
   position: sticky;
   top: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
   background: var(--bg);
 }
 
-.brand { font-size: 1.05rem; font-weight: 650; letter-spacing: -.01em; }
+.brand {
+  font-size: 1.05rem;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  padding: 0 .5rem;
+  margin-bottom: .8rem;
+}
 
-/* Меню экранов. Текущий экран отмечен подчёркиванием, а не только цветом:
-   цвет один и тот же в обоих темах, а подчёркивание видно и без него. */
-.menu { display: flex; gap: .2rem; }
-.menu-item {
-  font-size: .86rem;
-  color: var(--dim);
-  padding: .25rem .55rem;
+.nav-item {
+  display: block;
+  padding: .35rem .5rem;
   border-radius: 6px;
-  border-bottom: 2px solid transparent;
+  color: var(--dim);
+  font-size: .9rem;
+  cursor: pointer;
 }
-.menu-item:hover { color: var(--text); background: var(--panel); }
-.menu-item.current {
-  color: var(--text);
-  font-weight: 600;
-  border-bottom-color: var(--accent);
-  border-radius: 6px 6px 0 0;
-}
+.nav-item:hover { background: var(--panel); color: var(--text); }
+.nav-item.active { background: var(--panel); color: var(--text); font-weight: 600; }
 
-.live { margin-left: auto; font-size: .78rem; color: var(--dim); }
+/* Признак связи — в подвале колонки: он про всю витрину, а не про экран. */
+.live { margin-top: auto; font-size: .78rem; color: var(--dim); padding: 0 .5rem; }
 .live.on::before { content: '●'; color: var(--accent); margin-right: .3rem; }
 .live.off::before { content: '○'; margin-right: .3rem; }
 
-/* Полоса содержимого посередине окна: шапка растянута во всю ширину, и
-   содержимое, прижатое к левому краю, читалось как съехавшая вёрстка. */
-.content { padding: 1.5rem 1.8rem; max-width: 76rem; margin: 0 auto; }
+/* `min-width: 0` обязателен: без него широкая таблица распирает flex-колонку
+   и уносит вбок всю страницу вместо того, чтобы прокручиваться в себе. */
+.content { flex: 1; min-width: 0; padding: 1.5rem 1.8rem; }
 
 h1 { font-size: 1.1rem; margin: 0 0 1.2rem; font-weight: 650; letter-spacing: -.01em; }
 h2.project {
@@ -169,6 +173,53 @@ input { min-width: 14rem; max-width: 100%; }
 .meta b { color: var(--text); font-weight: 600; font-family: var(--mono); }
 
 /*
+ * Таблица прогонов на первом экране.
+ *
+ * Ширину держит `.table-scroll`: колонок семь, и на узком окне таблица должна
+ * прокручиваться в своих берегах, а не растягивать страницу.
+ */
+.table-scroll { overflow-x: auto; }
+table.runs { width: 100%; border-collapse: collapse; font-size: .88rem; }
+table.runs th {
+  text-align: left;
+  font-weight: 600;
+  font-size: .76rem;
+  color: var(--dim);
+  padding: .35rem .5rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+table.runs th.num { text-align: right; }
+table.runs td { padding: .45rem .5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.runs tbody tr:hover { background: var(--panel); }
+table.runs td.num { text-align: right; font-family: var(--mono); white-space: nowrap; }
+table.runs .marks { display: flex; gap: .3rem; flex-wrap: wrap; }
+.run-name { font-weight: 600; }
+
+button.tokens {
+  border: none;
+  padding: 0;
+  font-family: var(--mono);
+  font-size: .82rem;
+  color: var(--text);
+  border-bottom: 1px dotted var(--dim);
+  border-radius: 0;
+}
+
+.breakdown {
+  font-family: var(--mono);
+  font-size: .76rem;
+  color: var(--dim);
+  text-align: right;
+  padding-top: .25rem;
+  white-space: nowrap;
+}
+
+/* Подтверждение удаления: спрашивается до, а не после. */
+.confirm { display: flex; gap: .35rem; align-items: center; justify-content: flex-end; }
+.confirm .question { font-size: .78rem; color: var(--fail); }
+
+/*
  * Прогоны под пайплайном или отдельной группой «пайплайн не найден».
  *
  * Сетка, а не поток: колонки должны стоять друг под другом во всех строках, а
@@ -209,6 +260,23 @@ input { min-width: 14rem; max-width: 100%; }
  * уехавшей вбок страницы нечестно.
  */
 @media (max-width: 44rem) {
+  /* Колонка меню на ширине телефона съела бы больше трети экрана: она
+     ложится полосой сверху, оставляя содержимому всю ширину. */
+  .shell { flex-direction: column; }
+  .sidebar {
+    width: auto;
+    height: auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .2rem;
+    padding: .7rem 1rem;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { margin-bottom: 0; margin-right: .4rem; }
+  .live { margin-top: 0; margin-left: auto; }
+
   .content { padding: 1.2rem 1rem; }
   .run-row,
   .cleanup-list .run-row,
@@ -285,5 +353,7 @@ pre {
 .empty { color: var(--dim); padding: 2rem 0; }
 .error { color: var(--fail); font-size: .85rem; }
 .note { font-size: .85rem; margin: .4rem 0 0; }
+/* Строка про прогоны под карточкой пайплайна: подчинена содержимому карточки. */
+.runs-note { border-top: 1px solid var(--border); padding-top: .5rem; margin-top: .7rem; }
 
 .run-id { font-family: var(--mono); font-size: .78rem; color: var(--dim); }

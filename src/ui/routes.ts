@@ -12,22 +12,33 @@
  */
 
 export type Route =
+  | { readonly page: 'runs' }
   | { readonly page: 'pipelines' }
   | { readonly page: 'settings' }
   | { readonly page: 'cleanup' }
   | { readonly page: 'run'; readonly projectKey: string; readonly runId: string };
 
 /**
- * Экраны верхнего меню в порядке показа.
+ * Экраны бокового меню в порядке, в каком к ним обращаются: сначала
+ * происходящее.
  *
  * Список здесь, а не в разметке: меню и разбор адреса обязаны знать об одних и
  * тех же экранах, и разъехаться им негде, пока имя пункта берётся оттуда же,
  * откуда маршрут.
+ *
+ * `pages` — экраны, на которых пункт считается текущим: страница прогона
+ * своего пункта не имеет и подсвечивает тот, из которого на неё приходят.
  */
-export const MENU: readonly { readonly page: Route['page']; readonly href: string; readonly title: string }[] = [
-  { page: 'pipelines', href: '/', title: 'Пайплайны' },
-  { page: 'cleanup', href: '/cleanup', title: 'Уборка' },
-  { page: 'settings', href: '/settings', title: 'Настройки' },
+export const MENU: readonly {
+  readonly page: Route['page'];
+  readonly href: string;
+  readonly title: string;
+  readonly pages: readonly Route['page'][];
+}[] = [
+  { page: 'runs', href: '/', title: 'Прогоны', pages: ['runs', 'run'] },
+  { page: 'pipelines', href: '/pipelines', title: 'Пайплайны', pages: ['pipelines'] },
+  { page: 'cleanup', href: '/cleanup', title: 'Уборка', pages: ['cleanup'] },
+  { page: 'settings', href: '/settings', title: 'Настройки', pages: ['settings'] },
 ];
 
 /**
@@ -57,13 +68,14 @@ export function runHref(projectKey: string, runId: string): string {
 /**
  * Путь в маршрут. Неизвестный путь — включая `/runs/<проект>` без
  * идентификатора прогона и `/runs/<проект>/<прогон>/...` с хвостом — даёт
- * первый экран: витрина не обязана объяснять форму адреса, ей достаточно не
- * потерять пользователя на пустой странице.
+ * первый экран, прогоны: витрина не обязана объяснять форму адреса, ей
+ * достаточно не потерять пользователя на пустой странице.
  */
 export function parseRoute(pathname: string): Route {
   const parts = pathname.split('/').filter((part) => part !== '');
 
   if (parts.length === 1) {
+    if (parts[0] === 'pipelines') return { page: 'pipelines' };
     if (parts[0] === 'settings') return { page: 'settings' };
     if (parts[0] === 'cleanup') return { page: 'cleanup' };
   }
@@ -77,12 +89,12 @@ export function parseRoute(pathname: string): Route {
       projectKey = decodeURIComponent(rawKey);
       runId = decodeURIComponent(rawRunId);
     } catch {
-      return { page: 'pipelines' };
+      return { page: 'runs' };
     }
     if (isSafeSegment(projectKey) && isSafeSegment(runId)) {
       return { page: 'run', projectKey, runId };
     }
   }
 
-  return { page: 'pipelines' };
+  return { page: 'runs' };
 }

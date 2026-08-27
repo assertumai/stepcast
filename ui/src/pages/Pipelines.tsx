@@ -1,128 +1,107 @@
 import { useEffect, useState, type JSX } from 'react';
 
-import { groupProjects, type PipelineGroup } from '../../../src/ui/grouping';
-import { deleteRun, fetchPipelines, type Overview, type PipelineView, type RunOverview } from '../api';
-import { fmtDuration, fmtTime } from '../format';
+import { groupProjects } from '../../../src/ui/grouping';
+import {
+  fetchPipelines,
+  type Overview,
+  type PipelineJobView,
+  type PipelineView,
+  type RunOverview,
+} from '../api';
+import { fmtTime } from '../format';
+import { JobGraph } from '../components/JobGraph';
 import { runHref } from '../router';
 
 /**
- * Первый экран: пайплайны проектов с их прогонами.
+ * Пайплайны проектов — их устройство, а не их прогоны.
  *
- * Пайплайны и прогоны приходят из двух разных источников — `GET
- * /api/pipelines` читает файлы проектов, обзор идёт живым потоком — и
- * складываются вместе в `src/ui/grouping.ts`: правило склейки общее с тестами
- * (`test/ui-grouping.test.ts`), потому что оно и есть смысл экрана. Прогон,
- * чьего пайплайна среди найденных нет — файл удалён, переименован или лежит
- * вне известных мест, — с экрана не пропадает: он показан отдельной группой
- * своего проекта.
+ * Экран отвечает на вопрос «что этот пайплайн делает и в каком порядке»:
+ * граф работ по зависимостям, условия перехода, шаги каждой работы с агентом
+ * или командой. Вопрос «чем кончился очередной заход» задают экрану
+ * «Прогоны», и повторять там таблицу прогонов здесь незачем — от неё
+ * остаётся одна строка со счётом и ссылкой.
+ *
+ * Инвентарь приходит из `GET /api/pipelines` (демон читает файлы проектов),
+ * счёт прогонов — из живого обзора; сводит их `src/ui/grouping.ts` по файлу,
+ * которым прогон запущен.
  */
 
 /**
- * Строка прогона — ячейка к ячейке с соседними строками.
+ * Подпись под именем работы в графе: первый шаг и счёт остальных.
  *
- * Колонки заданы сеткой на списке, а не потоком внутри строки: статусы разной
- * длины (`failed` против `budget_exceeded`) на потоке разъезжали, и колонка
- * времени гуляла по горизонтали от строки к строке. Пустые ячейки поэтому
- * остаются в разметке пустыми, а не пропадают.
+ * Полный список шагов в рамку узла не помещается, а обрезанный на середине
+ * второго имени сообщает меньше, чем честное «и ещё сколько-то».
  */
-function RunRow({
-  projectKey,
-  run,
-  navigate,
-}: {
-  readonly projectKey: string;
-  readonly run: RunOverview;
-  readonly navigate: (href: string) => void;
-}): JSX.Element {
-  const href = runHref(projectKey, run.runId);
-  const address = `${projectKey}/${run.runId}`;
-  // Удаление необратимо, поэтому идёт в два нажатия. Подтверждение живёт в
-  // строке: модальное окно ради одного прогона отняло бы у списка контекст,
-  // из-за которого прогон и удаляют.
-  const [asking, setAsking] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
-  const [busy, setBusy] = useState(false);
+function stepsOf(job: PipelineJobView): string {
+  const [first, ...rest] = job.steps;
+  if (first === undefined) return 'шагов нет';
+  return rest.length === 0 ? first.id : `${first.id} +${rest.length}`;
+}
 
-  const remove = (): void => {
-    setBusy(true);
-    setError(undefined);
-    // Строка не убирается своей рукой: демон пересобирает обзор сразу после
-    // удаления, и прогон уходит с экрана живым потоком — тем же путём, каким
-    // появился.
-    deleteRun(address)
-      .catch((failure: Error) => setError(failure.message))
-      .finally(() => {
-        setBusy(false);
-        setAsking(false);
-      });
-  };
-
+function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
   return (
-    <div className="run-row">
-      <a
-        className="run-id"
-        href={href}
-        onClick={(event) => {
-          // Средняя кнопка и Cmd/Ctrl-клик должны открывать вкладку: перехватывается только обычный переход.
-          if (event.metaKey || event.ctrlKey || event.button !== 0) return;
-          event.preventDefault();
-          navigate(href);
-        }}
-      >
-        {run.shortId}
-      </a>
-
-      <span className={`badge ${run.status ?? ''}`}>{run.status ?? 'неизвестно'}</span>
-
-      <span className="marks">
-        {run.swept ? <span className="badge">убран</span> : null}
-        {run.unreadable ? <span className="badge">не читается</span> : null}
-        {run.abandoned ? <span className="badge">оборван</span> : null}
-      </span>
-
-      <span className="small dim">{fmtTime(run.startedAt)}</span>
-      <span className="small dim mono">{fmtDuration(run.durationMs)}</span>
-
-      <span className="actions">
-        {asking ? (
-          <>
-            <button className="danger plain" disabled={busy} onClick={remove}>
-              {busy ? 'удаление…' : 'да, удалить'}
-            </button>
-            <button className="plain" disabled={busy} onClick={() => setAsking(false)}>
-              нет
-            </button>
-          </>
+    <div className="job">
+      <div className="job-head">
+        <span className="job-name">{job.id}</span>
+        {job.needs.length === 0 ? (
+          <span className="kind">без предшественников</span>
         ) : (
-          <button
-            className="plain quiet"
-            title={`Удалить прогон ${run.shortId} из истории`}
-            onClick={() => setAsking(true)}
-          >
-            удалить
-          </button>
+          <span className="kind">needs: {job.needs.join(', ')}</span>
         )}
-      </span>
+        {job.on === 'success' ? null : <span className="kind">on: {job.on}</span>}
+        {job.if === undefined ? null : <span className="kind">if: {job.if}</span>}
+        {job.publishesOutput ? <span className="badge">публикует выход</span> : null}
+      </div>
+      {job.description === undefined ? null : <div className="desc">{job.description}</div>}
 
-      {/* Отказ демона — во всю ширину строки, а не в колонке действий: он
-          называет причину целой фразой («прогон идёт»), и в колонке шириной с
-          кнопку эта фраза легла бы поверх соседних колонок. */}
-      {error === undefined ? null : <span className="run-error error small">{error}</span>}
+      {job.steps.map((step) => (
+        <div key={step.id} className="step">
+          <div className="step-head">
+            <span className="job-name">{step.id}</span>
+            <span className="kind">{step.kind}</span>
+            {step.agent === undefined ? null : (
+              <span className="kind">
+                {step.agent}
+                {step.model === undefined ? '' : ` · ${step.model}`}
+              </span>
+            )}
+          </div>
+          {step.command === undefined ? null : <div className="ctx">$ {step.command}</div>}
+        </div>
+      ))}
     </div>
   );
 }
 
 function PipelineCard({
-  group,
+  pipeline,
+  runs,
   runsKnown,
   navigate,
 }: {
-  readonly group: PipelineGroup<PipelineView, RunOverview>;
+  readonly pipeline: PipelineView;
+  readonly runs: readonly RunOverview[];
   /** Обзор уже пришёл: только тогда пустой список значит «прогонов нет». */
   readonly runsKnown: boolean;
   readonly navigate: (href: string) => void;
 }): JSX.Element {
-  const { pipeline, runs } = group;
+  const [selected, setSelected] = useState<string | undefined>(undefined);
+
+  if (pipeline.error !== undefined) {
+    return (
+      <div className="card">
+        <div className="card-head">
+          <span className="card-title">{pipeline.name}</span>
+          <span className="mono small dim">{pipeline.file}</span>
+        </div>
+        <p className="error">{pipeline.error}</p>
+      </div>
+    );
+  }
+
+  const job = pipeline.jobs.find((item) => item.id === selected) ?? pipeline.jobs[0];
+  const last = runs[0];
+
   return (
     <div className="card">
       <div className="card-head">
@@ -130,32 +109,66 @@ function PipelineCard({
         <span className="mono small dim">{pipeline.file}</span>
       </div>
 
-      {pipeline.error === undefined ? (
-        <div className="meta">
+      <div className="meta">
+        <span>
+          работ <b>{pipeline.jobs.length}</b>
+        </span>
+        {pipeline.concurrency === undefined ? null : (
           <span>
-            работ <b>{pipeline.jobs.length}</b>
+            параллельно <b>{pipeline.concurrency}</b>
           </span>
-          {pipeline.jobs.length === 0 ? null : (
-            <span className="mono small dim">{pipeline.jobs.map((job) => job.id).join(', ')}</span>
-          )}
-          <span className="mono">stepcast run {pipeline.file}</span>
-        </div>
-      ) : (
-        <p className="error">{pipeline.error}</p>
+        )}
+        {pipeline.failFast === undefined ? null : (
+          <span>
+            fail_fast <b>{pipeline.failFast ? 'да' : 'нет'}</b>
+          </span>
+        )}
+        <span className="mono">stepcast run {pipeline.file}</span>
+      </div>
+
+      {pipeline.graph === undefined ? null : (
+        <JobGraph
+          graph={pipeline.graph}
+          {...(job === undefined ? {} : { selected: job.id })}
+          onSelect={setSelected}
+          subtitle={(node) => {
+            const found = pipeline.jobs.find((item) => item.id === node.id);
+            return found === undefined ? undefined : stepsOf(found);
+          }}
+        />
       )}
 
-      {runs.length === 0 ? (
-        // «Прогонов нет» и «обзор ещё не пришёл» — разные вещи: обзор идёт
-        // живым потоком и на первой отрисовке его ещё нет, а если поток не
-        // установился, не будет вовсе. Выдавать второе за первое — врать.
-        <p className="note dim">{runsKnown ? 'прогонов пока нет' : 'прогоны ещё не загружены'}</p>
-      ) : (
-        <div className="run-list">
-          {runs.map((run) => (
-            <RunRow key={run.runId} projectKey={group.pipeline.projectKey} run={run} navigate={navigate} />
-          ))}
-        </div>
-      )}
+      {job === undefined ? <p className="note dim">Работ в этом пайплайне нет.</p> : <JobCard job={job} />}
+
+      {/* Прогоны — на своём экране; здесь довольно счёта и последнего исхода. */}
+      <p className="note dim runs-note">
+        {!runsKnown ? (
+          'прогоны ещё не загружены'
+        ) : runs.length === 0 ? (
+          'прогонов пока нет'
+        ) : (
+          <>
+            прогонов {runs.length}
+            {last === undefined ? null : (
+              <>
+                {' · последний '}
+                <a
+                  href={runHref(pipeline.projectKey, last.runId)}
+                  onClick={(event) => {
+                    if (event.metaKey || event.ctrlKey || event.button !== 0) return;
+                    event.preventDefault();
+                    navigate(runHref(pipeline.projectKey, last.runId));
+                  }}
+                >
+                  <span className="run-id">{last.shortId}</span>
+                </a>{' '}
+                <span className={`badge ${last.status ?? ''}`}>{last.status ?? 'неизвестно'}</span>{' '}
+                {fmtTime(last.startedAt)}
+              </>
+            )}
+          </>
+        )}
+      </p>
     </div>
   );
 }
@@ -182,14 +195,14 @@ export function Pipelines({
   if (pipelines === undefined) return <p className="empty">Загрузка…</p>;
 
   const groups = groupProjects(pipelines, overview?.projects ?? []);
+  // Прогоны без найденного пайплайна на этом экране не показываются: экран про
+  // устройство пайплайнов, а сами прогоны целиком видны на своём экране.
+  const withPipelines = groups.filter((group) => group.pipelines.length > 0);
 
-  if (groups.length === 0) {
-    // Пусто по обоим источникам, но обзора ещё нет: заключать из этого, что
-    // показывать нечего, рано.
-    if (overview === undefined) return <p className="empty">Загрузка…</p>;
+  if (withPipelines.length === 0) {
     return (
       <p className="empty">
-        Пайплайнов и прогонов пока не найдено. Демон ищет <code>stepcast.yml</code> и{' '}
+        Пайплайнов не найдено. Демон ищет <code>stepcast.yml</code> и{' '}
         <code>.stepcast/pipelines/*.yml</code> у проектов, чьи прогоны он видит.
       </p>
     );
@@ -198,7 +211,7 @@ export function Pipelines({
   return (
     <>
       <h1>Пайплайны</h1>
-      {groups.map((group) => (
+      {withPipelines.map((group) => (
         <section key={group.projectKey}>
           <h2 className={group.projectPath === undefined ? 'project unknown-path' : 'project'}>
             {group.projectPath ?? `${group.projectKey} — путь неизвестен`}
@@ -207,24 +220,12 @@ export function Pipelines({
           {group.pipelines.map((pipelineGroup) => (
             <PipelineCard
               key={`${pipelineGroup.pipeline.projectKey}/${pipelineGroup.pipeline.file}`}
-              group={pipelineGroup}
+              pipeline={pipelineGroup.pipeline}
+              runs={pipelineGroup.runs}
               runsKnown={overview !== undefined}
               navigate={navigate}
             />
           ))}
-
-          {group.orphanRuns.length === 0 ? null : (
-            <div className="card">
-              <div className="card-head">
-                <span className="card-title">Прогоны без найденного пайплайна</span>
-              </div>
-              <div className="run-list">
-                {group.orphanRuns.map((run) => (
-                  <RunRow key={run.runId} projectKey={group.projectKey} run={run} navigate={navigate} />
-                ))}
-              </div>
-            </div>
-          )}
         </section>
       ))}
     </>
