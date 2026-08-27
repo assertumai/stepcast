@@ -1,9 +1,9 @@
 import type { Job, Pipeline } from './pipeline/model.js';
 
 /**
- * Граф работ. Исполнение в этом срезе последовательное, но модель уже
- * множественная: планировщик берёт работы из множества готовых, и снятие
- * ограничения на размер выборки позже даст параллелизм без переписывания.
+ * Граф работ. Планировщик берёт работы из множества готовых и исполняет их
+ * одновременно в пределах `concurrency`; граф остаётся единственным
+ * основанием для того, что работа о прогоне видит.
  */
 
 export interface Graph {
@@ -104,6 +104,24 @@ export function buildGraph(pipeline: Pipeline): GraphResult {
   }
 
   return { graph: { main, terminal, dependencies, dependents, upstream, byId }, problems };
+}
+
+/**
+ * Выходы работ, расположенных выше по графу, включая транзитивные.
+ *
+ * Общее хранилище опубликованных выходов накапливается в порядке завершения
+ * работ, а этот порядок при параллельном исполнении — вопрос длительности
+ * соседей. Состав того, что работа видит, определяется графом: иначе и блок
+ * контекста, и ключ шага зависели бы от того, кто успел завершиться рядом.
+ */
+export function upstreamOutputs<T extends { readonly job: string }>(
+  graph: Graph,
+  jobId: string,
+  outputs: readonly T[],
+): readonly T[] {
+  const above = graph.upstream.get(jobId);
+  if (above === undefined) return [];
+  return outputs.filter((output) => above.has(output.job));
 }
 
 /**

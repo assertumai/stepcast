@@ -11,6 +11,7 @@ import {
 } from '../anchor/index.js';
 import { fingerprintInputs } from '../anchor/fingerprint.js';
 import { resolveAdapter } from '../backend/registry.js';
+import { createBackendSlots, type BackendSlots } from '../backend/slots.js';
 import {
   BACKEND_REFUSAL_PREDICATE,
   describeRefusal,
@@ -30,7 +31,7 @@ import { buildStepEnv, injectedVariables } from '../exec/env.js';
 import { executeRunStep } from '../exec/runStep.js';
 import { runJudgePass } from '../exec/judgePass.js';
 import { evaluatePredicates } from '../expect/evaluate.js';
-import { buildGraph, type Graph } from '../graph.js';
+import { buildGraph, upstreamOutputs, type Graph } from '../graph.js';
 import { bookkeep } from './bookkeeping.js';
 import { buildIterationNote, type IterationNoteTruncation } from './iterationNote.js';
 import { HaltCause, type HaltCauseValue } from './halt.js';
@@ -40,6 +41,7 @@ import { buildPreviousFailure } from './previousFailure.js';
 import type { ResumePlan, SourceRun, StepPlan } from './resumePlan.js';
 import { computeStepKey, upstreamForKey } from './stepKey.js';
 import { prepareWorkspace, type PreparedWorkspace } from './workspace.js';
+import { createWaitState } from './waitState.js';
 import { shortRunId } from '../journal/paths.js';
 import { findStepDir } from '../journal/reader.js';
 import { RunJournal } from '../journal/writer.js';
@@ -189,13 +191,17 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   const graph = buildGraph(pipeline).graph;
   // Каталог и последний якорь каждой завершившейся работы: источник, из
   // которого наследование выбирает и разрешает дерево зависимой работы.
-  // Работы исполняются последовательно — карта читается только за работами,
-  // уже отдавшими исход.
+  // Читается по зависимостям работы, а они к её началу уже отдали исход, —
+  // одновременность соседей записи в карте не касается.
   const completedWorkspaces = new Map<string, CompletedJob>();
 
   // Момент пробуждения: дописывается на диск до начала сна и снимается после
   // продолжения — состояние спящего прогона доступно снаружи, пока он спит.
-  const waitState: { wakeAt: string | undefined } = { wakeAt: undefined };
+  const waitState = createWaitState();
+
+  // Общий на прогон счёт мест по имени бэкенда: один агентский шаг и вызов
+  // судьи того же бэкенда делят предел, а не удваивают его.
+  const backendSlots = createBackendSlots((name) => config.backends[name]?.concurrency ?? 1);
 
   const context: RunContext = {
     ...options,
@@ -204,6 +210,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     usage,
     outputs,
     adapters,
+    backendSlots,
     reportedDenials,
     lockHash,
     anchorKind,
@@ -214,16 +221,26 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     ...(options.resume === undefined
       ? {}
       : { observedInputs: options.resume.plan.observedInputs }),
-    onWait: (wakeAt) => {
-      waitState.wakeAt = wakeAt;
+    beginWait: (wakeAt) => {
+      const release = waitState.begin(wakeAt);
       writeStatus('running');
+      return () => {
+        release();
+        writeStatus('running');
+      };
     },
   };
 
   warnAboutDegradedBackends(context);
 
   const writeStatus = (status: StatusValue): void => {
-    const blocked = [...records.values()].find((record) => record.status === 'failed');
+    // Перерасход бюджета останавливает прогон так же, как отказ, и точка
+    // возобновления нужна ровно так же: без неё прогон, упёршийся в потолок,
+    // остался бы единственным законченным исходом без подсказки, как его
+    // продолжить.
+    const blocked = [...records.values()].find(
+      (record) => record.status === 'failed' || record.status === 'budget_exceeded',
+    );
     journal.writeStatus({
       run_id: journal.paths.runId,
       pipeline: pipeline.name,
@@ -258,7 +275,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
               blocked_by: blocked.id,
             },
           }),
-      ...(waitState.wakeAt === undefined ? {} : { wake_at: waitState.wakeAt }),
+      ...(waitState.earliest() === undefined ? {} : { wake_at: waitState.earliest() as string }),
       updated_at: new Date().toISOString(),
     } satisfies RunStatus);
   };
@@ -278,6 +295,9 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   const result = await schedule({
     pipeline,
     graph,
+    // Потолок конфигурации применяет сам прогон: линт отклоняет превышение,
+    // но прогон не обязан полагаться на то, что линт был.
+    concurrency: Math.min(pipeline.concurrency, config.limits.concurrency),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     scopeExtras: { run: { id: journal.paths.runId, dir: journal.paths.dir }, env: {} },
     execute: async (job, scope) => executeJob(job, scope, context),
@@ -300,6 +320,18 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
       writeStatus('running');
     },
   });
+
+  if (context.failureNote.pending !== undefined) {
+    const addressee = options.resume?.plan.failureNoteJob;
+    journal.event({
+      kind: 'resume.note_undelivered',
+      ...(addressee === undefined ? {} : { job: addressee }),
+      detail:
+        addressee === undefined
+          ? 'в плане возобновления нет переисполняемых агентских шагов'
+          : `агентский шаг работы ${addressee} не исполнялся`,
+    });
+  }
 
   writeStatus(result.status);
   journal.writeUsage(usage.report(journal.paths.runId));
@@ -324,6 +356,8 @@ interface RunContext extends RunOptions {
   readonly usage: UsageAccumulator;
   readonly outputs: UpstreamOutput[];
   readonly adapters: Map<string, BackendAdapter>;
+  /** Предел одновременных вызовов бэкенда, общий на прогон. */
+  readonly backendSlots: BackendSlots;
   /** Одна и та же переменная вычёркивается на каждом шаге — сообщаем однажды. */
   readonly reportedDenials: Set<string>;
   readonly lockHash: string;
@@ -342,19 +376,22 @@ interface RunContext extends RunOptions {
   /** Наблюдённые входы шагов прошлого прогона: `<работа>/<шаг>` → пути. */
   readonly observedInputs?: ReadonlyMap<string, readonly string[]>;
   /**
-   * Выдержка о прошлом отказе. Достаётся первому переисполняемому агентскому
-   * шагу и на этом исчезает: повторять её остальным — значит навязывать всему
-   * прогону разбор одной чужой неудачи.
+   * Выдержка о прошлом отказе. Достаётся первому агентскому шагу работы,
+   * названной планом возобновления (`plan.failureNoteJob`), и на этом исчезает:
+   * повторять её остальным — значит навязывать всему прогону разбор одной
+   * чужой неудачи, а отдавать «первому, кто успел» при параллельном
+   * исполнении значит не отдавать никому определённому.
    */
   readonly failureNote: { pending: string | undefined };
   /** Результаты непрошедшего `check` предыдущей итерации текущей работы. */
   readonly iterationCheck?: readonly PredicateResult[];
   /**
-   * Уход в ожидание и пробуждение из него: состояние прогона должно быть на
-   * диске до начала сна, а не после — иначе спящий прогон неотличим от
-   * зависшего. `undefined` снимает момент пробуждения.
+   * Уход в ожидание: состояние прогона должно быть на диске до начала сна, а
+   * не после — иначе спящий прогон неотличим от зависшего. Возвращённое
+   * снятие убирает ровно это ожидание, не трогая чужих: ожидающих работ может
+   * быть несколько.
    */
-  readonly onWait: (wakeAt: string | undefined) => void;
+  readonly beginWait: (wakeAt: string) => () => void;
 }
 
 /** Отсутствие поддержки сессий не отказ, а деградация с предупреждением. */
@@ -629,6 +666,15 @@ function jobScopes(job: Job, context: RunContext): BudgetScope[] {
   ];
 }
 
+/**
+ * Работа и шаг, от имени которых пишется запись журнала. При чередующихся
+ * работах запись без них разбирается только догадкой.
+ */
+interface StepAddress {
+  readonly job: string;
+  readonly step: string;
+}
+
 /** Исход ожидания сброса окна лимита. */
 type WaitOutcome =
   | { readonly kind: 'resumed' }
@@ -642,7 +688,11 @@ type WaitOutcome =
  * отстоит дальше предела ожидания, или суммарное ожидание за прогон уже
  * исчерпало предел. Сон прерывается сигналом прогона немедленно.
  */
-async function waitForReset(exceeded: Exceeded, context: RunContext): Promise<WaitOutcome> {
+async function waitForReset(
+  exceeded: Exceeded,
+  context: RunContext,
+  where?: StepAddress,
+): Promise<WaitOutcome> {
   if (exceeded.resetsAt === undefined) {
     return {
       kind: 'stopped',
@@ -673,10 +723,11 @@ async function waitForReset(exceeded: Exceeded, context: RunContext): Promise<Wa
   }
 
   const wakeAt = new Date(exceeded.resetsAt).toISOString();
-  context.onWait(wakeAt);
+  const endWait = context.beginWait(wakeAt);
   context.journal.event({
     kind: 'budget.waiting',
     scope: exceeded.scope,
+    ...(where === undefined ? {} : { job: where.job, step: where.step }),
     dimension: 'rate_limit',
     threshold: exceeded.limit,
     resets_at: exceeded.resetsAt,
@@ -688,10 +739,14 @@ async function waitForReset(exceeded: Exceeded, context: RunContext): Promise<Wa
   const actualMs = Date.now() - started;
 
   context.usage.recordWait(started, started + actualMs);
-  context.onWait(undefined);
+  endWait();
   if (canceled) return { kind: 'canceled' };
 
-  context.journal.event({ kind: 'budget.resumed', actual_ms: actualMs });
+  context.journal.event({
+    kind: 'budget.resumed',
+    ...(where === undefined ? {} : { job: where.job, step: where.step }),
+    actual_ms: actualMs,
+  });
   return { kind: 'resumed' };
 }
 
@@ -725,6 +780,7 @@ function resolveOnExceedForRateLimit(job: Job, step: Step, context: RunContext):
 async function waitForBackendRateLimit(
   refusal: BackendRefusal,
   scopeName: string,
+  where: StepAddress,
   context: RunContext,
 ): Promise<{ readonly kind: 'resumed' } | { readonly kind: 'canceled' } | { readonly kind: 'stopped'; readonly reason: string }> {
   if (refusal.resetAt === undefined) {
@@ -747,10 +803,12 @@ async function waitForBackendRateLimit(
   }
 
   const wakeAt = new Date(refusal.resetAt).toISOString();
-  context.onWait(wakeAt);
+  const endWait = context.beginWait(wakeAt);
   context.journal.event({
     kind: 'budget.waiting',
     scope: scopeName,
+    job: where.job,
+    step: where.step,
     dimension: 'rate_limit',
     resets_at: refusal.resetAt,
     wait_ms: waitMs,
@@ -761,10 +819,15 @@ async function waitForBackendRateLimit(
   const actualMs = Date.now() - started;
 
   context.usage.recordWait(started, started + actualMs);
-  context.onWait(undefined);
+  endWait();
   if (canceled) return { kind: 'canceled' };
 
-  context.journal.event({ kind: 'budget.resumed', actual_ms: actualMs });
+  context.journal.event({
+    kind: 'budget.resumed',
+    job: where.job,
+    step: where.step,
+    actual_ms: actualMs,
+  });
   return { kind: 'resumed' };
 }
 
@@ -808,7 +871,7 @@ async function resolveBackendRefusal(
   const mode = resolveOnExceedForRateLimit(job, step, context);
   const waited =
     mode === 'wait'
-      ? await waitForBackendRateLimit(refusal, scopeName, context)
+      ? await waitForBackendRateLimit(refusal, scopeName, { job: job.id, step: step.id }, context)
       : ({
           kind: 'stopped',
           reason: `${scopeName}: упор в окно лимита подписки бэкенда — ${refusal.message}`,
@@ -1048,7 +1111,17 @@ async function runJobSteps(
             changedPaths,
           );
 
-    exceeded = outcome.exceeded ?? exceeded;
+    // Превышение, обнаруженное за время шага, приписывается ему, только если
+    // его собственный расход потолок и перевёл. Успевшая попытка соседа,
+    // ничего в этот потолок не добавившая, остаётся успешной: её результат
+    // получен и оплачен. Новых попыток и шагов после этого всё равно не
+    // будет — следующий шаг упрётся в проверку до запуска.
+    if (exceeded === undefined && outcome.exceeded !== undefined) {
+      const own =
+        outcome.status !== 'success' ||
+        context.usage.crossedBy(outcome.exceeded, job.id, step.id);
+      if (own) exceeded = outcome.exceeded;
+    }
 
     for (const [index, results] of outcome.results.entries()) {
       journal.writeExpectReport(stepDirPath, { attempt: index + 1, results: [...results] });
@@ -1090,7 +1163,10 @@ async function runJobSteps(
             : undefined,
         // Порядок завершения работ у исполнителя свой, у планировщика
         // возобновления свой; общая функция приводит оба к одному виду.
-        upstream: upstreamForKey(context.outputs),
+        // Состав берётся по графу, а не по тому, что успело завершиться:
+        // иначе ключ шага, а с ним и решение о переиспользовании, зависели бы
+        // от длительности соседних работ.
+        upstream: upstreamForKey(upstreamOutputs(context.graph, job.id, context.outputs)),
       }),
       status,
       ...(treeAfter === undefined
@@ -1306,6 +1382,7 @@ async function runCommandStep(
           onStall,
           adapterFor: (name) => adapterOf(name, context),
           defaultAgent: config.defaults.agent,
+          backendSlots: context.backendSlots,
           journal,
           nextCallIndex,
           canCall: () => {
@@ -1369,7 +1446,7 @@ async function runCommandStep(
         return { status: 'canceled', attempts: result.attempts, results: result.results };
       }
       context.usage.sealStep(job.id, step.id);
-      const waited = await waitForReset(abort.waitTrigger, context);
+      const waited = await waitForReset(abort.waitTrigger, context, { job: job.id, step: step.id });
       if (waited.kind === 'resumed') continue;
       if (waited.kind === 'stopped') {
         return { status: 'budget_exceeded', attempts: result.attempts, results: result.results, exceeded: waited.exceeded };
@@ -1424,6 +1501,7 @@ async function runAgentStep(
     cwd: context.cwd,
     stepDir: stepDirPath,
     sessions,
+    backendSlots: context.backendSlots,
     stallTimeoutMs: config.defaults.stallTimeoutMs,
     signal: abort.controller.signal,
     env: (plan) => stepEnv(step, job, plan.attempt, context, stepDirPath),
@@ -1435,6 +1513,7 @@ async function runAgentStep(
 
       const stepEntries = withIterationNote(
         context,
+        job.id,
         step.context,
         context.iterationCheck,
         (truncation) => {
@@ -1455,7 +1534,7 @@ async function runAgentStep(
         pipeline: first ? pipeline.context : [],
         job: first ? job.context : [],
         step: stepEntries.entries,
-        upstream: first ? context.outputs : [],
+        upstream: first ? upstreamOutputs(context.graph, job.id, context.outputs) : [],
         contextUpstream: job.contextUpstream,
         inherit: step.contextInherit,
         exclude: step.contextExclude,
@@ -1466,7 +1545,8 @@ async function runAgentStep(
         // контексте есть: иначе шаг с узким пределом контекста отказывал бы
         // из-за настройки, которая его не касается.
         ...(stepEntries.hasNote ? { noteMaxTokens: config.context.noteMaxTokens } : {}),
-        onDenied: (path, pattern) => journal.event({ kind: 'context.denied', path, pattern }),
+        onDenied: (path, pattern) =>
+          journal.event({ kind: 'context.denied', job: job.id, step: step.id, path, pattern }),
         onDowngraded: (path, tokens) =>
           journal.event({
             kind: 'context.downgraded',
@@ -1556,6 +1636,7 @@ async function runAgentStep(
         onStall,
         adapterFor: (name) => adapterOf(name, context),
         defaultAgent: config.defaults.agent,
+        backendSlots: context.backendSlots,
         journal,
         nextCallIndex,
         canCall: () => {
@@ -1607,6 +1688,8 @@ async function runAgentStep(
     journal.event({
       kind: 'budget.exceeded',
       scope: exceeded.scope,
+      job: job.id,
+      step: step.id,
       used: exceeded.used,
       limit: exceeded.limit,
     });
@@ -1642,7 +1725,7 @@ async function runAgentStep(
       };
     }
     context.usage.sealStep(job.id, step.id);
-    const waited = await waitForReset(abort.waitTrigger, context);
+    const waited = await waitForReset(abort.waitTrigger, context, { job: job.id, step: step.id });
     if (waited.kind === 'resumed') continue;
     if (waited.kind === 'stopped') {
       return {
@@ -1888,11 +1971,12 @@ function restoreForResume(
  */
 function withIterationNote(
   context: RunContext,
+  jobId: string,
   own: readonly ContextEntry[],
   previousCheck: readonly PredicateResult[] | undefined,
   onTruncated: (truncation: IterationNoteTruncation) => void,
 ): { entries: readonly ContextEntry[]; hasNote: boolean } {
-  const entries = takeFailureNote(context, own);
+  const entries = takeFailureNote(context, jobId, own);
   if (previousCheck === undefined) return { entries, hasNote: false };
 
   const failed = previousCheck.filter((item) => !item.passed && item.hard);
@@ -1910,16 +1994,18 @@ function previousFailureText(resume: ResumeContext): string | undefined {
 }
 
 /**
- * Подложить выдержку о прошлом отказе первому переисполняемому шагу с
- * контекстом. Запись входит в состав контекста наравне с остальными и потому
- * учитывается в пределе размера.
+ * Подложить выдержку о прошлом отказе первому агентскому шагу работы, с
+ * которой возобновление начато. Запись входит в состав контекста наравне с
+ * остальными и потому учитывается в пределе размера.
  */
 function takeFailureNote(
   context: RunContext,
+  jobId: string,
   own: readonly ContextEntry[],
 ): readonly ContextEntry[] {
   const note = context.failureNote.pending;
   if (note === undefined) return own;
+  if (context.resume?.plan.failureNoteJob !== jobId) return own;
 
   context.failureNote.pending = undefined;
   return [{ kind: 'text', text: note }, ...own];

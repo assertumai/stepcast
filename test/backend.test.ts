@@ -15,8 +15,13 @@ import {
 } from '../src/core/backend/fake.js';
 import { emptyUsage, mergeUsage, sumUsage } from '../src/core/backend/types.js';
 import { createSessionRegistry, executeAgentStep } from '../src/core/exec/agentStep.js';
+import { runJudgePass } from '../src/core/exec/judgePass.js';
+import { createBackendSlots } from '../src/core/backend/slots.js';
+import { RunJournal } from '../src/core/journal/writer.js';
 import type { BackendConfig } from '../src/core/config/resolve.js';
 import type { AgentStep } from '../src/core/pipeline/model.js';
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 const BACKEND: BackendConfig = {
   command: 'claude',
@@ -665,6 +670,234 @@ describe('agent-backend: исполнение шага', () => {
     assert.ok(existsSync(join(dir, 'prompt.txt')));
     assert.ok(existsSync(join(dir, 'prompt.2.txt')));
     assert.ok(existsSync(join(dir, 'stdout.2.log')));
+  });
+});
+
+describe('backend-slots: счёт мест', () => {
+  it('лишний вызов ждёт освобождения места', async () => {
+    const slots = createBackendSlots(() => 1);
+    const order: string[] = [];
+    const first = slots.run('claude', async () => {
+      order.push('first-start');
+      await sleep(30);
+      order.push('first-end');
+    });
+    const second = slots.run('claude', async () => {
+      order.push('second-start');
+    });
+    await Promise.all([first, second]);
+    assert.deepEqual(order, ['first-start', 'first-end', 'second-start']);
+  });
+
+  it('разные бэкенды считаются раздельно', async () => {
+    const slots = createBackendSlots(() => 1);
+    const order: string[] = [];
+    const claude = slots.run('claude', async () => {
+      order.push('claude-start');
+      await sleep(30);
+      order.push('claude-end');
+    });
+    const codex = slots.run('codex', async () => {
+      order.push('codex-start');
+    });
+    await Promise.all([claude, codex]);
+    // Второй бэкенд не ждёт первый: его начало попадает между стартом и
+    // концом первого, а не после.
+    assert.deepEqual(order, ['claude-start', 'codex-start', 'claude-end']);
+  });
+
+  it('место освобождается, даже если вызов отказал', async () => {
+    const slots = createBackendSlots(() => 1);
+    await assert.rejects(
+      slots.run('claude', () => Promise.reject(new Error('отказ'))),
+      /отказ/,
+    );
+    assert.equal(slots.active('claude'), 0);
+
+    let ran = false;
+    await slots.run('claude', async () => {
+      ran = true;
+    });
+    assert.equal(ran, true, 'следующий вызов не должен наткнуться на место, занятое навсегда');
+  });
+
+  it('вызов, удерживающий место, другого места не ждёт — предела своего бэкенда достаточно', async () => {
+    const slots = createBackendSlots(() => 1);
+    // Вызов внутри вызова того же бэкенда взаимно заблокировал бы прогон,
+    // если бы место не освобождалось до возврата внешнего вызова. Здесь же
+    // внешний вызов сам не просит второе место — он лишь проверяет, что
+    // соседний бэкенд его не ждёт.
+    let otherRan = false;
+    await slots.run('claude', async () => {
+      await slots.run('codex', async () => {
+        otherRan = true;
+      });
+    });
+    assert.equal(otherRan, true);
+  });
+});
+
+describe('agent-backend: предел одновременных вызовов', () => {
+  it('предел меньше параллелизма графа задерживает лишние вызовы', async () => {
+    const slots = createBackendSlots(() => 1);
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })], hangMs: 120 });
+
+    const started = Date.now();
+    await Promise.all(
+      ['a', 'b'].map((id) =>
+        executeAgentStep({
+          step: makeAgentStep({ id, session: id }),
+          adapter: backend.adapter,
+          cwd: workdir(),
+          stepDir: workdir(),
+          sessions: createSessionRegistry(),
+          backendSlots: slots,
+          buildPrompt: () => 'промпт',
+          env: () => ({ PATH: process.env.PATH ?? '' }),
+        }),
+      ),
+    );
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 220, `вызовы должны пройти по очереди, а не разом: прошло ${elapsed}мс`);
+  });
+
+  it('разные бэкенды не делят предел', async () => {
+    const slots = createBackendSlots(() => 1);
+    const claude = createFakeBackend({ lines: [resultLine({ text: 'ок' })], hangMs: 120 });
+    const codex: typeof claude = { ...claude, adapter: { ...claude.adapter, name: 'codex' } };
+
+    const started = Date.now();
+    await Promise.all([
+      executeAgentStep({
+        step: makeAgentStep({ id: 'a', session: 'a' }),
+        adapter: claude.adapter,
+        cwd: workdir(),
+        stepDir: workdir(),
+        sessions: createSessionRegistry(),
+        backendSlots: slots,
+        buildPrompt: () => 'промпт',
+        env: () => ({ PATH: process.env.PATH ?? '' }),
+      }),
+      executeAgentStep({
+        step: makeAgentStep({ id: 'b', session: 'b' }),
+        adapter: codex.adapter,
+        cwd: workdir(),
+        stepDir: workdir(),
+        sessions: createSessionRegistry(),
+        backendSlots: slots,
+        buildPrompt: () => 'промпт',
+        env: () => ({ PATH: process.env.PATH ?? '' }),
+      }),
+    ]);
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed < 220, `разные бэкенды не должны сериализоваться: прошло ${elapsed}мс`);
+  });
+
+  it('ожидание места не даёт timeout: отсчёт начинается после получения места', async () => {
+    const slots = createBackendSlots(() => 1);
+    // Место занято на 300мс вручную — дольше, чем таймаут шага ниже. Если бы
+    // отсчёт таймаута шёл с момента постановки в очередь, а не с момента
+    // запуска процесса, шаг отказал бы таймаутом, не успев начаться. Запас в
+    // 400мс на сам процесс покрывает старт нового процесса Node.
+    const holder = slots.run('fake', () => sleep(300));
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })] });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep({ timeoutMs: 400 }),
+      adapter: backend.adapter,
+      cwd: workdir(),
+      stepDir: workdir(),
+      sessions: createSessionRegistry(),
+      backendSlots: slots,
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    await holder;
+    assert.equal(result.status, 'success');
+  });
+
+  // Задача 4.3: длительность попытки — это длительность её процесса. Ожидание
+  // места принадлежит прогону, а не шагу.
+  it('окно попытки не включает ожидание места бэкенда', async () => {
+    const slots = createBackendSlots(() => 1);
+    const holder = slots.run('fake', () => sleep(300));
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })] });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep(),
+      adapter: backend.adapter,
+      cwd: workdir(),
+      stepDir: workdir(),
+      sessions: createSessionRegistry(),
+      backendSlots: slots,
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+    await holder;
+
+    const record = result.attempts[0];
+    assert.ok(record !== undefined);
+    const window = Date.parse(record.finished_at as string) - Date.parse(record.started_at);
+    assert.ok(
+      window < 250,
+      `окно попытки обязано считаться от старта процесса, а не от очереди: ${window}мс`,
+    );
+    assert.ok(
+      Math.abs(window - (record.usage?.wallclock_ms ?? 0)) < 250,
+      'окно попытки и длительность процесса не должны расходиться на время ожидания',
+    );
+  });
+
+  it('судья ждёт место и исполняется после освобождения оцениваемым вызовом', async () => {
+    const slots = createBackendSlots(() => 1);
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })], hangMs: 100 });
+    const dir = workdir();
+
+    const order: string[] = [];
+    const stepCall = executeAgentStep({
+      step: makeAgentStep(),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      backendSlots: slots,
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    }).then((result) => {
+      order.push('step-end');
+      return result;
+    });
+
+    // Место занимается сразу вызовом шага, судья успевает встать в очередь.
+    await sleep(10);
+    const judgeCall = runJudgePass({
+      predicates: [{ kind: 'judge', claim: 'звучит правдоподобно', hard: true }],
+      firstPass: [{ predicate: 'judge', passed: true, hard: true, expected: 'звучит правдоподобно' }],
+      task: 'задание',
+      text: 'ок',
+      structured: undefined,
+      cwd: dir,
+      stepDir: dir,
+      attempt: 1,
+      timeoutMs: 5_000,
+      adapterFor: () => backend.adapter,
+      defaultAgent: 'fake',
+      backendSlots: slots,
+      journal: RunJournal.create({
+        runsRoot: mkdtempSync(join(tmpdir(), 'stepcast-slots-runs-')),
+        projectRoot: mkdtempSync(join(tmpdir(), 'stepcast-slots-project-')),
+      }),
+      nextCallIndex: () => 1,
+      canCall: () => true,
+      onUsage: () => {},
+    }).then((results) => {
+      order.push('judge-end');
+      return results;
+    });
+
+    await Promise.all([stepCall, judgeCall]);
+    assert.deepEqual(order, ['step-end', 'judge-end']);
   });
 });
 

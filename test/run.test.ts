@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
+import { createFakeBackend, resultLine } from '../src/core/backend/fake.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { findStepDir, readEvents, readStatus } from '../src/core/journal/reader.js';
 import { resolveExitCode, runPipeline, type RunResult } from '../src/core/run/runner.js';
@@ -433,6 +434,217 @@ describe('run-journal: ключ шага', () => {
     const after = steps(await run(project)).map((step) => step.key);
 
     assert.notEqual(after[0], before[0]);
+  });
+
+  // Сценарий: «Ключ шага не зависит от параллелизма» — то же правило, что и у
+  // блока контекста (см. `step-context: блок предшественников берётся по
+  // графу` в этом же файле): состав, который видит шаг, определяется графом,
+  // а не тем, кто успел завершиться, и от предела одновременности не зависит.
+  it('не меняется при разном пределе одновременности', async () => {
+    // Работы `a` и `b` независимы и публикуют выход агентским шагом; `c`
+    // зависит от обеих, а порядок их завершения при параллельном исполнении
+    // не гарантирован. Ключ шага `c` берёт выходы предшественников по графу
+    // (см. `upstreamOutputs`), а не по порядку завершения, — иначе он
+    // расходился бы с пределом одновременности.
+    const pipeline = `
+version: 1
+kind: pipeline
+name: ключ-под-параллелизмом
+concurrency: 2
+jobs:
+  a:
+    output:
+      from: думает
+    steps:
+      - id: думает
+        agent: fake
+        prompt: придумай a
+        expect: [{ exit_code: 0 }]
+  b:
+    output:
+      from: думает
+    steps:
+      - id: думает
+        agent: fake
+        prompt: придумай b
+        expect: [{ exit_code: 0 }]
+  c:
+    needs: [a, b]
+    steps:
+      - id: use
+        run: [echo, готово]
+        expect: [{ exit_code: 0 }]
+`;
+
+    const keysOf = (result: RunResult): string[] =>
+      readStatus(result.journal.paths).jobs.flatMap((job) =>
+        job.steps.map((step) => `${job.id}/${step.id}:${step.key}`),
+      );
+
+    // Один и тот же проект для обоих прогонов: разные временные каталоги
+    // дали бы разные деревья git, и ключ разошёлся бы по вполне законной
+    // причине — рабочее дерево изменилось, — заслонив собой то, что здесь
+    // проверяется.
+    const project = makeProject({ 'stepcast.yml': pipeline });
+    const runOnce = async (concurrency: number): Promise<RunResult> => {
+      const backend = createFakeBackend({ lines: [resultLine({ text: 'ок', structured: { slug: 'x' } })] });
+      return runPipeline({
+        expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+        config: {
+          ...project.config,
+          runs: { ...project.config.runs, root: mkdtempSync(join(tmpdir(), 'stepcast-runs-')) },
+          limits: { ...project.config.limits, concurrency },
+        },
+        projectRoot: project.root,
+        cwd: project.root,
+        adapterFor: () => backend.adapter,
+      });
+    };
+
+    assert.deepEqual(keysOf(await runOnce(2)), keysOf(await runOnce(1)));
+  });
+});
+
+describe('step-context: блок предшественников берётся по графу', () => {
+  // Спека step-context: «Работа вне графа предшественников в блок не входит».
+  // `сосед` и `предок` идут одновременно и оба публикуют выход; в блок работы
+  // `потребитель` обязан войти только выход её предшественника, независимо от
+  // того, кто из двух завершился раньше.
+  it('не пускает в блок выход одновременной работы, не входящей в предшественники', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: блок-по-графу
+concurrency: 2
+jobs:
+  сосед:
+    output:
+      from: думает
+    steps:
+      - id: думает
+        agent: альфа
+        prompt: придумай
+        expect: [{ exit_code: 0 }]
+  предок:
+    output:
+      from: думает
+    steps:
+      - id: думает
+        agent: бета
+        prompt: придумай
+        expect: [{ exit_code: 0 }]
+  потребитель:
+    needs: [предок]
+    steps:
+      - id: читает
+        agent: гамма
+        prompt: используй
+        expect: [{ exit_code: 0 }]
+`,
+    });
+
+    const backends: Record<string, ReturnType<typeof createFakeBackend>> = {
+      альфа: createFakeBackend({ lines: [resultLine({ text: 'ок', structured: { slug: 'от-соседа' } })] }),
+      бета: createFakeBackend({ lines: [resultLine({ text: 'ок', structured: { slug: 'от-предка' } })] }),
+      гамма: createFakeBackend({ lines: [resultLine({ text: 'ок' })] }),
+    };
+
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: {
+        ...project.config,
+        runs: { ...project.config.runs, root: mkdtempSync(join(tmpdir(), 'stepcast-runs-')) },
+      },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: (name) => {
+        const backend = backends[name];
+        assert.ok(backend !== undefined, `нет поддельного бэкенда для «${name}»`);
+        return backend.adapter;
+      },
+    });
+
+    assert.equal(result.status, 'success');
+
+    const dir = findStepDir(result.journal.paths, 'потребитель', 'читает');
+    assert.ok(dir !== undefined, 'каталог шага потребителя не найден');
+    const prompt = readFileSync(join(dir, 'prompt.txt'), 'utf8');
+
+    assert.match(prompt, /от-предка/, 'выход предшественника в блоке обязан быть');
+    assert.doesNotMatch(prompt, /от-соседа/, 'выход работы вне предшественников в блок не входит');
+  });
+});
+
+describe('pipeline-execution: журнал под параллелизмом', () => {
+  const TWO_INDEPENDENT = `
+version: 1
+kind: pipeline
+name: две-независимые
+concurrency: 2
+jobs:
+  медленная:
+    steps:
+      - id: раз
+        run: [sh, -c, 'sleep 0.15']
+        expect: [{ exit_code: 0 }]
+      - id: два
+        run: [sh, -c, 'sleep 0.15']
+        expect: [{ exit_code: 0 }]
+  быстрая:
+    steps:
+      - id: раз
+        run: [sh, -c, 'sleep 0.01']
+        expect: [{ exit_code: 0 }]
+      - id: два
+        run: [sh, -c, 'sleep 0.01']
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Сценарий: «Чередующийся поток сохраняет причинный порядок» — задача 5.3
+  it('порядковые номера возрастают без повторов, а поток каждой работы читается как её последовательность', async () => {
+    const project = makeProject({ 'stepcast.yml': TWO_INDEPENDENT });
+    const result = await run(project);
+    const events = readEvents(result.journal.paths);
+
+    assert.deepEqual(
+      events.map((event) => event.seq),
+      events.map((_, index) => index),
+      'номера идут подряд с нуля, без повторов и пропусков',
+    );
+
+    for (const job of ['медленная', 'быстрая']) {
+      const own = events.filter(
+        (event): event is typeof event & { job: string } => 'job' in event && event.job === job,
+      );
+      const started = own.find((event) => event.kind === 'job.started');
+      const finished = own.find((event) => event.kind === 'job.finished');
+      assert.ok(started !== undefined && finished !== undefined);
+      assert.ok(started.seq < finished.seq, `${job}: работа завершается после старта`);
+
+      const stepsOf = own.filter(
+        (event): event is typeof event & { step: string; attempt: number } =>
+          (event.kind === 'step.started' || event.kind === 'step.finished') && 'step' in event,
+      );
+      for (const step of ['раз', 'два']) {
+        const stepStarted = stepsOf.find((event) => event.kind === 'step.started' && event.step === step);
+        const stepFinished = stepsOf.find((event) => event.kind === 'step.finished' && event.step === step);
+        assert.ok(stepStarted !== undefined && stepFinished !== undefined);
+        assert.ok(stepStarted.seq < stepFinished.seq, `${job}/${step}: начало раньше конца`);
+      }
+    }
+
+    // Доказательство собственно чередования: событие быстрой работы попадает
+    // между началом и концом медленной — иначе исполнение было бы
+    // последовательным, а не параллельным.
+    const slowStart = events.find((event) => event.kind === 'job.started' && event.job === 'медленная');
+    const slowEnd = events.find((event) => event.kind === 'job.finished' && event.job === 'медленная');
+    const fastEnd = events.find((event) => event.kind === 'job.finished' && event.job === 'быстрая');
+    assert.ok(slowStart !== undefined && slowEnd !== undefined && fastEnd !== undefined);
+    assert.ok(
+      fastEnd.seq > slowStart.seq && fastEnd.seq < slowEnd.seq,
+      'быстрая работа успевает завершиться, пока медленная ещё идёт',
+    );
   });
 });
 

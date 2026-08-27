@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 
 import type { BackendAdapter, BackendRefusal } from '../backend/types.js';
+import type { BackendSlots } from '../backend/slots.js';
 import {
   BACKEND_REFUSAL_PREDICATE,
   describeRefusal,
@@ -48,6 +49,8 @@ export interface JudgePassOptions {
   readonly onStall?: (silentMs: number) => void;
   readonly adapterFor: (name: string) => BackendAdapter;
   readonly defaultAgent: string;
+  /** Место бэкенда: судья занимает его на общих основаниях с агентским шагом. */
+  readonly backendSlots?: BackendSlots;
   readonly journal: RunJournal;
   /** Сквозной номер вызова в пределах шага: растёт через попытки и предикаты. */
   readonly nextCallIndex: () => number;
@@ -92,6 +95,7 @@ export async function runJudgePass(
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.onStall === undefined ? {} : { onStall: options.onStall }),
       adapter: options.adapterFor(predicate.agent ?? options.defaultAgent),
+      ...(options.backendSlots === undefined ? {} : { backendSlots: options.backendSlots }),
       journal: options.journal,
       callIndex: options.nextCallIndex(),
     });
@@ -130,6 +134,7 @@ interface CallJudgeOptions {
   readonly signal?: AbortSignal;
   readonly onStall?: (silentMs: number) => void;
   readonly adapter: BackendAdapter;
+  readonly backendSlots?: BackendSlots;
   readonly journal: RunJournal;
   readonly callIndex: number;
 }
@@ -193,19 +198,25 @@ async function callJudge(options: CallJudgeOptions): Promise<CallJudgeResult> {
     }
   };
 
-  const process_ = await runProcess({
-    command: launch.command,
-    cwd: options.cwd,
-    env: launch.env ?? {},
-    stdin: launch.stdin,
-    timeoutMs: options.timeoutMs,
-    ...(options.stallTimeoutMs === undefined ? {} : { stallTimeoutMs: options.stallTimeoutMs }),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-    ...(options.onStall === undefined ? {} : { onStall: options.onStall }),
-    stdoutPath: join(dir, 'stdout.log'),
-    stderrPath: join(dir, 'stderr.log'),
-    onStdout: consume,
-  });
+  // Место бэкенда занято вокруг самого процесса — на общих основаниях с
+  // агентским шагом, см. `agentStep.ts`.
+  const runBackendProcess = (): ReturnType<typeof runProcess> =>
+    runProcess({
+      command: launch.command,
+      cwd: options.cwd,
+      env: launch.env ?? {},
+      stdin: launch.stdin,
+      timeoutMs: options.timeoutMs,
+      ...(options.stallTimeoutMs === undefined ? {} : { stallTimeoutMs: options.stallTimeoutMs }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.onStall === undefined ? {} : { onStall: options.onStall }),
+      stdoutPath: join(dir, 'stdout.log'),
+      stderrPath: join(dir, 'stderr.log'),
+      onStdout: consume,
+    });
+  const process_ = options.backendSlots === undefined
+    ? await runBackendProcess()
+    : await options.backendSlots.run(adapter.name, runBackendProcess);
 
   if (carry.trim() !== '') handle(carry);
   usage = { ...usage, wallclock_ms: process_.wallclockMs };

@@ -3,6 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import type { BackendAdapter, BackendRefusal } from '../backend/types.js';
+import type { BackendSlots } from '../backend/slots.js';
 import {
   BACKEND_REFUSAL_PREDICATE,
   describeRefusal,
@@ -49,6 +50,12 @@ export interface AgentStepOptions {
   readonly cwd: string;
   readonly stepDir: string;
   readonly sessions: SessionRegistry;
+  /**
+   * Место бэкенда: вызов ждёт его перед запуском процесса и освобождает по
+   * завершении. Отсутствие — прогон без предела одновременности бэкенда,
+   * как в тестах, что вызывают исполнение шага напрямую.
+   */
+  readonly backendSlots?: BackendSlots;
   /** Текст, который отправляется вместе с промптом: контекст и разбор отказа. */
   readonly buildPrompt: (plan: AttemptPlan, previousFailure: string | undefined) => string;
   readonly env: (plan: AttemptPlan) => Readonly<Record<string, string>>;
@@ -112,7 +119,12 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
     ...(options.canContinue === undefined ? {} : { canContinue: options.canContinue }),
     run: async (plan) => {
       options.onAttemptStart?.(plan);
-      const startedAt = new Date().toISOString();
+      // Окно попытки открывается запуском процесса, а не постановкой в
+      // очередь за местом бэкенда: иначе при насыщенном пределе started_at…
+      // finished_at показывал бы чужое ожидание как время этого шага, расходясь
+      // с `usage.wallclock_ms`, который считает сам процесс. Значение задаётся
+      // и здесь: попытка, до процесса не дошедшая, обязана остаться с началом.
+      let startedAt = new Date().toISOString();
 
       const session = options.sessions.acquire(step.session);
       sessionId = session.id;
@@ -197,20 +209,29 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
         options.onUsage?.(usage, plan.attempt);
       };
 
-      const process_ = await runProcess({
-        command: launch.command,
-        cwd: options.cwd,
-        env: { ...options.env(plan), ...(launch.env ?? {}) },
-        stdin: launch.stdin,
-        timeoutMs: step.timeoutMs,
-        ...(options.stallTimeoutMs === undefined ? {} : { stallTimeoutMs: options.stallTimeoutMs }),
-        ...(options.graceMs === undefined ? {} : { graceMs: options.graceMs }),
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-        ...(options.onStall === undefined ? {} : { onStall: options.onStall }),
-        stdoutPath: join(options.stepDir, `stdout${suffix}.log`),
-        stderrPath: join(options.stepDir, `stderr${suffix}.log`),
-        onStdout: consume,
-      });
+      // Место бэкенда занято вокруг самого процесса: таймаут и детектор
+      // тишины отсчитываются от старта процесса, а не от постановки в
+      // очередь, — иначе ожидание места засчиталось бы попытке как простой.
+      const runBackendProcess = (): Promise<ProcessResult> => {
+        startedAt = new Date().toISOString();
+        return runProcess({
+          command: launch.command,
+          cwd: options.cwd,
+          env: { ...options.env(plan), ...(launch.env ?? {}) },
+          stdin: launch.stdin,
+          timeoutMs: step.timeoutMs,
+          ...(options.stallTimeoutMs === undefined ? {} : { stallTimeoutMs: options.stallTimeoutMs }),
+          ...(options.graceMs === undefined ? {} : { graceMs: options.graceMs }),
+          ...(options.signal === undefined ? {} : { signal: options.signal }),
+          ...(options.onStall === undefined ? {} : { onStall: options.onStall }),
+          stdoutPath: join(options.stepDir, `stdout${suffix}.log`),
+          stderrPath: join(options.stepDir, `stderr${suffix}.log`),
+          onStdout: consume,
+        });
+      };
+      const process_ = options.backendSlots === undefined
+        ? await runBackendProcess()
+        : await options.backendSlots.run(adapter.name, runBackendProcess);
 
       if (carry.trim() !== '') handleLine(carry);
       usage = { ...usage, wallclock_ms: process_.wallclockMs };

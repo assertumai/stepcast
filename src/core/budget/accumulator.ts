@@ -237,9 +237,9 @@ export class UsageAccumulator {
     this.waits.push({ start, end });
   }
 
-  /** Суммарная длительность всех ожиданий за прогон. */
+  /** Время, проведённое прогоном в ожидании: объединение интервалов, не сумма. */
   totalWaitMs(): number {
-    return this.waits.reduce((sum, wait) => sum + (wait.end - wait.start), 0);
+    return this.sleptMs();
   }
 
   /** Уложится ли ожидание длиной `durationMs` в объявленный предел с учётом уже проспанного. */
@@ -266,15 +266,58 @@ export class UsageAccumulator {
     }
   }
 
-  /** Сон, вычитаемый из области, начавшейся не раньше `sinceMs` (по умолчанию — весь). */
+  /**
+   * Сон, вычитаемый из области, начавшейся не раньше `sinceMs` (по умолчанию —
+   * весь).
+   *
+   * Интервалы объединяются, а не складываются: две работы, ждавшие сброса окна
+   * одновременно, проспали столько же, сколько одна. Сумма длительностей
+   * исчерпывала бы `max_wait` вдвое быстрее и вычитала бы из `wallclock`
+   * больше, чем прогон действительно проспал.
+   */
   private sleptMs(sinceMs?: number): number {
+    const clipped = this.waits
+      .map((wait) => ({ start: sinceMs === undefined ? wait.start : Math.max(wait.start, sinceMs), end: wait.end }))
+      .filter((wait) => wait.end > wait.start)
+      .sort((left, right) => left.start - right.start);
+
     let total = 0;
-    for (const wait of this.waits) {
-      if (sinceMs !== undefined && wait.end <= sinceMs) continue;
-      const start = sinceMs === undefined ? wait.start : Math.max(wait.start, sinceMs);
-      total += wait.end - start;
+    let mergedStart: number | undefined;
+    let mergedEnd = 0;
+    for (const wait of clipped) {
+      if (mergedStart === undefined || wait.start > mergedEnd) {
+        if (mergedStart !== undefined) total += mergedEnd - mergedStart;
+        mergedStart = wait.start;
+        mergedEnd = wait.end;
+        continue;
+      }
+      mergedEnd = Math.max(mergedEnd, wait.end);
     }
+    if (mergedStart !== undefined) total += mergedEnd - mergedStart;
     return total;
+  }
+
+  /**
+   * Перевёл ли потолок расход именно этого шага.
+   *
+   * При одновременном исполнении потолок прогона может упереться из-за
+   * соседней работы, пока попытка этого шага идёт. Приписать превышение ей
+   * значило бы объявить перерасходом успевшую попытку, которая на потолок
+   * ничего не потратила, — и заодно назвать в состоянии прогона две работы
+   * там, где превышение произошло на одной.
+   *
+   * Время и доля окна лимита ничьи: они принадлежат прогону целиком, и
+   * вычитать из них чей-то вклад нечего.
+   */
+  crossedBy(exceeded: Exceeded, jobId: string, stepId: string): boolean {
+    switch (exceeded.dimension) {
+      case 'tokens':
+        return exceeded.used - this.stepTotal(jobId, stepId) <= exceeded.limit;
+      case 'cost':
+        return exceeded.used - this.stepCostTotal(jobId, stepId) <= exceeded.limit;
+      default:
+        return true;
+    }
   }
 
   /** Первый потолок, который упёрся. Связывает тот, что ближе. */

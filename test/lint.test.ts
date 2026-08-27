@@ -184,6 +184,193 @@ jobs:
     assert.deepEqual(errors(diagnostics), []);
   });
 
+  // Спека pipeline-definition: «Ссылка на работу вне зависимостей при
+  // параллелизме предупреждается» — сценарий «Условие ссылается на соседа»
+  it('предупреждает об условии на соседнюю работу при concurrency больше единицы', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+concurrency: 2
+jobs:
+  review:
+    steps: [{ id: c, run: [echo, ok] }]
+  docs:
+    if: "jobs.review.status == 'success'"
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+      }),
+    );
+    assert.deepEqual(errors(diagnostics), []);
+    assert.ok(
+      warnings(diagnostics).some((message) => /docs/.test(message) && /review/.test(message)),
+      'предупреждение называет обе работы',
+    );
+  });
+
+  // Сценарий: «Ссылка на зависимость не предупреждается»
+  it('не предупреждает об условии на объявленную зависимость при concurrency больше единицы', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+concurrency: 2
+jobs:
+  review:
+    steps: [{ id: c, run: [echo, ok] }]
+  docs:
+    needs: [review]
+    if: "jobs.review.status == 'success'"
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+      }),
+    );
+    assert.deepEqual(
+      warnings(diagnostics).filter((message) => /обращается|ссылается/.test(message)),
+      [],
+    );
+  });
+
+  // Сценарий: «Последовательное исполнение не предупреждается» — при
+  // concurrency: 1 порядок определён объявлением, предупреждать не о чем.
+  it('не предупреждает о той же ссылке при concurrency: 1', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  review:
+    steps: [{ id: c, run: [echo, ok] }]
+  docs:
+    if: "jobs.review.status == 'success'"
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+      }),
+    );
+    assert.deepEqual(warnings(diagnostics), []);
+  });
+
+  // Сценарий, тот же перечень, для подстановки ${jobs.<id>.*} вне `if`
+  it('предупреждает о подстановке выхода соседней работы при concurrency больше единицы', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+version: 1
+kind: pipeline
+name: подстановка
+concurrency: 2
+budget: { tokens: 100k }
+jobs:
+  propose:
+    output:
+      from: думает
+    steps:
+      - id: думает
+        agent: fake
+        prompt: придумай
+        expect: [{ exit_code: 0 }]
+  implement:
+    steps:
+      - id: использует
+        run: [sh, -c, 'echo "\${jobs.propose.output.slug}" > slug.txt']
+        expect: [{ exit_code: 0 }]
+`,
+      }),
+    );
+    assert.ok(
+      warnings(diagnostics).some(
+        (message) =>
+          /Работа implement подставляет/.test(message) &&
+          /выход работы propose, не входящей/.test(message),
+      ),
+      'предупреждение называет обе работы',
+    );
+  });
+
+  // Сценарий: «Ссылка на зависимость не предупреждается», форма подстановки
+  it('не предупреждает о подстановке выхода объявленной зависимости', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+version: 1
+kind: pipeline
+name: подстановка
+concurrency: 2
+budget: { tokens: 100k }
+jobs:
+  propose:
+    output:
+      from: думает
+    steps:
+      - id: думает
+        agent: fake
+        prompt: придумай
+        expect: [{ exit_code: 0 }]
+  implement:
+    needs: [propose]
+    steps:
+      - id: использует
+        run: [sh, -c, 'echo "\${jobs.propose.output.slug}" > slug.txt']
+        expect: [{ exit_code: 0 }]
+`,
+      }),
+    );
+    assert.deepEqual(
+      warnings(diagnostics).filter((message) => /подставляет/.test(message)),
+      [],
+    );
+  });
+
+  // Перечень context_upstream отбирает выходы из работ выше по графу: имя за
+  // их пределами не отбирает ничего и оставляет блок беднее заявленного.
+  it('отклоняет context_upstream, называющий работу вне предшественников', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  propose:
+    steps: [{ id: c, run: [echo, ok] }]
+  implement:
+    context_upstream: [propose]
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+      }),
+    );
+    assert.ok(
+      errors(diagnostics).some(
+        (message) => /context_upstream работы implement/.test(message) && /propose/.test(message),
+      ),
+      'ошибка называет обе работы',
+    );
+  });
+
+  it('не трогает context_upstream, называющий объявленную зависимость', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  propose:
+    steps: [{ id: c, run: [echo, ok] }]
+  implement:
+    needs: [propose]
+    context_upstream: [propose]
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+      }),
+    );
+    assert.deepEqual(
+      errors(diagnostics).filter((message) => /context_upstream/.test(message)),
+      [],
+    );
+  });
+
   // Сценарий: «Подстановка вывода модели в командную строку»
   it('отклоняет вывод работы в строковой форме run и предлагает argv', () => {
     const diagnostics = lint(

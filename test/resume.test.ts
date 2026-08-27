@@ -521,6 +521,90 @@ jobs:
       undefined,
     );
   });
+
+  // Пайплайн, где первая переисполняемая работа состоит из одних `run`:
+  // читать выдержку в ней некому, адресатом обязана стать работа с агентом.
+  const RUN_THEN_AGENT = (condition: string): string => `
+version: 1
+kind: pipeline
+name: адресат-выдержки
+jobs:
+  prepare:
+    session: per_step
+    steps:
+      - id: готовит
+        run: [sh, -c, 'test -f маркер.txt']
+        expect: [{ exit_code: 0 }]
+  review:
+    needs: [prepare]
+    session: per_step${condition}
+    steps:
+      - id: думает
+        agent: fake
+        prompt: "разбери прошлый отказ"
+        expect: [{ exit_code: 0 }]
+`;
+
+  function talker(): (name: string) => BackendAdapter {
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })] });
+    return () => backend.adapter;
+  }
+
+  // Сценарий: «Выдержка достаётся работе, названной планом» — адресат назван
+  // по имени работы, а не по порядку переисполнения.
+  it('адресует выдержку работе с переисполняемым агентским шагом, а не первой переисполняемой', async () => {
+    const b = bed({ 'stepcast.yml': RUN_THEN_AGENT('') });
+
+    const first = await firstRun(b, talker());
+    assert.equal(first.status, 'failed', 'без маркера подготовка падает');
+
+    b.project.write('маркер.txt', 'теперь есть');
+
+    const plan = planFor(b, first);
+    assert.equal(
+      plan.steps.find((item) => item.job === 'prepare')?.decision.kind,
+      'rerun',
+      'prepare переисполняется первой',
+    );
+    assert.equal(plan.failureNoteJob, 'review', 'адресат — работа с агентским шагом');
+
+    const second = await resume(b, first, undefined, talker());
+    assert.equal(second.status, 'success');
+
+    const dir = findStepDir(second.journal.paths, 'review', 'думает');
+    assert.ok(dir !== undefined, 'каталог агентского шага не найден');
+    assert.match(readFileSync(join(dir, 'prompt.txt'), 'utf8'), /Прошлый прогон не дошёл до конца/);
+    assert.ok(
+      !readEvents(second.journal.paths).some((event) => event.kind === 'resume.note_undelivered'),
+      'доставленная выдержка о недоставке не сообщает',
+    );
+  });
+
+  // Сценарий: «Адресат не исполнялся» — работу сняло условие, и выдержка
+  // теряется. Терять её молча нельзя: прогон обязан назвать несостоявшегося
+  // адресата.
+  it('сообщает о недоставленной выдержке, когда адресата снимает условие', async () => {
+    const b = bed({
+      'stepcast.yml': RUN_THEN_AGENT(`
+    if: "jobs.prepare.status == 'failed'"`),
+    });
+
+    const first = await firstRun(b, talker());
+    assert.equal(first.status, 'failed');
+
+    b.project.write('маркер.txt', 'теперь есть');
+
+    const second = await resume(b, first, undefined, talker());
+    assert.equal(findStepDir(second.journal.paths, 'review', 'думает'), undefined);
+
+    const undelivered = readEvents(second.journal.paths).find(
+      (event) => event.kind === 'resume.note_undelivered',
+    );
+    assert.ok(undelivered !== undefined, 'о потерянной выдержке должно быть событие');
+    if (undelivered?.kind === 'resume.note_undelivered') {
+      assert.equal(undelivered.job, 'review');
+    }
+  });
 });
 
 describe('run-resume: объяснение и пробный запуск', () => {

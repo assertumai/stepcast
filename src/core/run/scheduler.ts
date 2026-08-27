@@ -7,9 +7,11 @@ import { HaltCause, type HaltCauseValue } from './halt.js';
 /**
  * Планировщик работ.
  *
- * Исполнение последовательное, но модель множественная: на каждом обороте
- * берётся множество готовых работ и из него выбирается одна. Параллелизм
- * позже станет снятием ограничения на размер выборки, а не переписыванием.
+ * На каждом обороте берётся множество готовых работ, и из него запускается
+ * столько, сколько позволяет предел одновременности; освободившееся место
+ * занимает следующая готовая. Выбор на запуск идёт по порядку объявления —
+ * порядок завершения зависит от длительности работ, и от него не зависит
+ * ничего: ни решение о запуске, ни состав контекста, ни ключ шага.
  *
  * Ввода-вывода здесь нет намеренно — это делает поведение графа проверяемым
  * без процессов, файлов и бэкендов.
@@ -42,6 +44,13 @@ export interface ScheduleOptions {
   readonly execute: (job: Job, scope: Record<string, unknown>) => Promise<JobOutcome>;
   /** Дополнительные значения для условий и подстановок: `run`, `env`. */
   readonly scopeExtras?: Readonly<Record<string, unknown>>;
+  /**
+   * Предел числа одновременно идущих работ. Приходит уже сведённым с потолком
+   * конфигурации: планировщик знает граф, а не конфигурацию, и читать её здесь
+   * значило бы завести второй источник истины о том же числе. Отсутствие —
+   * единица: последовательное исполнение в порядке объявления.
+   */
+  readonly concurrency?: number;
   readonly signal?: AbortSignal;
   readonly onSettled?: (job: Job, outcome: JobOutcome) => void | Promise<void>;
 }
@@ -56,8 +65,13 @@ export async function schedule(options: ScheduleOptions): Promise<ScheduleResult
   const graph = options.graph ?? buildGraph(pipeline).graph;
   const settled = new Map<string, JobOutcome>();
   const order: string[] = [];
+  // Предел не меньше единицы: ноль или отрицательное означали бы прогон, в
+  // котором ни одна работа не может начаться.
+  const limit = Math.max(1, Math.floor(options.concurrency ?? 1));
 
   let stopping = false;
+  /** Ошибка исполнителя, придержанная до завершения идущих работ. */
+  let failure: unknown;
 
   const settle = async (job: Job, outcome: JobOutcome): Promise<void> => {
     settled.set(job.id, outcome);
@@ -112,47 +126,81 @@ export async function schedule(options: ScheduleOptions): Promise<ScheduleResult
   };
 
   const runPhase = async (jobs: readonly Job[], phase: 'main' | 'terminal'): Promise<void> => {
+    /** Идущие работы: обещание удаляет себя из множества по завершении. */
+    const running = new Map<string, Promise<void>>();
+    /** Работа взята в оборот: запущена или уже отдала исход. */
+    const claimed = new Set<string>();
+
     for (;;) {
-      const ready = jobs.filter((job) => {
-        if (settled.has(job.id)) return false;
+      while (running.size < limit) {
+        const job = jobs.find(
+          (candidate) =>
+            !claimed.has(candidate.id) &&
+            (graph.dependencies.get(candidate.id) ?? []).every((id) => settled.has(id)),
+        );
+        if (job === undefined) break;
+
+        claimed.add(job.id);
         const dependencies = graph.dependencies.get(job.id) ?? [];
-        return dependencies.every((id) => settled.has(id));
-      });
 
-      if (ready.length === 0) break;
+        // Отмена, условия и остановка после отказа решаются в момент запуска,
+        // а не при сборе множества готовых: работа, ставшая готовой, пока шла
+        // соседняя, обязана увидеть её исход — иначе решение зависело бы от
+        // того, кто когда попал в выборку.
+        if (options.signal?.aborted === true && phase === 'main') {
+          await settle(job, {
+            status: 'canceled',
+            reason: 'прогон отменён',
+            cause: HaltCause.canceled,
+          });
+          continue;
+        }
 
-      // Из множества готовых берём одну: порядок объявления делает выбор
-      // детерминированным при любом составе множества.
-      const job = ready[0] as Job;
-      const dependencies = graph.dependencies.get(job.id) ?? [];
+        // Условия проверяются раньше fail_fast по двум причинам. Во-первых,
+        // «зависимость упала» объясняет пропуск точнее, чем «остановлено после
+        // отказа». Во-вторых, остановка касается продолжения работы, а не её
+        // разбора: работы с on: failure и on: always должны выполниться и после
+        // отказа, иначе разбирать его будет нечем.
+        const decision = decide(job, dependencies);
+        if (decision !== undefined) {
+          await settle(job, decision);
+          continue;
+        }
 
-      if (options.signal?.aborted === true && phase === 'main') {
-        await settle(job, {
-          status: 'canceled',
-          reason: 'прогон отменён',
-          cause: HaltCause.canceled,
+        if (stopping && phase === 'main' && job.on === 'success') {
+          await settle(job, { status: 'skipped', reason: 'остановлено после отказа (fail_fast)' });
+          continue;
+        }
+
+        const scope = conditionScope();
+        const task = (async () => {
+          try {
+            await settle(job, await options.execute(job, scope));
+          } catch (error) {
+            // Работа, не отдавшая исхода вовсе, — дефект исполнителя. Ошибка
+            // придерживается до завершения остальных идущих: оборвать их на
+            // середине хуже, чем сообщить о ней мгновением позже.
+            failure ??= error;
+            stopping = true;
+          }
+        })().then(() => {
+          running.delete(job.id);
         });
-        continue;
+        running.set(job.id, task);
       }
 
-      // Условия проверяются раньше fail_fast по двум причинам. Во-первых,
-      // «зависимость упала» объясняет пропуск точнее, чем «остановлено после
-      // отказа». Во-вторых, остановка касается продолжения работы, а не её
-      // разбора: работы с on: failure и on: always должны выполниться и после
-      // отказа, иначе разбирать его будет нечем.
-      const decision = decide(job, dependencies);
-      if (decision !== undefined) {
-        await settle(job, decision);
-        continue;
-      }
-
-      if (stopping && phase === 'main' && job.on === 'success') {
-        await settle(job, { status: 'skipped', reason: 'остановлено после отказа (fail_fast)' });
-        continue;
-      }
-
-      await settle(job, await options.execute(job, conditionScope()));
+      if (running.size === 0) break;
+      // Ждём ближайшего завершения, а не всех: место освобождается по одному,
+      // и следующая готовая работа занимает его сразу.
+      await Promise.race(running.values());
     }
+
+    // Дефект исполнителя — не исход графа: приписывать работе, упавшей с
+    // ошибкой, пропуск «зависимости не разрешились» значило бы записать в
+    // состояние прогона неправду, а её соседям по второй фазе — дать
+    // основание считать граф исполненным. Ошибка уходит наверх, как только
+    // идущие работы отдали исход.
+    if (failure !== undefined) return;
 
     // Работы, до которых очередь не дошла: при неразрешимом графе линт бы уже
     // сообщил, здесь это страховка от бесконечного ожидания.
@@ -163,8 +211,13 @@ export async function schedule(options: ScheduleOptions): Promise<ScheduleResult
     }
   };
 
+  // Вторая фаза начинается только после того, как основной граф исполнился
+  // весь: работа с `needs: all` зависит от всех разом, и начать её вперемешку
+  // с идущими значило бы дать ей неполную картину.
   await runPhase(graph.main, 'main');
+  if (failure !== undefined) throw failure;
   await runPhase(graph.terminal, 'terminal');
+  if (failure !== undefined) throw failure;
 
   const results: SettledJob[] = order.map((id) => ({
     id,

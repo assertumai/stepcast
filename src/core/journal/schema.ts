@@ -336,15 +336,19 @@ export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('step.stalled'), job: z.string(), step: z.string(), silent_ms: z.number() }).strict(),
   z.object({ ...eventBase, kind: z.literal('expect.failed'), job: z.string(), step: z.string(), attempt: z.number().int().positive(), predicate: z.string(), detail: z.string().optional() }).strict(),
   z.object({ ...eventBase, kind: z.literal('env.denied'), name: z.string(), pattern: z.string(), scope: z.string() }).strict(),
-  z.object({ ...eventBase, kind: z.literal('context.denied'), path: z.string(), pattern: z.string() }).strict(),
+  z.object({ ...eventBase, kind: z.literal('context.denied'), job: z.string().optional(), step: z.string().optional(), path: z.string(), pattern: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('context.downgraded'), job: z.string(), step: z.string(), path: z.string(), tokens: z.number() }).strict(),
   z.object({ ...eventBase, kind: z.literal('context.note_truncated'), job: z.string(), step: z.string(), original_tokens: z.number(), final_tokens: z.number() }).strict(),
-  z.object({ ...eventBase, kind: z.literal('budget.warning'), scope: z.string(), used: z.number(), limit: z.number() }).strict(),
-  z.object({ ...eventBase, kind: z.literal('budget.exceeded'), scope: z.string(), used: z.number(), limit: z.number() }).strict(),
+  z.object({ ...eventBase, kind: z.literal('budget.warning'), scope: z.string(), job: z.string().optional(), step: z.string().optional(), used: z.number(), limit: z.number() }).strict(),
+  // Работа и шаг названы отдельно от `scope`: имя области — текст для чтения,
+  // а разбирать чересполосный поток нужно по идентификаторам.
+  z.object({ ...eventBase, kind: z.literal('budget.exceeded'), scope: z.string(), job: z.string().optional(), step: z.string().optional(), used: z.number(), limit: z.number() }).strict(),
   z.object({
     ...eventBase,
     kind: z.literal('budget.waiting'),
     scope: z.string(),
+    job: z.string().optional(),
+    step: z.string().optional(),
     dimension: z.literal('rate_limit'),
     // Отсутствует, когда ожидание вызвано отказом бэкенда, а не превышением
     // объявленного `rate_limit_pct`: измеренного порога тут нет.
@@ -352,7 +356,7 @@ export const EventSchema = z.discriminatedUnion('kind', [
     resets_at: z.number(),
     wait_ms: z.number(),
   }).strict(),
-  z.object({ ...eventBase, kind: z.literal('budget.resumed'), actual_ms: z.number() }).strict(),
+  z.object({ ...eventBase, kind: z.literal('budget.resumed'), job: z.string().optional(), step: z.string().optional(), actual_ms: z.number() }).strict(),
   // Неустранимый отказ бэкенда: виден без чтения stdout.log шага.
   z.object({
     ...eventBase,
@@ -388,6 +392,11 @@ export const EventSchema = z.discriminatedUnion('kind', [
   // перенесено из исходного прогона, потому что каталог нового пуст.
   z.object({ ...eventBase, kind: z.literal('run_dir.carried'), path: z.string(), source: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('bookkeeping.failed'), operation: z.string(), job: z.string().optional(), step: z.string().optional(), detail: z.string() }).strict(),
+  // Выдержка о прошлом отказе так и не досталась никому: адресат назван
+  // планом, но его агентский шаг не исполнялся — работа пропущена по `if`
+  // или `on`. Молчать нельзя: возобновление выглядело бы как разбор отказа,
+  // которого агент не видел.
+  z.object({ ...eventBase, kind: z.literal('resume.note_undelivered'), job: z.string().optional(), detail: z.string() }).strict(),
 ]);
 
 export type Event = z.infer<typeof EventSchema>;

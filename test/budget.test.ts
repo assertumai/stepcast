@@ -16,6 +16,7 @@ import {
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { readEvents, readStatus, readUsage, resolveRun } from '../src/core/journal/reader.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
+import { createWaitState } from '../src/core/run/waitState.js';
 import { ExitCode } from '../src/core/errors.js';
 import type { Config } from '../src/core/config/resolve.js';
 import {
@@ -352,6 +353,101 @@ describe('budget-wait-on-exceed: аккумулятор', () => {
     usage.recordWait(0, 100);
     assert.equal(usage.wouldExceedMaxWait(50, 200), false);
     assert.equal(usage.wouldExceedMaxWait(150, 200), true);
+  });
+
+  // Сценарий: «Непересекающиеся ожидания складываются»
+  it('непересекающиеся ожидания складываются', () => {
+    const usage = new UsageAccumulator(() => 1);
+    usage.recordWait(0, 600_000);
+    usage.recordWait(1_000_000, 1_600_000);
+    assert.equal(usage.totalWaitMs(), 1_200_000);
+  });
+
+  // Сценарий: «Два одновременных ожидания считаются один раз»
+  it('одновременные ожидания дают в учёт своё объединение, а не сумму', () => {
+    const usage = new UsageAccumulator(() => 1);
+    usage.recordWait(0, 600_000);
+    usage.recordWait(0, 600_000);
+    assert.equal(usage.totalWaitMs(), 600_000, 'прогон проспал десять минут, а не двадцать');
+  });
+
+  it('пересекающиеся ожидания сливаются в один интервал', () => {
+    const usage = new UsageAccumulator(() => 1);
+    usage.recordWait(0, 100);
+    usage.recordWait(60, 200);
+    assert.equal(usage.totalWaitMs(), 200);
+  });
+
+  it('вложенное ожидание не добавляет к учёту ничего', () => {
+    const usage = new UsageAccumulator(() => 1);
+    usage.recordWait(0, 300);
+    usage.recordWait(100, 200);
+    assert.equal(usage.totalWaitMs(), 300);
+  });
+
+  // Сценарий: «Вычитание из wallclock не превышает проспанного»
+  it('одновременные ожидания вычитаются из wallclock один раз', () => {
+    const usage = new UsageAccumulator(() => 1);
+    const startedAt = Date.now() - 1_000;
+    usage.recordWait(startedAt, startedAt + 400);
+    usage.recordWait(startedAt, startedAt + 400);
+
+    const found = usage.check([
+      { kind: 'job', name: 'работа', jobId: 'j', startedAt, budget: { wallclockMs: 500, onExceed: 'stop' } },
+    ]);
+    assert.ok(
+      found !== undefined,
+      'из тысячи миллисекунд вычитаются четыреста, а не восемьсот: потолок в пятьсот превышен',
+    );
+  });
+
+  it('предел max_wait исчерпывается объединением, а не суммой', () => {
+    const usage = new UsageAccumulator(() => 1);
+    usage.recordWait(0, 600_000);
+    usage.recordWait(0, 600_000);
+    assert.equal(
+      usage.wouldExceedMaxWait(300_000, 1_000_000),
+      false,
+      'два одновременных ожидания по десять минут не должны исчерпать предел в час',
+    );
+  });
+});
+
+describe('budget-wait-on-exceed: множество ожиданий прогона', () => {
+  it('в состояние идёт ближайший момент пробуждения', () => {
+    const waits = createWaitState();
+    waits.begin('2026-08-27T12:00:00.000Z');
+    waits.begin('2026-08-27T10:00:00.000Z');
+    assert.equal(waits.earliest(), '2026-08-27T10:00:00.000Z');
+  });
+
+  it('снятие одного ожидания не убирает чужой момент', () => {
+    const waits = createWaitState();
+    const first = waits.begin('2026-08-27T10:00:00.000Z');
+    waits.begin('2026-08-27T12:00:00.000Z');
+
+    first();
+    assert.equal(
+      waits.earliest(),
+      '2026-08-27T12:00:00.000Z',
+      'вторая работа всё ещё спит — момент её пробуждения остаётся в состоянии',
+    );
+  });
+
+  it('одинаковые моменты снимаются по отдельности', () => {
+    const waits = createWaitState();
+    const first = waits.begin('2026-08-27T10:00:00.000Z');
+    waits.begin('2026-08-27T10:00:00.000Z');
+
+    first();
+    assert.equal(waits.earliest(), '2026-08-27T10:00:00.000Z');
+  });
+
+  it('без ожиданий момента пробуждения нет', () => {
+    const waits = createWaitState();
+    const release = waits.begin('2026-08-27T10:00:00.000Z');
+    release();
+    assert.equal(waits.earliest(), undefined);
   });
 
   it('sealStep сохраняет расход прерванной попытки, а переисполнение считает заново под тем же именем', () => {
@@ -1396,5 +1492,97 @@ jobs:
       },
     };
     assert.equal(UsageReportSchema.safeParse(oldStepNode).success, true);
+  });
+});
+
+describe('budget-parallel: превышение при нескольких идущих работах', () => {
+  // Работы `дорогая` и `долгая` идут одновременно и обращаются к разным
+  // бэкендам — предел мест их не выстраивает в очередь. Командный шаг
+  // `дорогой` держит её агентский вызов позади начала долгого: к моменту, когда
+  // расход перевалит потолок прогона, попытка соседа уже идёт.
+  const THREE_JOBS = `
+version: 1
+kind: pipeline
+name: budget-parallel
+concurrency: 2
+budget:
+  cost: 1
+jobs:
+  дорогая:
+    steps:
+      - id: ждёт
+        run: [sh, -c, 'sleep 0.2']
+        expect:
+          - exit_code: 0
+      - id: тратит
+        agent: дорогой
+        prompt: "трать"
+        expect:
+          - exit_code: 0
+  долгая:
+    steps:
+      - id: думает
+        agent: дешёвый
+        prompt: "думай"
+        expect:
+          - exit_code: 0
+  третья:
+    steps:
+      - id: думает
+        agent: дешёвый
+        prompt: "думай"
+        expect:
+          - exit_code: 0
+`;
+
+  // Спека pipeline-execution: «Превышение обнаружено при двух идущих работах»
+  // и «Прогон останавливается с объявленной причиной».
+  it('доводит начатую работу до конца, новых не запускает и называет причину', async () => {
+    const project = makeProject({ 'stepcast.yml': THREE_JOBS });
+    // Имя адаптера у поддельного бэкенда общее, а место считается по нему:
+    // без переименования оба вызова встали бы в одну очередь и перестали быть
+    // одновременными.
+    const дорогойБазовый = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 10, tokensOut: 0, costUsd: 2 })],
+    });
+    const дорогой: FakeBackend = {
+      ...дорогойБазовый,
+      adapter: { ...дорогойБазовый.adapter, name: 'дорогой' },
+    };
+    const дешёвый = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 10, tokensOut: 0, costUsd: 0 })],
+      // Дольше, чем нужно дорогой работе на превышение: место освобождается
+      // уже после остановки, и третьей работе взяться неоткуда.
+      hangMs: 1_200,
+    });
+
+    const result = await run(project, { дорогой, дешёвый });
+
+    assert.equal(result.status, 'budget_exceeded');
+    assert.equal(дешёвый.invocations.length, 1, 'третья работа после превышения не запускается');
+
+    const status = readStatus(result.journal.paths);
+    const jobStatus = (id: string): string | undefined =>
+      status.jobs.find((job) => job.id === id)?.status;
+    assert.equal(jobStatus('дорогая'), 'budget_exceeded');
+    assert.equal(
+      jobStatus('долгая'),
+      'success',
+      'идущая попытка доведена до конца, и чужой перерасход её исход не переписывает',
+    );
+    assert.equal(jobStatus('третья'), 'skipped', 'после превышения новых работ не запускается');
+
+    // Состояние называет работу и шаг, на которых превышение обнаружено.
+    assert.equal(status.resume?.blocked_by, 'дорогая');
+    assert.equal(stepStatus(result, 'дорогая', 'тратит'), 'budget_exceeded');
+
+    const exceeded = readEvents(result.journal.paths).find(
+      (event) => event.kind === 'budget.exceeded',
+    );
+    assert.ok(exceeded !== undefined);
+    if (exceeded?.kind === 'budget.exceeded') {
+      assert.equal(exceeded.job, 'дорогая');
+      assert.equal(exceeded.step, 'тратит');
+    }
   });
 });

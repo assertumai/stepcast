@@ -192,7 +192,10 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
       );
     }
 
-    checkCondition(job, graph.upstream.get(job.id) ?? new Set(), declaredInputs, pipeline.file, push);
+    const upstreamOf = graph.upstream.get(job.id) ?? new Set();
+    checkCondition(job, upstreamOf, declaredInputs, pipeline.concurrency, pipeline.file, push);
+    checkJobSubstitutions(job, upstreamOf, pipeline.concurrency, substitutions, pipeline.file, push);
+    checkContextUpstream(job, upstreamOf, push);
     checkEnv(job.env, envDenyMatchers, pipeline.envDeny, job.source, `${at}.env`, push);
 
     if (job.context.length > 0 && !job.steps.some((step) => step.kind === 'agent')) {
@@ -268,6 +271,7 @@ function checkCondition(
   job: Job,
   upstream: ReadonlySet<string>,
   declaredInputs: ReadonlySet<string>,
+  concurrency: number,
   file: string,
   push: (diagnostic: Diagnostic) => void,
 ): void {
@@ -320,15 +324,113 @@ function checkCondition(
       // Условие вычисляется в момент готовности работы: до этого момента
       // известны исходы только тех работ, что выше по графу.
       if (other !== undefined && job.needs !== 'all' && !upstream.has(other)) {
-        push({
-          severity: 'error',
-          message: `Условие работы ${job.id} обращается к работе ${other}, которой нет выше по графу`,
-          file,
-          at,
-          hint: `Добавьте ${other} в needs или используйте needs: all`,
-        });
+        // При concurrency: 1 работы идут в порядке объявления — обращение
+        // остаётся строгой ошибкой, потому что от неё зависит порядок,
+        // который явно нигде не заявлен. При параллелизме тот же порядок
+        // никем не гарантирован вовсе, и жёсткий отказ здесь — не о точности
+        // диагностики, а о старом правиле; сообщать о риске правильнее
+        // предупреждением, называющим причину, чем гасить прогон ошибкой,
+        // которая в части случаев (соседняя работа успела раньше) окажется
+        // ложной тревогой.
+        if (concurrency > 1) {
+          push({
+            severity: 'warning',
+            message: `Условие работы ${job.id} ссылается на работу ${other}, не входящую в её зависимости`,
+            file,
+            at,
+            hint: `При concurrency: ${concurrency} исход ${other} к этому моменту может быть ещё не известен — добавьте её в needs или используйте needs: all`,
+          });
+        } else {
+          push({
+            severity: 'error',
+            message: `Условие работы ${job.id} обращается к работе ${other}, которой нет выше по графу`,
+            file,
+            at,
+            hint: `Добавьте ${other} в needs или используйте needs: all`,
+          });
+        }
       }
     }
+  }
+}
+
+/**
+ * Подстановки `${jobs.<id>.*}` в определении работы (контекст, env, run,
+ * бюджет — всё, что не `if`), называющие работу вне её зависимостей.
+ *
+ * В отличие от `if`, эти подстановки читаются во время исполнения самого
+ * шага, а не в момент готовности работы, — и при `concurrency: 1` часто
+ * оказываются безобидными за счёт порядка объявления. Полагаться на этот
+ * порядок явно не стоит, но и запрещать его как ошибку — значит гасить
+ * пайплайны, которые до сих пор работали. Предупреждение годится ровно там,
+ * где риск реален: при параллелизме, когда объявленный порядок ничего не
+ * гарантирует.
+ */
+function checkJobSubstitutions(
+  job: Job,
+  upstream: ReadonlySet<string>,
+  concurrency: number,
+  substitutions: ExpandedPipeline['substitutions'],
+  file: string,
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  if (concurrency <= 1) return;
+
+  const prefix = `jobs.${job.id}.`;
+  const warned = new Set<string>();
+
+  for (const [key, list] of substitutions) {
+    if (!key.startsWith(prefix)) continue;
+
+    for (const item of list) {
+      if (item.namespace !== 'jobs') continue;
+      // path подстановки уже без пространства: у `${jobs.propose.output.slug}`
+      // это `propose.output.slug`, поэтому идентификатор работы — первый сегмент.
+      const other = item.path.split('.')[0];
+      if (other === undefined || other === job.id) continue;
+      if (job.needs === 'all' || upstream.has(other)) continue;
+      if (warned.has(other)) continue;
+      warned.add(other);
+
+      push({
+        severity: 'warning',
+        message: `Работа ${job.id} подставляет ${item.expression} — выход работы ${other}, не входящей в её зависимости`,
+        file,
+        at: key,
+        hint: `При concurrency: ${concurrency} исход ${other} к этому моменту может быть ещё не известен — добавьте её в needs или используйте needs: all`,
+      });
+    }
+  }
+}
+
+/**
+ * Перечень `context_upstream`, называющий работу вне предшественников.
+ *
+ * Блок контекста собирается из выходов работ выше по графу, и имя за их
+ * пределами в перечне не отбирает ничего: работа, названная явно, в блок не
+ * попадает, и шаг молча получает контекст беднее заявленного. Это ошибка
+ * определения — перечень называет ровно то, что автор хотел видеть.
+ */
+function checkContextUpstream(
+  job: Job,
+  upstream: ReadonlySet<string>,
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  const selector = job.contextUpstream;
+  if (selector === 'all' || selector === 'none') return;
+
+  for (const other of selector) {
+    if (upstream.has(other)) continue;
+    push({
+      severity: 'error',
+      message: `context_upstream работы ${job.id} называет работу ${other}, которой нет выше по графу`,
+      file: job.source,
+      at: `jobs.${job.id}.context_upstream`,
+      hint:
+        other === job.id
+          ? 'Работа не может взять в контекст собственный выход'
+          : `Добавьте ${other} в needs или уберите её из context_upstream`,
+    });
   }
 }
 

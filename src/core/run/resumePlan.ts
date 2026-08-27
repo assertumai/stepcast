@@ -18,7 +18,7 @@ import type { JobRecord, RunManifest, RunStatus, StepRecord } from '../journal/s
 import { expandPipeline } from '../pipeline/expand.js';
 import { jobLockHash } from '../pipeline/lock.js';
 import { definitionFiles, type ExpandedPipeline, type Job, type Pipeline, type Step } from '../pipeline/model.js';
-import { buildGraph, executionOrder } from '../graph.js';
+import { buildGraph, executionOrder, upstreamOutputs } from '../graph.js';
 import { computeStepKey, upstreamForKey } from './stepKey.js';
 
 /**
@@ -68,6 +68,18 @@ export interface ResumePlan {
   readonly restore?: { readonly anchor: Anchor; readonly paths: readonly string[] };
   /** Ничего переиспользовать не удалось: пайплайн идёт с начала. */
   readonly fromScratch: boolean;
+  /**
+   * Работа, которой достаётся выдержка о прошлом отказе: первая в порядке
+   * исполнения, чей **агентский** шаг переисполняется. Названа планом, а не
+   * выведена из прогона: выдержку разбирает тот, кто отказ переигрывает, а при
+   * параллельном исполнении «первый переисполняемый шаг» — это тот, кто успел,
+   * то есть никто определённый.
+   *
+   * Требование про агентский шаг здесь не украшение: у работы из одних `run`
+   * выдержку читать некому, и назвав её адресатом, план потерял бы выдержку
+   * молча. Пусто, если переисполняемых агентских шагов в плане нет вовсе.
+   */
+  readonly failureNoteJob?: string;
 }
 
 export interface SourceRun {
@@ -168,7 +180,8 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
   const changed = excludeDefinitionFiles(options.changed, pipeline, cwd);
   // Порядок обхода — тот, в котором работы доходили до исполнения: от него
   // зависят и каскад пересчёта, и состав выходов работ выше по графу.
-  const order = executionOrder(buildGraph(pipeline).graph);
+  const graph = buildGraph(pipeline).graph;
+  const order = executionOrder(graph);
   // Что произвёл сам исходный прогон: считается один раз на план, а не на
   // каждый шаг.
   const producedFrom = attributionIndex(source, options.producedPaths, order);
@@ -227,7 +240,10 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
         isAbove,
         isFromPoint,
         options,
-        upstream,
+        // Тот же состав, что видит исполнитель: работы выше по графу, а не
+        // всё, что успело завершиться. Иначе ключ, посчитанный планом, не
+        // совпал бы с записанным прогоном, и переиспользование отказало бы.
+        upstream: upstreamOutputs(graph, job.id, upstream),
         changed,
         producedAfter: producedFrom.get(address) ?? EMPTY_SET,
         outputUnrecoverable,
@@ -265,6 +281,14 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
 
   const coarsened = coarsenSharedSessions(pipeline.jobs, steps);
   const anyReuse = coarsened.some((plan) => plan.decision.kind === 'reuse');
+  const agentAddresses = new Set(
+    pipeline.jobs.flatMap((job) =>
+      job.steps.filter((step) => step.kind === 'agent').map((step) => `${job.id}/${step.id}`),
+    ),
+  );
+  const failureNoteJob = coarsened.find(
+    (plan) => plan.decision.kind === 'rerun' && agentAddresses.has(`${plan.job}/${plan.step}`),
+  )?.job;
   const anchor =
     lastReused?.tree_id === undefined
       ? undefined
@@ -287,6 +311,7 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
       ? { restore: { anchor, paths: restorable.sort() } }
       : {}),
     fromScratch: !anyReuse,
+    ...(failureNoteJob === undefined ? {} : { failureNoteJob }),
   };
 }
 

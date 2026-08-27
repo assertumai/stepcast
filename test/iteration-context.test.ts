@@ -348,6 +348,7 @@ jobs:
           observedInputs: new Map(),
           ignoredEdits: [],
           fromScratch: true,
+          failureNoteJob: 'работа',
         },
       },
     });
