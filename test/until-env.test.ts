@@ -84,6 +84,29 @@ jobs:
     assert.equal((await run(project)).status, 'success');
   });
 
+  it('STEPCAST_BIN доходит до проверки цикла', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: checked
+workspace: { mode: cwd }
+jobs:
+  looped:
+    until:
+      max_iterations: 1
+      check:
+        - cmd: 'test -n "$STEPCAST_BIN"'
+    steps:
+      - id: noop
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`,
+    });
+
+    assert.equal((await run(project)).status, 'success');
+  });
+
   it('переменная уровня шага проверке цикла не объявляется', async () => {
     const project = makeProject({
       'stepcast.yml': `

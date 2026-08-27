@@ -1,28 +1,35 @@
 # Петля саморазвития: stepcast улучшает сам stepcast.
 #
-# Один заход берёт первый свободный пункт из backlog.md, заводит под него
-# OpenSpec-изменение, реализует до зелёного npm run check, ревьюит, исправляет
-# находки, проверяет ещё раз начисто и коммитит — по коммиту на улучшение.
+# Заход берёт до двух свободных пунктов из backlog.md — по одному на дорожку
+# — и ведёт их одновременно: propose → plan → implement → review →
+# fix-review → verify на каждой. Дорожка без свободного пункта пропускает всю
+# свою цепочку. После того как обе дорожки дошли до verify (или были
+# пропущены), work merge накладывает зелёные дорожки на дерево проекта по
+# очереди, проверяя каждую свежим npm run check перед коммитом. work finalize
+# проставляет failed пунктам дорожек, которые до done не дошли.
 #
 #   stepcast lint .stepcast/pipelines/self-improve.yml
 #   stepcast run  .stepcast/pipelines/self-improve.yml
 #
 # Требует чистого рабочего дерева: отказ прошлого захода останавливает петлю до
 # разбора человеком, а не наслаивает следующее улучшение на сломанный код.
+# Чистоту проверяет work slots, до того как какая-либо дорожка тронет копию.
 
 version: 1
 kind: pipeline
 name: self-improve
 
-# cwd вынужденно: изолирующие режимы дают каждой работе снимок от исходного
-# HEAD, и review не увидел бы правок implement, а verify собирал бы
-# неизменённый код. Отсюда же concurrency: 1 — работы и так строго
-# последовательны. Снимается пунктом очереди dependent-job-workspace.
+# worktree: дорожки идут одновременно и не должны видеть правок друг друга —
+# review одной не имеет права застать implement другой. slots, merge и
+# finalize переопределяют режим на cwd: они не производят параллельных правок
+# кода и должны видеть/трогать дерево проекта напрямую.
 workspace:
-  mode: cwd
+  mode: worktree
 
-concurrency: 1
-fail_fast: true
+# По числу дорожек: меньше — и вторая дожидалась бы свободного места
+# впустую, хотя обе не зависят друг от друга до merge.
+concurrency: 2
+fail_fast: false
 
 # CLAUDE.md здесь сознательно нет: в этом репозитории его и не заводили, а
 # Claude Code подгружает его сам — свой и родительские, — и stepcast этого не
@@ -44,63 +51,123 @@ defaults:
   agent: claude
   session: shared
 
-# Единственный потолок — на весь заход. Бюджетов на отдельных работах нет
-# сознательно: billable считает чтение кеша с весом, и у агентской работы,
-# которая много читает файлы, он выходит примерно вдесятеро больше реального
-# диалога. Выставлять такие потолки на глаз нельзя, а недооценка обрывает
-# заход посреди работы. Цена решения — одна разговорившаяся работа способна
-# съесть весь запас; поймать это можно будет, когда появится показ расхода
-# (пункт очереди usage-visibility). Значения — потолок limits из конфигурации:
-# выше него пайплайн подняться не может.
+# Единственный потолок — на весь заход, денежный, а не токенный: две дорожки
+# читают контекст параллельно, и трафик прогона (см. limits в конфигурации)
+# перестал быть надёжным ориентиром на двух одновременных сессиях. Прогон,
+# стоивший $16 на одной дорожке, на двух укладывается кратно с запасом ниже
+# потолка limits.cost конфигурации — выше него подняться нельзя.
 budget:
-  # Считается трафик прогона, а не объём контекста: сумма префиксов по всем
-  # обращениям к API. У сессии на 147 обращений это 36.8M чтения кэша при
-  # 340k в контексте, поэтому величина не соотносится с окном модели и
-  # растёт квадратично длине сессии. Прежние 5M исчерпывались на шестой
-  # работе из семи.
-  tokens: 20M
+  cost: $40
   wallclock: 4h
   rate_limit_pct: 80
   # on_exceed: wait реализован и усыпляет прогон до сброса окна подписки, но
-  # потолок токенов он не ждёт — тот останавливает прогон в любом случае.
+  # денежный потолок он не ждёт — тот останавливает прогон в любом случае.
   # Здесь stop сознательно: ночного захода нет, а сон до утра приятнее
   # встретить осознанно.
   on_exceed: stop
 
 jobs:
 
-  propose:
+  slots:
+    uses: ../jobs/slots.yml
+    workspace: { mode: cwd }
+
+  # --- Дорожка a ---
+
+  propose-a:
     uses: ../jobs/propose.yml
+    with: { lane: a }
+    lane: a
+    needs: [slots]
+    workspace: { inherit: none }
+    # Неопределённое значение (слот не заполнен, а то и вовсе work slots не
+    # дошла до успеха) сравнением с true даёт false — работа пропускается,
+    # а не запускается на пустоте.
+    if: "jobs.slots.output.lanes.a.filled == true"
 
-  plan:
+  plan-a:
     uses: ../jobs/plan.yml
-    with: { change: "${jobs.propose.output.slug}" }
-    needs: [propose]
+    with: { change: "${jobs.propose-a.output.slug}" }
+    lane: a
+    needs: [propose-a]
 
-  implement:
+  implement-a:
     uses: ../jobs/implement.yml
-    with: { change: "${jobs.propose.output.slug}" }
-    needs: [plan]
+    with: { change: "${jobs.propose-a.output.slug}", lane: a }
+    lane: a
+    needs: [plan-a]
 
-  review:
+  review-a:
     uses: ../jobs/review.yml
-    with: { change: "${jobs.propose.output.slug}" }
-    needs: [implement]
+    with: { change: "${jobs.propose-a.output.slug}" }
+    lane: a
+    needs: [implement-a]
 
-  fix-review:
+  fix-review-a:
     uses: ../jobs/fix-review.yml
-    with: { change: "${jobs.propose.output.slug}" }
-    needs: [review]
+    with: { change: "${jobs.propose-a.output.slug}" }
+    lane: a
+    needs: [review-a]
 
-  verify:
+  verify-a:
     uses: ../jobs/verify.yml
-    needs: [fix-review]
+    lane: a
+    needs: [fix-review-a]
+
+  # --- Дорожка b: та же цепочка, те же файлы работ ---
+
+  propose-b:
+    uses: ../jobs/propose.yml
+    with: { lane: b }
+    lane: b
+    needs: [slots]
+    workspace: { inherit: none }
+    if: "jobs.slots.output.lanes.b.filled == true"
+
+  plan-b:
+    uses: ../jobs/plan.yml
+    with: { change: "${jobs.propose-b.output.slug}" }
+    lane: b
+    needs: [propose-b]
+
+  implement-b:
+    uses: ../jobs/implement.yml
+    with: { change: "${jobs.propose-b.output.slug}", lane: b }
+    lane: b
+    needs: [plan-b]
+
+  review-b:
+    uses: ../jobs/review.yml
+    with: { change: "${jobs.propose-b.output.slug}" }
+    lane: b
+    needs: [implement-b]
+
+  fix-review-b:
+    uses: ../jobs/fix-review.yml
+    with: { change: "${jobs.propose-b.output.slug}" }
+    lane: b
+    needs: [review-b]
+
+  verify-b:
+    uses: ../jobs/verify.yml
+    lane: b
+    needs: [fix-review-b]
+
+  # --- Сведение и завершение ---
+
+  # on: always — дорожка с пустым слотом даёт verify статусом skipped, а не
+  # success, и без always merge не запустилась бы вовсе.
+  merge:
+    uses: ../jobs/merge.yml
+    workspace: { mode: cwd }
+    needs: [verify-a, verify-b]
+    on: always
 
   # needs: all и on: always — единственная конструкция формата, отрабатывающая
-  # и при отмене, и при остановке по бюджету. Без неё пункт очереди зависал бы
-  # в in_progress до протухания.
+  # и при отмене, и при остановке по бюджету, в том числе до того, как
+  # запустилась merge.
   finalize:
     uses: ../jobs/finalize.yml
-    with: { verify_status: "${jobs.verify.status}" }
+    workspace: { mode: cwd }
     needs: all
     on: always

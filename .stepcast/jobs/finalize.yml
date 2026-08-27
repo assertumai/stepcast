@@ -1,20 +1,18 @@
-# Работа: проставить исход пункту очереди и закоммитить успешное улучшение.
+# Работа: проставить failed каждому взятому пункту дорожки, чей исход ещё не
+# проставлен. Коммит сведённой дорожки — забота work merge, а не этой работы:
+# finalize её не дублирует.
 #
 # Подключается с needs: all и on: always — только так она отрабатывает и при
-# отмене по сигналу, и при остановке по бюджету. Обычная зависимость от verify
-# в этих случаях не сработала бы, и пункт остался бы в in_progress до
-# протухания.
+# отмене по сигналу, и при остановке по бюджету, когда до merge заход не
+# дошёл вовсе.
 
 version: 1
 kind: job
 name: finalize
-description: Проставить исход пункту очереди; при успехе — закоммитить
-
-params:
-  verify_status: { type: string, required: true }
+description: Проставить failed пунктам дорожек, чей исход ещё не проставлен
 
 steps:
   - id: settle
-    run: [node, scripts/finalize.mjs, --verify-status, "${params.verify_status}"]
+    run: [node, scripts/finalize.mjs]
     timeout: 3m
     expect: [{ exit_code: 0 }]

@@ -224,6 +224,32 @@ describe('run-journal: раскладка и состояние', () => {
     assert.equal(RunStatusSchema.safeParse(readStatus(journal.paths)).success, true);
   });
 
+  // Спека pipeline-lanes: «Дорожка в записи работы состояния прогона»
+  it('запись работы с объявленной lane несёт её, а запись без lane — нет', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    const status = sampleStatus(journal.paths.runId);
+    journal.writeStatus({
+      ...status,
+      jobs: status.jobs.map((job, index) => (index === 0 ? { ...job, lane: 'a' } : job)),
+    });
+
+    const read = readStatus(journal.paths);
+    assert.equal(read.jobs[0]?.lane, 'a');
+    assert.equal(read.jobs[1]?.lane, undefined);
+  });
+
+  it('состояние прежней формы без lane у работ читается без ошибки', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    const status = sampleStatus(journal.paths.runId);
+    journal.writeStatus(status);
+
+    const read = readStatus(journal.paths);
+    assert.ok(read.jobs.every((job) => job.lane === undefined));
+    assert.equal(RunStatusSchema.safeParse(read).success, true);
+  });
+
   it('состояние с моментом пробуждения читается во время ожидания', () => {
     const { runsRoot, projectRoot } = bed();
     const journal = RunJournal.create({ runsRoot, projectRoot });

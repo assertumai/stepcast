@@ -12,6 +12,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
  *
  *   node scripts/backlog.mjs list   [--file backlog.md]
  *   node scripts/backlog.mjs pick   [--file …] [--stale-hours 6] [--now ISO] [--out path] [--slots N]
+ *   node scripts/backlog.mjs pick   [--file …] [--stale-hours 6] [--now ISO] --lanes a,b [--run-dir путь]
  *   node scripts/backlog.mjs finish <slug> --status done|failed [--reason …]
  */
 
@@ -213,6 +214,13 @@ function commandPick(argv) {
 
   const nowMs = Date.parse(now);
   if (Number.isNaN(nowMs)) throw new BacklogError(`ключ --now: «${now}» не разбирается как дата`);
+  const staleMs = staleHours * 3600_000;
+
+  const lanesOption = option(argv, 'lanes', undefined);
+  if (lanesOption !== undefined) {
+    commandPickLanes(argv, file, now, nowMs, staleMs, lanesOption);
+    return;
+  }
 
   const slotsOption = option(argv, 'slots', undefined);
   const slots = slotsOption === undefined ? 1 : Number(slotsOption);
@@ -221,7 +229,7 @@ function commandPick(argv) {
   }
 
   const text = readFileSync(file, 'utf8');
-  const chosen = selectItems(parse(text), slots, nowMs, staleHours * 3600_000);
+  const chosen = selectItems(parse(text), slots, nowMs, staleMs);
   if (chosen.length === 0) {
     throw new BacklogError('свободных пунктов в очереди нет: все завершены либо взяты в работу');
   }
@@ -239,6 +247,57 @@ function commandPick(argv) {
   const out = option(argv, 'out', undefined);
   if (out !== undefined) writeFileSync(out, payload);
   process.stdout.write(payload);
+}
+
+/**
+ * Раздать по одному пункту на дорожку: `--lanes a,b` отбирает ровно
+ * `lanes.length` пунктов теми же правилами, что и `--slots`, одной записью
+ * файла и общей меткой `started_at`. Пустая дорожка получает пустые значения
+ * полей, а не отсутствующую запись, — витрина петли не должна гадать, чего
+ * не хватает.
+ */
+function commandPickLanes(argv, file, now, nowMs, staleMs, lanesOption) {
+  const lanes = lanesOption.split(',').map((entry) => entry.trim());
+  if (lanes.length === 0 || lanes.some((lane) => lane === '')) {
+    throw new BacklogError('ключ --lanes требует непустого перечня имён через запятую');
+  }
+  for (const lane of lanes) {
+    if (!SLUG.test(lane)) {
+      throw new BacklogError(`имя дорожки «${lane}» не является слагом в kebab-case`);
+    }
+  }
+  if (new Set(lanes).size !== lanes.length) {
+    throw new BacklogError('имена дорожек должны быть попарно различны');
+  }
+
+  const text = readFileSync(file, 'utf8');
+  const chosen = selectItems(parse(text), lanes.length, nowMs, staleMs);
+
+  if (chosen.length > 0) {
+    let updated = text;
+    for (const item of chosen) {
+      updated = withFields(updated, item.slug, { status: 'in_progress', started_at: now });
+    }
+    writeFileSync(file, updated);
+  }
+
+  const runDir = option(argv, 'run-dir', undefined);
+  const result = { lanes: {} };
+
+  lanes.forEach((lane, index) => {
+    const item = chosen[index];
+    if (item === undefined) {
+      result.lanes[lane] = { filled: false, slug: '', title: '', group: '', item: null };
+      return;
+    }
+    const rec = record(item);
+    result.lanes[lane] = { filled: true, slug: rec.slug, title: rec.title, group: rec.group, item: rec };
+    if (runDir !== undefined) {
+      writeFileSync(`${runDir}/item-${lane}.json`, `${JSON.stringify(rec, null, 2)}\n`);
+    }
+  });
+
+  process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 
 function commandFinish(argv) {
@@ -259,6 +318,16 @@ function commandFinish(argv) {
   }
 
   const text = readFileSync(file, 'utf8');
+  const items = parse(text);
+  const item = items.find((candidate) => candidate.slug === slug);
+  if (item === undefined) throw new BacklogError(`пункт «${slug}» в очереди не найден`);
+
+  // Исход, уже проставленный, не переписывается: два finish на одном пункте
+  // (например, повторный вызов после отказа сети) не должны состязаться за
+  // последнее слово — первый проставленный исход и есть окончательный.
+  const currentStatus = field(item, 'status');
+  if (currentStatus === 'done' || currentStatus === 'failed') return;
+
   const values = status === 'failed' ? { status, reason } : { status };
   writeFileSync(file, withFields(text, slug, values));
 }

@@ -102,6 +102,8 @@ export function parseEnvFile(path: string): Record<string, string> {
 export interface InjectedContext {
   readonly runId: string;
   readonly runDir: string;
+  /** Путь к точке входа исполняющего процесса stepcast — `process.argv[1]`. */
+  readonly binPath: string;
   readonly jobId: string;
   readonly jobDir: string;
   /** Шаг и его каталог. Отсутствуют у проверки цикла: она не шаг. */
@@ -118,6 +120,7 @@ export function injectedVariables(context: InjectedContext): Record<string, stri
   return {
     STEPCAST_RUN_ID: context.runId,
     STEPCAST_RUN_DIR: context.runDir,
+    STEPCAST_BIN: context.binPath,
     STEPCAST_JOB: context.jobId,
     STEPCAST_JOB_DIR: context.jobDir,
     ...(context.stepId === undefined ? {} : { STEPCAST_STEP: context.stepId }),

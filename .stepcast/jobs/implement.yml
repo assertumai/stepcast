@@ -7,12 +7,15 @@ description: Реализовать задачи из плана до зелён
 
 params:
   change: { type: string, required: true }
+  lane: { type: string, required: true }
 
 session: shared
 
 # План — единственный нужный выход предшественника: proposal уже развёрнут в
-# нём, а повторная вставка только раздувает стартовый кеш сессии.
-context_upstream: [plan]
+# нём, а повторная вставка только раздувает стартовый кеш сессии. Имя работы
+# плана несёт суффикс дорожки — общий job-файл сам его не знает, и суффикс
+# приходит параметром с места подключения.
+context_upstream: ["plan-${params.lane}"]
 
 context:
   - openspec/changes/${params.change}/tasks.md
@@ -74,6 +77,12 @@ steps:
           - package.json
           - .gitattributes
           - .stepcast/prompts/**
+          # Устройство самого пайплайна: пункты, меняющие движок исполнения
+          # (дорожки, зависимые рабочие деревья, триггеры), обязаны обновить
+          # и то, что этим движком управляет.
+          - .stepcast/jobs/**
+          - .stepcast/pipelines/**
+          - .stepcast/schemas/**
     attempts:
       max: 3
       escalation:

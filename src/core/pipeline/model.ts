@@ -106,6 +106,12 @@ export interface RunStep extends StepCommon {
   /** Список argv либо строка для оболочки. */
   readonly command: readonly string[] | string;
   readonly onFail?: { readonly analyze: string; readonly prompt: string };
+  /**
+   * Схема, объявляющая структурированный выход командного шага. Присутствие
+   * поля включает разбор stdout как одного JSON-документа — без него
+   * командный шаг структурированного выхода не имеет.
+   */
+  readonly outputSchemaPath?: string;
 }
 
 export type Step = AgentStep | RunStep;
@@ -130,6 +136,8 @@ export interface Job {
   readonly needs: readonly string[] | NeedsAll;
   readonly on: 'success' | 'failure' | 'always';
   readonly if?: string;
+  /** Метка обвязки, объявленная на месте подключения работы. Не влияет на порядок исполнения графа. */
+  readonly lane?: string;
   readonly session: 'shared' | 'per_step';
   readonly workspace: Workspace;
   readonly env: Readonly<Record<string, string>>;

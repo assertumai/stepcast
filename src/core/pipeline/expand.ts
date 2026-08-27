@@ -286,6 +286,9 @@ function toStep(
               prompt: readPrompt(raw.on_fail.prompt, declaringFile, scope, `${at}.on_fail.prompt`).text,
             },
           }),
+      ...(raw.output_schema === undefined
+        ? {}
+        : { outputSchemaPath: resolveDeclaredPath(raw.output_schema, declaringFile) }),
     };
   }
 
@@ -370,6 +373,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         needs: 'needs' in entry ? entry.needs : undefined,
         on: 'on' in entry ? entry.on : undefined,
         if: 'if' in entry ? entry.if : undefined,
+        lane: 'lane' in entry ? entry.lane : undefined,
       },
       pipelineScope,
       at,
@@ -433,7 +437,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     } else {
       declaringFile = pipelinePath;
       bodyScope = pipelineScope;
-      const { needs: _needs, on: _on, if: _if, ...rest } = entry;
+      const { needs: _needs, on: _on, if: _if, lane: _lane, ...rest } = entry;
       const interpolated = interpolateTree(rest as Record<string, unknown>, pipelineScope, at);
       collect(interpolated.substitutions);
       body = interpolated.value;
@@ -497,6 +501,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       needs: (wiring.value.needs as readonly string[] | 'all' | undefined) ?? [],
       on: (wiring.value.on as Job['on'] | undefined) ?? 'success',
       ...(wiring.value.if === undefined ? {} : { if: wiring.value.if as string }),
+      ...(wiring.value.lane === undefined ? {} : { lane: wiring.value.lane as string }),
       session: sessionMode,
       workspace,
       env: (body.env as Record<string, string> | undefined) ?? {},

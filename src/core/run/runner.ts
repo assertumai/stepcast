@@ -183,7 +183,10 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     (backend) => config.backends[backend]?.cacheReadWeight ?? 1,
   );
   const records = new Map<string, JobRecord>(
-    pipeline.jobs.map((job) => [job.id, { id: job.id, status: 'pending', steps: [] }]),
+    pipeline.jobs.map((job) => [
+      job.id,
+      { id: job.id, status: 'pending', ...(job.lane === undefined ? {} : { lane: job.lane }), steps: [] },
+    ]),
   );
   const outputs: UpstreamOutput[] = [];
   const adapters = new Map<string, BackendAdapter>();
@@ -646,6 +649,7 @@ function jobEnv(job: Job, context: RunContext): Record<string, string> {
     injected: injectedVariables({
       runId: context.journal.paths.runId,
       runDir: context.journal.paths.dir,
+      binPath: process.argv[1] ?? '',
       jobId: job.id,
       jobDir: context.journal.prepareJob(job.id),
       attempt: 1,
@@ -980,7 +984,7 @@ async function runJobSteps(
   // сессии теряется.
   const contextSent = new Set<string>();
   const steps: StepRecord[] = [];
-  let lastAgentStructured: unknown;
+  let lastStructuredOutput: unknown;
   let outputFromStep: unknown;
   /** `output.from` назвал переиспользованный шаг, а его выход не перенёсся. */
   let outputFromStepMissing = false;
@@ -1021,18 +1025,21 @@ async function runJobSteps(
         ...(context.records.get(job.id) as JobRecord),
         steps: [...steps],
       });
-      if (step.kind === 'agent' && planned.decision.record.status === 'success') {
+      if (
+        (step.kind === 'agent' || step.outputSchemaPath !== undefined) &&
+        planned.decision.record.status === 'success'
+      ) {
         // Переиспользованный шаг не исполнялся, структурированного вывода у
         // него в этом прогоне нет: он переносится из исходного прогона —
         // единственный источник `output.from` при частичном переиспользовании
         // работы, когда выход работы целиком не перенесён.
         const transferred = transferStepOutput(context, job.id, step.id, stepDirPath);
-        lastAgentStructured =
-          transferred ?? context.resume?.plan.outputs.get(job.id) ?? lastAgentStructured;
+        lastStructuredOutput =
+          transferred ?? context.resume?.plan.outputs.get(job.id) ?? lastStructuredOutput;
         if (job.output?.from === step.id) {
           // Перенос мог не удаться: файла выхода в исходном прогоне нет или он
           // не разбирается. Отметку нужно сохранить — иначе ниже сработает
-          // запасной `lastAgentStructured`, и работа опубликует как свой выход
+          // запасной `lastStructuredOutput`, и работа опубликует как свой выход
           // другого, позже исполненного шага.
           outputFromStep = transferred;
           outputFromStepMissing = transferred === undefined;
@@ -1188,8 +1195,8 @@ async function runJobSteps(
     steps.push(stepRecord);
     journal.writeStepJson(stepDirPath, 'step.json', stepRecord);
 
-    if (step.kind === 'agent' && outcome.structured !== undefined) {
-      lastAgentStructured = outcome.structured;
+    if ((step.kind === 'agent' || step.outputSchemaPath !== undefined) && outcome.structured !== undefined) {
+      lastStructuredOutput = outcome.structured;
       journal.writeStepJson(stepDirPath, 'output.json', outcome.structured);
     }
     if (job.output?.from === step.id) outputFromStep = outcome.structured;
@@ -1224,7 +1231,7 @@ async function runJobSteps(
     };
   }
 
-  const published = job.output === undefined ? undefined : (outputFromStep ?? lastAgentStructured);
+  const published = job.output === undefined ? undefined : (outputFromStep ?? lastStructuredOutput);
   if (job.output !== undefined && published !== undefined) {
     const path = journal.writeArtifact(job.id, published);
     // Выходом работы с циклом становится результат последней выполненной
@@ -1332,6 +1339,10 @@ async function runCommandStep(
   changedPaths: () => readonly string[] | undefined,
 ): Promise<StepOutcome> {
   const { journal, config } = context;
+  // Разобранный выход командного шага. Заполняется только когда объявлен
+  // output_schema — без него у командного шага структурированного выхода
+  // нет, и поле остаётся неопределённым до конца функции.
+  let structuredOutput: unknown;
 
   for (;;) {
     let exceeded: ReturnType<UsageAccumulator['check']>;
@@ -1353,10 +1364,30 @@ async function runCommandStep(
       signal: abort.controller.signal,
       env: (plan) => stepEnv(step, job, plan.attempt, context, stepDirPath),
       evaluate: async (target, process_, plan) => {
+        // Разбор строгий: только пробелы по краям снимаются, без поиска
+        // первого объекта и без склейки последней строки — вывод либо один
+        // JSON-документ целиком, либо отказ попытки.
+        let structured: unknown;
+        if (target.outputSchemaPath !== undefined) {
+          try {
+            structured = JSON.parse(process_.stdout.trim());
+          } catch (error) {
+            return [
+              {
+                predicate: 'output_schema',
+                passed: false,
+                hard: true,
+                detail: `шаг ${target.id} объявляет output_schema, но stdout не разбирается как JSON: ${(error as Error).message}`,
+              },
+            ];
+          }
+          structuredOutput = structured;
+        }
+
         const firstPass = evaluatePredicates(target.expect, {
           exitCode: process_.exitCode,
           text: process_.stdout,
-          structured: undefined,
+          structured,
           cwd: context.cwd,
           env: stepEnv(step, job, 1, context, stepDirPath),
           changedPaths: changedPaths(),
@@ -1372,7 +1403,7 @@ async function runCommandStep(
           firstPass,
           task: describeStepTask(target),
           text: process_.stdout,
-          structured: process_.stdout,
+          structured: structured ?? process_.stdout,
           cwd: context.cwd,
           stepDir: stepDirPath,
           attempt: plan.attempt,
@@ -1459,6 +1490,7 @@ async function runCommandStep(
       ...(result.reason === undefined ? {} : { reason: result.reason }),
       attempts: result.attempts,
       results: result.results,
+      ...(structuredOutput === undefined ? {} : { structured: structuredOutput }),
       ...(exceeded === undefined ? {} : { exceeded }),
     };
   }
@@ -1789,6 +1821,7 @@ function stepEnv(
     injected: injectedVariables({
       runId: context.journal.paths.runId,
       runDir: context.journal.paths.dir,
+      binPath: process.argv[1] ?? '',
       jobId: job.id,
       jobDir: context.journal.prepareJob(job.id),
       stepId: step.id,

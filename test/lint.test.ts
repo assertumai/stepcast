@@ -42,6 +42,39 @@ describe('pipeline-definition: статическая проверка', () => {
     assert.equal(hasErrors(diagnostics), false);
   });
 
+  it('принимает lane в kebab-case', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    lane: a
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      }),
+    );
+    assert.equal(hasErrors(diagnostics), false);
+  });
+
+  it('отклоняет lane, не являющийся слагом, называя работу и значение', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    lane: "Дорожка A"
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      }),
+    );
+    const messages = errors(diagnostics);
+    assert.ok(messages.some((message) => message.includes('build') && message.includes('Дорожка A')));
+  });
+
   // Сценарий: «Цикл в зависимостях»
   it('находит цикл и перечисляет участников', () => {
     const diagnostics = lint(

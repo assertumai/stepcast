@@ -163,6 +163,8 @@ export const JobRecordSchema = z
     reason: z.string().optional(),
     /** Причина неуспеха из закрытого перечня. */
     cause: HaltCauseSchema.optional(),
+    /** Метка обвязки, объявленная на месте подключения работы. У работы без lane отсутствует. */
+    lane: z.string().optional(),
     /** Число выполненных итераций цикла. У работы без цикла отсутствует. */
     iterations: z.number().int().positive().optional(),
     /**

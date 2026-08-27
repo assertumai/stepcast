@@ -67,6 +67,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
     positional: ['run'],
     flags: {
       job: { kind: 'string', description: 'наложить только результат этой работы' },
+      lane: { kind: 'string', description: 'наложить только результат этой дорожки, одним диффом' },
     },
   },
   config: {

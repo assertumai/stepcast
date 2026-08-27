@@ -1,19 +1,20 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
- * Завершение захода петли: проставить исход пункту очереди и — только при
- * успехе — закоммитить рабочее дерево.
+ * Завершение захода петли: проставить `failed` каждому взятому пункту, чей
+ * исход ещё не проставлен.
  *
- * Слаг берётся из файла, записанного шагом выбора в каталог прогона, а не из
- * выхода работы `propose`. Работа `finalize` объявлена с `needs: all` и
- * `on: always`, то есть выполняется и когда `propose` не дошла до публикации
- * выхода: отказ на грязном дереве, отмена по сигналу, исчерпание бюджета.
- * Отсутствие файла означает, что пункт не брался, и проставлять нечего.
+ * Слаги берутся из файлов `item-<дорожка>.json`, записанных `backlog.mjs pick
+ * --lanes` в каталог прогона, — по одному на занятую дорожку; дорожка без
+ * пункта файла не оставляет и здесь не упоминается. Коммит сведения дорожки
+ * — забота `merge-lanes.mjs`: он же и переводит пункт в `done` до коммита.
+ * `finalize` эту работу не дублирует и коммитов не создаёт: дерево, отменённое
+ * по сигналу или упёршееся в бюджет, коммитить нечем и незачем.
  *
- *   node scripts/finalize.mjs --verify-status <status> [--item …] [--file …]
+ *   node scripts/finalize.mjs [--file backlog.md] [--run-dir путь]
  */
 
 const DEFAULT_FILE = 'backlog.md';
@@ -28,62 +29,97 @@ function option(argv, name, fallback) {
   return value;
 }
 
-function run(command, args) {
-  const result = spawnSync(command, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-  if (result.status !== 0) {
-    throw new FinalizeError(
-      `${command} ${args.join(' ')} завершилась кодом ${result.status}: ${result.stderr.trim()}`,
-    );
+function readJson(path) {
+  return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+/**
+ * Причина отказа пункта дорожки — из итога сведения, если он есть
+ * (`merge-<дорожка>.json`, пишет `merge-lanes.mjs`), иначе — из того, что
+ * сведение до дорожки, судя по всему, не дошло вовсе (файла нет: `merge`
+ * не запускалась, отменена по сигналу или упёрлась в бюджет раньше этой
+ * дорожки).
+ */
+function failureReason(runDir, lane) {
+  const path = join(runDir, `merge-${lane}.json`);
+  if (!existsSync(path)) {
+    return 'сведение до дорожки не дошло: заход остановился раньше или не запускал merge';
   }
-  return result.stdout;
+
+  const outcome = readJson(path);
+  switch (outcome.status) {
+    case 'skipped_verify':
+      return `дорожка не сведена: ${outcome.reason ?? 'работа verify не прошла'}`;
+    case 'conflict':
+      return `дорожка не сведена: наложение не сошлось — ${outcome.reason ?? 'конфликт'}`;
+    case 'check_failed':
+      return `дорожка не сведена: проверка после сведения красная — ${outcome.reason ?? 'npm run check'}`;
+    case 'not_reached':
+      return 'сведение до дорожки не дошло: остановилось на более ранней дорожке';
+    case 'merged':
+      // Дорожка сведена и уже помечена done самим merge-lanes — сюда дойти
+      // не должны: см. main().
+      return 'дорожка сведена — исход уже проставлен';
+    default:
+      return `сведение дорожки завершилось неизвестным исходом ${String(outcome.status)}`;
+  }
+}
+
+function laneOf(itemFile) {
+  const match = /^item-(.+)\.json$/.exec(itemFile);
+  return match?.[1];
 }
 
 function main(argv) {
-  const status = option(argv, 'verify-status', undefined);
-  if (status === undefined) throw new FinalizeError('ключ --verify-status обязателен');
-
-  const runDir = process.env.STEPCAST_RUN_DIR;
-  const item = option(argv, 'item', runDir === undefined ? undefined : join(runDir, 'item.json'));
-  if (item === undefined) {
-    throw new FinalizeError('не задан ни --item, ни переменная STEPCAST_RUN_DIR');
-  }
-
-  if (!existsSync(item)) {
-    process.stdout.write('пункт очереди не брался — проставлять нечего\n');
-    return;
-  }
-
-  const { slug, title } = JSON.parse(readFileSync(item, 'utf8'));
-  if (typeof slug !== 'string' || slug === '') {
-    throw new FinalizeError(`файл ${item} не содержит слага пункта`);
+  const runDir = option(argv, 'run-dir', process.env.STEPCAST_RUN_DIR);
+  if (runDir === undefined) {
+    throw new FinalizeError('не задан ни --run-dir, ни переменная STEPCAST_RUN_DIR');
   }
 
   const file = option(argv, 'file', DEFAULT_FILE);
-  const backlog = new URL('backlog.mjs', import.meta.url).pathname;
+  const backlogScript = new URL('backlog.mjs', import.meta.url).pathname;
 
-  if (status !== 'success') {
-    run(process.execPath, [
-      backlog,
-      'finish',
-      slug,
-      '--file',
-      file,
-      '--status',
-      'failed',
-      '--reason',
-      `работа verify завершилась статусом ${status}`,
-    ]);
-    process.stdout.write(`пункт «${slug}» помечен как failed; коммит не создаётся\n`);
+  const itemFiles = existsSync(runDir)
+    ? readdirSync(runDir).filter((name) => /^item-.+\.json$/.test(name))
+    : [];
+
+  if (itemFiles.length === 0) {
+    process.stdout.write('пункты очереди не брались — проставлять нечего\n');
     return;
   }
 
-  // Отметка исхода идёт до коммита, чтобы попасть в него же: улучшение и его
-  // бухгалтерия — одно событие, и git revert снимает их вместе.
-  run(process.execPath, [backlog, 'finish', slug, '--file', file, '--status', 'done']);
-  run('git', ['add', '-A']);
-  run('git', ['commit', '-m', `${slug}: ${title ?? 'улучшение из очереди'}`]);
+  let finalized = 0;
 
-  process.stdout.write(`пункт «${slug}» помечен как done и закоммичен\n`);
+  for (const itemFile of itemFiles) {
+    const lane = laneOf(itemFile);
+    const { slug } = readJson(join(runDir, itemFile));
+    if (typeof slug !== 'string' || slug === '') {
+      throw new FinalizeError(`файл ${itemFile} не содержит слага пункта`);
+    }
+
+    const mergeOutcomePath = join(runDir, `merge-${lane}.json`);
+    if (existsSync(mergeOutcomePath) && readJson(mergeOutcomePath).status === 'merged') {
+      // Сведена и уже done — заходить сюда не за чем: finish это же и
+      // защищает, но повторный вызов есть повторная работа без надобности.
+      continue;
+    }
+
+    const reason = failureReason(runDir, lane);
+    const result = spawnSync(
+      process.execPath,
+      [backlogScript, 'finish', slug, '--file', file, '--status', 'failed', '--reason', reason],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    if (result.status !== 0) {
+      throw new FinalizeError(`backlog.mjs finish ${slug} завершилась кодом ${result.status}: ${result.stderr.trim()}`);
+    }
+    finalized += 1;
+    process.stdout.write(`пункт «${slug}» (дорожка ${lane}) помечен failed: ${reason}\n`);
+  }
+
+  if (finalized === 0) {
+    process.stdout.write('все взятые пункты уже свели свой исход — проставлять нечего\n');
+  }
 }
 
 try {

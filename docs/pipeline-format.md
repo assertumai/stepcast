@@ -219,6 +219,45 @@ jobs:
 На месте подключения переопределяются `with`, `needs`, `on`, `if`, `env`,
 `budget`, `workspace`, `context`. Шаги — нет.
 
+## Дорожка (`lane`)
+
+```yaml
+jobs:
+  propose-a:
+    uses: ./jobs/propose.yml
+    lane: a
+    with: { lane: a }
+
+  propose-b:
+    uses: ./jobs/propose.yml
+    lane: b
+    with: { lane: b }
+```
+
+`lane` — метка обвязки, слаг в kebab-case, как и идентификатор работы.
+Объявляется только на месте подключения работы — как `needs`, `on`, `if` — и
+внутри файла работы отклоняется той же диагностикой, что и остальная
+обвязка. На порядок исполнения графа не влияет: это чисто учётная метка,
+группирующая работы одного прохода параллельной дорожки для сведения
+расхода, журнала и последующего наложения.
+
+Смежность дорожки объявляет автор пайплайна: движок не выводит её из needs
+или workspace — работа несёт `lane`, только если она объявлена явно на месте
+подключения.
+
+Метка переносится в `pipeline.lock.yml`, в запись работы `status.json`
+(`stepcast status`, `stepcast usage` — см. [run-layout.md](run-layout.md)) и
+читается ключом `--lane` команды `stepcast apply` (там же).
+
+Третья одновременная дорожка — правка самого пайплайна (третья цепочка
+`propose → … → verify` с `lane: c`, третий слот в `backlog.mjs pick --lanes`,
+третья ветвь в `merge-lanes.mjs`), а не параметр движка. Одновременных
+агентских сессий при этом становится больше, и прежде чем поднимать
+`concurrency` пайплайна, поднимите на столько же `backends.claude.concurrency`
+и, если денежный потолок захода упирается в потолок конфигурации, —
+`limits.cost` в глобальном конфиге: сам пайплайн подняться выше него не
+может.
+
 ## Зависимости и условия
 
 Два независимых ключа, оба должны выполниться. Разделение убирает главную
@@ -421,6 +460,23 @@ steps:
 (`cmd.exe /c` на Windows). Подстановка `${jobs.*.output.*}` в строковую форму
 отклоняется линтером: это данные, порождённые моделью, и место им в argv, а не
 в командной строке.
+
+Командный шаг с объявленным `output_schema` разбирает свой `stdout` как один
+JSON-документ — строго: снимаются только пробелы по краям, без поиска первого
+объекта в тексте и без склейки последней строки. Результат становится
+структурированным выходом шага — теми же путями, что и у агентского шага:
+доступен предикату `schema` в `expect`, и работа может опубликовать его через
+`output.from`. Неразбираемый вывод — отказ попытки с причиной, называющей шаг
+и то, что вывод не JSON; попытка подчинена обычному `attempts.max`. Без
+`output_schema` командный шаг структурированного выхода не имеет вовсе.
+
+```yaml
+  - id: pick
+    run: [node, scripts/pick.mjs]
+    output_schema: ./schemas/pick.json
+    expect:
+      - schema: ./schemas/pick.json
+```
 
 `on_fail.analyze` не чинит и не повторяет — производит разбор в `analysis.md`
 и завершает шаг отказом.
@@ -744,9 +800,15 @@ env_deny: ["AWS_*", "*_PRIVATE_KEY"]
 
 ### Инжектируемые
 
-`STEPCAST_RUN_ID`, `STEPCAST_RUN_DIR`, `STEPCAST_JOB`, `STEPCAST_JOB_DIR`, `STEPCAST_STEP`,
-`STEPCAST_STEP_DIR`, `STEPCAST_ITERATION`, `STEPCAST_ATTEMPT`, `STEPCAST_WORKSPACE`,
-`STEPCAST_ARTIFACTS`, `STEPCAST_PREV_FAILURE`.
+`STEPCAST_RUN_ID`, `STEPCAST_RUN_DIR`, `STEPCAST_BIN`, `STEPCAST_JOB`, `STEPCAST_JOB_DIR`,
+`STEPCAST_STEP`, `STEPCAST_STEP_DIR`, `STEPCAST_ITERATION`, `STEPCAST_ATTEMPT`,
+`STEPCAST_WORKSPACE`, `STEPCAST_ARTIFACTS`, `STEPCAST_PREV_FAILURE`.
+
+`STEPCAST_BIN` — путь к точке входа исполняющего процесса stepcast
+(`process.argv[1]`). Даёт шагу вызвать `stepcast` рекурсивно тем же движком,
+которым он сам исполняется, — например, командный шаг, сводящий дорожки,
+зовёт им `$STEPCAST_BIN apply --lane <имя> <run-id>`, не полагаясь на то, что
+`stepcast` вообще есть в `PATH` шага.
 
 ## Контекст
 
@@ -809,7 +871,8 @@ $ stepcast context --job implement --step write-code
 
 Отклоняет:
 
-- `needs`, `on`, `if`, `with` внутри файла работы;
+- `needs`, `on`, `if`, `with`, `lane` внутри файла работы;
+- `lane`, не являющийся слагом в kebab-case;
 - циклы в `needs`, недостижимые работы, неизвестные идентификаторы;
 - `if`, обращающийся к неопределённым `inputs` или к работе не выше по графу;
 - обязательный `param`, не переданный через `with`; лишние ключи в `with`;

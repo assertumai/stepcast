@@ -124,6 +124,7 @@ const RunStepSchema = z
     ...StepCommonShape,
     run: z.union([z.string(), z.array(z.string())]),
     on_fail: z.object({ analyze: z.string(), prompt: z.string() }).strict().optional(),
+    output_schema: z.string().optional(),
   })
   .strict();
 
@@ -180,6 +181,7 @@ const WiringShape = {
   needs: z.union([z.literal('all'), z.array(z.string())]).optional(),
   on: z.enum(['success', 'failure', 'always']).optional(),
   if: z.string().optional(),
+  lane: z.string().optional(),
 };
 
 const JobUseSchema = z
@@ -263,4 +265,4 @@ export type RawScheduleTrigger = z.infer<typeof ScheduleTriggerEntrySchema>;
 export type RawTriggers = z.infer<typeof TriggersSchema>;
 
 /** Ключи обвязки, недопустимые внутри документа работы. */
-export const WIRING_KEYS = ['needs', 'on', 'if', 'with', 'triggers'] as const;
+export const WIRING_KEYS = ['needs', 'on', 'if', 'with', 'triggers', 'lane'] as const;

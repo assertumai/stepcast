@@ -38,7 +38,10 @@ export interface JudgePassOptions {
   /** Задание шага без блока контекста: `step.prompt` либо командная строка. */
   readonly task: string;
   readonly text: string;
-  /** Для командного шага структурированного вывода нет — его место занимает stdout. */
+  /**
+   * Командный шаг без output_schema структурированного вывода не имеет — его
+   * место занимает stdout.
+   */
   readonly structured: unknown;
   readonly cwd: string;
   readonly stepDir: string;

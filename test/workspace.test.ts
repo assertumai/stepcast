@@ -1228,6 +1228,100 @@ jobs:
   });
 });
 
+describe('pipeline-lanes: apply --lane', () => {
+  const LANES_PIPELINE = `
+version: 1
+kind: pipeline
+name: дорожки
+workspace: { mode: worktree }
+jobs:
+  a1:
+    lane: a
+    steps: [{ id: s, run: [sh, -c, 'printf "a1\\n" > a1.txt'], expect: [{ exit_code: 0 }] }]
+  a2:
+    lane: a
+    needs: [a1]
+    steps: [{ id: s, run: [sh, -c, 'printf "a2\\n" > a2.txt'], expect: [{ exit_code: 0 }] }]
+  b1:
+    lane: b
+    steps: [{ id: s, run: [sh, -c, 'printf "b1\\n" > b1.txt'], expect: [{ exit_code: 0 }] }]
+  b2:
+    lane: b
+    needs: [b1]
+    steps: [{ id: s, run: [sh, -c, 'printf "b2\\n" > b2.txt'], expect: [{ exit_code: 0 }] }]
+`;
+
+  it('накладывает цепочку дорожки одним диффом, не трогая соседнюю', async () => {
+    const project = makeProject({ 'stepcast.yml': LANES_PIPELINE });
+    gitInit(project);
+    project.write('затравка.txt', 'нужен хотя бы один коммит\n');
+    commit(project, 'первый');
+
+    const result = await run(project);
+    assert.equal(result.status, 'success');
+
+    const outcome = applyRun({ paths: result.journal.paths, cwd: project.root, lane: 'a' });
+    assert.equal(outcome.kind, 'applied');
+    if (outcome.kind === 'applied') {
+      assert.deepEqual([...outcome.jobs].sort(), ['a1', 'a2']);
+    }
+
+    assert.equal(readFileSync(project.path('a1.txt'), 'utf8'), 'a1\n');
+    assert.equal(readFileSync(project.path('a2.txt'), 'utf8'), 'a2\n');
+    assert.equal(existsSync(project.path('b1.txt')), false);
+    assert.equal(existsSync(project.path('b2.txt')), false);
+  });
+
+  it('дорожка без изолированных работ с якорями даёт nothing-to-apply', async () => {
+    const project = makeProject({ 'stepcast.yml': LANES_PIPELINE });
+    gitInit(project);
+    project.write('затравка.txt', 'нужен хотя бы один коммит\n');
+    commit(project, 'первый');
+
+    const result = await run(project);
+    const outcome = applyRun({ paths: result.journal.paths, cwd: project.root, lane: 'нет-такой' });
+    assert.equal(outcome.kind, 'nothing-to-apply');
+  });
+
+  it('конфликт наложения дорожки откатывает дерево и называет пути', async () => {
+    const project = makeProject({
+      'спорный.txt': 'строка один\nстрока два\nстрока три\n',
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: конфликт-дорожки
+workspace: { mode: worktree }
+jobs:
+  build:
+    lane: a
+    steps:
+      - id: touch
+        run: [sh, -c, 'printf "строка один\\nправка прогона\\nстрока три\\n" > спорный.txt']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    gitInit(project);
+    commit(project, 'первый');
+
+    const result = await run(project);
+
+    project.write('спорный.txt', 'строка один\nправка пользователя\nстрока три\n');
+    const beforeApply = readFileSync(project.path('спорный.txt'), 'utf8');
+
+    assert.throws(
+      () => applyRun({ paths: result.journal.paths, cwd: project.root, lane: 'a' }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /не сошлось/);
+        assert.match(error.hint ?? '', /спорный\.txt/);
+        return true;
+      },
+    );
+
+    assert.equal(readFileSync(project.path('спорный.txt'), 'utf8'), beforeApply);
+  });
+});
+
 describe('dependent-job-workspace: наложение цепочки', () => {
   // Сценарий: «Наложение цепочки»
   it('applyRun без --job даёт итоговое состояние цепочки без пропусков и двойного применения', async () => {

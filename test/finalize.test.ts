@@ -19,8 +19,8 @@ function git(repo: string, args: readonly string[]): string {
   return result.stdout;
 }
 
-/** Временный репозиторий с очередью из одного пункта, взятого в работу. */
-function bed(): Bed {
+/** Временный репозиторий с очередью, готовой принять пункты дорожек. */
+function bed(items: readonly string[]): Bed {
   const base = mkdtempSync(join(tmpdir(), 'stepcast-finalize-'));
   const repo = join(base, 'repo');
   const runDir = join(base, 'run');
@@ -31,113 +31,135 @@ function bed(): Bed {
   git(repo, ['config', 'user.email', 'test@example.com']);
   git(repo, ['config', 'user.name', 'Test']);
 
-  writeFileSync(
-    join(repo, 'backlog.md'),
-    '# Очередь\n\n## some-item\n\nstatus: in_progress\ntitle: Улучшение\nwhy: з\ndone_when: к\n',
-  );
-  writeFileSync(join(repo, 'README.md'), 'исходное\n');
+  writeFileSync(join(repo, 'backlog.md'), `# Очередь\n\n${items.join('\n')}`);
   git(repo, ['add', '-A']);
   git(repo, ['commit', '--quiet', '-m', 'исходный коммит']);
 
   return { repo, runDir };
 }
 
-function seedItem(runDir: string): void {
+function backlogItem(slug: string, status: string): string {
+  return `## ${slug}\n\nstatus: ${status}\ntitle: Улучшение ${slug}\nwhy: з\ndone_when: к\n`;
+}
+
+function seedItemFile(runDir: string, lane: string, slug: string): void {
   writeFileSync(
-    join(runDir, 'item.json'),
-    JSON.stringify({ slug: 'some-item', title: 'Улучшение', why: 'з', done_when: 'к' }),
+    join(runDir, `item-${lane}.json`),
+    JSON.stringify({ slug, title: `Улучшение ${slug}`, why: 'з', done_when: 'к' }),
   );
 }
 
-function finalize(bed_: Bed, verifyStatus: string): { code: number; stderr: string } {
-  const result = spawnSync(process.execPath, [SCRIPT, '--verify-status', verifyStatus], {
+function seedMergeOutcome(runDir: string, lane: string, status: string, reason?: string): void {
+  writeFileSync(join(runDir, `merge-${lane}.json`), JSON.stringify({ status, ...(reason === undefined ? {} : { reason }) }));
+}
+
+function finalize(bed_: Bed): { code: number; stdout: string; stderr: string } {
+  const result = spawnSync(process.execPath, [SCRIPT], {
     cwd: bed_.repo,
     encoding: 'utf8',
     env: { ...process.env, STEPCAST_RUN_DIR: bed_.runDir },
   });
-  return { code: result.status ?? -1, stderr: result.stderr };
+  return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
 }
 
-function statusOf(repo: string): string | undefined {
-  const text = readFileSync(join(repo, 'backlog.md'), 'utf8');
-  return /^status:\s*(.*)$/m.exec(text)?.[1];
+function statusOf(repo: string, slug: string): string | undefined {
+  const section = readFileSync(join(repo, 'backlog.md'), 'utf8').split(`## ${slug}\n`)[1]?.split('\n## ')[0] ?? '';
+  return /^status:\s*(.*)$/m.exec(section)?.[1];
+}
+
+function fieldOf(repo: string, slug: string, name: string): string | undefined {
+  const section = readFileSync(join(repo, 'backlog.md'), 'utf8').split(`## ${slug}\n`)[1]?.split('\n## ')[0] ?? '';
+  return new RegExp(`^${name}:\\s*(.*)$`, 'm').exec(section)?.[1];
 }
 
 function commitCount(repo: string): number {
   return Number(git(repo, ['rev-list', '--count', 'HEAD']).trim());
 }
 
-describe('завершение захода петли', () => {
-  it('ничего не делает, если пункт не брался', () => {
-    const bed_ = bed();
-    const result = finalize(bed_, 'success');
+describe('finalize: исход по всем взятым пунктам', () => {
+  it('ничего не делает, если ни один пункт не брался', () => {
+    const bed_ = bed([backlogItem('some-item', 'pending')]);
+    const result = finalize(bed_);
 
     assert.equal(result.code, 0);
-    assert.equal(statusOf(bed_.repo), 'in_progress');
+    assert.equal(statusOf(bed_.repo, 'some-item'), 'pending');
+    assert.equal(commitCount(bed_.repo), 1, 'finalize коммитов не создаёт');
+  });
+
+  // Сценарий: «Отмена по сигналу» — merge не запускалась вовсе, файлов
+  // merge-<lane>.json нет.
+  it('отмена по сигналу до сведения: взятый пункт помечается failed без merge-файла', () => {
+    const bed_ = bed([backlogItem('a-item', 'in_progress')]);
+    seedItemFile(bed_.runDir, 'a', 'a-item');
+
+    const result = finalize(bed_);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(statusOf(bed_.repo, 'a-item'), 'failed');
+    assert.match(fieldOf(bed_.repo, 'a-item', 'reason') ?? '', /не дошло/);
     assert.equal(commitCount(bed_.repo), 1);
   });
 
-  it('при успехе помечает пункт done и коммитит одним коммитом', () => {
-    const bed_ = bed();
-    seedItem(bed_.runDir);
-    writeFileSync(join(bed_.repo, 'README.md'), 'правка агента\n');
+  // Сценарий: «Останов по бюджету» — тот же случай снаружи: merge не
+  // добежала до дорожки, файла нет.
+  it('останов по бюджету до сведения: взятый пункт помечается failed', () => {
+    const bed_ = bed([backlogItem('b-item', 'in_progress')]);
+    seedItemFile(bed_.runDir, 'b', 'b-item');
 
-    const result = finalize(bed_, 'success');
+    const result = finalize(bed_);
 
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(statusOf(bed_.repo), 'done');
-    assert.equal(commitCount(bed_.repo), 2);
-
-    // Один коммит содержит и правку кода, и отметку исхода: git revert
-    // снимает улучшение вместе с его бухгалтерией.
-    const changed = git(bed_.repo, ['show', '--name-only', '--format=', 'HEAD']).trim().split('\n');
-    assert.deepEqual(changed.sort(), ['README.md', 'backlog.md']);
-    assert.match(git(bed_.repo, ['log', '-1', '--format=%s']), /some-item/);
+    assert.equal(statusOf(bed_.repo, 'b-item'), 'failed');
+    assert.match(fieldOf(bed_.repo, 'b-item', 'reason') ?? '', /не дошло/);
   });
 
-  it('при отказе помечает пункт failed и не коммитит', () => {
-    const bed_ = bed();
-    seedItem(bed_.runDir);
-    writeFileSync(join(bed_.repo, 'README.md'), 'сломанная правка\n');
+  it('одна дорожка свелась (done, не трогается), другая — нет (помечается failed)', () => {
+    const bed_ = bed([backlogItem('a-item', 'done'), backlogItem('b-item', 'in_progress')]);
+    seedItemFile(bed_.runDir, 'a', 'a-item');
+    seedItemFile(bed_.runDir, 'b', 'b-item');
+    seedMergeOutcome(bed_.runDir, 'a', 'merged');
+    seedMergeOutcome(bed_.runDir, 'b', 'check_failed', 'проверка после наложения не прошла');
 
-    const result = finalize(bed_, 'failed');
+    const result = finalize(bed_);
 
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(statusOf(bed_.repo), 'failed');
+    assert.equal(statusOf(bed_.repo, 'a-item'), 'done');
+    assert.equal(fieldOf(bed_.repo, 'a-item', 'reason'), undefined);
+    assert.equal(statusOf(bed_.repo, 'b-item'), 'failed');
+    assert.match(fieldOf(bed_.repo, 'b-item', 'reason') ?? '', /красная|check_failed|наложения/);
+  });
+
+  it('дорожка, пропущенная verify, отражает причину из итога сведения', () => {
+    const bed_ = bed([backlogItem('c-item', 'in_progress')]);
+    seedItemFile(bed_.runDir, 'c', 'c-item');
+    seedMergeOutcome(bed_.runDir, 'c', 'skipped_verify', 'у дорожки c работа verify завершилась статусом failed');
+
+    const result = finalize(bed_);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(statusOf(bed_.repo, 'c-item'), 'failed');
+    assert.match(fieldOf(bed_.repo, 'c-item', 'reason') ?? '', /verify/);
+  });
+
+  it('пустая дорожка (нет файла пункта) ничего не получает', () => {
+    const bed_ = bed([backlogItem('a-item', 'in_progress')]);
+    seedItemFile(bed_.runDir, 'a', 'a-item');
+    // Дорожка b пуста: пункт не брался, файла item-b.json нет.
+
+    const result = finalize(bed_);
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(statusOf(bed_.repo, 'a-item'), 'failed');
+    // Ничего лишнего в очередь не попало.
+    assert.doesNotMatch(readFileSync(join(bed_.repo, 'backlog.md'), 'utf8'), /## b-item/);
+  });
+
+  it('не создаёт ни одного коммита', () => {
+    const bed_ = bed([backlogItem('a-item', 'in_progress')]);
+    seedItemFile(bed_.runDir, 'a', 'a-item');
+
+    finalize(bed_);
+
     assert.equal(commitCount(bed_.repo), 1);
-    assert.match(readFileSync(join(bed_.repo, 'backlog.md'), 'utf8'), /^reason:.*failed/m);
-  });
-
-  it('правки агента при отказе остаются в дереве нетронутыми', () => {
-    const bed_ = bed();
-    seedItem(bed_.runDir);
-    writeFileSync(join(bed_.repo, 'README.md'), 'сломанная правка\n');
-
-    finalize(bed_, 'failed');
-
-    assert.equal(readFileSync(join(bed_.repo, 'README.md'), 'utf8'), 'сломанная правка\n');
-  });
-
-  it('пропущенная работа verify считается отказом', () => {
-    const bed_ = bed();
-    seedItem(bed_.runDir);
-
-    const result = finalize(bed_, 'skipped');
-
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(statusOf(bed_.repo), 'failed');
-    assert.equal(commitCount(bed_.repo), 1);
-  });
-
-  it('требует ключа --verify-status', () => {
-    const bed_ = bed();
-    const result = spawnSync(process.execPath, [SCRIPT], {
-      cwd: bed_.repo,
-      encoding: 'utf8',
-      env: { ...process.env, STEPCAST_RUN_DIR: bed_.runDir },
-    });
-
-    assert.equal(result.status, 1);
-    assert.match(result.stderr, /verify-status/);
   });
 });

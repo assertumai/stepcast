@@ -45,6 +45,9 @@ export interface LintOptions {
 /** Метасимволы глоба. Глоб запрашивает совпадения, и их отсутствие не ошибка. */
 const GLOB = /[*?[]/;
 
+/** Правило имени слага: то же, что у идентификатора работы и у пунктов витрины. */
+const KEBAB_CASE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 interface DeclaredPath {
   readonly path: string;
   /** Каталог, от которого путь отсчитывается. Пусто — путь уже абсолютный. */
@@ -190,6 +193,16 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
         substitutions,
         push,
       );
+    }
+
+    if (job.lane !== undefined && !KEBAB_CASE.test(job.lane)) {
+      push({
+        severity: 'error',
+        message: `Работа ${job.id} объявляет lane «${job.lane}», не являющийся слагом в kebab-case`,
+        file: pipeline.file,
+        at: `${at}.lane`,
+        hint: 'Слаг — строчные латинские буквы, цифры и дефис, как у идентификатора работы',
+      });
     }
 
     const upstreamOf = graph.upstream.get(job.id) ?? new Set();
@@ -482,19 +495,19 @@ function checkStep(
         at: `${at}.agent`,
       });
     }
+  }
 
-    if (step.outputSchemaPath !== undefined) {
-      checkDeclaredPath(
-        {
-          path: step.outputSchemaPath,
-          declaredAt: `${at}.output_schema`,
-          file: job.source,
-          kind: 'Файл схемы',
-        },
-        substitutions,
-        push,
-      );
-    }
+  if (step.outputSchemaPath !== undefined) {
+    checkDeclaredPath(
+      {
+        path: step.outputSchemaPath,
+        declaredAt: `${at}.output_schema`,
+        file: job.source,
+        kind: 'Файл схемы',
+      },
+      substitutions,
+      push,
+    );
   }
 
   checkContext(step.context, base, job.source, `${at}.context`, substitutions, push);

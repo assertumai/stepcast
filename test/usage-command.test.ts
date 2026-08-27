@@ -624,4 +624,86 @@ describe('CLI: stepcast usage', () => {
     assert.doesNotMatch(text, /не прочитана/, 'прежняя форма обязана читаться');
     assert.match(text, /430/, 'агрегаты старой сводки показываются');
   });
+
+  // Спека pipeline-lanes: «Группировка расхода по дорожкам»
+  const LANE_JOB = (id: string, lane: string | undefined): RunStatus['jobs'][number] => ({
+    id,
+    status: 'success',
+    ...(lane === undefined ? {} : { lane }),
+    steps: [
+      {
+        id: 'c',
+        index: 1,
+        kind: 'run',
+        key: `k-${id}`,
+        status: 'success',
+        attempts: [
+          {
+            attempt: 1,
+            status: 'success',
+            started_at: '2026-08-01T00:00:00.000Z',
+            finished_at: '2026-08-01T00:00:10.000Z',
+          },
+        ],
+      },
+    ],
+  });
+
+  it('печатает строку итога дорожки над работами, входящими в неё', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, {
+      jobs: [LANE_JOB('propose', 'a'), LANE_JOB('plan', 'a')],
+      usage: {
+        run_id: 'r',
+        total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 300, wallclock_ms: 30_000 },
+        unreported: [],
+        jobs: {
+          propose: { billable_tokens: 100, wallclock_ms: 10_000, cost_usd: 0.1, steps: {} },
+          plan: { billable_tokens: 200, wallclock_ms: 20_000, cost_usd: 0.2, steps: {} },
+        },
+      },
+    });
+
+    const { lines, write } = capture();
+    withHome(home, () => runUsageCommand(args([journal.paths.runId]), write, projectRoot));
+
+    assert.equal(cell(lines, 'a', 'списано'), '300');
+    assert.equal(cell(lines, 'a', 'время'), '30s');
+    // Строка итога стоит раньше первой работы дорожки.
+    const laneIndex = lines.findIndex((line) => line.startsWith('a'));
+    const jobIndex = lines.findIndex((line) => line.startsWith('  propose'));
+    assert.ok(laneIndex >= 0 && jobIndex > laneIndex);
+  });
+
+  it('помечает несообщённую величину в итоге дорожки прочерком, а не нулём', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, {
+      jobs: [LANE_JOB('propose', 'a'), LANE_JOB('plan', 'a')],
+      usage: {
+        run_id: 'r',
+        total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 300, wallclock_ms: 30_000 },
+        unreported: [],
+        jobs: {
+          propose: { billable_tokens: 100, wallclock_ms: 10_000, cost_usd: 0.1, steps: {} },
+          plan: { billable_tokens: 200, wallclock_ms: 20_000, steps: {} },
+        },
+      },
+    });
+
+    const { lines, write } = capture();
+    withHome(home, () => runUsageCommand(args([journal.paths.runId]), write, projectRoot));
+
+    assert.equal(cell(lines, 'a', 'цена'), '—');
+  });
+
+  it('прогон без объявленных дорожек печатается без группировки', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, { jobs: [LANE_JOB('build', undefined)] });
+
+    const { lines, write } = capture();
+    withHome(home, () => runUsageCommand(args([journal.paths.runId]), write, projectRoot));
+
+    assert.equal(lines.some((line) => line.startsWith('build')), false);
+    assert.ok(lines.some((line) => line.startsWith('  build')));
+  });
 });

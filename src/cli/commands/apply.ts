@@ -1,5 +1,5 @@
 import { resolveConfig } from '../../core/config/resolve.js';
-import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
+import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { resolveRun } from '../../core/journal/reader.js';
 import { applyRun } from '../../core/run/apply.js';
@@ -14,10 +14,17 @@ export function runApplyCommand(
   const projectRoot = findProjectRoot(cwd);
   const paths = resolveRun(config.runs.root, projectRoot, args.positional[0]);
 
+  if (typeof args.flags.job === 'string' && typeof args.flags.lane === 'string') {
+    throw new StepcastError('--job и --lane взаимоисключимы', {
+      hint: 'Укажите либо конкретную работу, либо целую дорожку',
+    });
+  }
+
   const outcome = applyRun({
     paths,
     cwd,
     ...(typeof args.flags.job === 'string' ? { job: args.flags.job } : {}),
+    ...(typeof args.flags.lane === 'string' ? { lane: args.flags.lane } : {}),
   });
 
   switch (outcome.kind) {

@@ -674,3 +674,153 @@ describe('bookkeeping: отказ фиксации якоря не роняет 
     assert.ok(failures.length > 0, 'отказ учёта должен быть записан в журнал');
   });
 });
+
+describe('pipeline-lanes: lane в записи работы', () => {
+  it('запись работы с объявленной lane несёт её в status.json', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    lane: a
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+  other:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+    });
+
+    const result = await run(project);
+    assert.equal(result.status, 'success');
+
+    const status = readStatus(result.journal.paths);
+    assert.equal(status.jobs.find((job) => job.id === 'build')?.lane, 'a');
+    assert.equal(status.jobs.find((job) => job.id === 'other')?.lane, undefined);
+  });
+});
+
+describe('step-execution: STEPCAST_BIN', () => {
+  it('указывает на исполняющий движок и не переопределяется объявленным env', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  probe:
+    steps:
+      - id: check
+        run: 'test "$STEPCAST_BIN" = "${process.argv[1]}"'
+        env: { STEPCAST_BIN: подделка }
+        expect: [{ exit_code: 0 }]
+`,
+    });
+
+    const result = await run(project);
+    assert.equal(result.status, 'success');
+  });
+});
+
+describe('step-execution: структурированный выход командного шага', () => {
+  it('публикует выход командного шага через output.from', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  probe:
+    output: { from: emit }
+    steps:
+      - id: emit
+        run: [echo, '{"slug":"x"}']
+        output_schema: schema.json
+`,
+      'schema.json': JSON.stringify({
+        type: 'object',
+        properties: { slug: { type: 'string' } },
+        required: ['slug'],
+      }),
+    });
+
+    const result = await run(project);
+    assert.equal(result.status, 'success');
+
+    const status = readStatus(result.journal.paths);
+    const job = status.jobs.find((entry) => entry.id === 'probe');
+    assert.ok(job?.output !== undefined, 'у работы должен быть путь к артефакту выхода');
+    const published = JSON.parse(readFileSync(job!.output as string, 'utf8'));
+    assert.deepEqual(published, { slug: 'x' });
+  });
+
+  it('предикат schema на командном шаге проверяет разобранный выход', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  probe:
+    steps:
+      - id: emit
+        run: [echo, '{"slug":"x"}']
+        output_schema: schema.json
+        expect:
+          - schema: schema.json
+`,
+      'schema.json': JSON.stringify({
+        type: 'object',
+        properties: { slug: { type: 'string' } },
+        required: ['slug'],
+      }),
+    });
+
+    const result = await run(project);
+    assert.equal(result.status, 'success');
+  });
+
+  it('отказывает попытку с причиной, называющей шаг и неразбираемый вывод, и повторяет её', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  probe:
+    steps:
+      - id: emit
+        run: [echo, 'не json']
+        output_schema: schema.json
+        attempts: { max: 2 }
+`,
+      'schema.json': JSON.stringify({ type: 'object' }),
+    });
+
+    const result = await run(project);
+    assert.equal(result.status, 'failed');
+
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'emit');
+    assert.equal(step?.attempts.length, 2);
+    assert.match(step?.reason ?? '', /emit/);
+    assert.match(step?.reason ?? '', /JSON/);
+  });
+
+  it('командный шаг без output_schema структурированного выхода не имеет', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  probe:
+    output: { from: emit }
+    steps:
+      - id: emit
+        run: [echo, '{"slug":"x"}']
+`,
+    });
+
+    const result = await run(project);
+    assert.equal(result.status, 'success');
+
+    const status = readStatus(result.journal.paths);
+    const job = status.jobs.find((entry) => entry.id === 'probe');
+    assert.equal(job?.output, undefined);
+  });
+});

@@ -57,6 +57,9 @@ steps:
           - package.json
           - .gitattributes
           - .stepcast/prompts/**
+          - .stepcast/jobs/**
+          - .stepcast/pipelines/**
+          - .stepcast/schemas/**
     attempts:
       max: 2
       escalation:

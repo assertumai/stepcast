@@ -134,6 +134,7 @@ describe('step-execution: окружение', () => {
     const injected = injectedVariables({
       runId: 'r1',
       runDir: '/runs/r1',
+      binPath: '/usr/local/lib/node_modules/stepcast/dist/src/bin.js',
       jobId: 'build',
       jobDir: '/runs/r1/jobs/build',
       stepId: 'compile',
@@ -159,6 +160,7 @@ describe('step-execution: окружение', () => {
     assert.equal(env.STEPCAST_STEP, 'compile');
     assert.equal(env.STEPCAST_ATTEMPT, '2');
     assert.equal(env.STEPCAST_WORKSPACE, '/work');
+    assert.equal(env.STEPCAST_BIN, '/usr/local/lib/node_modules/stepcast/dist/src/bin.js');
   });
 
   // Сценарий: «Инжектируемые переменные не переопределяются»
@@ -168,12 +170,13 @@ describe('step-execution: окружение', () => {
       envFiles: [],
       pipeline: {},
       job: {},
-      step: { STEPCAST_JOB: 'подделка' },
-      injected: { STEPCAST_JOB: 'build' },
+      step: { STEPCAST_JOB: 'подделка', STEPCAST_BIN: 'подделка' },
+      injected: { STEPCAST_JOB: 'build', STEPCAST_BIN: '/real/bin.js' },
       deny: [],
       cwd: '/tmp',
     });
     assert.equal(env.STEPCAST_JOB, 'build');
+    assert.equal(env.STEPCAST_BIN, '/real/bin.js');
   });
 
   it('переменные stepcast не попадают под запреты', () => {

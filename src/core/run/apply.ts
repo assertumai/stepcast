@@ -7,7 +7,7 @@ import { createAnchorer } from '../anchor/index.js';
 import { StepcastError } from '../errors.js';
 import { readManifest, readStatus } from '../journal/reader.js';
 import type { RunPaths } from '../journal/paths.js';
-import type { JobRecord } from '../journal/schema.js';
+import type { JobRecord, RunManifest } from '../journal/schema.js';
 
 /**
  * Возврат результата изолированного прогона в текущее дерево.
@@ -25,6 +25,8 @@ export interface ApplyOptions {
   readonly cwd: string;
   /** Ограничить наложение одной работой. */
   readonly job?: string;
+  /** Ограничить наложение одной дорожкой — взаимоисключимо с `job`. */
+  readonly lane?: string;
 }
 
 export type ApplyOutcome =
@@ -89,9 +91,78 @@ function isolatedJobs(paths: RunPaths, only: string | undefined): JobRecord[] {
   return [found];
 }
 
+/** Изолированные работы дорожки, в порядке графа (уже — порядок `status.jobs`). */
+function laneIsolatedJobs(paths: RunPaths, lane: string): JobRecord[] {
+  const status = readStatus(paths);
+  return status.jobs.filter(
+    (job) => job.lane === lane && job.workspace !== undefined && job.workspace.mode !== 'cwd',
+  );
+}
+
+/**
+ * Наложить дорожку одним диффом: от `tree_before` первого шага дорожки до
+ * последнего непустого `tree_id` — в отличие от `--job`, который накладывает
+ * каждую работу отдельным диффом, здесь диффов ровно один, и по нему проходит
+ * ровно одно `git apply --3way`.
+ */
+function applyLane(paths: RunPaths, cwd: string, manifest: RunManifest, lane: string): ApplyOutcome {
+  const jobs = laneIsolatedJobs(paths, lane);
+  if (jobs.length === 0) return { kind: 'nothing-to-apply' };
+
+  const steps = jobs.flatMap((job) => job.steps);
+  const from = steps[0]?.tree_before;
+  const to = [...steps].reverse().find((step) => step.tree_id !== undefined)?.tree_id;
+
+  if (from === undefined || to === undefined) return { kind: 'nothing-to-apply' };
+
+  if (manifest.anchor_kind !== 'git') {
+    throw new StepcastError(`Дорожка ${lane} снята вне git: накладывать нечего`, {
+      hint: 'Объектов деревьев нет, поэтому дифф не вычислить.',
+    });
+  }
+
+  if (from === to) return { kind: 'nothing-to-apply' };
+
+  const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-apply-'));
+  const anchorer = createAnchorer({ dir: cwd, stateDir, kind: 'git', scope: 'apply' });
+  const before = anchorer.capture();
+
+  try {
+    const patch = git(cwd, ['diff', '--binary', from, to]);
+    if (patch === '') return { kind: 'nothing-to-apply' };
+
+    const patchFile = join(stateDir, `lane-${lane}.patch`);
+    writeFileSync(patchFile, patch);
+
+    try {
+      git(cwd, ['apply', '--3way', patchFile]);
+    } catch (error) {
+      const output = String((error as { stderr?: string }).stderr ?? '');
+      const paths_ = conflictingPaths(output);
+      throw new StepcastError(`Наложение дорожки ${lane} не сошлось с текущим деревом`, {
+        hint:
+          paths_.length === 0
+            ? 'Текущее дерево изменилось несовместимо с результатом прогона'
+            : `Конфликтующие пути:\n${paths_.map((path) => `  ${path}`).join('\n')}\nЗакоммитьте или отложите свои правки в этих файлах и повторите`,
+        cause: error,
+      });
+    }
+  } catch (error) {
+    anchorer.restore(before);
+    throw error;
+  } finally {
+    anchorer.dispose();
+  }
+
+  return { kind: 'applied', jobs: jobs.map((job) => job.id) };
+}
+
 export function applyRun(options: ApplyOptions): ApplyOutcome {
   const { paths, cwd } = options;
   const manifest = readManifest(paths);
+
+  if (options.lane !== undefined) return applyLane(paths, cwd, manifest, options.lane);
+
   const jobs = isolatedJobs(paths, options.job);
 
   if (jobs.length === 0) return { kind: 'already-in-place' };

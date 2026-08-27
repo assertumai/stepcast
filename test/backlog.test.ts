@@ -529,4 +529,112 @@ describe('проставление исхода', () => {
     assert.equal(result.code, 1);
     assert.match(result.stderr, /done/);
   });
+
+  // Спека pipeline-lanes: «Защита проставленного исхода»
+  it('finish на уже done ничего не перезаписывает и завершается кодом 0', () => {
+    const path = fixture(item('some-item', { ...COMPLETE, status: 'done' }));
+    const before = readFileSync(path, 'utf8');
+    const result = backlog(['finish', 'some-item', '--file', path, '--status', 'failed', '--reason', 'поздно']);
+
+    assert.equal(result.code, 0);
+    assert.equal(readFileSync(path, 'utf8'), before);
+  });
+
+  it('finish на уже failed ничего не перезаписывает и завершается кодом 0', () => {
+    const path = fixture(item('some-item', { ...COMPLETE, status: 'failed', reason: 'прежняя причина' }));
+    const before = readFileSync(path, 'utf8');
+    const result = backlog(['finish', 'some-item', '--file', path, '--status', 'done']);
+
+    assert.equal(result.code, 0);
+    assert.equal(readFileSync(path, 'utf8'), before);
+  });
+});
+
+describe('выдача слотов по дорожкам', () => {
+  const NOW = '2026-08-23T12:00:00.000Z';
+
+  it('раздаёт по одному пункту на дорожку в порядке дорожек', () => {
+    const path = fixture(
+      item('a', { ...COMPLETE, group: 'a' }),
+      item('b', { ...COMPLETE, group: 'b' }),
+    );
+    const result = backlog(['pick', '--file', path, '--now', NOW, '--lanes', 'a-lane,b-lane']);
+
+    assert.equal(result.code, 0);
+    const parsed = JSON.parse(result.stdout) as {
+      lanes: Record<string, { filled: boolean; slug: string }>;
+    };
+    assert.equal(parsed.lanes['a-lane']?.filled, true);
+    assert.equal(parsed.lanes['a-lane']?.slug, 'a');
+    assert.equal(parsed.lanes['b-lane']?.filled, true);
+    assert.equal(parsed.lanes['b-lane']?.slug, 'b');
+    assert.equal(statusOf(path, 'a'), 'in_progress');
+    assert.equal(statusOf(path, 'b'), 'in_progress');
+  });
+
+  it('дорожка без подходящего пункта получает пустые значения полей', () => {
+    const path = fixture(item('a', { ...COMPLETE, group: 'a' }));
+    const result = backlog(['pick', '--file', path, '--now', NOW, '--lanes', 'a-lane,b-lane']);
+
+    assert.equal(result.code, 0);
+    const parsed = JSON.parse(result.stdout) as {
+      lanes: Record<string, { filled: boolean; slug: string; title: string; group: string; item: unknown }>;
+    };
+    assert.equal(parsed.lanes['a-lane']?.filled, true);
+    assert.equal(parsed.lanes['b-lane']?.filled, false);
+    assert.equal(parsed.lanes['b-lane']?.slug, '');
+    assert.equal(parsed.lanes['b-lane']?.title, '');
+    assert.equal(parsed.lanes['b-lane']?.group, '');
+    assert.equal(parsed.lanes['b-lane']?.item, null);
+  });
+
+  it('отсутствие подходящих пунктов не отказывает: все дорожки пустые', () => {
+    const path = fixture(item('a', { ...COMPLETE, status: 'done' }));
+    const before = readFileSync(path, 'utf8');
+    const result = backlog(['pick', '--file', path, '--now', NOW, '--lanes', 'a-lane,b-lane']);
+
+    assert.equal(result.code, 0);
+    assert.equal(readFileSync(path, 'utf8'), before);
+    const parsed = JSON.parse(result.stdout) as { lanes: Record<string, { filled: boolean }> };
+    assert.equal(parsed.lanes['a-lane']?.filled, false);
+    assert.equal(parsed.lanes['b-lane']?.filled, false);
+  });
+
+  it('отказывает на некорректном перечне дорожек и не трогает файл', () => {
+    const path = fixture(item('a', COMPLETE));
+    const before = readFileSync(path, 'utf8');
+
+    for (const lanes of ['', 'a-lane,a-lane', 'Дорожка A', 'a-lane,']) {
+      const result = backlog(['pick', '--file', path, '--now', NOW, '--lanes', lanes]);
+      assert.equal(result.code, 1, `lanes=${lanes}`);
+    }
+    assert.equal(readFileSync(path, 'utf8'), before);
+  });
+
+  it('пишет пункт каждой занятой дорожки файлом item-<дорожка>.json в каталог прогона', () => {
+    const path = fixture(
+      item('a', { ...COMPLETE, group: 'a' }),
+      item('b', { ...COMPLETE, group: 'b' }),
+    );
+    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-rundir-'));
+    const result = backlog(['pick', '--file', path, '--now', NOW, '--lanes', 'a-lane,b-lane', '--run-dir', runDir]);
+
+    assert.equal(result.code, 0);
+    const itemA = JSON.parse(readFileSync(join(runDir, 'item-a-lane.json'), 'utf8')) as { slug: string };
+    const itemB = JSON.parse(readFileSync(join(runDir, 'item-b-lane.json'), 'utf8')) as { slug: string };
+    assert.equal(itemA.slug, 'a');
+    assert.equal(itemB.slug, 'b');
+  });
+
+  it('общая метка started_at у всех занятых дорожек', () => {
+    const path = fixture(
+      item('a', { ...COMPLETE, group: 'a' }),
+      item('b', { ...COMPLETE, group: 'b' }),
+    );
+    const result = backlog(['pick', '--file', path, '--now', NOW, '--lanes', 'a-lane,b-lane']);
+
+    assert.equal(result.code, 0);
+    assert.equal(fieldOf(path, 'a', 'started_at'), NOW);
+    assert.equal(fieldOf(path, 'b', 'started_at'), NOW);
+  });
 });

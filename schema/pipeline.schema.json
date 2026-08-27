@@ -331,6 +331,9 @@
               "if": {
                 "type": "string"
               },
+              "lane": {
+                "type": "string"
+              },
               "description": {
                 "type": "string"
               },
@@ -515,6 +518,9 @@
                 ]
               },
               "if": {
+                "type": "string"
+              },
+              "lane": {
                 "type": "string"
               },
               "name": {

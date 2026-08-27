@@ -1,0 +1,28 @@
+# Работа: предусловие петли и раздача слотов по дорожкам.
+#
+# Голова всего пайплайна: чистое дерево проверяется здесь и только здесь, до
+# того как какая-либо дорожка тронет рабочую копию. Режим переопределён на cwd
+# на месте подключения в пайплайне: работа не производит правок кода и живёт
+# в каталоге запуска, где и стоит проверять его чистоту.
+
+version: 1
+kind: job
+name: slots
+description: Проверить чистоту дерева и раздать слоты дорожек из очереди улучшений
+
+output:
+  from: pick-lanes
+  schema: ../schemas/slots.json
+
+steps:
+  - id: guard-clean-tree
+    run: [sh, -c, 'test -z "$(git status --porcelain)"']
+    timeout: 1m
+    expect: [{ exit_code: 0 }]
+
+  - id: pick-lanes
+    run: [sh, -c, 'node scripts/backlog.mjs pick --lanes a,b --run-dir "$STEPCAST_RUN_DIR"']
+    timeout: 1m
+    output_schema: ../schemas/slots.json
+    expect:
+      - schema: ../schemas/slots.json

@@ -90,6 +90,7 @@ export function jobToPlain(job: Job): Record<string, unknown> {
     needs: job.needs,
     on: job.on,
     ...(job.if === undefined ? {} : { if: job.if }),
+    ...(job.lane === undefined ? {} : { lane: job.lane }),
     session: job.session,
     workspace: job.workspace,
     ...(Object.keys(job.env).length === 0 ? {} : { env: job.env }),

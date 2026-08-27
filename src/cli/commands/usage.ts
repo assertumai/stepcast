@@ -92,7 +92,27 @@ export function runUsageCommand(
   );
 
   const rows: string[][] = [['', ...COLUMNS]];
+  // Группировка по lane включается, только если хоть одна работа её несёт:
+  // прогон без объявленных дорожек печатается ровно как прежде.
+  const hasLanes = status.jobs.some((job) => job.lane !== undefined);
+  const printedLanes = new Set<string>();
+
   for (const job of status.jobs) {
+    if (hasLanes && job.lane !== undefined && !printedLanes.has(job.lane)) {
+      printedLanes.add(job.lane);
+      const laneReports = status.jobs
+        .filter((entry) => entry.lane === job.lane)
+        .map((entry) => summary?.jobs[entry.id]);
+      rows.push([
+        job.lane,
+        ...totalCells(
+          sumOrUnreported(laneReports.map((report) => report?.billable_tokens)),
+          sumOrUnreported(laneReports.map((report) => report?.wallclock_ms)),
+          sumOrUnreported(laneReports.map((report) => report?.cost_usd)),
+        ),
+      ]);
+    }
+
     const jobReport = summary?.jobs[job.id];
     rows.push([`  ${job.id}`, ...totalCells(jobReport?.billable_tokens, jobReport?.wallclock_ms, jobReport?.cost_usd)]);
     for (const step of job.steps) {
@@ -147,6 +167,12 @@ function attemptCells(
     tokensCell(billable?.peak_prefix_tokens ?? usage.peak_prefix_tokens),
     costCell(billable?.cost_usd ?? usage.reported_cost_usd),
   ];
+}
+
+/** Сумма измерения по дорожке: одна несообщённая работа делает итог несообщённым, не нулевым. */
+function sumOrUnreported(values: readonly (number | undefined)[]): number | undefined {
+  if (values.some((value) => value === undefined)) return undefined;
+  return (values as number[]).reduce((sum, value) => sum + value, 0);
 }
 
 function tokensCell(value: number | undefined): string {

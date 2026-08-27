@@ -563,6 +563,63 @@ jobs:
       ['zebra', 'alpha', 'middle'],
     );
   });
+
+  // Сценарий: «Дорожка объявлена на месте подключения»
+  it('разбирает lane на месте подключения работы', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    lane: a
+    steps: [{ id: c, run: [echo, ok] }]
+  other:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+    const { pipeline } = expand(project);
+    assert.equal(pipeline.jobs[0]!.lane, 'a');
+    assert.equal(pipeline.jobs[1]!.lane, undefined);
+  });
+
+  it('отклоняет lane внутри файла работы, как и прочую обвязку', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: ./jobs/build.yml
+`,
+      'jobs/build.yml': `
+kind: job
+lane: a
+steps:
+  - id: compile
+    run: [echo, ok]
+`,
+    });
+
+    assert.throws(() => expand(project), StepcastError);
+  });
+
+  it('не меняет порядок исполнения графа при объявленной lane', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  zebra:
+    lane: a
+    steps: [{ id: c, run: [echo, ok] }]
+  alpha:
+    lane: b
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+    assert.deepEqual(
+      expand(project).pipeline.jobs.map((job) => job.id),
+      ['zebra', 'alpha'],
+    );
+  });
 });
 
 // Спека pipeline-definition: «Единицы измерения» — подстановка в числовые поля
@@ -965,6 +1022,21 @@ jobs:
     const { pipeline } = expand(project);
     assert.equal(pipeline.jobs[0]!.workspace.inherit, undefined);
     assert.doesNotMatch(serializeLock(pipeline), /inherit/);
+  });
+
+  it('сохраняет объявленную lane в pipeline.lock.yml', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    lane: a
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+    const { pipeline } = expand(project);
+    const plain = parseYaml(serializeLock(pipeline)) as { jobs: { lane?: string }[] };
+    assert.equal(plain.jobs[0]?.lane, 'a');
   });
 
   // Сценарий: «Пайплайн без триггеров не изменился»

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["lanes"],
+  "additionalProperties": false,
+  "properties": {
+    "lanes": {
+      "type": "object",
+      "required": ["a", "b"],
+      "additionalProperties": false,
+      "properties": {
+        "a": { "$ref": "#/$defs/lane" },
+        "b": { "$ref": "#/$defs/lane" }
+      }
+    }
+  },
+  "$defs": {
+    "lane": {
+      "type": "object",
+      "required": ["filled", "slug", "title", "group", "item"],
+      "additionalProperties": false,
+      "properties": {
+        "filled": { "type": "boolean" },
+        "slug": { "type": "string" },
+        "title": { "type": "string" },
+        "group": { "type": "string" },
+        "item": { "type": ["object", "null"] }
+      }
+    }
+  }
+}
