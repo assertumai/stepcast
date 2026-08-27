@@ -6,7 +6,8 @@
   "properties": {
     "lanes": {
       "type": "object",
-      "required": ["a", "b"],
+      "comment": "Дорожка b необязательна: заход может раздавать один слот, и тогда pick её не называет вовсе. Условие propose-b сравнивает неопределённое значение с true и даёт false — работа пропускается, а не запускается на пустоте.",
+      "required": ["a"],
       "additionalProperties": false,
       "properties": {
         "a": { "$ref": "#/$defs/lane" },
