@@ -53,6 +53,10 @@ steps:
           # настройку или поле, обязано их обновить, иначе объявленный формат
           # разойдётся с принимаемым.
           - schema/**
+          - scripts/**
+          - package.json
+          - .gitattributes
+          - .stepcast/prompts/**
     attempts:
       max: 2
       escalation:
