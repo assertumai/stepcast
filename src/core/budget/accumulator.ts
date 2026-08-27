@@ -75,6 +75,12 @@ interface Counters {
   attempts: number;
   backend: string;
   model: string | undefined;
+  /**
+   * Наибольший префикс одного обращения. Не накапливается через `apply()`:
+   * максимум разностями не считается, а на уровнях работы и прогона он не
+   * ведётся вовсе (см. `record()`/`report()`) — только на уровне попытки.
+   */
+  peak: number | undefined;
 }
 
 function emptyCounters(): Counters {
@@ -90,7 +96,15 @@ function emptyCounters(): Counters {
     attempts: 0,
     backend: '',
     model: undefined,
+    peak: undefined,
   };
+}
+
+/** Максимум двух необязательных величин: несообщённое не участвует и не выигрывает как ноль. */
+function maxOptional(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.max(a, b);
 }
 
 export class UsageAccumulator {
@@ -143,6 +157,7 @@ export class UsageAccumulator {
     for (const field of ['tokens_in', 'tokens_out', 'cache_read', 'cache_write'] as const) {
       if (usage[field] === null) this.unreported.add(field);
     }
+    if (usage.peak_prefix_tokens === undefined) this.unreported.add('peak_prefix_tokens');
     if (usage.reported_cost_usd === undefined) {
       this.costUnreportedAttempts.add(key);
     } else {
@@ -389,6 +404,8 @@ export class UsageAccumulator {
           wallclock_ms: number;
           costMicroUsd: number;
           costReportedAttempts: number;
+          /** Максимум по попыткам шага (включая запечатанные) — не сумма. */
+          peak: number | undefined;
           attempts: Map<
             number,
             UsageReport['jobs'][string]['steps'][string]['attempts'][number] & {
@@ -410,8 +427,13 @@ export class UsageAccumulator {
         const attempt = Number(sealAt === -1 ? attemptPart : attemptPart.slice(0, sealAt));
 
         const existing =
-          steps[stepId] ?? { billable_tokens: 0, wallclock_ms: 0, costMicroUsd: 0, costReportedAttempts: 0, attempts: new Map() };
+          steps[stepId] ??
+          { billable_tokens: 0, wallclock_ms: 0, costMicroUsd: 0, costReportedAttempts: 0, peak: undefined, attempts: new Map() };
         const priorAttempt = existing.attempts.get(attempt);
+        // Переисполнение шага запечатывает старую попытку под тем же номером
+        // (`sealStep`): её пик не должен теряться, когда новая попытка с тем
+        // же номером его не достигла.
+        const attemptPeak = maxOptional(priorAttempt?.peak_prefix_tokens, step.peak);
         existing.attempts.set(attempt, {
           attempt,
           backend: step.backend,
@@ -420,12 +442,14 @@ export class UsageAccumulator {
           wallclock_ms: (priorAttempt?.wallclock_ms ?? 0) + step.wallclockMs,
           costMicroUsd: (priorAttempt?.costMicroUsd ?? 0) + step.costMicroUsd,
           costReportedAttempts: (priorAttempt?.costReportedAttempts ?? 0) + step.costReportedAttempts,
+          ...(attemptPeak === undefined ? {} : { peak_prefix_tokens: attemptPeak }),
         });
         steps[stepId] = {
           billable_tokens: existing.billable_tokens + step.billable,
           wallclock_ms: existing.wallclock_ms + step.wallclockMs,
           costMicroUsd: existing.costMicroUsd + step.costMicroUsd,
           costReportedAttempts: existing.costReportedAttempts + step.costReportedAttempts,
+          peak: maxOptional(existing.peak, step.peak),
           attempts: existing.attempts,
         };
       }
@@ -440,6 +464,7 @@ export class UsageAccumulator {
               billable_tokens: step.billable_tokens,
               wallclock_ms: step.wallclock_ms,
               ...(step.costReportedAttempts > 0 ? { cost_usd: step.costMicroUsd / 1_000_000 } : {}),
+              ...(step.peak === undefined ? {} : { peak_prefix_tokens: step.peak }),
               attempts: [...step.attempts.values()]
                 .sort((a, b) => a.attempt - b.attempt)
                 .map(({ costMicroUsd, costReportedAttempts, ...attempt }) => ({
@@ -496,6 +521,7 @@ function toCounters(usage: Usage, cacheReadWeight: number): Counters {
     attempts: 1,
     backend: usage.backend,
     model: usage.model,
+    peak: usage.peak_prefix_tokens,
   };
 }
 
@@ -507,7 +533,10 @@ export function describeExceeded(exceeded: Exceeded): string {
 function describeExceededDimension(exceeded: Exceeded): string {
   switch (exceeded.dimension) {
     case 'tokens':
-      return `${exceeded.scope}: израсходовано ${formatTokens(exceeded.used)} при потолке ${formatTokens(exceeded.limit)}`;
+      // «Трафик», не «размер»/«объём»: потолок считает сумму по всем
+      // обращениям к API, а не то, что одновременно лежит в контексте, —
+      // см. docs/pipeline-format.md, раздел «Бюджет».
+      return `${exceeded.scope}: передано ${formatTokens(exceeded.used)} трафика при потолке ${formatTokens(exceeded.limit)}`;
     case 'cost':
       return `${exceeded.scope}: потрачено ${formatMoney(exceeded.used)} при потолке ${formatMoney(exceeded.limit)}`;
     case 'wallclock':

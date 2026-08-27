@@ -7,6 +7,7 @@ import {
   describeRefusal,
   emptyUsage,
   mergeUsage,
+  messagePrefix,
 } from '../backend/types.js';
 import { judgeVerdictSchemaPath, parseVerdict } from '../expect/verdict.js';
 import type { PredicateResult, Usage } from '../journal/schema.js';
@@ -168,10 +169,23 @@ async function callJudge(options: CallJudgeOptions): Promise<CallJudgeResult> {
     for (const line of lines) handle(line);
   };
 
+  const recordMessageUsage = (delta: Partial<Usage> | undefined): void => {
+    if (delta === undefined) return;
+    // Пик — величина этого сообщения; итоговая `result` ниже несёт
+    // накопительный итог вызова, а не одно сообщение, и в пик не годится.
+    const peak = messagePrefix(delta);
+    usage = mergeUsage(usage, peak === undefined ? delta : { ...delta, peak_prefix_tokens: peak });
+  };
+
   const handle = (line: string): void => {
     const event = adapter.parseLine(line);
-    if (event.kind === 'usage') {
-      usage = mergeUsage(usage, event.usage);
+    // Сообщение с вызовом инструмента адаптер отдаёт как `tool_use`, а не как
+    // `usage`, хотя расход в нём тот же (см. `src/core/backend/claude.ts`).
+    // Пропустить его значило бы занижать пик тем сильнее, чем больше судья
+    // звал инструментов, — и терять при этом самые поздние, самые большие
+    // обращения.
+    if (event.kind === 'usage' || event.kind === 'tool_use') {
+      recordMessageUsage(event.usage);
     } else if (event.kind === 'result') {
       if (event.structured !== undefined) structured = event.structured;
       usage = mergeUsage(usage, event.usage);

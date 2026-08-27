@@ -130,12 +130,24 @@ export function emptyUsage(backend: string, model: string | undefined, wallclock
   };
 }
 
-/** Слить частичные сведения о расходе, не подменяя отсутствующее нулём. */
+/**
+ * Слить частичные сведения о расходе, не подменяя отсутствующее нулём.
+ *
+ * `peak_prefix_tokens` — исключение из общего правила «патч перезаписывает
+ * поле»: он копится максимумом, а не последним значением. Итоговая запись
+ * `result` бэкенда не несёт пика вовсе (его считает только код движка), но
+ * если когда-нибудь понесёт — меньшее значение не должно затереть уже
+ * накопленный больший пик попытки.
+ */
 export function mergeUsage(base: Usage, patch: Partial<Usage> | undefined): Usage {
   if (patch === undefined) return base;
   const out: Usage = { ...base };
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue;
+    if (key === 'peak_prefix_tokens') {
+      out.peak_prefix_tokens = maxOptional(base.peak_prefix_tokens, value as number);
+      continue;
+    }
     (out as Record<string, unknown>)[key] = value;
   }
   return out;
@@ -149,6 +161,7 @@ export function mergeUsage(base: Usage, patch: Partial<Usage> | undefined): Usag
  */
 export function sumUsage(base: Usage, addition: Usage): Usage {
   const cost = sumOptional(base.reported_cost_usd, addition.reported_cost_usd);
+  const peak = maxOptional(base.peak_prefix_tokens, addition.peak_prefix_tokens);
   return {
     backend: base.backend,
     ...(base.model === undefined ? {} : { model: base.model }),
@@ -158,6 +171,9 @@ export function sumUsage(base: Usage, addition: Usage): Usage {
     cache_write: sumNullable(base.cache_write, addition.cache_write),
     wallclock_ms: base.wallclock_ms + addition.wallclock_ms,
     ...(cost === undefined ? {} : { reported_cost_usd: cost }),
+    // Пик — максимум одного обращения, а не сумма: два независимых вызова
+    // (шаг и вызванный им судья) не складывают своих префиксов.
+    ...(peak === undefined ? {} : { peak_prefix_tokens: peak }),
     // rate_limits намеренно не складывается: у окна лимитов нечего суммировать
     // — значение последнего сообщения и есть текущее состояние окна.
   };
@@ -172,4 +188,24 @@ function sumNullable(a: number | null, b: number | null): number | null {
 function sumOptional(a: number | undefined, b: number | undefined): number | undefined {
   if (a === undefined && b === undefined) return undefined;
   return (a ?? 0) + (b ?? 0);
+}
+
+/** Максимум двух необязательных величин: несообщённое не участвует и не выигрывает как ноль. */
+function maxOptional(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.max(a, b);
+}
+
+/**
+ * Объём одного обращения к API — сумма `tokens_in + cache_read + cache_write`
+ * той дельты, что бэкенд сообщил для одного сообщения потока. Отсутствует,
+ * если ни одно из трёх полей не пришло: считать пик нулём в этом случае
+ * означало бы выдать отсутствие данных за факт маленького обращения.
+ */
+export function messagePrefix(delta: Partial<Usage> | undefined): number | undefined {
+  if (delta === undefined) return undefined;
+  const { tokens_in, cache_read, cache_write } = delta;
+  if (tokens_in == null && cache_read == null && cache_write == null) return undefined;
+  return (tokens_in ?? 0) + (cache_read ?? 0) + (cache_write ?? 0);
 }

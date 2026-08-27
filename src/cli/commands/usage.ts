@@ -26,11 +26,13 @@ const COLUMNS = [
   'зап. кэша',
   'время',
   'списано',
+  'пик',
   'цена',
 ] as const;
 
 const TIME_COLUMN = COLUMNS.indexOf('время');
 const BILLABLE_COLUMN = COLUMNS.indexOf('списано');
+const PEAK_COLUMN = COLUMNS.indexOf('пик');
 const COST_COLUMN = COLUMNS.indexOf('цена');
 
 function totalCells(
@@ -42,6 +44,23 @@ function totalCells(
   cells[TIME_COLUMN] = timeCell(wallclockMs);
   cells[BILLABLE_COLUMN] = tokensCell(billable);
   cells[COST_COLUMN] = costCell(costUsd);
+  return cells;
+}
+
+/**
+ * Строка шага дополнительно несёт пик — максимум по попыткам из сводки. У
+ * работы своего пика нет (см. `UsageAccumulator.report`): «наибольшее
+ * обращение за работу» не указывает, в каком шаге оно случилось, а столбец
+ * там остаётся пустым, как и у сырых токенов.
+ */
+function stepCells(
+  billable: number | undefined,
+  wallclockMs: number | undefined,
+  costUsd: number | undefined,
+  peak: number | undefined,
+): string[] {
+  const cells = totalCells(billable, wallclockMs, costUsd);
+  cells[PEAK_COLUMN] = tokensCell(peak);
   return cells;
 }
 
@@ -80,7 +99,12 @@ export function runUsageCommand(
       const stepReport = jobReport?.steps[step.id];
       rows.push([
         `    ${step.id}`,
-        ...totalCells(stepReport?.billable_tokens, stepReport?.wallclock_ms, stepReport?.cost_usd),
+        ...stepCells(
+          stepReport?.billable_tokens,
+          stepReport?.wallclock_ms,
+          stepReport?.cost_usd,
+          stepReport?.peak_prefix_tokens,
+        ),
       ]);
       for (const attempt of step.attempts) {
         rows.push([`      #${attempt.attempt}`, ...attemptCells(attempt, stepReport?.attempts)]);
@@ -114,6 +138,13 @@ function attemptCells(
     tokensCell(usage.cache_write ?? undefined),
     timeCell(usage.wallclock_ms),
     tokensCell(billable?.billable_tokens),
+    // Сначала сводка, и только потом status.json: в status.json попытки лежит
+    // пик одного агента, а «списано» слева от него и пик строки шага уже
+    // включают вызванного шагом судью. Взять здесь агентский пик значило бы
+    // печатать в строке шага величину больше, чем в любой её строке попытки,
+    // — расхождение, которое таблица ничем не объясняет. Значение из
+    // status.json остаётся запасным: оно переживает gc сводки.
+    tokensCell(billable?.peak_prefix_tokens ?? usage.peak_prefix_tokens),
     costCell(billable?.cost_usd ?? usage.reported_cost_usd),
   ];
 }

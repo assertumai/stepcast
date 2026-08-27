@@ -358,4 +358,58 @@ describe('agent-backend: вызов судьи', () => {
     assert.equal(results[1]?.predicate, 'backend_refusal');
     assert.equal(results[2], secondPlaceholder, 'слот второго судьи остался заготовкой');
   });
+
+  // Спека run-journal: «Пик виден рядом с трафиком» — то же правило в судейском потоке.
+  it('пик судейской попытки — максимум по сообщениям потока, а не сумма', async () => {
+    const { stepDir } = bed();
+    const usageMessage = (tokensIn: number, cacheRead: number): string =>
+      JSON.stringify({
+        type: 'assistant',
+        message: { content: [], usage: { input_tokens: tokensIn, cache_read_input_tokens: cacheRead } },
+      });
+    const backend = createFakeBackend({
+      lines: [
+        usageMessage(50, 0), // префикс 50
+        usageMessage(20, 400), // префикс 420 — наибольшее сообщение
+        resultLine({ structured: { pass: true, reason: 'ок' }, tokensIn: 70, cacheRead: 400 }),
+      ],
+    });
+
+    const usages: Usage[] = [];
+    await runJudgePass(baseOptions({ adapter: backend.adapter, stepDir, usages }));
+
+    const last = usages.at(-1);
+    assert.equal(last?.peak_prefix_tokens, 420, 'пик — наибольшее сообщение, а не сумма 50+420');
+    assert.equal(last?.tokens_in, 70, 'итоговый расход остаётся тем, что сообщил result');
+  });
+
+  // Сообщение с вызовом инструмента адаптер отдаёт как `tool_use`, а не как
+  // `usage`: не учти его — и пик судьи занижался бы тем сильнее, чем больше
+  // инструментов он позвал, теряя именно поздние, самые большие обращения.
+  it('пик судьи учитывает сообщения с вызовом инструмента', async () => {
+    const { stepDir } = bed();
+    const toolMessage = (tokensIn: number, cacheRead: number): string =>
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'tool_use', name: 'Read', input: { file_path: 'a.txt' } }],
+          usage: { input_tokens: tokensIn, cache_read_input_tokens: cacheRead },
+        },
+      });
+    const backend = createFakeBackend({
+      lines: [
+        JSON.stringify({
+          type: 'assistant',
+          message: { content: [], usage: { input_tokens: 50, cache_read_input_tokens: 0 } },
+        }),
+        toolMessage(20, 900), // префикс 920 — наибольшее обращение, и оно с инструментом
+        resultLine({ structured: { pass: true, reason: 'ок' }, tokensIn: 70, cacheRead: 900 }),
+      ],
+    });
+
+    const usages: Usage[] = [];
+    await runJudgePass(baseOptions({ adapter: backend.adapter, stepDir, usages }));
+
+    assert.equal(usages.at(-1)?.peak_prefix_tokens, 920);
+  });
 });

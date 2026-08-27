@@ -9,6 +9,7 @@ import {
   emptyUsage,
   extractRefusal,
   mergeUsage,
+  messagePrefix,
   sumUsage,
 } from '../backend/types.js';
 import type { AgentStep } from '../pipeline/model.js';
@@ -187,7 +188,12 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
       const recordUsageDelta = (delta: Partial<Usage> | undefined, messageId: string | undefined): void => {
         if (delta === undefined || (messageId !== undefined && seenUsageMessageIds.has(messageId))) return;
         if (messageId !== undefined) seenUsageMessageIds.add(messageId);
-        usage = sumUsage(usage, mergeUsage(emptyUsage(adapter.name, resolvedModel, 0), delta));
+        // Пик — величина этого одного сообщения, а не накопленного расхода:
+        // считается до слияния с пустой базой, иначе sumUsage увидел бы его
+        // как обычное поле дельты и просуммировал бы вместо взятия максимума.
+        const peak = messagePrefix(delta);
+        const messageUsage = mergeUsage(emptyUsage(adapter.name, resolvedModel, 0), delta);
+        usage = sumUsage(usage, peak === undefined ? messageUsage : { ...messageUsage, peak_prefix_tokens: peak });
         options.onUsage?.(usage, plan.attempt);
       };
 

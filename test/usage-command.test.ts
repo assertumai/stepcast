@@ -17,6 +17,29 @@ function capture(): { lines: string[]; write: (line: string) => void } {
   return { lines, write: (line) => lines.push(line) };
 }
 
+/**
+ * Ячейка названного столбца в строке, начинающейся с `rowPrefix`.
+ *
+ * Столбцы выровнены `formatColumns` по левому краю и одинаковой ширины во всех
+ * строках, поэтому смещение столбца берётся из шапки. Без такой привязки
+ * проверка вида «в выводе есть прочерк» проходит и на прочерке из соседнего
+ * столбца — и молчит, когда в проверяемом напечатан ноль.
+ */
+function cell(lines: readonly string[], rowPrefix: string, column: string): string {
+  const header = lines.find((line) => line.includes('бэкенд'));
+  assert.ok(header !== undefined, 'шапка таблицы не найдена');
+  const start = header.indexOf(column);
+  assert.ok(start >= 0, `столбец «${column}» не найден в шапке`);
+  const rest = header.slice(start + column.length);
+  // Последний столбец тянется до конца строки; у прочих граница — начало следующего.
+  const end =
+    rest.trim() === '' ? undefined : start + column.length + (rest.length - rest.trimStart().length);
+  const row = lines.find((line) => line.startsWith(rowPrefix));
+  assert.ok(row !== undefined, `строка «${rowPrefix}» не найдена`);
+  // Строка обрезана справа (`trimEnd`), поэтому конец столбца может выйти за её длину.
+  return row.slice(start, end).trim();
+}
+
 const RETRIED_STEP: RunStatus['jobs'] = [
   {
     id: 'implement',
@@ -340,6 +363,230 @@ describe('CLI: stepcast usage', () => {
 
     const text = lines.join('\n');
     assert.match(text, /2 попытки без сообщённой цены/);
+  });
+
+  // Спека run-journal: «Пик виден рядом с трафиком»
+  it('печатает столбец пика в строке шага и попытки', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const jobs: RunStatus['jobs'] = [
+      {
+        id: 'implement',
+        status: 'success',
+        steps: [
+          {
+            id: 'write-code',
+            index: 1,
+            kind: 'agent',
+            key: 'k1',
+            status: 'success',
+            attempts: [
+              {
+                attempt: 1,
+                status: 'success',
+                started_at: '2026-08-01T00:00:00.000Z',
+                finished_at: '2026-08-01T00:01:00.000Z',
+                usage: {
+                  backend: 'claude',
+                  model: 'sonnet',
+                  tokens_in: 5_000_000,
+                  tokens_out: 100,
+                  cache_read: 4_900_000,
+                  cache_write: 0,
+                  wallclock_ms: 60_000,
+                  peak_prefix_tokens: 340_000,
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const summary: UsageReport = {
+      run_id: 'r',
+      total: { tokens_in: 5_000_000, tokens_out: 100, cache_read: 4_900_000, cache_write: 0, billable_tokens: 5_000_100, wallclock_ms: 60_000 },
+      unreported: [],
+      jobs: {
+        implement: {
+          billable_tokens: 5_000_100,
+          wallclock_ms: 60_000,
+          steps: {
+            'write-code': {
+              billable_tokens: 5_000_100,
+              wallclock_ms: 60_000,
+              peak_prefix_tokens: 340_000,
+              attempts: [{ attempt: 1, backend: 'claude', model: 'sonnet', billable_tokens: 5_000_100, wallclock_ms: 60_000, peak_prefix_tokens: 340_000 }],
+            },
+          },
+        },
+      },
+    };
+    const journal = seedRun(runsRoot, projectRoot, { jobs, usage: summary });
+
+    const { lines, write } = capture();
+    withHome(home, () => runUsageCommand(args([journal.paths.runId]), write, projectRoot));
+
+    // Пик и трафик расходятся на порядок — оба должны быть видны в отчёте.
+    assert.equal(cell(lines, '    write-code', 'пик'), '340k');
+    assert.equal(cell(lines, '      #1', 'пик'), '340k');
+    assert.equal(cell(lines, '    write-code', 'списано'), '5.0M');
+  });
+
+  // Пик попытки в сводке уже с максимумом по вызванному шагом судье
+  // (`runner.ts` складывает расход шага и судьи через `sumUsage`), а в
+  // status.json попытки лежит пик одного агента. Строка шага берёт максимум по
+  // попыткам из сводки — строка попытки обязана брать оттуда же, иначе шаг
+  // покажет пик больше, чем любая его попытка.
+  it('пик строки попытки берётся из сводки, а не из агентского пика status.json', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const summary = RETRIED_SUMMARY('r');
+    const step = summary.jobs.implement?.steps['write-code'];
+    assert.ok(step !== undefined);
+    const withPeak: UsageReport = {
+      ...summary,
+      jobs: {
+        implement: {
+          ...summary.jobs.implement!,
+          steps: {
+            'write-code': {
+              ...step,
+              peak_prefix_tokens: 900,
+              attempts: step.attempts.map((attempt) => ({ ...attempt, peak_prefix_tokens: 900 })),
+            },
+          },
+        },
+      },
+    };
+    // В status.json обеих попыток пик агента меньше судейского.
+    const jobs: RunStatus['jobs'] = RETRIED_STEP.map((job) => ({
+      ...job,
+      steps: job.steps.map((step_) => ({
+        ...step_,
+        attempts: step_.attempts.map((attempt) => ({
+          ...attempt,
+          usage: attempt.usage === undefined ? undefined : { ...attempt.usage, peak_prefix_tokens: 120 },
+        })),
+      })),
+    })) as RunStatus['jobs'];
+    const journal = seedRun(runsRoot, projectRoot, { jobs, usage: withPeak });
+
+    const { lines, write } = capture();
+    withHome(home, () => runUsageCommand(args([journal.paths.runId]), write, projectRoot));
+
+    assert.equal(cell(lines, '      #1', 'пик'), '900');
+    assert.equal(cell(lines, '      #2', 'пик'), '900');
+    assert.equal(cell(lines, '    write-code', 'пик'), '900');
+  });
+
+  it('без сводки пик попытки берётся из status.json — он переживает gc', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const jobs = RETRIED_STEP.map((job) => ({
+      ...job,
+      steps: job.steps.map((step_) => ({
+        ...step_,
+        attempts: step_.attempts.map((attempt) => ({
+          ...attempt,
+          usage: attempt.usage === undefined ? undefined : { ...attempt.usage, peak_prefix_tokens: 120 },
+        })),
+      })),
+    })) as RunStatus['jobs'];
+    const journal = seedRun(runsRoot, projectRoot, { jobs });
+
+    const { lines, write } = capture();
+    withHome(home, () => runUsageCommand(args([journal.paths.runId]), write, projectRoot));
+
+    assert.equal(cell(lines, '      #1', 'пик'), '120');
+  });
+
+  it('пик неизвестен в сводке прежней формы — прочерк, не ноль', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, { jobs: RETRIED_STEP });
+    // Форма до появления пика: поле в сводке отсутствует вовсе.
+    writeFileSync(
+      journal.paths.usage,
+      JSON.stringify({
+        run_id: journal.paths.runId,
+        total: { tokens_in: 300, tokens_out: 130, cache_read: 0, cache_write: 0, billable_tokens: 430, wallclock_ms: 150_000 },
+        unreported: [],
+        jobs: {
+          implement: {
+            billable_tokens: 430,
+            wallclock_ms: 150_000,
+            steps: {
+              'write-code': {
+                billable_tokens: 430,
+                wallclock_ms: 150_000,
+                attempts: [
+                  { attempt: 1, backend: 'claude', model: 'sonnet', billable_tokens: 150, wallclock_ms: 60_000 },
+                  { attempt: 2, backend: 'claude', model: 'opus', billable_tokens: 280, wallclock_ms: 90_000 },
+                ],
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    const { lines, write } = capture();
+    withHome(home, () => runUsageCommand(args([journal.paths.runId]), write, projectRoot));
+
+    const text = lines.join('\n');
+    assert.doesNotMatch(text, /не прочитана/, 'сводка прежней формы обязана читаться');
+    // Именно в столбце пика, а не где-нибудь в строке: прочерк есть и в
+    // денежном столбце обеих попыток, и проверка по всему тексту прошла бы
+    // даже на напечатанном нуле.
+    assert.equal(cell(lines, '    write-code', 'пик'), '—', 'пик неизвестной сводки — прочерк');
+    assert.equal(cell(lines, '      #1', 'пик'), '—');
+  });
+
+  it('число ячеек в строке попытки без расхода совпадает с числом столбцов у попытки с расходом', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const jobs: RunStatus['jobs'] = [
+      {
+        id: 'a',
+        status: 'running',
+        steps: [
+          {
+            id: 's',
+            index: 1,
+            kind: 'agent',
+            key: 'k',
+            status: 'running',
+            attempts: [
+              // Попытка без расхода (#1, ещё не завершилась) и попытка с
+              // расходом (#2) должны давать строки одинаковой ширины.
+              { attempt: 1, status: 'running', started_at: '2026-08-01T00:00:00.000Z', finished_at: '' },
+              {
+                attempt: 2,
+                status: 'success',
+                started_at: '2026-08-01T00:00:00.000Z',
+                finished_at: '2026-08-01T00:00:30.000Z',
+                usage: {
+                  backend: 'claude',
+                  model: 'sonnet',
+                  tokens_in: 10,
+                  tokens_out: 5,
+                  cache_read: 0,
+                  cache_write: 0,
+                  wallclock_ms: 30_000,
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const journal = seedRun(runsRoot, projectRoot, { status: 'running', jobs, skipUsage: true });
+
+    const { lines, write } = capture();
+    withHome(home, () => runUsageCommand(args([journal.paths.runId]), write, projectRoot));
+
+    const attemptWithoutUsage = lines.find((line) => line.includes('#1'));
+    const attemptWithUsage = lines.find((line) => line.includes('#2'));
+    assert.ok(attemptWithoutUsage !== undefined && attemptWithUsage !== undefined);
+    // Оба начинаются с непустого имени попытки, поэтому разделение по
+    // пробельным разрывам честно считает число ячеек в каждой строке.
+    const cellCount = (line: string): number => line.trim().split(/\s{2,}/).length;
+    assert.equal(cellCount(attemptWithoutUsage!), cellCount(attemptWithUsage!));
   });
 
   // Сценарий: «Сводка прежней формы»

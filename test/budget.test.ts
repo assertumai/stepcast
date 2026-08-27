@@ -18,7 +18,14 @@ import { readEvents, readStatus, readUsage, resolveRun } from '../src/core/journ
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { ExitCode } from '../src/core/errors.js';
 import type { Config } from '../src/core/config/resolve.js';
-import { BudgetStateSchema, UsageReportSchema, type Usage } from '../src/core/journal/schema.js';
+import {
+  AttemptRecordSchema,
+  BudgetStateSchema,
+  UsageAttemptReportSchema,
+  UsageReportSchema,
+  UsageSchema,
+  type Usage,
+} from '../src/core/journal/schema.js';
 import { makeProject, type Project } from './helpers.js';
 
 /** См. test/judge-attempt.test.ts: один поддельный бэкенд на объявленное имя. */
@@ -1343,5 +1350,51 @@ jobs:
     const emptyBudgetState = { tokens_used: 2, wallclock_ms: 10 };
     const parsedBudget = BudgetStateSchema.safeParse(emptyBudgetState);
     assert.equal(parsedBudget.success, true);
+  });
+
+  // Спека run-journal: «Наибольший префикс обращения виден рядом с расходом» —
+  // запись прежней формы, записанная до появления поля, обязана читаться.
+  it('запись расхода прежней формы без пика проходит все затронутые схемы', () => {
+    const oldUsage = {
+      backend: 'claude',
+      model: 'sonnet',
+      tokens_in: 100,
+      tokens_out: 50,
+      cache_read: 0,
+      cache_write: 0,
+      wallclock_ms: 1_000,
+    };
+    assert.equal(UsageSchema.safeParse(oldUsage).success, true);
+
+    const oldAttemptRecord = {
+      attempt: 1,
+      status: 'success',
+      started_at: '2026-08-01T00:00:00.000Z',
+      finished_at: '2026-08-01T00:00:30.000Z',
+      usage: oldUsage,
+    };
+    assert.equal(AttemptRecordSchema.safeParse(oldAttemptRecord).success, true);
+
+    const oldAttemptReport = {
+      attempt: 1,
+      backend: 'claude',
+      billable_tokens: 150,
+      wallclock_ms: 1_000,
+    };
+    assert.equal(UsageAttemptReportSchema.safeParse(oldAttemptReport).success, true);
+
+    const oldStepNode = {
+      run_id: 'run-old',
+      total: { tokens_in: 1, tokens_out: 1, cache_read: 0, cache_write: 0, billable_tokens: 2, wallclock_ms: 10 },
+      unreported: [],
+      jobs: {
+        build: {
+          billable_tokens: 150,
+          wallclock_ms: 1_000,
+          steps: { compile: { billable_tokens: 150, wallclock_ms: 1_000, attempts: [oldAttemptReport] } },
+        },
+      },
+    };
+    assert.equal(UsageReportSchema.safeParse(oldStepNode).success, true);
   });
 });

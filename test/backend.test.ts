@@ -201,6 +201,34 @@ describe('agent-backend: разбор потока', () => {
     assert.equal('reported_cost_usd' in summed, false);
   });
 
+  // Спека run-journal: «Пик шага — максимум по попыткам» (то же правило —
+  // на уровне слияния расхода шага и вызванного им судьи).
+  it('sumUsage берёт пик максимумом, а не суммой', () => {
+    const step = { ...emptyUsage('claude', 'sonnet', 0), peak_prefix_tokens: 300 };
+    const judge = { ...emptyUsage('claude', 'sonnet', 0), peak_prefix_tokens: 900 };
+    const summed = sumUsage(step, judge);
+    assert.equal(summed.peak_prefix_tokens, 900, 'два независимых вызова не складывают своих префиксов');
+  });
+
+  it('sumUsage сохраняет пик, когда у второго слагаемого он не сообщён', () => {
+    const step = { ...emptyUsage('claude', 'sonnet', 0), peak_prefix_tokens: 300 };
+    const judgeNoPeak = emptyUsage('claude', 'sonnet', 0);
+    const summed = sumUsage(step, judgeNoPeak);
+    assert.equal(summed.peak_prefix_tokens, 300);
+  });
+
+  it('mergeUsage не даёт патчу без пика затереть уже накопленный больший пик', () => {
+    const accumulated = { ...emptyUsage('claude', 'sonnet', 0), peak_prefix_tokens: 900 };
+    const merged = mergeUsage(accumulated, { tokens_in: 5 });
+    assert.equal(merged.peak_prefix_tokens, 900, 'финальный патч результата обычно пика не несёт');
+  });
+
+  it('mergeUsage берёт максимум, если патч всё же несёт меньший пик', () => {
+    const accumulated = { ...emptyUsage('claude', 'sonnet', 0), peak_prefix_tokens: 900 };
+    const merged = mergeUsage(accumulated, { peak_prefix_tokens: 300 });
+    assert.equal(merged.peak_prefix_tokens, 900);
+  });
+
   // Сценарий: «Окна лимитов»
   it('сохраняет все окна лимитов', () => {
     const line = JSON.stringify({
@@ -514,6 +542,56 @@ describe('agent-backend: исполнение шага', () => {
     );
     assert.equal(reported.at(-1)?.[1] !== 0, true, 'итоговая отправка несёт длительность');
     assert.equal(result.last?.usage.tokens_in, 120);
+  });
+
+  // Спека run-journal: «Пик виден рядом с трафиком»
+  it('пик попытки — наибольшее сообщение потока, а не сумма', async () => {
+    const dir = workdir();
+    const assistant = (id: string, tokensIn: number, cacheRead: number): string =>
+      JSON.stringify({
+        type: 'assistant',
+        message: { id, content: [], usage: { input_tokens: tokensIn, cache_read_input_tokens: cacheRead } },
+      });
+    const backend = createFakeBackend({
+      lines: [
+        assistant('msg-1', 100, 0), // префикс 100
+        assistant('msg-2', 50, 900), // префикс 950 — наибольшее сообщение
+        assistant('msg-3', 20, 10), // префикс 30
+        resultLine({ text: 'ок', tokensIn: 170, cacheRead: 910 }),
+      ],
+    });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep(),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(result.last?.usage.peak_prefix_tokens, 950, 'пик — наибольшее одно сообщение, не сумма трёх');
+    assert.equal(result.last?.usage.tokens_in, 170, 'списанный расход остаётся суммой/итогом потока');
+  });
+
+  it('пик не проставляется, если ни одно сообщение не сообщило слагаемых префикса', async () => {
+    const dir = workdir();
+    const backend = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'ок' })],
+    });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep(),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(result.last?.usage.peak_prefix_tokens, undefined);
   });
 
   // Сценарий: «Фиксация инициализации»

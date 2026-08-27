@@ -172,8 +172,8 @@ describe('run-journal: расход и бюджет', () => {
   it('помечает измерения, которых бэкенд не сообщил', () => {
     const accumulator = new UsageAccumulator(() => 0.1);
     accumulator.record('build', 'compile', 1, usageOf({ cache_write: null }));
-    // Цена тоже не сообщена в этой записи — попадает в тот же перечень.
-    assert.deepEqual(accumulator.report('r').unreported, ['cache_write', 'reported_cost_usd']);
+    // Цена и пик тоже не сообщены в этой записи — попадают в тот же перечень.
+    assert.deepEqual(accumulator.report('r').unreported, ['cache_write', 'peak_prefix_tokens', 'reported_cost_usd']);
   });
 
   // Сценарий: «Превышение бюджета шага»
@@ -290,6 +290,63 @@ describe('run-journal: расход и бюджет', () => {
     assert.equal(attempts?.length, 1);
     assert.equal(attempts?.[0]?.attempt, 1);
     assert.equal(attempts?.[0]?.billable_tokens, 140);
+  });
+
+  // Спека run-journal: «Пик шага — максимум по попыткам»
+  it('пик шага — максимум по попыткам, а не сумма', () => {
+    const accumulator = new UsageAccumulator(() => 0);
+    accumulator.record('build', 'test', 1, usageOf({ peak_prefix_tokens: 300 }));
+    accumulator.record('build', 'test', 2, usageOf({ peak_prefix_tokens: 900 }));
+
+    const step = accumulator.report('r1').jobs.build?.steps.test;
+    assert.equal(step?.peak_prefix_tokens, 900, 'максимум по двум попыткам, а не их сумма 1200');
+    assert.equal(step?.attempts.find((a) => a.attempt === 1)?.peak_prefix_tokens, 300);
+    assert.equal(step?.attempts.find((a) => a.attempt === 2)?.peak_prefix_tokens, 900);
+  });
+
+  // Сценарий: «Пик шага — максимум по попыткам» — переисполнение не теряет
+  // пика запечатанной попытки.
+  it('переисполненный шаг не теряет пика запечатанной попытки', () => {
+    const accumulator = new UsageAccumulator(() => 0);
+    accumulator.record('build', 'test', 1, usageOf({ peak_prefix_tokens: 900 }));
+    accumulator.sealStep('build', 'test');
+    accumulator.record('build', 'test', 1, usageOf({ peak_prefix_tokens: 40 }));
+
+    const step = accumulator.report('r1').jobs.build?.steps.test;
+    assert.equal(step?.attempts.length, 1);
+    assert.equal(
+      step?.attempts[0]?.peak_prefix_tokens,
+      900,
+      'новая попытка не достигла пика прерванного запуска — он не должен теряться',
+    );
+    assert.equal(step?.peak_prefix_tokens, 900);
+  });
+
+  // Сценарий: «Бэкенд не сообщает пооткликового расхода»
+  it('бэкенд без пооткликового расхода оставляет пик отсутствующим и пополняет unreported', () => {
+    const accumulator = new UsageAccumulator(() => 0);
+    accumulator.record('build', 'test', 1, usageOf({}));
+
+    const report = accumulator.report('r1');
+    assert.equal(report.jobs.build?.steps.test?.peak_prefix_tokens, undefined, 'прочерк, а не ноль');
+    assert.ok(report.unreported.includes('peak_prefix_tokens'));
+  });
+
+  // Спека run-journal: «Сообщение о превышении говорит о трафике»
+  it('причина остановки по токенному потолку называет трафик и не ссылается на контекст', () => {
+    const accumulator = new UsageAccumulator(() => 0);
+    accumulator.record('build', 'compile', 1, usageOf({ tokens_in: 900, tokens_out: 0, cache_read: 0, cache_write: 0 }));
+
+    const exceeded = accumulator.check([
+      { kind: 'step', name: 'build/compile', jobId: 'build', stepId: 'compile', budget: { tokens: 500, onExceed: 'stop' } },
+    ]);
+
+    const description = describeExceeded(exceeded!);
+    assert.match(description, /трафик/);
+    assert.doesNotMatch(description, /израсходовано/);
+    assert.doesNotMatch(description, /размер/);
+    assert.doesNotMatch(description, /объём/);
+    assert.doesNotMatch(description, /контекст/);
   });
 });
 

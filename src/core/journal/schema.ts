@@ -40,6 +40,13 @@ export const UsageSchema = z
       )
       .optional(),
     reported_cost_usd: z.number().optional(),
+    /**
+     * Объём одного самого большого обращения — сумма tokens_in + cache_read +
+     * cache_write того сообщения потока, где она была наибольшей. Не путать с
+     * трафиком: последний суммирует все обращения, а это — максимум одного.
+     * Отсутствует, если бэкенд не сообщает расход по отдельным сообщениям.
+     */
+    peak_prefix_tokens: z.number().optional(),
   })
   .strict();
 
@@ -241,6 +248,8 @@ export const UsageAttemptReportSchema = z
     wallclock_ms: z.number(),
     /** Отсутствует, если ни один сообщённый расход попытки не содержал цены. */
     cost_usd: z.number().optional(),
+    /** Наибольший префикс обращения этой попытки. См. `UsageSchema`. */
+    peak_prefix_tokens: z.number().optional(),
   })
   .strict();
 
@@ -274,6 +283,11 @@ export const UsageReportSchema = z
                 billable_tokens: z.number(),
                 wallclock_ms: z.number(),
                 cost_usd: z.number().optional(),
+                // Максимум по попыткам шага, не сумма. Отсутствует, если ни
+                // одна попытка не сообщила пика, — уровни работы и прогона
+                // этого поля не несут вовсе: величина теряет смысл ориентира
+                // выше шага.
+                peak_prefix_tokens: z.number().optional(),
                 // Прежняя форма сводки хранила число попыток. Разбивки в ней
                 // нет и взять её неоткуда, но остальная сводка старого прогона
                 // остаётся годной: терять её целиком ради поля, которого тогда
