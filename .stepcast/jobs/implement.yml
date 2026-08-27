@@ -91,6 +91,7 @@ steps:
           - ui/**
           - vite.config.ts
           - README.md
+          - eslint.config.js
     attempts:
       max: 3
       escalation:

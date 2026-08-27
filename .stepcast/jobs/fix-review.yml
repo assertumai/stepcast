@@ -66,6 +66,7 @@ steps:
           - vite.config.ts
           - README.md
           - .stepcast/schemas/**
+          - eslint.config.js
     attempts:
       max: 2
       escalation:
