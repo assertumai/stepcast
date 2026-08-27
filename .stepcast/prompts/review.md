@@ -1,8 +1,8 @@
 Отревьюй изменения рабочего дерева против плана и спеки.
 
 В контексте — план предыдущей работы и слаг изменения
-`${jobs.propose.output.slug}`. Смотри `git diff` и артефакты изменения в
-`openspec/changes/${jobs.propose.output.slug}/`.
+`${params.change}`. Смотри `git diff` и артефакты изменения в
+`openspec/changes/${params.change}/`.
 
 Что искать:
 
