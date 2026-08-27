@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { get, request } from 'node:http';
 import { describe, it, type TestContext } from 'node:test';
 
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
+import { dashboardPath } from '../src/ui/assets.js';
 import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
@@ -140,15 +141,35 @@ async function sendJson(
 
 const settle = (ms = 80): Promise<void> => new Promise((done) => setTimeout(done, ms));
 
+/**
+ * Собранная витрина для проверки страницы.
+ *
+ * `dist/ui-web/index.html` — артефакт сборки фронта: его нет ни в git, ни в
+ * свежем worktree, поэтому проверка «страница отдаётся» не имеет права
+ * полагаться на то, что он случайно лежит на диске — иначе `npm run check`
+ * зелёный только в том каталоге, где кто-то однажды собрал фронт руками.
+ * Здесь витрина создаётся сама, если её нет, и убирается за собой; уже
+ * собранную настоящую витрину тест не трогает.
+ */
+function ensureDashboard(t: TestContext): string {
+  const path = dashboardPath();
+  if (existsSync(path)) return path;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, '<!doctype html><title>stepcast</title><div id="root"></div>\n');
+  t.after(() => rmSync(path, { force: true }));
+  return path;
+}
+
 describe('ui-dashboard: HTTP-витрина', () => {
   it('отдаёт страницу и обзор, слушая только петлю', async (t) => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const dashboard = ensureDashboard(t);
     const server = await startServer(t, { runsRoot });
 
     const page = await fetchPath(server, '/');
     assert.equal(page.code, 200);
-    assert.match(page.body, /<title>stepcast<\/title>/);
+    assert.equal(page.body, readFileSync(dashboard, 'utf8'));
 
     const overview = await fetchJson(server, '/api/overview');
     assert.equal(overview.code, 200);
