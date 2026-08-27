@@ -31,6 +31,7 @@ import type {
   Permissions,
   Substitution,
   SubstitutionMap,
+  Triggers,
   Workspace,
 } from './model.js';
 
@@ -108,6 +109,26 @@ function toBudget(raw: RawBudget, substitutions: SubstitutionMap, at: string): B
         }),
     onExceed,
     ...(raw.on_exceed === undefined ? {} : { declaredOnExceed: raw.on_exceed }),
+  };
+}
+
+/**
+ * Расписание не подстановочное поле по смыслу — cron-выражению негде взять
+ * значение из `${inputs.*}` — но проходит через `interpolateTree` наравне с
+ * остальными скалярными полями пайплайна: `pipelineRest` не исключает его, и
+ * заводить отдельный путь только ради одного поля незачем.
+ */
+function toTriggers(
+  raw:
+    | { schedule?: readonly { cron?: string | undefined; timezone?: string | undefined }[] | undefined }
+    | undefined,
+): Triggers | undefined {
+  if (raw === undefined) return undefined;
+  return {
+    schedule: (raw.schedule ?? []).map((entry) => ({
+      ...(entry.cron === undefined ? {} : { cron: entry.cron }),
+      ...(entry.timezone === undefined ? {} : { timezone: entry.timezone }),
+    })),
   };
 }
 
@@ -515,6 +536,8 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     });
   }
 
+  const triggers = toTriggers(doc.triggers);
+
   const pipeline: Pipeline = {
     name: doc.name ?? 'pipeline',
     file: pipelinePath,
@@ -531,6 +554,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         ? config.defaults.concurrency
         : toCount(doc.concurrency, 'concurrency', substitutions, parseCount, 'concurrency'),
     failFast: doc.fail_fast ?? config.defaults.failFast,
+    ...(triggers === undefined ? {} : { triggers }),
     jobs,
   };
 

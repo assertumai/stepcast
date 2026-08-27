@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { stringify } from 'yaml';
 
 import { formatDuration, formatTokens } from '../units.js';
-import type { Budget, Job, Pipeline, Step } from './model.js';
+import type { Budget, Job, Pipeline, Step, Triggers } from './model.js';
 
 /**
  * Сериализация раскрытого пайплайна в `pipeline.lock.yml`.
@@ -28,6 +28,16 @@ function budgetToPlain(budget: Budget | undefined): Record<string, unknown> | un
     ...(budget.wallclockMs === undefined ? {} : { wallclock: formatDuration(budget.wallclockMs) }),
     ...(budget.rateLimitPct === undefined ? {} : { rate_limit_pct: budget.rateLimitPct }),
     on_exceed: budget.onExceed,
+  };
+}
+
+function triggersToPlain(triggers: Triggers | undefined): Record<string, unknown> | undefined {
+  if (triggers === undefined) return undefined;
+  return {
+    schedule: triggers.schedule.map((entry) => ({
+      ...(entry.cron === undefined ? {} : { cron: entry.cron }),
+      ...(entry.timezone === undefined ? {} : { timezone: entry.timezone }),
+    })),
   };
 }
 
@@ -107,6 +117,7 @@ export function pipelineToPlain(pipeline: Pipeline): Record<string, unknown> {
     ...(pipeline.budget === undefined ? {} : { budget: budgetToPlain(pipeline.budget) }),
     concurrency: pipeline.concurrency,
     fail_fast: pipeline.failFast,
+    ...(pipeline.triggers === undefined ? {} : { triggers: triggersToPlain(pipeline.triggers) }),
     jobs: pipeline.jobs.map(jobToPlain),
   };
 }

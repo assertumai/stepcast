@@ -6,6 +6,7 @@ import { parseExpression, references } from './expr/parse.js';
 import { buildGraph } from './graph.js';
 import { isStepcastError } from './errors.js';
 import { workspacePathNeedsCopy } from './run/workspace.js';
+import { isKnownTimeZone, isSatisfiable, parseCron } from './trigger/cron.js';
 import { formatDuration, formatMoney, formatTokens } from './units.js';
 import type { ContextEntry, ExpandedPipeline, Job, Predicate, Step } from './pipeline/model.js';
 
@@ -209,6 +210,7 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
   }
 
   checkLimits(pipeline, options.config, push);
+  checkTriggers(pipeline, push);
 
   if (pipeline.budget === undefined) {
     push({
@@ -543,6 +545,63 @@ function checkLimits(
         file,
         at: `${at}.cost`,
         hint: 'Потолок снизу можно ужесточить, но не поднять',
+      });
+    }
+  }
+}
+
+/**
+ * Проверить объявленное расписание: наличие и разбор `cron`, известность
+ * часового пояса и выполнимость маски.
+ *
+ * Выполнимость проверяется по календарю (`isSatisfiable`), а не перебором от
+ * «сейчас»: вердикт линта не должен зависеть от дня, в который его позвали,
+ * а расписание, чьё ближайшее срабатывание лежит у края горизонта перебора,
+ * иначе принималось бы или отклонялось по-разному в разные дни.
+ */
+function checkTriggers(pipeline: ExpandedPipeline['pipeline'], push: (diagnostic: Diagnostic) => void): void {
+  const schedule = pipeline.triggers?.schedule ?? [];
+
+  for (const [index, entry] of schedule.entries()) {
+    const at = `triggers.schedule.${index}`;
+
+    if (entry.cron === undefined || entry.cron.trim() === '') {
+      push({
+        severity: 'error',
+        message: `Запись расписания ${index} не содержит обязательного поля cron`,
+        file: pipeline.file,
+        at: `${at}.cron`,
+      });
+      continue;
+    }
+
+    const parsed = parseCron(entry.cron);
+    if (!parsed.ok) {
+      push({
+        severity: 'error',
+        message: `Запись расписания ${index}: ${parsed.reason}`,
+        file: pipeline.file,
+        at: `${at}.cron`,
+      });
+      continue;
+    }
+
+    if (entry.timezone !== undefined && !isKnownTimeZone(entry.timezone)) {
+      push({
+        severity: 'error',
+        message: `Запись расписания ${index}: неизвестный часовой пояс ${entry.timezone}`,
+        file: pipeline.file,
+        at: `${at}.timezone`,
+      });
+      continue;
+    }
+
+    if (!isSatisfiable(parsed.mask)) {
+      push({
+        severity: 'error',
+        message: `Запись расписания ${index}: расписание невыполнимо — такой день в этом месяце не наступает`,
+        file: pipeline.file,
+        at,
       });
     }
   }

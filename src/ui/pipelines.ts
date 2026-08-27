@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { existsSync } from 'node:fs';
+import { relative } from 'node:path';
 
+import { listPipelineFiles } from '../core/project/pipelines.js';
 import { listProjects } from '../core/journal/reader.js';
 import { expandPipeline } from '../core/pipeline/expand.js';
 import { isStepcastError } from '../core/errors.js';
@@ -16,13 +17,10 @@ import { layoutJobs, type JobGraph } from './graph.js';
  * собирается обходом корней проектов из `projects.json` — тех самых, чьи
  * прогоны витрина и показывает.
  *
- * Обход намеренно мелкий: корневой `stepcast.yml` и `.stepcast/pipelines/*.yml`
- * — раскладка, которую заводит `stepcast init` и которой держится сам проект.
- * Полный обход дерева проекта стоил бы дорого и находил бы чужие YAML.
+ * Сам обход файлов живёт в `src/core/project/pipelines.ts`: планировщик
+ * расписания ищет те же файлы тем же правилом, и держать это правило в двух
+ * местах значило бы дать им разойтись.
  */
-
-/** Каталог пайплайнов проекта относительно его корня. */
-const PIPELINE_DIR = join('.stepcast', 'pipelines');
 
 export interface PipelineStepView {
   readonly id: string;
@@ -65,33 +63,6 @@ export interface PipelineView {
 export interface PipelinesOverview {
   readonly pipelines: readonly PipelineView[];
   readonly generatedAt: string;
-}
-
-/** Файлы-кандидаты проекта, в порядке от корневого к каталогу пайплайнов. */
-function candidates(projectPath: string): string[] {
-  const out: string[] = [];
-  const root = join(projectPath, 'stepcast.yml');
-  if (existsSync(root)) out.push(root);
-
-  const dir = join(projectPath, PIPELINE_DIR);
-  try {
-    for (const name of readdirSync(dir).sort()) {
-      if (name.endsWith('.yml') || name.endsWith('.yaml')) out.push(join(dir, name));
-    }
-  } catch {
-    // Каталога пайплайнов у проекта может не быть — это не ошибка.
-  }
-  return out;
-}
-
-/** Пайплайн ли это. Определение работы лежит в таком же `.yml` и им не является. */
-function isPipelineFile(path: string): boolean {
-  try {
-    // Достаточно шапки: `kind` объявляется в первых строках документа.
-    return /^kind:\s*pipeline\s*$/m.test(readFileSync(path, 'utf8').slice(0, 4096));
-  } catch {
-    return false;
-  }
 }
 
 function toJobView(job: Job): PipelineJobView {
@@ -169,8 +140,7 @@ export function buildPipelines(
   for (const project of listProjects(runsRoot)) {
     // Проект, чей путь неизвестен, обходить негде: в указателе его нет.
     if (project.path === undefined || !existsSync(project.path)) continue;
-    for (const file of candidates(project.path)) {
-      if (!isPipelineFile(file)) continue;
+    for (const file of listPipelineFiles(project.path)) {
       pipelines.push(readPipeline(project.key, project.path, file, config));
     }
   }

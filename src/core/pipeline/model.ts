@@ -141,6 +141,25 @@ export interface Job {
   readonly steps: readonly Step[];
 }
 
+/**
+ * Одна запись расписания: cron-выражение и необязательный часовой пояс.
+ *
+ * `cron` может отсутствовать: незаполненную запись ловит линт, называя её
+ * номер, — схема о ней молчит намеренно (см. `ScheduleTriggerEntrySchema`).
+ */
+export interface ScheduleTrigger {
+  readonly cron?: string;
+  readonly timezone?: string;
+}
+
+/**
+ * Триггеры пайплайна. Единственный признанный вид на сегодня — `schedule`;
+ * ключ заведён с запасом на вторую объявленную форму запуска (GitHub).
+ */
+export interface Triggers {
+  readonly schedule: readonly ScheduleTrigger[];
+}
+
 export interface Pipeline {
   readonly name: string;
   readonly file: string;
@@ -154,6 +173,7 @@ export interface Pipeline {
   readonly budget?: Budget;
   readonly concurrency: number;
   readonly failFast: boolean;
+  readonly triggers?: Triggers;
   /** Порядок объявления сохраняется: он задаёт детерминированный порядок работ. */
   readonly jobs: readonly Job[];
 }

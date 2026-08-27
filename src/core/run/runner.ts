@@ -167,6 +167,10 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
       Object.entries(config.backends).map(([name, backend]) => [name, { command: backend.command }]),
     ),
     started_at: new Date().toISOString(),
+    // До запуска первой работы: планировщик расписания отличает идущий
+    // прогон от брошенного по факту существования этого процесса, а не по
+    // свежести записи в журнале (шаг агента легко молчит час).
+    pid: process.pid,
   };
   journal.writeManifest(manifest);
   journal.event({ kind: 'run.started', pipeline: pipeline.name, run_id: journal.paths.runId });

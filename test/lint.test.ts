@@ -672,3 +672,175 @@ steps:
     );
   });
 });
+
+describe('schedule-trigger: статическая проверка расписания', () => {
+  // Сценарий: «Триггер расписания признаётся»
+  it('принимает объявленное расписание', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+triggers:
+  schedule:
+    - cron: "0 3 * * *"
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      }),
+    );
+    assert.deepEqual(errors(diagnostics), []);
+  });
+
+  // Сценарий: «Поле cron отсутствует»
+  it('называет отсутствие обязательного cron', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+triggers:
+  schedule:
+    - timezone: UTC
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      }),
+    );
+    const found = diagnostics.find(
+      (item) => item.severity === 'error' && item.at === 'triggers.schedule.0.cron',
+    );
+    assert.ok(found !== undefined, 'ошибка должна называть поле cron записи 0');
+    assert.match(found.message, /cron/);
+  });
+
+  it('называет пустой cron тем же способом, что и отсутствующий', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+triggers:
+  schedule:
+    - cron: ""
+      timezone: UTC
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      }),
+    );
+    const found = errors(diagnostics).find((message) => /cron/.test(message));
+    assert.ok(found !== undefined);
+  });
+
+  // Сценарий: «Неразбираемое выражение»
+  it('называет номер записи и причину отказа разбора', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+triggers:
+  schedule:
+    - cron: "не выражение"
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      }),
+    );
+    const found = diagnostics.find(
+      (item) => item.severity === 'error' && item.at === 'triggers.schedule.0.cron',
+    );
+    assert.ok(found !== undefined, 'ошибка должна называть запись 0');
+  });
+
+  // Сценарий: «Неизвестный часовой пояс»
+  it('называет неизвестный часовой пояс', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+triggers:
+  schedule:
+    - cron: "0 3 * * *"
+      timezone: Mars/Olympus
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      }),
+    );
+    const found = errors(diagnostics).find((message) => /Mars\/Olympus/.test(message));
+    assert.ok(found !== undefined);
+  });
+
+  // Сценарий: «Расписание без срабатываний»
+  it('называет невыполнимое расписание', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+triggers:
+  schedule:
+    - cron: "0 0 30 2 *"
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      }),
+    );
+    const found = diagnostics.find(
+      (item) => item.severity === 'error' && item.at === 'triggers.schedule.0',
+    );
+    assert.ok(found !== undefined);
+  });
+
+  it('принимает 29 февраля: вердикт не зависит от дня запуска линта', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+triggers:
+  schedule:
+    - cron: "0 0 29 2 *"
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      }),
+    );
+    assert.deepEqual(errors(diagnostics), []);
+  });
+
+  // Сценарий: «Расписание проверено целиком» — ошибочна вторая запись
+  it('называет именно вторую запись из двух, когда ошибочна она', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+triggers:
+  schedule:
+    - cron: "0 3 * * *"
+    - cron: "0 0 30 2 *"
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      }),
+    );
+    const scheduleErrors = errors(diagnostics).filter((message) => /расписан/i.test(message));
+    assert.equal(scheduleErrors.length, 1);
+    const found = diagnostics.find(
+      (item) => item.severity === 'error' && item.at === 'triggers.schedule.1',
+    );
+    assert.ok(found !== undefined, 'ошибка должна называть именно вторую запись (индекс 1)');
+  });
+});

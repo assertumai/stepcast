@@ -1,5 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { open } from 'node:fs/promises';
+import { uptime } from 'node:os';
 import { join } from 'node:path';
 
 import { StepcastError } from '../errors.js';
@@ -177,6 +178,140 @@ export function readUsageSoft(paths: RunPaths): UsageSummaryResult {
 
   const parsed = UsageReportSchema.safeParse(raw);
   return parsed.success ? { summary: parsed.data } : { unavailable: 'unreadable' };
+}
+
+/**
+ * Момент последней загрузки машины. `os.uptime()` округлён до секунд, поэтому
+ * граница берётся с запасом в минуту: ошибиться в сторону «прогон жив»
+ * безопаснее (планировщик пропустит момент), чем в сторону «мёртв» (два
+ * прогона одного пайплайна разом).
+ */
+function bootTimeMs(now: number): number {
+  return now - uptime() * 1000 - 60_000;
+}
+
+/**
+ * Прогон жив, если его состояние `running`, процесс с идентификатором из
+ * манифеста существует и сам прогон начат после последней загрузки машины.
+ * Манифест без `pid` (прежняя форма) считается неживым: сигнал 0 ничего не
+ * убивает, только проверяет существование процесса — `ESRCH` означает «нет
+ * такого процесса», а `EPERM` означает, что процесс есть, но принадлежит
+ * другому пользователю, то есть жив.
+ *
+ * Сверка с загрузкой нужна против переиспользования идентификатора: прогон,
+ * убитый вместе с машиной, навсегда остаётся в состоянии `running`, а его pid
+ * после перезагрузки достаётся постороннему процессу — и планировщик молча
+ * пропускал бы моменты, ссылаясь на прогон, которого нет. Внутри одной
+ * загрузки переиспользование остаётся возможным, но требует, чтобы счётчик
+ * pid успел обойти круг, и приводит лишь к пропуску моментов, а не к порче
+ * журнала.
+ */
+export function isRunAlive(paths: RunPaths, now: number = Date.now()): boolean {
+  let status: RunStatus;
+  try {
+    status = readStatus(paths);
+  } catch {
+    return false;
+  }
+  if (status.status !== 'running') return false;
+
+  let manifest: RunManifest;
+  try {
+    manifest = readManifest(paths);
+  } catch {
+    return false;
+  }
+  if (manifest.pid === undefined) return false;
+
+  const startedAt = Date.parse(manifest.started_at);
+  if (!Number.isNaN(startedAt) && startedAt < bootTimeMs(now)) return false;
+
+  try {
+    process.kill(manifest.pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Живой прогон пайплайна проекта, если он есть. `listRuns` отдаёт прогоны
+ * новейшими первыми, поэтому первый живой найденный — он же единственный,
+ * которого стоит искать: планировщик проверяет единственность в пределах
+ * одного пайплайна, а не всего проекта.
+ */
+export function findAliveRun(
+  runsRoot: string,
+  projectRoot: string,
+  pipelineFile: string,
+  now: number = Date.now(),
+): RunPaths | undefined {
+  const key = projectKey(projectRoot);
+  for (const runId of listRuns(runsRoot, projectRoot)) {
+    const candidate = runPaths(runsRoot, key, runId);
+    let manifest: RunManifest;
+    try {
+      manifest = readManifest(candidate);
+    } catch {
+      continue;
+    }
+    if (manifest.pipeline_file !== pipelineFile) continue;
+    if (isRunAlive(candidate, now)) return candidate;
+  }
+  return undefined;
+}
+
+export interface ResetHint {
+  readonly resetsAt: number;
+}
+
+/**
+ * Момент сброса окна лимита из последнего завершённого прогона пайплайна.
+ *
+ * Смотрит только на `backend.refused` и `budget.waiting` — оба несут
+ * `resets_at`, а `budget.exceeded` (потолки `tokens`/`cost`/`wallclock`) его не
+ * несёт и не должен откладывать следующее срабатывание: эти потолки не
+ * сбрасываются по времени и относятся к прогону, а не к внешнему окну.
+ * Подсказка даётся только тем прогоном, который упёрся в окно и на этом
+ * остановился: если после отказа прогон продолжил работу — дождался сброса
+ * (`budget.resumed`), успешно закончил шаг или завершился успехом — окно его
+ * не остановило, и откладывать следующее срабатывание нечем. Поэтому
+ * `resets_at` последнего отказа сбрасывается любым признаком продолжения.
+ */
+export function readResetHint(
+  runsRoot: string,
+  projectRoot: string,
+  pipelineFile: string,
+): ResetHint | undefined {
+  const key = projectKey(projectRoot);
+  for (const runId of listRuns(runsRoot, projectRoot)) {
+    const candidate = runPaths(runsRoot, key, runId);
+    let manifest: RunManifest;
+    try {
+      manifest = readManifest(candidate);
+    } catch {
+      continue;
+    }
+    if (manifest.pipeline_file !== pipelineFile) continue;
+    if (manifest.finished_at === undefined) continue;
+
+    let resetsAt: number | undefined;
+    for (const event of readEvents(candidate)) {
+      if (event.kind === 'backend.refused' && event.resets_at !== undefined) {
+        resetsAt = event.resets_at;
+      } else if (event.kind === 'budget.waiting') {
+        resetsAt = event.resets_at;
+      } else if (
+        event.kind === 'budget.resumed' ||
+        (event.kind === 'step.finished' && event.status === 'success') ||
+        (event.kind === 'run.finished' && event.status === 'success')
+      ) {
+        resetsAt = undefined;
+      }
+    }
+    return resetsAt === undefined ? undefined : { resetsAt };
+  }
+  return undefined;
 }
 
 export function readEvents(paths: RunPaths): Event[] {

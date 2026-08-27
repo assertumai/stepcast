@@ -191,6 +191,26 @@ const JobInlineSchema = z.object({ ...WiringShape, ...JobBodyShape }).strict();
 
 export const JobEntrySchema = z.union([JobUseSchema, JobInlineSchema]);
 
+/**
+ * `cron` объявлен необязательным намеренно: отсутствие поля — это не поломка
+ * формы документа, а незаполненная запись расписания, и назвать её должен
+ * линт («запись расписания N не содержит обязательного поля cron»), а не общая
+ * ошибка схемы, в тексте которой имя поля не звучит. Линт бесплатен и
+ * безусловен перед прогоном (`src/cli/commands/run.ts`), поэтому запись без
+ * `cron` до запуска не доходит.
+ */
+const ScheduleTriggerEntrySchema = z
+  .object({ cron: z.string().optional(), timezone: z.string().optional() })
+  .strict();
+
+/**
+ * Ключ `triggers` заведён с запасом на вторую объявленную, но нереализованную
+ * форму запуска (GitHub, см. docs/status.md). В этом изменении внутри него
+ * признаётся только `schedule` — `.strict()` отклоняет любой другой вид сам,
+ * называя его в сообщении об ошибке (см. `validateDocument`).
+ */
+const TriggersSchema = z.object({ schedule: z.array(ScheduleTriggerEntrySchema).optional() }).strict();
+
 export const PipelineDocumentSchema = z
   .object({
     version: z.literal(1).optional(),
@@ -203,6 +223,7 @@ export const PipelineDocumentSchema = z
     env_deny: z.array(z.string()).optional(),
     context: z.array(ContextEntrySchema).optional(),
     context_upstream: ContextUpstreamSchema.optional(),
+    triggers: TriggersSchema.optional(),
     defaults: z
       .object({
         agent: z.string().optional(),
@@ -228,6 +249,8 @@ export type RawPredicate = z.infer<typeof PredicateSchema>;
 export type RawContextEntry = z.infer<typeof ContextEntrySchema>;
 export type RawBudget = z.infer<typeof BudgetSchema>;
 export type RawParam = z.infer<typeof ParamSchema>;
+export type RawScheduleTrigger = z.infer<typeof ScheduleTriggerEntrySchema>;
+export type RawTriggers = z.infer<typeof TriggersSchema>;
 
 /** Ключи обвязки, недопустимые внутри документа работы. */
-export const WIRING_KEYS = ['needs', 'on', 'if', 'with'] as const;
+export const WIRING_KEYS = ['needs', 'on', 'if', 'with', 'triggers'] as const;

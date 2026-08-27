@@ -16,12 +16,16 @@ import { describe, it } from 'node:test';
 import { RunJournal } from '../src/core/journal/writer.js';
 import { cleanupRun } from '../src/core/run/cleanup.js';
 import {
+  findAliveRun,
   findStepDir,
   follow,
+  isRunAlive,
   listProjects,
   listRuns,
   listRunsByKey,
   readEvents,
+  readManifest,
+  readResetHint,
   readStatus,
   resolveRun,
 } from '../src/core/journal/reader.js';
@@ -35,6 +39,9 @@ import {
 } from '../src/core/journal/paths.js';
 import { RunStatusSchema, type RunStatus } from '../src/core/journal/schema.js';
 import { StepcastError } from '../src/core/errors.js';
+import { expandPipeline } from '../src/core/pipeline/expand.js';
+import { runPipeline } from '../src/core/run/runner.js';
+import { makeProject, MINIMAL_PIPELINE } from './helpers.js';
 
 interface Bed {
   readonly runsRoot: string;
@@ -440,5 +447,459 @@ describe('run-journal: раскладка и состояние', () => {
     assert.equal(received.length, 2);
     assert.match(received[0] as string, /"job":"first"/);
     assert.match(received[1] as string, /"job":"second"/);
+  });
+});
+
+/**
+ * Начало прогона, который считается живым: живость сверяется с моментом
+ * последней загрузки машины, поэтому прогон «из прошлого» живым не бывает.
+ */
+const RECENT = new Date().toISOString();
+
+describe('run-journal: идентификатор процесса прогона', () => {
+  // Сценарий: «Идущий прогон отличим от брошенного»
+  it('пишет pid в манифест до запуска первой работы и переживает завершение прогона', async () => {
+    const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
+
+    const result = await runPipeline({
+      expanded,
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+    });
+
+    const manifest = readManifest(result.journal.paths);
+    assert.equal(manifest.pid, process.pid);
+    assert.ok(manifest.finished_at !== undefined);
+  });
+
+  it('отличает живой прогон (свой процесс) от брошенного (несуществующий pid)', () => {
+    const { runsRoot, projectRoot } = bed();
+
+    const alive = RunJournal.create({ runsRoot, projectRoot, runId: 'alive' });
+    alive.writeManifest({
+      run_id: 'alive',
+      pipeline: 'demo',
+      pipeline_file: join(projectRoot, 'stepcast.yml'),
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: RECENT,
+      pid: process.pid,
+    });
+    alive.writeStatus({
+      run_id: 'alive',
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'running',
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      jobs: [],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+
+    const abandoned = RunJournal.create({ runsRoot, projectRoot, runId: 'abandoned' });
+    abandoned.writeManifest({
+      run_id: 'abandoned',
+      pipeline: 'demo',
+      pipeline_file: join(projectRoot, 'stepcast.yml'),
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: RECENT,
+      pid: 999_999_999,
+    });
+    abandoned.writeStatus({
+      run_id: 'abandoned',
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'running',
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      jobs: [],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+
+    assert.equal(isRunAlive(alive.paths), true);
+    assert.equal(isRunAlive(abandoned.paths), false);
+  });
+
+  it('прогон, начатый до последней загрузки машины, живым не считается даже при существующем pid', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'rebooted' });
+    journal.writeManifest({
+      run_id: 'rebooted',
+      pipeline: 'demo',
+      pipeline_file: join(projectRoot, 'stepcast.yml'),
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      // Заведомо раньше любой мыслимой загрузки этой машины, а pid — свой,
+      // то есть существующий: ровно случай переиспользованного номера.
+      started_at: '2001-01-01T00:00:00.000Z',
+      pid: process.pid,
+    });
+    journal.writeStatus({
+      run_id: 'rebooted',
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'running',
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      jobs: [],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2001-01-01T00:00:00.000Z',
+    });
+
+    assert.equal(isRunAlive(journal.paths), false);
+    assert.equal(findAliveRun(runsRoot, projectRoot, join(projectRoot, 'stepcast.yml')), undefined);
+  });
+
+  // Сценарий: «Манифест прежней формы»
+  it('манифест прежней формы (без pid) читается и даёт неживой прогон', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'legacy' });
+    journal.writeManifest({
+      run_id: 'legacy',
+      pipeline: 'demo',
+      pipeline_file: join(projectRoot, 'stepcast.yml'),
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: RECENT,
+    });
+    journal.writeStatus({
+      run_id: 'legacy',
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'running',
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      jobs: [],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+
+    assert.doesNotThrow(() => readManifest(journal.paths));
+    assert.equal(isRunAlive(journal.paths), false);
+  });
+
+  // Сценарий: «Спящий прогон жив»
+  it('спящий до сброса окна лимита прогон (running + wake_at) признаётся живым', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'sleeping' });
+    journal.writeManifest({
+      run_id: 'sleeping',
+      pipeline: 'demo',
+      pipeline_file: join(projectRoot, 'stepcast.yml'),
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: RECENT,
+      pid: process.pid,
+    });
+    journal.writeStatus({
+      run_id: 'sleeping',
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'running',
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      jobs: [],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      wake_at: '2026-08-01T04:00:00.000Z',
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+
+    assert.equal(isRunAlive(journal.paths), true);
+  });
+
+  // Сценарий: «Идёт прогон другого пайплайна»
+  it('findAliveRun не находит живой прогон другого пайплайна', () => {
+    const { runsRoot, projectRoot } = bed();
+    const pipelineA = join(projectRoot, 'a.yml');
+    const pipelineB = join(projectRoot, 'b.yml');
+
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'other' });
+    journal.writeManifest({
+      run_id: 'other',
+      pipeline: 'b',
+      pipeline_file: pipelineB,
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: RECENT,
+      pid: process.pid,
+    });
+    journal.writeStatus({
+      run_id: 'other',
+      pipeline: 'b',
+      lock_hash: 'abc',
+      status: 'running',
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      jobs: [],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+
+    assert.equal(findAliveRun(runsRoot, projectRoot, pipelineA), undefined);
+    assert.notEqual(findAliveRun(runsRoot, projectRoot, pipelineB), undefined);
+  });
+
+  it('findAliveRun находит живой прогон того же пайплайна', () => {
+    const { runsRoot, projectRoot } = bed();
+    const pipelineFile = join(projectRoot, 'stepcast.yml');
+
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'mine' });
+    journal.writeManifest({
+      run_id: 'mine',
+      pipeline: 'demo',
+      pipeline_file: pipelineFile,
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: RECENT,
+      pid: process.pid,
+    });
+    journal.writeStatus({
+      run_id: 'mine',
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'running',
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      jobs: [],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+
+    const found = findAliveRun(runsRoot, projectRoot, pipelineFile);
+    assert.equal(found?.runId, 'mine');
+  });
+});
+
+describe('run-journal: момент сброса окна лимита из последнего прогона', () => {
+  it('возвращает resets_at последнего backend.refused завершённого прогона', () => {
+    const { runsRoot, projectRoot } = bed();
+    const pipelineFile = join(projectRoot, 'stepcast.yml');
+
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'stopped' });
+    journal.writeManifest({
+      run_id: 'stopped',
+      pipeline: 'demo',
+      pipeline_file: pipelineFile,
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: '2026-08-01T00:00:00.000Z',
+      finished_at: '2026-08-01T00:05:00.000Z',
+      status: 'budget_exceeded',
+      pid: 12_345,
+    });
+    journal.event({
+      kind: 'backend.refused',
+      job: 'build',
+      step: 'compile',
+      attempt: 1,
+      class: 'rate_limit',
+      message: 'rate limited',
+      resets_at: 1_800_000_000_000,
+    });
+
+    const hint = readResetHint(runsRoot, projectRoot, pipelineFile);
+    assert.equal(hint?.resetsAt, 1_800_000_000_000);
+  });
+
+  it('возвращает undefined, когда прогон не упирался в окно лимита', () => {
+    const { runsRoot, projectRoot } = bed();
+    const pipelineFile = join(projectRoot, 'stepcast.yml');
+
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'clean' });
+    journal.writeManifest({
+      run_id: 'clean',
+      pipeline: 'demo',
+      pipeline_file: pipelineFile,
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: '2026-08-01T00:00:00.000Z',
+      finished_at: '2026-08-01T00:05:00.000Z',
+      status: 'success',
+    });
+
+    assert.equal(readResetHint(runsRoot, projectRoot, pipelineFile), undefined);
+  });
+
+  it('не откладывает срабатывание, если прогон дождался сброса и пошёл дальше', () => {
+    const { runsRoot, projectRoot } = bed();
+    const pipelineFile = join(projectRoot, 'stepcast.yml');
+
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'waited' });
+    journal.writeManifest({
+      run_id: 'waited',
+      pipeline: 'demo',
+      pipeline_file: pipelineFile,
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: '2026-08-01T00:00:00.000Z',
+      finished_at: '2026-08-01T02:05:00.000Z',
+      status: 'success',
+    });
+    journal.event({
+      kind: 'budget.waiting',
+      scope: 'run',
+      dimension: 'rate_limit',
+      resets_at: 1_800_000_000_000,
+      wait_ms: 1_000,
+    });
+    journal.event({ kind: 'budget.resumed', actual_ms: 1_000 });
+    journal.event({ kind: 'run.finished', status: 'success', exit_code: 0 });
+
+    assert.equal(readResetHint(runsRoot, projectRoot, pipelineFile), undefined);
+  });
+
+  it('не откладывает срабатывание, если после отказа шаг всё-таки прошёл', () => {
+    const { runsRoot, projectRoot } = bed();
+    const pipelineFile = join(projectRoot, 'stepcast.yml');
+
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'retried' });
+    journal.writeManifest({
+      run_id: 'retried',
+      pipeline: 'demo',
+      pipeline_file: pipelineFile,
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: '2026-08-01T00:00:00.000Z',
+      finished_at: '2026-08-01T00:05:00.000Z',
+      status: 'failed',
+    });
+    journal.event({
+      kind: 'backend.refused',
+      job: 'build',
+      step: 'compile',
+      attempt: 1,
+      class: 'rate_limit',
+      message: 'rate limited',
+      resets_at: 1_800_000_000_000,
+    });
+    journal.event({
+      kind: 'step.finished',
+      job: 'build',
+      step: 'compile',
+      attempt: 2,
+      status: 'success',
+    });
+
+    assert.equal(readResetHint(runsRoot, projectRoot, pipelineFile), undefined);
+  });
+
+  it('игнорирует budget.exceeded (потолки tokens/cost/wallclock не откладывают срабатывание)', () => {
+    const { runsRoot, projectRoot } = bed();
+    const pipelineFile = join(projectRoot, 'stepcast.yml');
+
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'over-budget' });
+    journal.writeManifest({
+      run_id: 'over-budget',
+      pipeline: 'demo',
+      pipeline_file: pipelineFile,
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: '2026-08-01T00:00:00.000Z',
+      finished_at: '2026-08-01T00:05:00.000Z',
+      status: 'budget_exceeded',
+    });
+    journal.event({ kind: 'budget.exceeded', scope: 'пайплайн', used: 100, limit: 50 });
+
+    assert.equal(readResetHint(runsRoot, projectRoot, pipelineFile), undefined);
+  });
+
+  it('находит момент сброса по manifest.pipeline_file, минуя живой (незавершённый) прогон', () => {
+    const { runsRoot, projectRoot } = bed();
+    const pipelineFile = join(projectRoot, 'stepcast.yml');
+
+    const finished = RunJournal.create({ runsRoot, projectRoot, runId: 'a-finished' });
+    finished.writeManifest({
+      run_id: 'a-finished',
+      pipeline: 'demo',
+      pipeline_file: pipelineFile,
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: '2026-08-01T00:00:00.000Z',
+      finished_at: '2026-08-01T00:05:00.000Z',
+      status: 'budget_exceeded',
+    });
+    finished.event({
+      kind: 'budget.waiting',
+      scope: 'run',
+      dimension: 'rate_limit',
+      resets_at: 1_900_000_000_000,
+      wait_ms: 1_000,
+    });
+
+    const going = RunJournal.create({ runsRoot, projectRoot, runId: 'b-going' });
+    going.writeManifest({
+      run_id: 'b-going',
+      pipeline: 'demo',
+      pipeline_file: pipelineFile,
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: '2026-08-01T00:10:00.000Z',
+      pid: process.pid,
+    });
+
+    const hint = readResetHint(runsRoot, projectRoot, pipelineFile);
+    assert.equal(hint?.resetsAt, 1_900_000_000_000);
   });
 });

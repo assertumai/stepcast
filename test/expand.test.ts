@@ -906,4 +906,103 @@ jobs:
     assert.equal(parsed.jobs[0]!.session, 'shared');
     assert.equal(parsed.jobs[0]!.steps[0]!.timeout, '30m');
   });
+
+  // Сценарий: «Пайплайн без триггеров не изменился»
+  it('раскрывает пайплайн без triggers ровно как прежде', () => {
+    const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
+    const { pipeline } = expand(project);
+    assert.equal(pipeline.triggers, undefined);
+
+    const plain = parseYaml(serializeLock(pipeline)) as Record<string, unknown>;
+    assert.equal('triggers' in plain, false);
+  });
+
+  // Сценарий: «Расписание объявлено одной записью»
+  it('видит объявленное расписание в раскрытой модели и в локе', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: scheduled
+triggers:
+  schedule:
+    - cron: "0 3 * * *"
+      timezone: Asia/Nicosia
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    const { pipeline } = expand(project);
+    assert.deepEqual(pipeline.triggers, {
+      schedule: [{ cron: '0 3 * * *', timezone: 'Asia/Nicosia' }],
+    });
+
+    const plain = parseYaml(serializeLock(pipeline)) as {
+      triggers: { schedule: Array<{ cron: string; timezone?: string }> };
+    };
+    assert.deepEqual(plain.triggers.schedule, [{ cron: '0 3 * * *', timezone: 'Asia/Nicosia' }]);
+  });
+
+  // Сценарий: «Два расписания на один пайплайн»
+  it('раскрывает несколько записей расписания', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+triggers:
+  schedule:
+    - cron: "0 8 * * 1-5"
+    - cron: "0 12 * * 6,0"
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    const { pipeline } = expand(project);
+    assert.equal(pipeline.triggers?.schedule.length, 2);
+    assert.equal(pipeline.triggers?.schedule[0]?.timezone, undefined);
+  });
+
+  // Сценарий: «Триггер в файле работы»
+  it('отклоняет triggers внутри файла работы, как и прочую обвязку', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: ./jobs/build.yml
+`,
+      'jobs/build.yml': `
+kind: job
+triggers:
+  schedule: [{ cron: "0 3 * * *" }]
+steps:
+  - id: compile
+    run: [echo, ok]
+`,
+    });
+
+    assert.throws(() => expand(project), StepcastError);
+  });
+
+  // Сценарий: «Незнакомый вид триггера»
+  it('отклоняет незнакомый вид триггера, называя его ключ', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+triggers:
+  github: {}
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    assert.throws(() => expand(project), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /github/);
+      return true;
+    });
+  });
 });
