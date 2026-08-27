@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 
 import type { BackendConfig } from '../config/resolve.js';
 import { StepcastError } from '../errors.js';
+import { effectivePermissions } from './permissions.js';
 import type {
   AgentInvocation,
   BackendAdapter,
@@ -9,7 +10,15 @@ import type {
   BackendRefusal,
   BackendRefusalClass,
   LaunchSpec,
+  PermissionDenial,
 } from './types.js';
+
+/**
+ * Режимы, разрешающие неназванное по умолчанию. Закрытый перечень: словарь
+ * режимов принадлежит бэкенду, и `enforce: strict` рядом с любым из них —
+ * объявление, обе половины которого требуют противоположного.
+ */
+export const PERMISSIVE_MODES = ['auto', 'acceptEdits', 'dontAsk', 'bypassPermissions'] as const;
 
 /**
  * Адаптер Claude Code.
@@ -25,6 +34,7 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
     capabilities: {
       sessions: config.sessions,
       structuredOutput: config.structuredOutput,
+      strictPermissions: config.strictPermissions,
     },
 
     launch(invocation: AgentInvocation): LaunchSpec {
@@ -41,7 +51,15 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
         command.push('--json-schema', prepareSchema(invocation.outputSchemaPath));
       }
 
-      const permissions = invocation.permissions ?? config.permissions;
+      const permissions = effectivePermissions(invocation.permissions, config.permissions);
+      // Жёсткий режим — две части разом: источники настроек ограничены
+      // репозиторием, а режим по умолчанию не разрешает, а отклоняет. Ни
+      // одной по отдельности не хватает (см. design.md): без первой действует
+      // правило пользовательского уровня, без второй разрешает сам режим.
+      if (permissions?.enforce === 'strict') {
+        command.push('--setting-sources', 'project');
+        if (permissions.mode === undefined) command.push('--permission-mode', 'manual');
+      }
       if (permissions?.mode !== undefined) command.push('--permission-mode', permissions.mode);
       if (permissions?.allow !== undefined && permissions.allow.length > 0) {
         command.push('--allowedTools', permissions.allow.join(' '));
@@ -91,6 +109,7 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
       if (type === 'result') {
         const usage = readUsage(record.usage);
         const refusal = readRefusal(record);
+        const permissionDenials = readPermissionDenials(record);
         return {
           kind: 'result',
           ...(typeof record.result === 'string' ? { text: record.result } : {}),
@@ -110,6 +129,7 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
               }),
           ...(record.is_error === true || record.subtype === 'error' ? { failed: true } : {}),
           ...(refusal === undefined ? {} : { refusal }),
+          ...(permissionDenials === undefined ? {} : { permissionDenials }),
         };
       }
 
@@ -174,6 +194,29 @@ function readUsage(raw: unknown): Record<string, number> | undefined {
   }
 
   return Object.keys(out).length === 0 ? undefined : out;
+}
+
+/**
+ * Отказы в разрешении из конверта результата.
+ *
+ * Отсутствие поля значит «отказов не было», а не ошибку разбора: поле
+ * появилось в конверте позже остальных, и старый CLI его не пишет вовсе.
+ * Запись неожиданной формы (не объект, без строкового имени инструмента)
+ * пропускается — один сломанный элемент не должен уронить разбор остальных.
+ */
+function readPermissionDenials(record: Record<string, unknown>): PermissionDenial[] | undefined {
+  const raw = record.permission_denials;
+  if (!Array.isArray(raw)) return undefined;
+
+  const out: PermissionDenial[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const item = entry as Record<string, unknown>;
+    const tool = item.tool_name ?? item.name;
+    if (typeof tool !== 'string') continue;
+    out.push({ tool, input: item.tool_input ?? item.input });
+  }
+  return out;
 }
 
 /** Окон лимитов у подписки несколько, и ночной прогон упирается в недельное. */

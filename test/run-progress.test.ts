@@ -135,6 +135,18 @@ const PRINTABLE: readonly { readonly event: Event; readonly says: readonly RegEx
     },
     says: [/build\/plan:/, /rate_limit/, /rate limited/],
   },
+  {
+    event: {
+      ...BASE,
+      kind: 'permission.denied',
+      job: 'build',
+      step: 'plan',
+      attempt: 1,
+      tool: 'Bash',
+      detail: '{"command":"touch marker.txt"}',
+    },
+    says: [/build\/plan:/, /отказ в разрешении/, /Bash/, /touch marker\.txt/],
+  },
 ];
 
 const PRINTABLE_EVENTS: readonly Event[] = PRINTABLE.map((item) => item.event);

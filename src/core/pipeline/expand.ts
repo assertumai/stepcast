@@ -180,6 +180,7 @@ function toPermissions(raw: NonNullable<RawAgentStep['permissions']>): Permissio
     ...(raw.mode === undefined ? {} : { mode: raw.mode }),
     ...(raw.allow === undefined ? {} : { allow: raw.allow }),
     ...(raw.deny === undefined ? {} : { deny: raw.deny }),
+    ...(raw.enforce === undefined ? {} : { enforce: raw.enforce }),
   };
 }
 
@@ -269,6 +270,8 @@ interface StepDefaults {
   readonly model: string | undefined;
   readonly timeoutMs: number;
   readonly sessionMode: 'shared' | 'per_step';
+  /** Политика доступа, объявленная работой — применяется к шагу без своей. */
+  readonly permissions: Permissions | undefined;
 }
 
 function toStep(
@@ -341,7 +344,14 @@ function toStep(
     ...(raw.output_schema === undefined
       ? {}
       : { outputSchemaPath: resolveDeclaredPath(raw.output_schema, declaringFile) }),
-    ...(raw.permissions === undefined ? {} : { permissions: toPermissions(raw.permissions) }),
+    // Ближайшее объявление побеждает целиком: политика не складывается между
+    // уровнями, поэтому job-level политика применяется, только если шаг не
+    // назвал своей вовсе.
+    ...(raw.permissions !== undefined
+      ? { permissions: toPermissions(raw.permissions) }
+      : defaults.permissions === undefined
+        ? {}
+        : { permissions: defaults.permissions }),
   };
 }
 
@@ -517,6 +527,11 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       });
     }
 
+    const jobPermissions =
+      body.permissions === undefined
+        ? undefined
+        : toPermissions(body.permissions as NonNullable<RawAgentStep['permissions']>);
+
     const output = body.output as { from?: string; schema?: string } | undefined;
     if (output !== undefined && output.from === undefined) {
       const lastAgent = [...rawSteps].reverse().find((step) => !('run' in step));
@@ -573,6 +588,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       ...(body.budget === undefined
         ? {}
         : { budget: toBudget(body.budget as RawBudget, substitutions, `${at}.budget`) }),
+      ...(jobPermissions === undefined ? {} : { permissions: jobPermissions }),
       steps: rawSteps.map((step, index) =>
         toStep(
           step,
@@ -584,6 +600,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
             model: defaultModel,
             timeoutMs: config.defaults.stepTimeoutMs,
             sessionMode,
+            permissions: jobPermissions,
           },
           config,
           substitutions,

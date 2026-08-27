@@ -837,6 +837,34 @@
                 ],
                 "additionalProperties": false
               },
+              "permissions": {
+                "type": "object",
+                "properties": {
+                  "mode": {
+                    "type": "string"
+                  },
+                  "allow": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "deny": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "enforce": {
+                    "type": "string",
+                    "enum": [
+                      "inherit",
+                      "strict"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
               "steps": {
                 "minItems": 1,
                 "type": "array",
@@ -1170,6 +1198,13 @@
                               "items": {
                                 "type": "string"
                               }
+                            },
+                            "enforce": {
+                              "type": "string",
+                              "enum": [
+                                "inherit",
+                                "strict"
+                              ]
                             }
                           },
                           "additionalProperties": false

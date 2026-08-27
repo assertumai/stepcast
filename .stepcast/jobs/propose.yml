@@ -29,8 +29,11 @@ steps:
         mode: inline
     output_schema: ../schemas/propose.json
     permissions:
+      enforce: strict
       allow:
         - Read
+        - Grep
+        - Glob
         - Edit
         - Write
         - Bash(openspec *)

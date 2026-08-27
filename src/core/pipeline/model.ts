@@ -85,6 +85,12 @@ export interface Permissions {
   readonly mode?: string;
   readonly allow?: readonly string[];
   readonly deny?: readonly string[];
+  /**
+   * Режим применения политики. `inherit` (умолчание) — сегодняшнее поведение:
+   * список добавляется к правилам, которые бэкенд читает из своих настроек.
+   * `strict` запрещает всё не названное и отсекает настройки вне репозитория.
+   */
+  readonly enforce?: 'inherit' | 'strict';
 }
 
 export interface AgentStep extends StepCommon {
@@ -152,6 +158,8 @@ export interface Job {
   readonly inputs: readonly string[];
   readonly budget?: Budget;
   readonly until?: Until;
+  /** Политика доступа агентских шагов работы, объявленная на её уровне. */
+  readonly permissions?: Permissions;
   readonly steps: readonly Step[];
 }
 

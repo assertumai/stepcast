@@ -14,6 +14,8 @@ export interface BackendCapabilities {
   readonly sessions: boolean;
   /** Умеет отдавать структурированный вывод по переданной схеме. */
   readonly structuredOutput: boolean;
+  /** Умеет применять `enforce: strict` — отсекать настройки вне репозитория и запрещать неназванное. */
+  readonly strictPermissions: boolean;
 }
 
 export interface AgentInvocation {
@@ -70,9 +72,17 @@ export type BackendEvent =
       readonly usage?: Partial<Usage>;
       readonly failed?: boolean;
       readonly refusal?: BackendRefusal;
+      /** Отказы бэкенда в разрешении на вызов инструмента за эту попытку. */
+      readonly permissionDenials?: readonly PermissionDenial[];
     }
   | { readonly kind: 'unparsed'; readonly line: string }
   | { readonly kind: 'ignored' };
+
+/** Один отказ бэкенда в разрешении на вызов инструмента. */
+export interface PermissionDenial {
+  readonly tool: string;
+  readonly input: unknown;
+}
 
 /** Имя предиката, которым отказ бэкенда попадает в результаты предикатов. */
 export const BACKEND_REFUSAL_PREDICATE = 'backend_refusal';

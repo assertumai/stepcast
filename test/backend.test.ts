@@ -18,6 +18,9 @@ import { createSessionRegistry, executeAgentStep } from '../src/core/exec/agentS
 import { runJudgePass } from '../src/core/exec/judgePass.js';
 import { createBackendSlots } from '../src/core/backend/slots.js';
 import { RunJournal } from '../src/core/journal/writer.js';
+import { expandPipeline } from '../src/core/pipeline/expand.js';
+import { runPipeline } from '../src/core/run/runner.js';
+import { makeProject } from './helpers.js';
 import type { BackendConfig } from '../src/core/config/resolve.js';
 import type { AgentStep } from '../src/core/pipeline/model.js';
 
@@ -31,6 +34,7 @@ const BACKEND: BackendConfig = {
   cacheReadWeight: 0.1,
   sessions: true,
   structuredOutput: true,
+  strictPermissions: true,
   permissions: undefined,
   env: {},
 };
@@ -57,6 +61,66 @@ function makeAgentStep(overrides: Partial<AgentStep> = {}): AgentStep {
     ...overrides,
   } as AgentStep;
 }
+
+describe('agent-backend: возможность жёсткого режима прав', () => {
+  it('адаптер Claude читает возможность из конфигурации бэкенда', () => {
+    assert.equal(createClaudeAdapter(BACKEND).capabilities.strictPermissions, true);
+    assert.equal(
+      createClaudeAdapter({ ...BACKEND, strictPermissions: false }).capabilities.strictPermissions,
+      false,
+    );
+  });
+
+  // Сценарий: «Бэкенд без поддержки жёсткого режима»
+  it('прогон не начинается, если адаптер не объявляет возможности жёсткого режима', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        permissions:
+          allow: [Read]
+          enforce: strict
+`,
+    });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const backend = createFakeBackend({
+      capabilities: { strictPermissions: false },
+      lines: [resultLine({ text: 'готово' })],
+    });
+
+    await assert.rejects(
+      runPipeline({
+        expanded: expandPipeline({
+          pipelinePath: project.path('stepcast.yml'),
+          config: project.config,
+        }),
+        config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+        projectRoot: project.root,
+        cwd: project.root,
+        adapterFor: () => backend.adapter,
+      }),
+      (error: Error) =>
+        /не умеет применять enforce: strict/.test(error.message) && /build\/ask/.test(error.message),
+    );
+  });
+
+  it('фейковый бэкенд умеет объявлять возможность выключенной', () => {
+    assert.equal(
+      createFakeBackend({ lines: [] }).adapter.capabilities.strictPermissions,
+      true,
+    );
+    assert.equal(
+      createFakeBackend({ capabilities: { strictPermissions: false }, lines: [] }).adapter.capabilities
+        .strictPermissions,
+      false,
+    );
+  });
+});
 
 describe('agent-backend: сборка запуска', () => {
   it('запускает неинтерактивно с потоковым структурированным выводом', () => {
@@ -99,6 +163,88 @@ describe('agent-backend: сборка запуска', () => {
 
     assert.ok(spec.command.includes('--permission-mode'));
     assert.ok(spec.command.includes('auto'));
+  });
+
+  // Сценарий: «Жёсткий режим отсекает настройки вне репозитория»
+  it('strict даёт разом отсечение настроек и запрещающий режим', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      permissions: { allow: ['Read'], enforce: 'strict' },
+    });
+
+    assert.ok(
+      spec.command.includes('--setting-sources') && spec.command[spec.command.indexOf('--setting-sources') + 1] === 'project',
+      'источники настроек должны быть ограничены репозиторием',
+    );
+    assert.ok(
+      spec.command.includes('--permission-mode') && spec.command[spec.command.indexOf('--permission-mode') + 1] === 'manual',
+      'режим должен отклонять неназванное, а не разрешать',
+    );
+  });
+
+  it('strict с явным запрещающим режимом шага сохраняет режим шага', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      permissions: { mode: 'plan', allow: ['Read'], enforce: 'strict' },
+    });
+
+    assert.equal(spec.command[spec.command.indexOf('--setting-sources') + 1], 'project');
+    assert.equal(spec.command[spec.command.indexOf('--permission-mode') + 1], 'plan');
+  });
+
+  // Сценарий: «Базовый режим бэкенда»
+  it('базовый strict из конфигурации действует и на шаг со своим блоком permissions', () => {
+    const spec = createClaudeAdapter({
+      ...BACKEND,
+      permissions: { enforce: 'strict' },
+    }).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      permissions: { allow: ['Read'] },
+    });
+
+    assert.equal(spec.command[spec.command.indexOf('--setting-sources') + 1], 'project');
+    assert.equal(spec.command[spec.command.indexOf('--permission-mode') + 1], 'manual');
+    assert.equal(spec.command[spec.command.indexOf('--allowedTools') + 1], 'Read');
+  });
+
+  it('явный inherit на шаге ослабляет базовый strict бэкенда', () => {
+    const spec = createClaudeAdapter({
+      ...BACKEND,
+      permissions: { enforce: 'strict' },
+    }).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      permissions: { allow: ['Read'], enforce: 'inherit' },
+    });
+
+    assert.ok(!spec.command.includes('--setting-sources'));
+    assert.ok(!spec.command.includes('--permission-mode'));
+  });
+
+  // Сценарий: «Прежнее поведение сохраняется по умолчанию»
+  it('inherit не добавляет ни одного нового флага', () => {
+    const inheritSpec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      permissions: { mode: 'acceptEdits', allow: ['Read'], enforce: 'inherit' },
+    });
+    const noFieldSpec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      permissions: { mode: 'acceptEdits', allow: ['Read'] },
+    });
+
+    assert.deepEqual(inheritSpec.command, noFieldSpec.command);
+    assert.ok(!inheritSpec.command.includes('--setting-sources'));
   });
 
   it('начинает сессию с идентификатором и продолжает её потом', () => {
@@ -156,6 +302,47 @@ describe('agent-backend: разбор потока', () => {
     assert.equal(event.name, 'Read');
     assert.equal(event.usage?.tokens_in, 2);
     assert.equal(event.usage?.cache_read, 40);
+  });
+
+  // Сценарий: «Отказ разобран»
+  it('разбирает два отказа в разрешении из одной попытки', () => {
+    const event = adapter.parseLine(
+      resultLine({
+        text: 'готово',
+        permissionDenials: [
+          { tool: 'Bash', input: { command: 'touch marker.txt' } },
+          { tool: 'Write', input: { file_path: 'a.ts' } },
+        ],
+      }),
+    ) as unknown as { readonly permissionDenials?: readonly { tool: string; input: unknown }[] };
+
+    assert.equal(event.permissionDenials?.length, 2);
+    assert.equal(event.permissionDenials?.[0]?.tool, 'Bash');
+    assert.deepEqual(event.permissionDenials?.[1]?.input, { file_path: 'a.ts' });
+  });
+
+  // Сценарий: «Результат без поля отказов»
+  it('результат без поля отказов не несёт их вовсе', () => {
+    const event = adapter.parseLine(resultLine({ text: 'готово' })) as unknown as {
+      readonly permissionDenials?: unknown;
+    };
+    assert.equal(event.permissionDenials, undefined);
+  });
+
+  it('результат с полем отказов неожиданной формы не роняет разбор', () => {
+    const line = JSON.stringify({
+      type: 'result',
+      subtype: 'success',
+      result: 'готово',
+      permission_denials: [{ no_tool_name: true }, 'строка вместо объекта', null],
+      usage: {},
+    });
+    const event = adapter.parseLine(line) as unknown as {
+      readonly kind: string;
+      readonly permissionDenials?: readonly unknown[];
+    };
+    assert.equal(event.kind, 'result');
+    assert.deepEqual(event.permissionDenials, []);
   });
 
   // Сценарий: «Битая строка потока»

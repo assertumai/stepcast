@@ -31,8 +31,11 @@ steps:
     prompt: file:../prompts/review.md
     output_schema: ../schemas/review.json
     permissions:
+      enforce: strict
       allow:
         - Read
+        - Grep
+        - Glob
         - Bash(git diff*)
         - Bash(git log*)
         - Bash(git status*)

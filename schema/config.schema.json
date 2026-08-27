@@ -235,6 +235,9 @@
           "structured_output": {
             "type": "boolean"
           },
+          "strict_permissions": {
+            "type": "boolean"
+          },
           "permissions": {
             "type": "object",
             "properties": {
@@ -252,6 +255,13 @@
                 "items": {
                   "type": "string"
                 }
+              },
+              "enforce": {
+                "type": "string",
+                "enum": [
+                  "inherit",
+                  "strict"
+                ]
               }
             },
             "additionalProperties": false

@@ -98,6 +98,7 @@ export function jobToPlain(job: Job): Record<string, unknown> {
     context_upstream: job.contextUpstream,
     ...(job.output === undefined ? {} : { output: job.output }),
     ...(job.budget === undefined ? {} : { budget: budgetToPlain(job.budget) }),
+    ...(job.permissions === undefined ? {} : { permissions: job.permissions }),
     steps: job.steps.map(stepToPlain),
   };
 }

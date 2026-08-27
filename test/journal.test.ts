@@ -37,10 +37,11 @@ import {
   shortRunId,
   stepDirName,
 } from '../src/core/journal/paths.js';
-import { RunStatusSchema, type RunStatus } from '../src/core/journal/schema.js';
+import { AttemptRecordSchema, RunStatusSchema, type RunStatus } from '../src/core/journal/schema.js';
 import { StepcastError } from '../src/core/errors.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline } from '../src/core/run/runner.js';
+import { createFakeBackend, resultLine } from '../src/core/backend/fake.js';
 import { makeProject, MINIMAL_PIPELINE, type Project } from './helpers.js';
 
 function gitInit(project: Project): void {
@@ -1115,5 +1116,150 @@ describe('run-journal: момент сброса окна лимита из по
 
     const hint = readResetHint(runsRoot, projectRoot, pipelineFile);
     assert.equal(hint?.resetsAt, 1_900_000_000_000);
+  });
+});
+
+describe('run-journal: отказ в разрешении', () => {
+  const AGENT_PIPELINE = `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+`;
+
+  // Сценарий: «Запись об отказе в разрешении»
+  it('пишет событие permission.denied с работой, шагом и именем инструмента', async () => {
+    const project = makeProject({ 'stepcast.yml': AGENT_PIPELINE });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const backend = createFakeBackend({
+      lines: [
+        resultLine({
+          text: 'готово',
+          permissionDenials: [{ tool: 'Bash', input: { command: 'touch marker.txt' } }],
+        }),
+      ],
+    });
+
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: () => backend.adapter,
+    });
+
+    const events = readEvents(result.journal.paths);
+    const denied = events.find((event) => event.kind === 'permission.denied') as
+      | { job: string; step: string; tool: string; detail?: string }
+      | undefined;
+    assert.ok(denied !== undefined, 'событие permission.denied должно быть в журнале');
+    assert.equal(denied.job, 'build');
+    assert.equal(denied.step, 'ask');
+    assert.equal(denied.tool, 'Bash');
+    assert.match(denied.detail ?? '', /touch marker\.txt/);
+  });
+
+  // Сценарий: «Деталь отказа обезврежена»
+  it('сводит многострочную деталь отказа с управляющими последовательностями к одной строке', async () => {
+    const project = makeProject({ 'stepcast.yml': AGENT_PIPELINE });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const esc = String.fromCharCode(0x1b);
+    const backend = createFakeBackend({
+      lines: [
+        resultLine({
+          text: 'готово',
+          permissionDenials: [
+            { tool: 'Bash', input: { command: `line1\nline2${esc}[31m colored${esc}[0m` } },
+          ],
+        }),
+      ],
+    });
+
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: () => backend.adapter,
+    });
+
+    const events = readEvents(result.journal.paths);
+    const denied = events.find((event) => event.kind === 'permission.denied') as
+      | { detail?: string }
+      | undefined;
+    assert.ok(denied?.detail !== undefined);
+    assert.doesNotMatch(denied.detail, /\n/);
+    assert.doesNotMatch(denied.detail, /\x1b/);
+  });
+
+  // Сценарий: «Отказы посчитаны»
+  it('считает число отказов попытки в записи попытки', async () => {
+    const project = makeProject({ 'stepcast.yml': AGENT_PIPELINE });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const backend = createFakeBackend({
+      lines: [
+        resultLine({
+          text: 'готово',
+          permissionDenials: [
+            { tool: 'Bash', input: { command: 'touch a' } },
+            { tool: 'Write', input: { file_path: 'a.ts' } },
+          ],
+        }),
+      ],
+    });
+
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: () => backend.adapter,
+    });
+
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.find((job) => job.id === 'build')?.steps.find((item) => item.id === 'ask');
+    assert.equal(step?.attempts[0]?.permission_denials, 2);
+  });
+
+  // Сценарий: «Отказ не проваливает попытку»
+  it('успешный результат с отказами и без предикатов даёт успешный шаг', async () => {
+    const project = makeProject({ 'stepcast.yml': AGENT_PIPELINE });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const backend = createFakeBackend({
+      lines: [
+        resultLine({
+          text: 'готово',
+          permissionDenials: [{ tool: 'Bash', input: { command: 'touch a' } }],
+        }),
+      ],
+    });
+
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: () => backend.adapter,
+    });
+
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.find((job) => job.id === 'build')?.steps.find((item) => item.id === 'ask');
+    assert.equal(step?.status, 'success');
+  });
+
+  // Сценарий: «Журнал прежней формы»
+  it('запись попытки без permission_denials разбирается штатно и не несёт числа отказов', () => {
+    const oldAttemptRecord = {
+      attempt: 1,
+      status: 'success',
+      started_at: '2026-08-01T00:00:00.000Z',
+      finished_at: '2026-08-01T00:00:30.000Z',
+    };
+    const parsed = AttemptRecordSchema.safeParse(oldAttemptRecord);
+    assert.equal(parsed.success, true);
+    assert.equal(parsed.success ? parsed.data.permission_denials : undefined, undefined);
   });
 });

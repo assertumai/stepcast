@@ -989,6 +989,7 @@ jobs:
           cacheReadWeight: 0.1,
           sessions: true,
           structuredOutput: false,
+          strictPermissions: false,
           permissions: undefined,
           env: {},
         },
@@ -1001,6 +1002,161 @@ jobs:
     assert.ok(
       errors(diagnostics).some((message) => /не поддерживает структурированный вывод/.test(message)),
     );
+  });
+
+  // Сценарий: «Противоречивое сочетание с разрешающим режимом»
+  it('отклоняет enforce: strict рядом с разрешающим режимом бэкенда', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        permissions:
+          mode: bypassPermissions
+          enforce: strict
+`,
+    });
+    const diagnostics = lint(project);
+    const messages = errors(diagnostics);
+    assert.ok(
+      messages.some(
+        (message) => /enforce: strict/.test(message) && /mode: bypassPermissions/.test(message),
+      ),
+    );
+  });
+
+  // Сценарий: «Жёсткий режим на бэкенде без поддержки»
+  it('отклоняет enforce: strict на бэкенде без объявленной возможности', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: ask
+        agent: no_strict
+        prompt: сделай
+        permissions:
+          enforce: strict
+`,
+    });
+    const config = {
+      ...project.config,
+      backends: {
+        ...project.config.backends,
+        no_strict: {
+          command: 'no-strict',
+          enabled: true,
+          defaultModel: undefined,
+          concurrency: 1,
+          cacheReadWeight: 0.1,
+          sessions: true,
+          structuredOutput: true,
+          strictPermissions: false,
+          permissions: undefined,
+          env: {},
+        },
+      },
+    };
+    const diagnostics = lintPipeline(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+      { config },
+    );
+    const messages = errors(diagnostics);
+    assert.ok(
+      messages.some(
+        (message) => /no_strict/.test(message) && /не объявляет возможность/.test(message),
+      ),
+    );
+  });
+
+  it('enforce: strict на поддерживающем бэкенде с запрещающим режимом проходит молча', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        permissions:
+          mode: manual
+          allow: [Read]
+          enforce: strict
+`,
+    });
+    const diagnostics = lint(project);
+    assert.deepEqual(errors(diagnostics), []);
+  });
+
+  it('называет объявление работы, а не скопированное в шаг поле', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    permissions:
+      mode: bypassPermissions
+      enforce: strict
+    steps:
+      - id: ask
+        prompt: сделай
+`,
+    });
+    const found = lint(project).filter(
+      (item) => item.severity === 'error' && /enforce: strict/.test(item.message),
+    );
+    assert.equal(found.length, 1);
+    assert.equal(found[0]?.at, 'jobs.build.permissions.enforce');
+  });
+
+  it('базовый strict бэкенда проверяется и у шага со своим блоком permissions', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: ask
+        agent: no_strict
+        prompt: сделай
+        permissions:
+          allow: [Read]
+`,
+    });
+    const config = {
+      ...project.config,
+      backends: {
+        ...project.config.backends,
+        no_strict: {
+          command: 'no-strict',
+          enabled: true,
+          defaultModel: undefined,
+          concurrency: 1,
+          cacheReadWeight: 0.1,
+          sessions: true,
+          structuredOutput: true,
+          strictPermissions: false,
+          permissions: { enforce: 'strict' as const },
+          env: {},
+        },
+      },
+    };
+    const found = lintPipeline(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+      { config },
+    ).filter((item) => item.severity === 'error');
+
+    assert.ok(found.some((item) => /не объявляет возможность/.test(item.message)));
+    assert.equal(found[0]?.at, 'backends.no_strict.permissions.enforce');
   });
 
   it('предупреждает о контексте у работы без агентских шагов', () => {

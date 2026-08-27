@@ -30,8 +30,11 @@ steps:
     prompt: file:../prompts/plan.md
     output_schema: ../schemas/plan.json
     permissions:
+      enforce: strict
       allow:
         - Read
+        - Grep
+        - Glob
         - Bash(git log*)
         - Bash(git diff*)
     timeout: 20m

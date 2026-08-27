@@ -38,6 +38,7 @@ export function createFakeBackend(options: FakeBackendOptions): FakeBackend {
     cacheReadWeight: 0.1,
     sessions: true,
     structuredOutput: true,
+    strictPermissions: true,
     permissions: undefined,
     env: {},
   });
@@ -47,6 +48,7 @@ export function createFakeBackend(options: FakeBackendOptions): FakeBackend {
     capabilities: {
       sessions: options.capabilities?.sessions ?? true,
       structuredOutput: options.capabilities?.structuredOutput ?? true,
+      strictPermissions: options.capabilities?.strictPermissions ?? true,
     },
     launch(invocation): LaunchSpec {
       const index = invocations.length;
@@ -88,6 +90,8 @@ export function resultLine(options: {
   readonly costUsd?: number;
   /** Окна лимитов подписки: имя окна → процент и, опционально, момент сброса. */
   readonly rateLimits?: Readonly<Record<string, { readonly usedPct: number; readonly resetsAt?: number }>>;
+  /** Отказы в разрешении, как их сообщает конверт результата Claude Code. */
+  readonly permissionDenials?: readonly { readonly tool: string; readonly input?: unknown }[];
 }): string {
   return JSON.stringify({
     type: 'result',
@@ -95,6 +99,14 @@ export function resultLine(options: {
     ...(options.text === undefined ? {} : { result: options.text }),
     ...(options.structured === undefined ? {} : { structured_output: options.structured }),
     ...(options.costUsd === undefined ? {} : { total_cost_usd: options.costUsd }),
+    ...(options.permissionDenials === undefined
+      ? {}
+      : {
+          permission_denials: options.permissionDenials.map((item) => ({
+            tool_name: item.tool,
+            tool_input: item.input,
+          })),
+        }),
     usage: {
       ...(options.tokensIn === undefined ? {} : { input_tokens: options.tokensIn }),
       ...(options.tokensOut === undefined ? {} : { output_tokens: options.tokensOut }),

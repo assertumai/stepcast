@@ -1,7 +1,9 @@
 import { existsSync } from 'node:fs';
 import { dirname, resolve as resolvePath } from 'node:path';
 
-import type { Config } from './config/resolve.js';
+import type { BackendConfig, Config } from './config/resolve.js';
+import { PERMISSIVE_MODES } from './backend/claude.js';
+import { effectivePermissions } from './backend/permissions.js';
 import { parseExpression, references } from './expr/parse.js';
 import { buildGraph } from './graph.js';
 import { isStepcastError } from './errors.js';
@@ -587,6 +589,8 @@ function checkStep(
         file: job.source,
         at: `${at}.agent`,
       });
+    } else {
+      checkPermissionsEnforce(job, step, step.agent, backend, at, push);
     }
   }
 
@@ -668,6 +672,74 @@ function checkStep(
 
 function isChangedOnly(predicate: Predicate | undefined): boolean {
   return predicate?.kind === 'changed_only';
+}
+
+/**
+ * `enforce: strict`, который не может быть исполнен, — ошибка, а не тихое
+ * послабление: оставленный без диагностики, он вернул бы ровно ту ложь
+ * границы, ради устранения которой заведён режим (см. design.md).
+ *
+ * Политика шага уже несёт ближайшее объявление (шаг сильнее работы —
+ * `expand.ts`), а базовый режим бэкенда применяется поверх неё по тому же
+ * правилу, каким его применяет адаптер в `launch` (`effectivePermissions`).
+ */
+function checkPermissionsEnforce(
+  job: Job,
+  step: Step,
+  backendName: string,
+  backend: BackendConfig,
+  at: string,
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  if (step.kind !== 'agent') return;
+  const effective = effectivePermissions(step.permissions, backend.permissions);
+  if ((effective?.enforce ?? 'inherit') !== 'strict') return;
+
+  const { at: enforceAt, file: enforceFile } = enforceOrigin(job, step, backendName, at);
+
+  if (effective?.mode !== undefined && (PERMISSIVE_MODES as readonly string[]).includes(effective.mode)) {
+    push({
+      severity: 'error',
+      message: `Шаг ${job.id}/${step.id}: enforce: strict рядом с mode: ${effective.mode} — разрешающий режим бэкенда ${backendName}`,
+      ...(enforceFile === undefined ? {} : { file: enforceFile }),
+      at: enforceAt,
+      hint: 'enforce: strict требует режима, отклоняющего неназванное — уберите mode либо смените его на запрещающий',
+    });
+  }
+
+  if (!backend.strictPermissions) {
+    push({
+      severity: 'error',
+      message: `Шаг ${job.id}/${step.id}: бэкенд ${backendName} не объявляет возможность применять enforce: strict`,
+      ...(enforceFile === undefined ? {} : { file: enforceFile }),
+      at: enforceAt,
+      hint: `Включите backends.${backendName}.strict_permissions в конфигурации либо снимите enforce: strict`,
+    });
+  }
+}
+
+/**
+ * Место, где `enforce` объявлен на самом деле.
+ *
+ * `expand.ts` копирует политику работы в каждый её шаг тем же объектом, и
+ * назвать в диагностике `jobs.<id>.steps.<n>.permissions.enforce` значило бы
+ * указать на поле, которого в файле нет. Тождество ссылки здесь и отличает
+ * скопированную политику от объявленной шагом: `toPermissions` для шага
+ * строит новый объект.
+ */
+function enforceOrigin(
+  job: Job,
+  step: Extract<Step, { kind: 'agent' }>,
+  backendName: string,
+  at: string,
+): { readonly at: string; readonly file?: string } {
+  if (step.permissions?.enforce === undefined) {
+    return { at: `backends.${backendName}.permissions.enforce` };
+  }
+  if (job.permissions !== undefined && step.permissions === job.permissions) {
+    return { at: `jobs.${job.id}.permissions.enforce`, file: job.source };
+  }
+  return { at: `${at}.permissions.enforce`, file: job.source };
 }
 
 function checkEnv(

@@ -78,6 +78,7 @@ const PermissionsSchema = z
     mode: z.string().optional(),
     allow: z.array(z.string()).optional(),
     deny: z.array(z.string()).optional(),
+    enforce: z.enum(['inherit', 'strict']).optional(),
   })
   .strict();
 
@@ -164,6 +165,7 @@ const JobBodyShape = {
   inputs: z.array(z.string()).optional(),
   budget: BudgetSchema.optional(),
   until: UntilSchema.optional(),
+  permissions: PermissionsSchema.optional(),
   steps: z.array(StepSchema).min(1),
 };
 

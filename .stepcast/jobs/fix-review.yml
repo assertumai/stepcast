@@ -31,8 +31,11 @@ steps:
     prompt: file:../prompts/fix-review.md
     output_schema: ../schemas/implement.json
     permissions:
+      enforce: strict
       allow:
         - Read
+        - Grep
+        - Glob
         - Edit
         - Write
         - Bash(npm *)

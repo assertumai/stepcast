@@ -48,8 +48,11 @@ steps:
     prompt: file:../prompts/implement.md
     output_schema: ../schemas/implement.json
     permissions:
+      enforce: strict
       allow:
         - Read
+        - Grep
+        - Glob
         - Edit
         - Write
         - Bash(npm *)

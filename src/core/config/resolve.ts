@@ -30,8 +30,15 @@ export interface BackendConfig {
   readonly cacheReadWeight: number;
   readonly sessions: boolean;
   readonly structuredOutput: boolean;
+  /** Умеет применять `enforce: strict` — отсекать настройки вне репозитория и запрещать неназванное. */
+  readonly strictPermissions: boolean;
   readonly permissions:
-    | { readonly mode?: string; readonly allow?: readonly string[]; readonly deny?: readonly string[] }
+    | {
+        readonly mode?: string;
+        readonly allow?: readonly string[];
+        readonly deny?: readonly string[];
+        readonly enforce?: 'inherit' | 'strict';
+      }
     | undefined;
   readonly env: Readonly<Record<string, string>>;
 }
@@ -197,6 +204,7 @@ function buildBackends(
       cacheReadWeight: typeof raw.cache_read_weight === 'number' ? raw.cache_read_weight : 1,
       sessions: raw.sessions === true,
       structuredOutput: raw.structured_output === true,
+      strictPermissions: raw.strict_permissions === true,
       permissions: (raw.permissions as BackendConfig['permissions']) ?? undefined,
       env: (raw.env as Record<string, string> | undefined) ?? {},
     };

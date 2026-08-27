@@ -233,4 +233,37 @@ describe('stepcast-configuration', () => {
     assert.match(line, /встроенное умолчание \(7\)/);
     assert.match(line, new RegExp(`${box.projectPath.replace(/[/\\]/g, '\\$&')} \\(2\\)`));
   });
+
+  // Сценарий: «Базовый режим бэкенда»
+  it('permissions.enforce из проектного файла доезжает до BackendConfig', () => {
+    const box = sandbox({
+      project: 'backends:\n  claude:\n    permissions:\n      enforce: strict\n      allow: [Read]\n',
+    });
+    const { config } = resolveIn(box);
+    assert.equal(config.backends.claude?.permissions?.enforce, 'strict');
+    assert.deepEqual(config.backends.claude?.permissions?.allow, ['Read']);
+  });
+
+  // Встроенный бэкенд claude объявляет возможность применять жёсткий режим.
+  it('claude объявляет strictPermissions по умолчанию', () => {
+    const { config } = resolveIn(sandbox({}));
+    assert.equal(config.backends.claude?.strictPermissions, true);
+  });
+
+  // Флаг возможности можно выключить конфигурацией — для CLI, ещё не понимающего флаг.
+  it('strict_permissions можно выключить в проектном файле', () => {
+    const box = sandbox({ project: 'backends:\n  claude:\n    strict_permissions: false\n' });
+    const { config } = resolveIn(box);
+    assert.equal(config.backends.claude?.strictPermissions, false);
+  });
+
+  // Сценарий: «Происхождение режима наблюдаемо»
+  it('источник permissions.enforce виден в разрешённой конфигурации', () => {
+    const box = sandbox({ project: 'backends:\n  claude:\n    permissions:\n      enforce: strict\n' });
+    const { provenance } = resolveIn(box);
+    assert.equal(
+      describeSource(provenance.get('backends.claude.permissions.enforce')!),
+      box.projectPath,
+    );
+  });
 });

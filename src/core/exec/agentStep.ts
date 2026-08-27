@@ -70,6 +70,8 @@ export interface AgentStepOptions {
    */
   readonly onUsage?: (usage: Usage, attempt: number) => void;
   readonly onUnparsed?: (line: string) => void;
+  /** Один вызов на каждый отказ бэкенда в разрешении на вызов инструмента. */
+  readonly onPermissionDenied?: (plan: AttemptPlan, tool: string, input: unknown) => void;
   readonly onExpectFailed?: (plan: AttemptPlan, result: PredicateResult) => void;
   /** Может возвращать промис: судья внутри неё — асинхронный агентский вызов. */
   readonly evaluate?: (
@@ -153,6 +155,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
       let backendInit: Record<string, unknown> | undefined;
       let failedByBackend = false;
       let refusal: BackendRefusal | undefined;
+      let permissionDenials = 0;
       const observedInputs = new Set<string>();
       let carry = '';
 
@@ -188,6 +191,10 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
             }
             if (event.failed === true) failedByBackend = true;
             if (event.refusal !== undefined) refusal = event.refusal;
+            for (const denial of event.permissionDenials ?? []) {
+              permissionDenials += 1;
+              options.onPermissionDenied?.(plan, denial.tool, denial.input);
+            }
             break;
           case 'unparsed':
             options.onUnparsed?.(event.line);
@@ -292,6 +299,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
         finished_at: new Date().toISOString(),
         exit_code: process_.exitCode,
         usage,
+        permission_denials: permissionDenials,
       };
       records.push(record);
 

@@ -10,6 +10,7 @@ import {
   type TreeAnchorer,
 } from '../anchor/index.js';
 import { fingerprintInputs } from '../anchor/fingerprint.js';
+import { effectivePermissions } from '../backend/permissions.js';
 import { resolveAdapter } from '../backend/registry.js';
 import { createBackendSlots, type BackendSlots } from '../backend/slots.js';
 import {
@@ -29,10 +30,11 @@ import {
   type UsageSnapshot,
 } from '../budget/accumulator.js';
 import type { Config } from '../config/resolve.js';
+import { inline } from '../text.js';
 import { formatDuration } from '../units.js';
 import { assembleContext, type UpstreamOutput } from '../context/assemble.js';
 import { resolveLate, type JobScopeEntry } from '../pipeline/late.js';
-import { ExitCode, isStepcastError, type ExitCodeValue } from '../errors.js';
+import { ExitCode, StepcastError, isStepcastError, type ExitCodeValue } from '../errors.js';
 import { createSessionRegistry, executeAgentStep } from '../exec/agentStep.js';
 import { buildStepEnv, injectedVariables } from '../exec/env.js';
 import { executeRunStep } from '../exec/runStep.js';
@@ -262,6 +264,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   };
 
   warnAboutDegradedBackends(context);
+  requireStrictPermissionsSupport(context);
 
   const writeStatus = (status: StatusValue): void => {
     // Перерасход бюджета останавливает прогон так же, как отказ, и точка
@@ -442,6 +445,34 @@ function warnAboutDegradedBackends(context: RunContext): void {
       capability: 'sessions',
       detail: 'session: shared исполняется как per_step',
     });
+  }
+}
+
+/**
+ * Отсутствие поддержки жёсткого режима не деградирует, а останавливает прогон
+ * до первого шага: молча исполнить `enforce: strict` бэкендом, который его не
+ * умеет, значило бы оставить пайплайн с границей, которой нет. Спрашивается
+ * возможность самого адаптера, а не флаг в конфигурации: флаг — то, что о
+ * бэкенде объявили, возможность — то, что он умеет, и расходиться они могут.
+ */
+function requireStrictPermissionsSupport(context: RunContext): void {
+  for (const job of context.expanded.pipeline.jobs) {
+    for (const step of job.steps) {
+      if (step.kind !== 'agent') continue;
+      const permissions = effectivePermissions(
+        step.permissions,
+        context.config.backends[step.agent]?.permissions,
+      );
+      if (permissions?.enforce !== 'strict') continue;
+      if (adapterOf(step.agent, context).capabilities.strictPermissions) continue;
+      throw new StepcastError(
+        `Бэкенд ${step.agent} не умеет применять enforce: strict, объявленный у шага ${job.id}/${step.id}`,
+        {
+          file: job.source,
+          hint: 'Снимите enforce: strict либо переведите шаг на бэкенд, объявляющий эту возможность',
+        },
+      );
+    }
   }
 }
 
@@ -1346,6 +1377,21 @@ function anyCostBudgetDeclared(pipeline: Pipeline): boolean {
 }
 
 /**
+ * Вход отклонённого вызова инструмента в текст для журнала. Полный вход
+ * остаётся в `stdout.log` — сюда идёт только то, что помогает опознать вызов
+ * в ленте и в `events.ndjson`, до обрезки общим правилом `inline()`.
+ */
+function describePermissionDenialInput(input: unknown): string | undefined {
+  if (input === undefined) return undefined;
+  if (typeof input === 'string') return input;
+  try {
+    return JSON.stringify(input);
+  } catch {
+    return String(input);
+  }
+}
+
+/**
  * Вызывается ровно там, где расход попытки уже окончателен — после того как
  * и сам шаг, и все его судьи отчитались. Раньше отсюда цена ещё не пришла бы
  * никогда: она приходит один раз, в финальной записи попытки.
@@ -1723,6 +1769,17 @@ async function runAgentStep(
     },
     onUnparsed: (line) =>
       journal.event({ kind: 'backend.unparsed', job: job.id, step: step.id, line }),
+    onPermissionDenied: (plan, tool, input) => {
+      const detail = describePermissionDenialInput(input);
+      journal.event({
+        kind: 'permission.denied',
+        job: job.id,
+        step: step.id,
+        attempt: plan.attempt,
+        tool,
+        ...(detail === undefined ? {} : { detail: inline(detail) }),
+      });
+    },
     onStall,
     onExpectFailed: (plan, failure) =>
       journal.event({

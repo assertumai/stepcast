@@ -749,6 +749,107 @@ jobs:
   });
 });
 
+// Спека pipeline-definition: «Режим применения прав принимается и проверяется статически»
+describe('pipeline-definition: permissions.enforce', () => {
+  // Сценарий: «Значение принято»
+  it('принимает enforce: strict на шаге и переносит в раскрытый пайплайн', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        permissions:
+          allow: [Read]
+          enforce: strict
+`,
+    });
+    const { pipeline } = expand(project);
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.permissions?.enforce, 'strict');
+  });
+
+  // Сценарий: «Неизвестное значение отклоняется»
+  it('отклоняет enforce вне перечня', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        permissions:
+          enforce: yolo
+`,
+    });
+    assert.throws(() => expand(project), StepcastError);
+  });
+
+  // Сценарий: «Шаг сужает режим работы»
+  it('шаг со strict перекрывает работу с inherit', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    permissions:
+      allow: [Read]
+      enforce: inherit
+    steps:
+      - id: ask
+        prompt: сделай
+        permissions:
+          allow: [Read]
+          enforce: strict
+`,
+    });
+    const { pipeline } = expand(project);
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.permissions?.enforce, 'strict');
+  });
+
+  // Работа со strict, шаг без своего блока permissions — работа побеждает целиком.
+  it('работа со strict применяется к шагу без своего блока permissions', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    permissions:
+      allow: [Read]
+      enforce: strict
+    steps:
+      - id: ask
+        prompt: сделай
+`,
+    });
+    const { pipeline } = expand(project);
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.permissions?.enforce, 'strict');
+    assert.deepEqual(step.permissions?.allow, ['Read']);
+  });
+
+  // Отсутствие обоих объявлений даёт прежнее раскрытие без поля.
+  it('без объявлений на работе и шаге раскрытие не несёт permissions', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+`,
+    });
+    const { pipeline } = expand(project);
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.permissions, undefined);
+  });
+});
+
 // Спека pipeline-definition: «Единицы измерения» — подстановка в числовые поля
 describe('pipeline-definition: подстановка в числовые поля', () => {
   // Сценарий: «Предел итераций задан параметром»
@@ -1057,6 +1158,28 @@ steps:
     const parsed = parseYaml(lock) as { kind: string; jobs: unknown[] };
     assert.equal(parsed.kind, 'pipeline.lock');
     assert.equal(parsed.jobs.length, 1);
+  });
+
+  it('несёт permissions.enforce работы и шага', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    permissions:
+      allow: [Read]
+      enforce: strict
+    steps:
+      - id: ask
+        prompt: сделай
+`,
+    });
+    const lock = serializeLock(expand(project).pipeline);
+    const parsed = parseYaml(lock) as {
+      jobs: Array<{ permissions?: { enforce?: string }; steps: Array<{ permissions?: { enforce?: string } }> }>;
+    };
+    assert.equal(parsed.jobs[0]!.permissions?.enforce, 'strict');
+    assert.equal(parsed.jobs[0]!.steps[0]!.permissions?.enforce, 'strict');
   });
 
   it('сохраняет подстановки времени прогона как есть', () => {

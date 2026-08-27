@@ -64,6 +64,7 @@ export const RawPermissionsSchema = z
     mode: z.string().optional(),
     allow: z.array(z.string()).optional(),
     deny: z.array(z.string()).optional(),
+    enforce: z.enum(['inherit', 'strict']).optional(),
   })
   .strict();
 
@@ -76,6 +77,11 @@ export const RawBackendSchema = z
     cache_read_weight: z.number().min(0).optional(),
     sessions: z.boolean().optional(),
     structured_output: z.boolean().optional(),
+    // Возможность адаптера отсекать настройки вне репозитория и запрещать
+    // неназванное — наравне с sessions/structured_output. Флаг «умею», а не
+    // желание: выключенный превращает `enforce: strict` в ошибку конфигурации,
+    // не в послабление.
+    strict_permissions: z.boolean().optional(),
     permissions: RawPermissionsSchema.optional(),
     env: z.record(z.string(), z.string()).optional(),
   })

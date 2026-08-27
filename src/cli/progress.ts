@@ -1,5 +1,6 @@
 import type { BudgetDimension, Event } from '../core/journal/schema.js';
 import { describeBudgetAmounts, type UsageSnapshot } from '../core/budget/accumulator.js';
+import { inline } from '../core/text.js';
 import { formatDuration, formatMoney, formatTokens } from '../core/units.js';
 
 /**
@@ -16,50 +17,6 @@ import { formatDuration, formatMoney, formatTokens } from '../core/units.js';
  */
 
 const DASH = '—';
-
-/**
- * Предел свободного текста в строке ленты.
- *
- * Деталь события — чужой текст: `expect.failed` предиката `cmd` несёт весь
- * вывод команды (`core/expect/evaluate.ts`), отказ бэкенда — сообщение
- * произвольной длины. Целиком они принадлежат журналу и файлам шага, лента
- * даёт начало: строка на событие обязана остаться строкой.
- */
-const DETAIL_LIMIT = 200;
-
-const ESC = String.fromCharCode(0x1b);
-const BEL = String.fromCharCode(0x07);
-
-/** OSC (заголовок окна, ссылки): своя терминация — BEL либо ST. */
-const OSC = new RegExp(`${ESC}\\][\\s\\S]*?(?:${BEL}|${ESC}\\\\)`, 'g');
-/** CSI: раскраска, перемещение курсора, очистка строки. */
-const CSI = new RegExp(`${ESC}\\[[0-9;:?]*[ -/]*[@-~]`, 'g');
-/** Однобуквенные escape-последовательности вроде `ESC c`. */
-const SHORT_ESCAPE = new RegExp(`${ESC}[@-_]`, 'g');
-/**
- * Управляющие символы: перевод строки, возврат каретки, табуляция и остатки
- * оборванных последовательностей. `\p{Cc}` вместо диапазона с управляющими
- * символами в самом литерале — их в исходнике быть не должно.
- */
-const CONTROL = /\p{Cc}+/gu;
-
-/**
- * Чужой текст в одну строку ленты: без управляющих последовательностей и
- * переводов строк, с обрезкой по `DETAIL_LIMIT`.
- *
- * Раскраска вывода команды предиката иначе прошла бы в ленту насквозь —
- * ANSI-последовательностями в том числе и в перенаправленном в файл выводе.
- */
-export function inline(text: string): string {
-  const flattened = text
-    .replace(OSC, '')
-    .replace(CSI, '')
-    .replace(SHORT_ESCAPE, '')
-    .replace(CONTROL, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return flattened.length <= DETAIL_LIMIT ? flattened : `${flattened.slice(0, DETAIL_LIMIT)}…`;
-}
 
 /** Хвост строки с деталью события: пусто, если детали нет или она пуста после очистки. */
 function detailSuffix(detail: string | undefined): string {
@@ -180,6 +137,11 @@ export function renderProgressLine(
       return line(
         `${event.job}/${event.step}`,
         `бэкенд отказал (${event.class})${detailSuffix(event.message)}`,
+      );
+    case 'permission.denied':
+      return line(
+        `${event.job}/${event.step}`,
+        `отказ в разрешении: ${inline(event.tool)}${detailSuffix(event.detail)}`,
       );
     default:
       return undefined;

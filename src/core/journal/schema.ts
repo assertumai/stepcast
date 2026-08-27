@@ -98,6 +98,12 @@ export const AttemptRecordSchema = z
     finished_at: z.string(),
     exit_code: z.number().nullable().optional(),
     usage: UsageSchema.optional(),
+    /**
+     * Число отказов бэкенда в разрешении за эту попытку. Необязательное:
+     * журналы прежней версии его не несут, и отсутствие поля значит
+     * «сведений нет», а не ноль отказов.
+     */
+    permission_denials: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -387,6 +393,17 @@ export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('budget.cost_unreported'), job: z.string(), step: z.string(), attempt: z.number().int().positive() }).strict(),
   z.object({ ...eventBase, kind: z.literal('backend.degraded'), backend: z.string(), capability: z.string(), detail: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('backend.unparsed'), job: z.string(), step: z.string(), line: z.string() }).strict(),
+  // Отказ бэкенда в разрешении на вызов инструмента в жёстком режиме прав.
+  // Сам по себе попытку не проваливает: агент вправе обойтись разрешённым.
+  z.object({
+    ...eventBase,
+    kind: z.literal('permission.denied'),
+    job: z.string(),
+    step: z.string(),
+    attempt: z.number().int().positive(),
+    tool: z.string(),
+    detail: z.string().optional(),
+  }).strict(),
   // Неудача внутреннего учёта. Статусов не меняет: см. core/run/bookkeeping.ts.
   z.object({ ...eventBase, kind: z.literal('iteration.started'), job: z.string(), iteration: z.number().int().positive() }).strict(),
   z.object({ ...eventBase, kind: z.literal('iteration.finished'), job: z.string(), iteration: z.number().int().positive(), passed: z.boolean(), reason: z.string().optional() }).strict(),
