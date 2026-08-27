@@ -6,6 +6,13 @@ import { z } from 'zod';
  */
 
 const amount = z.union([z.string(), z.number()]);
+/**
+ * Числовые поля, не измеряющие величину: `concurrency`, счётчики итераций и
+ * попыток, процент, код возврата. Проверка формы (целое, диапазон, знак)
+ * переезжает в разбор из units.ts — она выполняется после раскрытия
+ * подстановок, а до него строка `${params.n}` не проходит ни одну из них.
+ */
+const count = z.union([z.string(), z.number()]);
 
 const ContextEntrySchema = z.union([
   z.string(),
@@ -22,7 +29,7 @@ const ContextUpstreamSchema = z.union([
 ]);
 
 const PredicateSchema = z.union([
-  z.object({ exit_code: z.number().int() }).strict(),
+  z.object({ exit_code: count }).strict(),
   z.object({ file_exists: z.string() }).strict(),
   z.object({ schema: z.string() }).strict(),
   z.object({ matches: z.string() }).strict(),
@@ -44,7 +51,7 @@ const BudgetSchema = z
     tokens: amount.optional(),
     cost: amount.optional(),
     wallclock: amount.optional(),
-    rate_limit_pct: z.number().min(0).max(100).optional(),
+    rate_limit_pct: count.optional(),
     on_exceed: z.enum(['wait', 'stop']).optional(),
   })
   .strict();
@@ -66,7 +73,7 @@ const PermissionsSchema = z
 
 const AttemptsSchema = z
   .object({
-    max: z.number().int().positive(),
+    max: count,
     escalation: z
       .array(
         z
@@ -122,7 +129,7 @@ const ParamSchema = z
 
 const UntilSchema = z
   .object({
-    max_iterations: z.number().int().positive().optional(),
+    max_iterations: count.optional(),
     check: z.array(PredicateSchema),
   })
   .strict();
@@ -206,7 +213,7 @@ export const PipelineDocumentSchema = z
       .strict()
       .optional(),
     budget: BudgetSchema.optional(),
-    concurrency: z.number().int().positive().optional(),
+    concurrency: count.optional(),
     fail_fast: z.boolean().optional(),
     jobs: z.record(z.string(), JobEntrySchema),
   })

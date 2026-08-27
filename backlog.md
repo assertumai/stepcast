@@ -94,10 +94,11 @@ started_at: 2026-08-26T23:20:36.478Z
 
 ## numeric-field-substitution
 
-status: pending
+status: done
 title: Подстановка в числовые поля
 why: Схема документа проверяется до подстановок, поэтому max_iterations, concurrency и attempts.max нельзя параметризовать — отклоняется как «ожидалось число, получена строка». Из-за этого файлы работ петли вынуждены держать числа литералами, а examples/target-state не запускается.
 done_when: числовые поля принимают строку, приведение выполняется после раскрытия, нечисловое значение отклоняется с внятной ошибкой; examples/target-state проходит lint; docs/status.md обновлён
+started_at: 2026-08-27T00:03:04.217Z
 
 ## schedule-trigger
 

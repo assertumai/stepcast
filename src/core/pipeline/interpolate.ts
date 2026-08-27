@@ -125,6 +125,25 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
   return { value, substitutions };
 }
 
+/**
+ * Пространства неэкранированных подстановок, оставшихся в тексте. Смотрит на
+ * само значение, а не на список применённых подстановок: отложенное выражение
+ * может доехать до поля через `params`, и тогда на поле записана подстановка
+ * `params.*`, а `${jobs...}` виден только в тексте.
+ */
+export function placeholderNamespaces(template: string): string[] {
+  PLACEHOLDER.lastIndex = 0;
+  const namespaces: string[] = [];
+  for (const match of template.matchAll(PLACEHOLDER)) {
+    if (match[0].startsWith('$${')) continue;
+    const expression = (match[2] ?? '').trim();
+    if (expression === '') continue;
+    const namespace = expression.split('.')[0] as string;
+    if (!namespaces.includes(namespace)) namespaces.push(namespace);
+  }
+  return namespaces;
+}
+
 /** Есть ли в строке хоть одна подстановка. Дешевле, чем полный разбор. */
 export function hasPlaceholder(template: string): boolean {
   PLACEHOLDER.lastIndex = 0;

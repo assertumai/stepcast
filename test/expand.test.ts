@@ -565,6 +565,283 @@ jobs:
   });
 });
 
+// Спека pipeline-definition: «Единицы измерения» — подстановка в числовые поля
+describe('pipeline-definition: подстановка в числовые поля', () => {
+  // Сценарий: «Предел итераций задан параметром»
+  it('раскрывает max_iterations из with в число', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: ./jobs/build.yml
+    with: { max_iterations: 4 }
+`,
+      'jobs/build.yml': `
+kind: job
+params:
+  max_iterations: { type: int, required: true }
+until:
+  max_iterations: "\${params.max_iterations}"
+  check: [{ file_exists: done.txt }]
+steps:
+  - id: c
+    run: [echo, ok]
+`,
+    });
+
+    const job = expand(project).pipeline.jobs[0]!;
+    assert.equal(job.until?.maxIterations, 4);
+  });
+
+  // Сценарий: «Число попыток задано параметром»
+  it('раскрывает attempts.max из подстановки в число', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: ./jobs/build.yml
+    with: { retries: 3 }
+`,
+      'jobs/build.yml': `
+kind: job
+params:
+  retries: { type: int, required: true }
+steps:
+  - id: c
+    run: [echo, ok]
+    attempts: { max: "\${params.retries}" }
+`,
+    });
+
+    const job = expand(project).pipeline.jobs[0]!;
+    assert.equal(job.steps[0]!.attempts.max, 3);
+  });
+
+  // Сценарий: «Ширина параллелизма задана входом пайплайна»
+  it('раскрывает concurrency из входа пайплайна в число', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+inputs:
+  workers: { type: int, required: true }
+concurrency: "\${inputs.workers}"
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    const { pipeline } = expand(project, 'stepcast.yml', { workers: '2' });
+    assert.equal(pipeline.concurrency, 2);
+  });
+
+  // Сценарий: «Числовой литерал разбирается как прежде»
+  it('литеральная запись числовых полей разбирается как прежде', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+concurrency: 1
+jobs:
+  build:
+    until:
+      max_iterations: 4
+      check: [{ file_exists: done.txt }]
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    const { pipeline } = expand(project);
+    assert.equal(pipeline.concurrency, 1);
+    assert.equal(pipeline.jobs[0]!.until?.maxIterations, 4);
+  });
+
+  // Сценарий: «Нечисловое значение отклонено» и «Ошибка называет источник значения»
+  it('отклоняет нечисловое значение с путём поля, значением и источником', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+inputs:
+  n: { type: string, required: true }
+jobs:
+  build:
+    until:
+      max_iterations: "\${inputs.n}"
+      check: [{ file_exists: done.txt }]
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    assert.throws(
+      () => expand(project, 'stepcast.yml', { n: 'много' }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.at ?? '', /until\.max_iterations/);
+        assert.match(error.message, /много/);
+        assert.match(error.hint ?? '', /\$\{inputs\.n\}/);
+        return true;
+      },
+    );
+  });
+
+  // Сценарий: «Отложенная подстановка в числовом поле отклонена»
+  it('отклоняет ${jobs.*} в числовом поле объясняющей ошибкой', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  plan:
+    steps: [{ id: c, run: [echo, ok] }]
+  ship:
+    needs: [plan]
+    until:
+      max_iterations: "\${jobs.plan.output.rounds}"
+      check: [{ file_exists: done.txt }]
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /jobs/);
+        assert.match(error.hint ?? '', /разбор(е|а) пайплайна/);
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет ${run.*} и ${env.*} в числовом поле объясняющей ошибкой', () => {
+    const runProject = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok], attempts: { max: "\${run.id}" } }]
+`,
+    });
+    assert.throws(
+      () => expand(runProject),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /run/);
+        return true;
+      },
+    );
+
+    const envProject = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok], attempts: { max: "\${env.WORKERS}" } }]
+`,
+    });
+    assert.throws(
+      () => expand(envProject),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /env/);
+        return true;
+      },
+    );
+  });
+
+  // Сценарий: «Отложенная подстановка доезжает до числового поля через параметр»
+  it('называет отложенное пространство, когда оно доехало через params', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  plan:
+    steps: [{ id: c, run: [echo, ok] }]
+  ship:
+    needs: [plan]
+    uses: ./jobs/ship.yml
+    with: { n: "\${jobs.plan.output.rounds}" }
+`,
+      'jobs/ship.yml': `
+kind: job
+params:
+  n: { type: string, required: true }
+until:
+  max_iterations: "\${params.n}"
+  check: [{ file_exists: done.txt }]
+steps:
+  - id: c
+    run: [echo, ok]
+`,
+    });
+
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /отложенное пространство jobs/);
+        assert.match(error.hint ?? '', /\$\{params\.n\}/);
+        return true;
+      },
+    );
+  });
+
+  // Экранирование оставляет в тексте литерал `${`, а не подстановку: числовое
+  // поле должно жаловаться на неразбираемое число, а не на пространство.
+  it('отклоняет экранированный литерал в числовом поле как неразбираемое число', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+concurrency: "$\${params.x}"
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /Не удалось разобрать счётчик/);
+        assert.doesNotMatch(error.message, /отложенное пространство/);
+        return true;
+      },
+    );
+  });
+
+  // Сценарий: «Ограничение поля проверяется после раскрытия»
+  it('attempts.max из подстановки, превышающий limits.attempts, даёт ошибку о потолке', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: ./jobs/build.yml
+    with: { retries: 9 }
+`,
+      'jobs/build.yml': `
+kind: job
+params:
+  retries: { type: int, required: true }
+steps:
+  - id: c
+    run: [echo, ok]
+    attempts: { max: "\${params.retries}" }
+`,
+    });
+
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /limits\.attempts/);
+        return true;
+      },
+    );
+  });
+});
+
 // Сценарий: «Фиксация перед запуском»
 describe('pipeline.lock.yml', () => {
   it('не содержит ссылок uses и нераскрытых подстановок пайплайна', () => {

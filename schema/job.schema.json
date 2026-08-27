@@ -201,9 +201,14 @@
           ]
         },
         "rate_limit_pct": {
-          "type": "number",
-          "minimum": 0,
-          "maximum": 100
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ]
         },
         "on_exceed": {
           "type": "string",
@@ -219,9 +224,14 @@
       "type": "object",
       "properties": {
         "max_iterations": {
-          "type": "integer",
-          "exclusiveMinimum": 0,
-          "maximum": 9007199254740991
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
+          ]
         },
         "check": {
           "type": "array",
@@ -231,9 +241,14 @@
                 "type": "object",
                 "properties": {
                   "exit_code": {
-                    "type": "integer",
-                    "minimum": -9007199254740991,
-                    "maximum": 9007199254740991
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -472,9 +487,14 @@
                     ]
                   },
                   "rate_limit_pct": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 100
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
                   },
                   "on_exceed": {
                     "type": "string",
@@ -494,9 +514,14 @@
                       "type": "object",
                       "properties": {
                         "exit_code": {
-                          "type": "integer",
-                          "minimum": -9007199254740991,
-                          "maximum": 9007199254740991
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "number"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -607,9 +632,14 @@
                 "type": "object",
                 "properties": {
                   "max": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
                   },
                   "escalation": {
                     "type": "array",
@@ -796,9 +826,14 @@
                     ]
                   },
                   "rate_limit_pct": {
-                    "type": "number",
-                    "minimum": 0,
-                    "maximum": 100
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
                   },
                   "on_exceed": {
                     "type": "string",
@@ -818,9 +853,14 @@
                       "type": "object",
                       "properties": {
                         "exit_code": {
-                          "type": "integer",
-                          "minimum": -9007199254740991,
-                          "maximum": 9007199254740991
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "number"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -931,9 +971,14 @@
                 "type": "object",
                 "properties": {
                   "max": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
                   },
                   "escalation": {
                     "type": "array",

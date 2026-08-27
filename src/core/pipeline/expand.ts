@@ -3,8 +3,8 @@ import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
 import type { Config } from '../config/resolve.js';
 import { StepcastError } from '../errors.js';
-import { parseDuration, parseMoney, parseTokens } from '../units.js';
-import { interpolateTree, type Scope } from './interpolate.js';
+import { parseCount, parseDuration, parseExitCode, parseMoney, parsePercent, parseTokens } from '../units.js';
+import { interpolateTree, placeholderNamespaces, type Scope } from './interpolate.js';
 import { readYamlDocument, rejectWiringKeys, validateDocument } from './load.js';
 import { resolveParams, type ParamValue } from './params.js';
 import {
@@ -30,6 +30,7 @@ import type {
   Step,
   Permissions,
   Substitution,
+  SubstitutionMap,
   Workspace,
 } from './model.js';
 
@@ -43,7 +44,49 @@ export interface ExpandOptions {
   readonly inputs?: Readonly<Record<string, ParamValue>>;
 }
 
-function toBudget(raw: RawBudget, at: string): Budget {
+/**
+ * Привести числовое поле после раскрытия подстановок. `inputs` и `params`
+ * раскрываются раньше и приходят сюда уже числом или числовой строкой; от
+ * `jobs`, `run` и `env` в значении остаётся нетронутый `${...}` — эти
+ * пространства известны только в прогоне, а числовое поле нужно раньше.
+ *
+ * Отложенное пространство ищется в самом значении: выражение могло доехать до
+ * поля через `params`, и тогда на поле записана вполне раскрытая подстановка
+ * `params.*`, а `${jobs...}` виден только в тексте. Остаток `${`, не
+ * принадлежащий отложенному пространству, — это литерал, полученный
+ * экранированием; он идёт в разбор и отклоняется как неразбираемое число.
+ */
+function toCount(
+  raw: string | number,
+  path: string,
+  substitutions: SubstitutionMap,
+  parse: (input: string | number, at?: string, source?: string) => number,
+  at: string,
+): number {
+  const expression = substitutions.get(path)?.[0]?.expression;
+  const source = expression === undefined ? undefined : `\${${expression}}`;
+
+  if (typeof raw === 'string') {
+    const deferred = placeholderNamespaces(raw).filter((namespace) =>
+      DEFERRED_NAMESPACES.has(namespace),
+    );
+    if (deferred.length > 0) {
+      throw new StepcastError(
+        `Числовое поле ссылается на отложенное пространство ${deferred.join(', ')}`,
+        {
+          at,
+          hint:
+            'Пространства jobs, run и env известны только в прогоне — числовое поле раскрывается при разборе пайплайна' +
+            (source === undefined ? '' : `. Значение получено из ${source}`),
+        },
+      );
+    }
+  }
+
+  return parse(raw, at, source);
+}
+
+function toBudget(raw: RawBudget, substitutions: SubstitutionMap, at: string): Budget {
   const onExceed = raw.on_exceed ?? 'stop';
 
   return {
@@ -52,7 +95,17 @@ function toBudget(raw: RawBudget, at: string): Budget {
     ...(raw.wallclock === undefined
       ? {}
       : { wallclockMs: parseDuration(raw.wallclock, `${at}.wallclock`) }),
-    ...(raw.rate_limit_pct === undefined ? {} : { rateLimitPct: raw.rate_limit_pct }),
+    ...(raw.rate_limit_pct === undefined
+      ? {}
+      : {
+          rateLimitPct: toCount(
+            raw.rate_limit_pct,
+            `${at}.rate_limit_pct`,
+            substitutions,
+            parsePercent,
+            `${at}.rate_limit_pct`,
+          ),
+        }),
     onExceed,
     ...(raw.on_exceed === undefined ? {} : { declaredOnExceed: raw.on_exceed }),
   };
@@ -72,8 +125,18 @@ function toContext(raw: readonly RawContextEntry[] | undefined): ContextEntry[] 
  * сырым: он указывает на файл, созданный шагом, а тот появляется в рабочей
  * директории.
  */
-function toPredicate(raw: RawPredicate, declaringFile: string): Predicate {
-  if ('exit_code' in raw) return { kind: 'exit_code', value: raw.exit_code };
+function toPredicate(
+  raw: RawPredicate,
+  declaringFile: string,
+  substitutions: SubstitutionMap,
+  at: string,
+): Predicate {
+  if ('exit_code' in raw) {
+    return {
+      kind: 'exit_code',
+      value: toCount(raw.exit_code, `${at}.exit_code`, substitutions, parseExitCode, `${at}.exit_code`),
+    };
+  }
   if ('file_exists' in raw) return { kind: 'file_exists', path: raw.file_exists };
   if ('schema' in raw) {
     return { kind: 'schema', path: resolveDeclaredPath(raw.schema, declaringFile) };
@@ -99,8 +162,16 @@ function toPermissions(raw: NonNullable<RawAgentStep['permissions']>): Permissio
   };
 }
 
-function toAttempts(raw: RawStep['attempts'], limits: Config['limits'], at: string): Attempts {
-  const max = raw?.max ?? 1;
+function toAttempts(
+  raw: RawStep['attempts'],
+  limits: Config['limits'],
+  substitutions: SubstitutionMap,
+  at: string,
+): Attempts {
+  const max =
+    raw?.max === undefined
+      ? 1
+      : toCount(raw.max, `${at}.attempts.max`, substitutions, parseCount, `${at}.attempts.max`);
   if (max > limits.attempts) {
     throw new StepcastError(
       `attempts.max = ${max} превышает потолок limits.attempts = ${limits.attempts}`,
@@ -157,6 +228,7 @@ function toStep(
   scope: Scope,
   defaults: StepDefaults,
   config: Config,
+  substitutions: SubstitutionMap,
   at: string,
 ): Step {
   const common = {
@@ -171,9 +243,13 @@ function toStep(
       : { contextMaxTokens: parseTokens(raw.context_max_tokens, `${at}.context_max_tokens`) }),
     timeoutMs:
       raw.timeout === undefined ? defaults.timeoutMs : parseDuration(raw.timeout, `${at}.timeout`),
-    ...(raw.budget === undefined ? {} : { budget: toBudget(raw.budget, `${at}.budget`) }),
-    expect: (raw.expect ?? []).map((entry) => toPredicate(entry, declaringFile)),
-    attempts: toAttempts(raw.attempts, config.limits, at),
+    ...(raw.budget === undefined
+      ? {}
+      : { budget: toBudget(raw.budget, substitutions, `${at}.budget`) }),
+    expect: (raw.expect ?? []).map((entry, i) =>
+      toPredicate(entry, declaringFile, substitutions, `${at}.expect.${i}`),
+    ),
+    attempts: toAttempts(raw.attempts, config.limits, substitutions, at),
   };
 
   if ('run' in raw) {
@@ -244,14 +320,22 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     for (const [path, list] of map) substitutions.set(path, list);
   };
 
+  // Скалярные поля документа раскрываются здесь, на уровне пайплайна: `jobs`
+  // раскрывается отдельно, каждая работа — в собственной области видимости.
+  const { version: _version, kind: _kind, inputs: _inputsDecl, jobs: _jobsField, ...pipelineRest } =
+    document;
+  const interpolatedPipeline = interpolateTree(pipelineRest as Record<string, unknown>, pipelineScope, '');
+  collect(interpolatedPipeline.substitutions);
+  const doc = interpolatedPipeline.value as typeof pipelineRest;
+
   const pipelineWorkspace: Workspace = {
-    mode: document.workspace?.mode ?? config.defaults.workspace.mode,
-    ...(document.workspace?.path === undefined ? {} : { path: document.workspace.path }),
+    mode: doc.workspace?.mode ?? config.defaults.workspace.mode,
+    ...(doc.workspace?.path === undefined ? {} : { path: doc.workspace.path }),
   };
 
-  const defaultSession = document.defaults?.session ?? config.defaults.session;
-  const defaultAgent = document.defaults?.agent ?? config.defaults.agent;
-  const defaultModel = document.defaults?.model ?? config.defaults.model;
+  const defaultSession = doc.defaults?.session ?? config.defaults.session;
+  const defaultAgent = doc.defaults?.agent ?? config.defaults.agent;
+  const defaultModel = doc.defaults?.model ?? config.defaults.model;
 
   const jobs: Job[] = [];
 
@@ -338,7 +422,9 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     const workspace = (body.workspace as Workspace | undefined) ?? pipelineWorkspace;
     const rawSteps = body.steps as RawStep[];
 
-    const until = body.until as { max_iterations?: number; check: RawPredicate[] } | undefined;
+    const until = body.until as
+      | { max_iterations?: string | number; check: RawPredicate[] }
+      | undefined;
     if (until !== undefined && until.max_iterations === undefined) {
       throw new StepcastError('Цикл until объявлен без max_iterations', {
         file: declaringFile,
@@ -378,14 +464,22 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       env: (body.env as Record<string, string> | undefined) ?? {},
       context: toContext(body.context as RawContextEntry[] | undefined),
       contextUpstream:
-        (body.context_upstream as ContextUpstream | undefined) ?? document.context_upstream ?? 'all',
+        (body.context_upstream as ContextUpstream | undefined) ?? doc.context_upstream ?? 'all',
       inputs: (body.inputs as readonly string[] | undefined) ?? [],
       ...(until === undefined
         ? {}
         : {
             until: {
-              maxIterations: until.max_iterations as number,
-              check: until.check.map((entry) => toPredicate(entry, declaringFile)),
+              maxIterations: toCount(
+                until.max_iterations as string | number,
+                `${at}.until.max_iterations`,
+                substitutions,
+                parseCount,
+                `${at}.until.max_iterations`,
+              ),
+              check: until.check.map((entry, i) =>
+                toPredicate(entry, declaringFile, substitutions, `${at}.until.check.${i}`),
+              ),
             },
           }),
       ...(output === undefined
@@ -400,7 +494,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
           }),
       ...(body.budget === undefined
         ? {}
-        : { budget: toBudget(body.budget as RawBudget, `${at}.budget`) }),
+        : { budget: toBudget(body.budget as RawBudget, substitutions, `${at}.budget`) }),
       steps: rawSteps.map((step, index) =>
         toStep(
           step,
@@ -414,6 +508,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
             sessionMode,
           },
           config,
+          substitutions,
           `${at}.steps.${index}`,
         ),
       ),
@@ -421,18 +516,21 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   }
 
   const pipeline: Pipeline = {
-    name: document.name ?? 'pipeline',
+    name: doc.name ?? 'pipeline',
     file: pipelinePath,
     inputs,
     workspace: pipelineWorkspace,
-    env: document.env ?? {},
-    envFiles: document.env_files ?? [],
-    envDeny: [...config.envDeny, ...(document.env_deny ?? [])],
-    context: toContext(document.context),
-    contextUpstream: document.context_upstream ?? 'all',
-    ...(document.budget === undefined ? {} : { budget: toBudget(document.budget, 'budget') }),
-    concurrency: document.concurrency ?? config.defaults.concurrency,
-    failFast: document.fail_fast ?? config.defaults.failFast,
+    env: doc.env ?? {},
+    envFiles: doc.env_files ?? [],
+    envDeny: [...config.envDeny, ...(doc.env_deny ?? [])],
+    context: toContext(doc.context),
+    contextUpstream: doc.context_upstream ?? 'all',
+    ...(doc.budget === undefined ? {} : { budget: toBudget(doc.budget, substitutions, 'budget') }),
+    concurrency:
+      doc.concurrency === undefined
+        ? config.defaults.concurrency
+        : toCount(doc.concurrency, 'concurrency', substitutions, parseCount, 'concurrency'),
+    failFast: doc.fail_fast ?? config.defaults.failFast,
     jobs,
   };
 

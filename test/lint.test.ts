@@ -607,3 +607,68 @@ jobs:
     );
   });
 });
+
+describe('pipeline-definition: подстановка в числовые поля', () => {
+  it('пайплайн с параметризованными числовыми полями проходит lint', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+inputs:
+  workers: { type: int, required: true }
+concurrency: "\${inputs.workers}"
+jobs:
+  build:
+    uses: ./jobs/build.yml
+    with: { retries: 2 }
+`,
+      'jobs/build.yml': `
+kind: job
+params:
+  retries: { type: int, required: true }
+until:
+  max_iterations: "\${params.retries}"
+  check: [{ file_exists: done.txt }]
+steps:
+  - id: c
+    run: [echo, ok]
+    attempts: { max: "\${params.retries}" }
+`,
+    });
+
+    const diagnostics = lint(project, { workers: '2' });
+    assert.deepEqual(errors(diagnostics), []);
+  });
+
+  // Предупреждение о худшем случае цикла until считается по раскрытому пределу
+  it('предупреждение о худшем случае цикла until считается по раскрытому max_iterations', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    uses: ./jobs/build.yml
+    with: { rounds: 5 }
+`,
+      'jobs/build.yml': `
+kind: job
+params:
+  rounds: { type: int, required: true }
+until:
+  max_iterations: "\${params.rounds}"
+  check: [{ file_exists: done.txt }]
+steps:
+  - id: c
+    run: [echo, ok]
+`,
+    });
+
+    const diagnostics = lint(project);
+    assert.ok(
+      diagnostics.some(
+        (item) => item.severity === 'warning' && /Худший случай: до 5 исполнений/.test(item.hint ?? ''),
+      ),
+    );
+  });
+});

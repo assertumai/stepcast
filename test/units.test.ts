@@ -1,7 +1,18 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { formatBytes, formatDuration, formatMoney, formatTokens, parseDuration, parseMoney, parseTokens } from '../src/core/units.js';
+import {
+  formatBytes,
+  formatDuration,
+  formatMoney,
+  formatTokens,
+  parseCount,
+  parseDuration,
+  parseExitCode,
+  parseMoney,
+  parsePercent,
+  parseTokens,
+} from '../src/core/units.js';
 import { StepcastError } from '../src/core/errors.js';
 
 describe('единицы измерения', () => {
@@ -90,5 +101,87 @@ describe('единицы измерения', () => {
     assert.equal(formatMoney(1_000_000), '$1.00');
     assert.equal(formatMoney(250_000), '$0.2500');
     assert.equal(formatMoney(1), '$0.0000');
+  });
+
+  describe('счётчик', () => {
+    it('строка и число дают одно значение', () => {
+      assert.equal(parseCount('4'), 4);
+      assert.equal(parseCount(4), 4);
+      assert.equal(parseCount('1'), 1);
+    });
+
+    it('отклоняет нечисловые, пустые, суффиксные, нулевые и дробные значения', () => {
+      assert.throws(() => parseCount('много'), StepcastError);
+      assert.throws(() => parseCount(''), StepcastError);
+      assert.throws(() => parseCount('0'), StepcastError);
+      assert.throws(() => parseCount(0), StepcastError);
+      assert.throws(() => parseCount(1.5), StepcastError);
+      assert.throws(() => parseCount('-1'), StepcastError);
+
+      assert.throws(
+        () => parseCount('2k'),
+        (error: unknown) => {
+          assert.ok(error instanceof StepcastError);
+          assert.match(error.hint ?? '', /не принимает суффиксов/);
+          return true;
+        },
+      );
+    });
+
+    it('сообщение называет ожидаемую форму', () => {
+      assert.throws(
+        () => parseCount('много'),
+        (error: unknown) => {
+          assert.ok(error instanceof StepcastError);
+          assert.match(error.hint ?? '', /целое положительное число/);
+          return true;
+        },
+      );
+    });
+
+    it('дописывает в подсказку выражение-источник', () => {
+      assert.throws(
+        () => parseCount('много', 'jobs.build.until.max_iterations', '${params.n}'),
+        (error: unknown) => {
+          assert.ok(error instanceof StepcastError);
+          assert.match(error.hint ?? '', /\$\{params\.n\}/);
+          return true;
+        },
+      );
+    });
+  });
+
+  describe('процент', () => {
+    it('строка и число дают одно значение, дробная часть допустима', () => {
+      assert.equal(parsePercent('50'), 50);
+      assert.equal(parsePercent(50), 50);
+      assert.equal(parsePercent('87.5'), 87.5);
+      assert.equal(parsePercent(0), 0);
+      assert.equal(parsePercent(100), 100);
+    });
+
+    it('отклоняет значения вне 0..100 и нечисловые', () => {
+      assert.throws(() => parsePercent('101'), StepcastError);
+      assert.throws(() => parsePercent(-1), StepcastError);
+      assert.throws(() => parsePercent('много'), StepcastError);
+      assert.throws(() => parsePercent(''), StepcastError);
+    });
+  });
+
+  describe('код возврата', () => {
+    it('строка и число дают одно значение, ноль и отрицательные допустимы', () => {
+      assert.equal(parseExitCode('0'), 0);
+      assert.equal(parseExitCode(0), 0);
+      assert.equal(parseExitCode('-1'), -1);
+      assert.equal(parseExitCode(-1), -1);
+      assert.equal(parseExitCode('137'), 137);
+    });
+
+    it('отклоняет дробные и нечисловые значения', () => {
+      assert.throws(() => parseExitCode('1.5'), StepcastError);
+      assert.throws(() => parseExitCode(1.5), StepcastError);
+      assert.throws(() => parseExitCode('много'), StepcastError);
+      assert.throws(() => parseExitCode(''), StepcastError);
+    });
   });
 });

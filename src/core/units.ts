@@ -23,8 +23,9 @@ const DURATION_MULTIPLIERS_MS: Record<string, number> = {
 const TOKEN_PATTERN = /^(\d+(?:\.\d+)?)([a-zA-Z]*)$/;
 const DURATION_PATTERN = /^(\d+(?:\.\d+)?)([a-zA-Z]*)$/;
 
-function fail(message: string, hint: string, at?: string): never {
-  throw new StepcastError(message, at === undefined ? { hint } : { hint, at });
+function fail(message: string, hint: string, at?: string, source?: string): never {
+  const fullHint = source === undefined ? hint : `${hint}. Значение получено из ${source}`;
+  throw new StepcastError(message, at === undefined ? { hint: fullHint } : { hint: fullHint, at });
 }
 
 /** Токены: целое число либо число с суффиксом `k` или `M`. */
@@ -113,6 +114,76 @@ export function parseMoney(input: string | number, at?: string): number {
 
   const [, digits] = match as unknown as [string, string];
   return Math.round(Number(digits) * 1_000_000);
+}
+
+const COUNT_PATTERN = /^\d+$/;
+
+/**
+ * Счётчик: целое положительное число, без суффиксов величин — `concurrency`,
+ * `max_iterations` и подобные поля не измеряют ни токены, ни время.
+ */
+export function parseCount(input: string | number, at?: string, source?: string): number {
+  if (typeof input === 'number') {
+    if (!Number.isInteger(input) || input <= 0) {
+      fail(`Счётчик должен быть целым положительным числом, получено ${input}`, 'Например: 1, 4, 20', at, source);
+    }
+    return input;
+  }
+
+  const trimmed = input.trim();
+  if (!COUNT_PATTERN.test(trimmed)) {
+    const hint = /^\d+(?:\.\d+)?[a-zA-Z]+$/.test(trimmed)
+      ? 'Счётчик не принимает суффиксов величин, например k или M'
+      : 'Ожидается целое положительное число, например 1, 4 или 20';
+    fail(`Не удалось разобрать счётчик: ${input}`, hint, at, source);
+  }
+
+  const value = Number(trimmed);
+  if (value <= 0) {
+    fail(`Счётчик должен быть положительным числом, получено ${input}`, 'Например: 1, 4, 20', at, source);
+  }
+  return value;
+}
+
+const PERCENT_PATTERN = /^\d+(?:\.\d+)?$/;
+
+/** Процент: число от 0 до 100, дробная часть допустима. */
+export function parsePercent(input: string | number, at?: string, source?: string): number {
+  if (typeof input === 'number') {
+    if (!Number.isFinite(input) || input < 0 || input > 100) {
+      fail(`Процент должен быть числом от 0 до 100, получено ${input}`, 'Например: 0, 50, 87.5', at, source);
+    }
+    return input;
+  }
+
+  const trimmed = input.trim();
+  if (!PERCENT_PATTERN.test(trimmed)) {
+    fail(`Не удалось разобрать процент: ${input}`, 'Ожидается число от 0 до 100, например 50 или 87.5', at, source);
+  }
+
+  const value = Number(trimmed);
+  if (value < 0 || value > 100) {
+    fail(`Процент должен быть числом от 0 до 100, получено ${input}`, 'Например: 0, 50, 87.5', at, source);
+  }
+  return value;
+}
+
+const EXIT_CODE_PATTERN = /^-?\d+$/;
+
+/** Код возврата процесса: целое число, ноль и отрицательные значения допустимы. */
+export function parseExitCode(input: string | number, at?: string, source?: string): number {
+  if (typeof input === 'number') {
+    if (!Number.isInteger(input)) {
+      fail(`Код возврата должен быть целым числом, получено ${input}`, 'Например: 0, 1, -1', at, source);
+    }
+    return input;
+  }
+
+  const trimmed = input.trim();
+  if (!EXIT_CODE_PATTERN.test(trimmed)) {
+    fail(`Не удалось разобрать код возврата: ${input}`, 'Ожидается целое число, например 0, 1 или -1', at, source);
+  }
+  return Number(trimmed);
 }
 
 /** Обратное преобразование для отчётов: 12500000 → "$12.50", 250000 → "$0.2500". */
