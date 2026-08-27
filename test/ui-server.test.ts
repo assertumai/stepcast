@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 
 import { dashboardPath } from '../src/ui/assets.js';
 import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
+import { runHref } from '../src/ui/routes.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { projectKey, runPaths } from '../src/core/journal/paths.js';
@@ -19,7 +20,13 @@ import { makeJournalBed, seedRun } from './helpers.js';
  */
 async function startServer(
   t: TestContext,
-  options: { runsRoot: string; watcher?: Watcher; config?: Config; home?: string },
+  options: {
+    runsRoot: string;
+    watcher?: Watcher;
+    config?: Config;
+    home?: string;
+    dashboardFile?: string;
+  },
 ): Promise<UiServer> {
   const server = await createUiServer({ ...options, port: 0 });
   t.after(() => server.close());
@@ -164,6 +171,46 @@ function ensureDashboard(t: TestContext): string {
   return path;
 }
 
+/**
+ * Отсутствие собранной витрины проверяется на файле, которого нет, а не
+ * удалением настоящего артефакта: демон принимает путь страницы параметром
+ * (`dashboardFile`). Поэтому сценарий не зависит ни от порядка блоков в файле
+ * (кеш разметки ведётся по файлу), ни от того, собран ли фронт на машине, и
+ * не может оставить дерево без `dist/ui-web/index.html`, оборвись процесс
+ * посреди проверки.
+ */
+describe('ui-dashboard: витрина не собрана', () => {
+  it('отвечает 503 с командой сборки из package.json, не задевая API', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, {
+      runsRoot,
+      dashboardFile: join(runsRoot, 'несобранная-витрина', 'index.html'),
+    });
+
+    const page = await fetchPath(server, '/');
+    assert.equal(page.code, 503);
+
+    const scriptMatch = /npm run ([\w:-]+)/.exec(page.body);
+    assert.ok(scriptMatch !== null, 'текст отказа должен называть npm-команду сборки');
+    const scriptName = (scriptMatch as RegExpExecArray)[1] as string;
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(pkg.scripts ?? {}, scriptName),
+      `команда «${scriptName}», названная в отказе, не объявлена в package.json`,
+    );
+
+    const overview = await fetchJson(server, '/api/overview');
+    assert.equal(overview.code, 200);
+
+    const run = await fetchJson(server, `/api/run?run=${address(key, 'a')}`);
+    assert.equal(run.code, 200);
+  });
+});
+
 describe('ui-dashboard: HTTP-витрина', () => {
   it('отдаёт страницу и обзор, слушая только петлю', async (t) => {
     const { runsRoot, projectRoot } = makeJournalBed();
@@ -181,6 +228,70 @@ describe('ui-dashboard: HTTP-витрина', () => {
 
     const bound = server.server.address();
     assert.equal(typeof bound === 'object' && bound !== null ? bound.address : '', LOOPBACK);
+  });
+
+  // Обзор называет файл, которым запущен прогон: по нему первый экран
+  // связывает прогон с пайплайном — имя для этого не годится (см.
+  // `src/ui/grouping.ts` и `test/ui-grouping.test.ts`).
+  it('называет в обзоре файл пайплайна относительно корня проекта', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    seedRun(runsRoot, projectRoot, {
+      runId: 'b',
+      manifest: { pipeline_file: join(projectRoot, '.stepcast', 'pipelines', 'ночной.yml') },
+    });
+    const server = await startServer(t, { runsRoot });
+
+    const overview = await fetchJson(server, '/api/overview');
+    const files = new Map(
+      (pick(overview.json, 'projects', 0, 'runs') as Array<{ runId: string; pipelineFile?: string }>).map(
+        (run) => [run.runId, run.pipelineFile],
+      ),
+    );
+
+    assert.equal(files.get('a'), 'stepcast.yml');
+    assert.equal(files.get('b'), '.stepcast/pipelines/ночной.yml');
+  });
+
+  // Файл вне корня проекта относительным не притворяется: он и не должен
+  // совпасть ни с одним найденным пайплайном.
+  it('оставляет файл пайплайна вне корня проекта абсолютным', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const outside = join(dirname(projectRoot), 'чужой.yml');
+    seedRun(runsRoot, projectRoot, { runId: 'a', manifest: { pipeline_file: outside } });
+    const server = await startServer(t, { runsRoot });
+
+    const overview = await fetchJson(server, '/api/overview');
+    assert.equal(pick(overview.json, 'projects', 0, 'runs', 0, 'pipelineFile'), outside);
+  });
+
+  // Требование ui-daemon: адрес страницы прогона разбирается общим модулем.
+  it('отдаёт страницу витрины на адрес страницы прогона', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    const dashboard = ensureDashboard(t);
+    const server = await startServer(t, { runsRoot });
+
+    const page = await fetchPath(server, runHref(key, 'a'));
+    assert.equal(page.code, 200);
+    assert.equal(page.body, readFileSync(dashboard, 'utf8'));
+  });
+
+  // Требование ui-daemon: отсутствие маршрута под /api/ — ошибка, а не страница.
+  it('отвечает 404 на несуществующий маршрут API, а не страницей витрины', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const server = await startServer(t, { runsRoot });
+
+    const missing = await fetchJson(server, `/api/${encodeURIComponent('нет-такого')}`);
+    assert.equal(missing.code, 404);
+    assert.equal(typeof missing.json.error, 'string');
+
+    // Сценарий: «Голый `/api`» — корня у API нет, и страница витрины на этот
+    // адрес была бы той же подменой ошибки разметкой.
+    const bare = await fetchJson(server, '/api');
+    assert.equal(bare.code, 404);
+    assert.equal(typeof bare.json.error, 'string');
   });
 
   it('отдаёт детальный снимок и отвечает 404 на неизвестный прогон', async (t) => {

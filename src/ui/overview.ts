@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { isAbsolute, relative } from 'node:path';
 
 import {
   isRunAlive,
@@ -23,6 +24,16 @@ export interface RunOverview {
   readonly runId: string;
   readonly shortId: string;
   readonly pipeline: string;
+  /**
+   * Файл пайплайна, которым запущен прогон, — путь относительно корня проекта,
+   * ровно в том же виде, что `PipelineView.file` (`src/ui/pipelines.ts`): по
+   * нему первый экран витрины и находит прогону его пайплайн, потому что имя
+   * для этого не годится — два файла проекта могут объявить одно имя, а у
+   * неразбираемого файла имени нет вовсе. Путь вне корня проекта (или при
+   * неизвестном корне) остаётся абсолютным: он честно не совпадёт ни с одним
+   * найденным пайплайном. Отсутствует, если манифест не прочитался.
+   */
+  readonly pipelineFile?: string;
   /** Отсутствует, если ни манифест, ни состояние прочитать не удалось. */
   readonly status?: StatusValue;
   readonly running: boolean;
@@ -90,11 +101,31 @@ function duration(startedAt: string | undefined, finishedAt: string | undefined,
   return Math.max(0, to - from);
 }
 
-function readRun(runsRoot: string, key: string, runId: string, now: Date): RunOverview {
+/**
+ * Файл пайплайна в том же виде, в каком его называет экран пайплайнов:
+ * относительно корня проекта и через прямой слэш. Всё, что за корень не
+ * укладывается, отдаётся как есть — подменять такой путь относительным
+ * значило бы выдать чужой файл за свой.
+ */
+function pipelineFileView(projectPath: string | undefined, absolute: string): string {
+  if (projectPath === undefined || !isAbsolute(absolute)) return absolute;
+  const rel = relative(projectPath, absolute).replace(/\\/g, '/');
+  if (rel === '' || rel === '..' || rel.startsWith('../')) return absolute;
+  return rel;
+}
+
+function readRun(
+  runsRoot: string,
+  key: string,
+  runId: string,
+  now: Date,
+  projectPath: string | undefined,
+): RunOverview {
   const paths = runPaths(runsRoot, key, runId);
   const shortId = runId.slice(runId.lastIndexOf('-') + 1);
 
   let pipeline = '';
+  let pipelineFile: string | undefined;
   let startedAt: string | undefined;
   let finishedAt: string | undefined;
   let status: StatusValue | undefined;
@@ -105,6 +136,7 @@ function readRun(runsRoot: string, key: string, runId: string, now: Date): RunOv
   try {
     const manifest = readManifest(paths);
     pipeline = manifest.pipeline;
+    pipelineFile = pipelineFileView(projectPath, manifest.pipeline_file);
     startedAt = manifest.started_at;
     finishedAt = manifest.finished_at;
     status = manifest.status;
@@ -155,6 +187,7 @@ function readRun(runsRoot: string, key: string, runId: string, now: Date): RunOv
     runId,
     shortId,
     pipeline,
+    ...(pipelineFile === undefined ? {} : { pipelineFile }),
     ...(status === undefined ? {} : { status }),
     running: status === 'running',
     abandoned,
@@ -174,7 +207,7 @@ export function buildOverview(runsRoot: string, now: Date = new Date()): Overvie
     key: project.key,
     ...(project.path === undefined ? {} : { path: project.path }),
     runs: listRunsByKey(runsRoot, project.key).map((runId) =>
-      readRun(runsRoot, project.key, runId, now),
+      readRun(runsRoot, project.key, runId, now, project.path),
     ),
   }));
 

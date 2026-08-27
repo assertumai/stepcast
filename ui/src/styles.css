@@ -1,0 +1,180 @@
+/*
+ * Палитра и плотность те же, что у прежней витрины: смена стека — не повод
+ * менять то, к чему пользователь уже привык.
+ */
+:root {
+  --bg: #fbfbfa;
+  --panel: #fff;
+  --border: #e3e3e0;
+  --text: #1c1c1a;
+  --dim: #6b6b66;
+  --accent: #2f6f4f;
+  --run: #b4690e;
+  --fail: #a03030;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17171a;
+    --panel: #1f1f23;
+    --border: #33333a;
+    --text: #e8e8e6;
+    --dim: #9a9a94;
+    --accent: #6bbd8e;
+    --run: #e0a75e;
+    --fail: #e08585;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+a { color: inherit; text-decoration: none; }
+
+.shell { min-height: 100vh; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: .8rem 1.8rem;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+}
+
+.brand { font-size: 1.05rem; font-weight: 650; letter-spacing: -.01em; }
+
+.live { margin-left: auto; font-size: .78rem; color: var(--dim); }
+.live.on::before { content: '●'; color: var(--accent); margin-right: .3rem; }
+.live.off::before { content: '○'; margin-right: .3rem; }
+
+.content { padding: 1.5rem 1.8rem; max-width: 64rem; }
+
+h1 { font-size: 1.1rem; margin: 0 0 1.2rem; font-weight: 650; letter-spacing: -.01em; }
+h2.project {
+  font-size: .82rem;
+  font-weight: 600;
+  color: var(--dim);
+  margin: 1.4rem 0 .5rem;
+  font-family: var(--mono);
+  word-break: break-all;
+}
+h2.project:first-of-type { margin-top: 0; }
+.unknown-path { font-style: italic; }
+
+.badge {
+  font-size: .72rem;
+  padding: .1rem .45rem;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  white-space: nowrap;
+}
+.badge.running { color: var(--run); border-color: var(--run); }
+.badge.success { color: var(--accent); border-color: var(--accent); }
+.badge.failed,
+.badge.budget_exceeded,
+.badge.canceled { color: var(--fail); border-color: var(--fail); }
+
+.dim { color: var(--dim); }
+.mono { font-family: var(--mono); }
+.small { font-size: .8rem; }
+
+button {
+  font: inherit;
+  font-size: .82rem;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: .2rem .5rem;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: .4; cursor: default; }
+button.plain { border: none; padding: .1rem .2rem; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: .8rem 1rem;
+  margin-bottom: .8rem;
+}
+.card-head { display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap; }
+.card-title { font-weight: 650; }
+
+.meta { display: flex; gap: 1.2rem; flex-wrap: wrap; font-size: .84rem; color: var(--dim); margin: .4rem 0 0; }
+.meta b { color: var(--text); font-weight: 600; font-family: var(--mono); }
+
+/* Прогоны под пайплайном или отдельной группой «пайплайн не найден». */
+.run-list { display: flex; flex-direction: column; gap: .3rem; margin-top: .5rem; }
+.run-row {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .3rem 0;
+  border-top: 1px solid var(--border);
+  font-size: .86rem;
+}
+.run-list .run-row:first-child { border-top: none; }
+.run-row .run-id { font-family: var(--mono); font-weight: 600; }
+.run-row .dim { margin-left: auto; }
+.run-row .dim + .dim { margin-left: 0; }
+
+/* Граф работ. */
+.graph { overflow-x: auto; padding: .4rem 0 .8rem; }
+.graph svg { display: block; }
+.node rect { fill: var(--panel); stroke: var(--border); }
+.node.selected rect { stroke: var(--accent); stroke-width: 2; }
+.node.conditional rect { stroke-dasharray: 4 3; }
+.node.status-success rect { stroke: var(--accent); }
+.node.status-running rect { stroke: var(--run); }
+.node.status-failed rect,
+.node.status-canceled rect,
+.node.status-budget_exceeded rect { stroke: var(--fail); }
+.node text { fill: var(--text); font-size: 12px; }
+.node text.sub { fill: var(--dim); font-size: 10px; font-family: var(--mono); }
+.node { cursor: pointer; }
+.edge { fill: none; stroke: var(--border); stroke-width: 1.5; }
+.edge.blocking { stroke: var(--fail); stroke-dasharray: 4 3; }
+
+.job { border-top: 1px solid var(--border); padding: .7rem 0; }
+.job:first-child { border-top: none; }
+.job-head { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+.job-name { font-weight: 600; }
+.desc { color: var(--dim); font-size: .85rem; }
+.row { margin-top: .4rem; font-size: .85rem; display: flex; gap: .5rem; flex-wrap: wrap; align-items: flex-start; }
+.row > .label { color: var(--dim); min-width: 7.5rem; }
+.step { margin-top: .5rem; padding-left: .8rem; border-left: 2px solid var(--border); }
+.step-head { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+.kind { font-size: .72rem; color: var(--dim); font-family: var(--mono); }
+.ctx { font-family: var(--mono); font-size: .78rem; color: var(--dim); margin-top: .3rem; }
+.ctx b { color: var(--text); font-weight: 600; }
+
+pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: .6rem;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: .8rem;
+  margin: .4rem 0 0;
+  max-height: 26rem;
+}
+.truncated { color: var(--run); font-size: .78rem; margin-top: .3rem; }
+.empty { color: var(--dim); padding: 2rem 0; }
+.error { color: var(--fail); font-size: .85rem; }
+.note { font-size: .85rem; margin: .4rem 0 0; }
+
+.run-id { font-family: var(--mono); font-size: .78rem; color: var(--dim); }

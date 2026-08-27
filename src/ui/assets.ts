@@ -21,19 +21,26 @@ export function dashboardPath(): string {
   return join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'ui-web', 'index.html');
 }
 
-let cached: string | undefined;
+/**
+ * Кеш по файлу, а не одна ячейка: демон в пределах запуска читает одну и ту же
+ * страницу, но проверки поднимают серверы с разными файлами витрины, и общая
+ * ячейка выдавала бы одному из них чужую разметку.
+ */
+const cached = new Map<string, string>();
 
 /**
  * Разметка витрины. `undefined` — витрина не собрана: единственный внятный
  * ответ на это — сказать, какой командой её собрать, а не отдать пустую
  * страницу и оставить пользователя гадать.
  */
-export function dashboardHtml(): string | undefined {
-  if (cached !== undefined) return cached;
+export function dashboardHtml(file: string = dashboardPath()): string | undefined {
+  const hit = cached.get(file);
+  if (hit !== undefined) return hit;
   try {
-    cached = readFileSync(dashboardPath(), 'utf8');
+    const html = readFileSync(file, 'utf8');
+    cached.set(file, html);
+    return html;
   } catch {
     return undefined;
   }
-  return cached;
 }

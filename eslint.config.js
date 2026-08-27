@@ -38,4 +38,33 @@ export default tseslint.config(
       ],
     },
   },
+  {
+    // Витрина исполняется в браузере, не в Node: своё окружение и JSX. Правило
+    // границы ядра выше на `ui` не распространяется — оно ограничено файлами
+    // `src/core/**/*.ts` и витрины не касается.
+    files: ['ui/**/*.ts', 'ui/**/*.tsx'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'module',
+      parserOptions: {
+        ecmaFeatures: { jsx: true },
+      },
+      globals: {
+        window: 'readonly',
+        document: 'readonly',
+        navigator: 'readonly',
+        fetch: 'readonly',
+        Response: 'readonly',
+        EventSource: 'readonly',
+        MessageEvent: 'readonly',
+        URL: 'readonly',
+        URLSearchParams: 'readonly',
+        console: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        localStorage: 'readonly',
+        HTMLElement: 'readonly',
+      },
+    },
+  },
 );

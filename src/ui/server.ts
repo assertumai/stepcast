@@ -10,6 +10,7 @@ import type { Config } from '../core/config/resolve.js';
 import { dashboardHtml } from './assets.js';
 import { readJournalFile } from './file.js';
 import { buildPipelines } from './pipelines.js';
+import { isApiPath, isSafeSegment } from './routes.js';
 import { readSettings, writeSettings, type SettingsPatch } from './settings.js';
 import { buildSnapshot } from './snapshot.js';
 import { createWatcher, type Watcher } from './watcher.js';
@@ -46,6 +47,13 @@ export interface UiServerOptions {
   readonly config?: Config;
   /** Домашний каталог: определяет, какой глобальный конфиг правят настройки. */
   readonly home?: string;
+  /**
+   * Файл собранной витрины. По умолчанию — артефакт сборки рядом с кодом
+   * (`dist/ui-web/index.html`). Переопределение нужно проверке отказа
+   * несобранной витрины: без него она вынуждена удалять настоящий артефакт с
+   * диска, то есть портить рабочее дерево ради одного сценария.
+   */
+  readonly dashboardFile?: string;
 }
 
 export interface UiServer {
@@ -63,15 +71,6 @@ function sendJson(res: ServerResponse, code: number, body: unknown): void {
     'cache-control': 'no-store',
   });
   res.end(text);
-}
-
-/**
- * Сегмент раскладки журнала, пришедший из запроса: ключ проекта или
- * идентификатор прогона. Оба идут прямо в путь, поэтому ни разделителя, ни
- * шага вверх по дереву в них быть не должно.
- */
-function isSafeSegment(value: string): boolean {
-  return value !== '' && !value.includes('..') && !value.includes('/') && !value.includes('\\');
 }
 
 /** Адрес прогона в API — `<projectKey>/<runId>`: принадлежность проекту часть адреса. */
@@ -376,8 +375,8 @@ function handleEvents(
 }
 
 /** Страница витрины. Любой не-API адрес ведёт на неё: маршруты разбирает клиент. */
-function handlePage(res: ServerResponse): void {
-  const html = dashboardHtml();
+function handlePage(res: ServerResponse, dashboardFile: string | undefined): void {
+  const html = dashboardFile === undefined ? dashboardHtml() : dashboardHtml(dashboardFile);
   if (html === undefined) {
     res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' });
     res.end('Витрина не собрана. Соберите её командой npm run build:ui.\n');
@@ -389,7 +388,7 @@ function handlePage(res: ServerResponse): void {
 }
 
 export function createUiServer(options: UiServerOptions): Promise<UiServer> {
-  const { runsRoot, config, home } = options;
+  const { runsRoot, config, home, dashboardFile } = options;
   const watcher = options.watcher ?? createWatcher({ runsRoot });
   const ownsWatcher = options.watcher === undefined;
 
@@ -451,11 +450,11 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
       default:
         // Адрес под /api — это обращение к API, и его отсутствие надо назвать,
         // а не подменять страницей.
-        if (url.pathname.startsWith('/api/')) {
+        if (isApiPath(url.pathname)) {
           sendJson(res, 404, { error: 'Нет такого маршрута' });
           return;
         }
-        handlePage(res);
+        handlePage(res, dashboardFile);
     }
   });
 
