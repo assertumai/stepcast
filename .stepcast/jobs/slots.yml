@@ -20,8 +20,16 @@ steps:
     timeout: 1m
     expect: [{ exit_code: 0 }]
 
+  # Одна дорожка, хотя пайплайн описывает две. Пять двухдорожечных заходов из
+  # шести упирались в денежный потолок на fix-review — два opus-шага идут
+  # одновременно и удваивают темп расхода там, где до потолка ближе всего, —
+  # и работа недоведённой дорожки выбрасывалась целиком: заход на $55 давал
+  # один сведённый пункт против $7-33 у одиночного. Потолок поднять нечем:
+  # $50 — встроенный limits.cost, а он TIGHTEN_ONLY. Дорожка b при этом
+  # остаётся в пайплайне и проходит по ветке пропуска (filled == false),
+  # которая проверяется этим же заходом; вернуть a,b — правка одной строки.
   - id: pick-lanes
-    run: [sh, -c, 'node scripts/backlog.mjs pick --lanes a,b --run-dir "$STEPCAST_RUN_DIR"']
+    run: [sh, -c, 'node scripts/backlog.mjs pick --lanes a --run-dir "$STEPCAST_RUN_DIR"']
     timeout: 1m
     output_schema: ../schemas/slots.json
     expect:
