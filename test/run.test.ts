@@ -10,7 +10,8 @@ import { findStepDir, readEvents, readStatus } from '../src/core/journal/reader.
 import { resolveExitCode, runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { HALT_CAUSES, HaltCause } from '../src/core/run/halt.js';
 import { ExitCode } from '../src/core/errors.js';
-import type { StatusValue, StepRecord } from '../src/core/journal/schema.js';
+import type { Event, StatusValue, StepRecord } from '../src/core/journal/schema.js';
+import type { UsageSnapshot } from '../src/core/budget/accumulator.js';
 import { makeProject, type Project } from './helpers.js';
 
 /** Прогнать пайплайн проекта целиком, сложив журнал во временный корень. */
@@ -822,5 +823,69 @@ jobs:
     const status = readStatus(result.journal.paths);
     const job = status.jobs.find((entry) => entry.id === 'probe');
     assert.equal(job?.output, undefined);
+  });
+});
+
+describe('run-progress: наблюдение onEvent в runPipeline', () => {
+  async function runObserved(
+    project: Project,
+    onEvent: (event: Event, usage: UsageSnapshot) => void,
+  ): Promise<RunResult> {
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
+    return runPipeline({
+      expanded,
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      onEvent,
+    });
+  }
+
+  it('наблюдатель получает run.started первым и run.finished последним', async () => {
+    const project = makeProject({ 'stepcast.yml': THREE_STEPS });
+    const received: Event[] = [];
+
+    await runObserved(project, (event) => received.push(event));
+
+    assert.equal(received[0]?.kind, 'run.started');
+    assert.equal(received.at(-1)?.kind, 'run.finished');
+  });
+
+  it('последовательность доставленных событий совпадает с events.ndjson', async () => {
+    const project = makeProject({ 'stepcast.yml': THREE_STEPS });
+    const received: string[] = [];
+
+    const result = await runObserved(project, (event) => received.push(event.kind));
+
+    assert.deepEqual(
+      received,
+      readEvents(result.journal.paths).map((event) => event.kind),
+    );
+  });
+
+  it('снимок расхода не убывает по ходу прогона (по времени, дошедшему до второго исхода шага)', async () => {
+    const project = makeProject({ 'stepcast.yml': THREE_STEPS });
+    const finishedSnapshots: UsageSnapshot[] = [];
+
+    await runObserved(project, (event, usage) => {
+      if (event.kind === 'step.finished') finishedSnapshots.push(usage);
+    });
+
+    assert.ok(finishedSnapshots.length >= 2);
+    assert.ok((finishedSnapshots[1] as UsageSnapshot).elapsedMs >= (finishedSnapshots[0] as UsageSnapshot).elapsedMs);
+  });
+
+  it('прогон с бросающим наблюдателем даёт тот же статус, код возврата и записи работ, что и без него', async () => {
+    const project = makeProject({ 'stepcast.yml': THREE_STEPS });
+
+    const clean = await run(project);
+    const observed = await runObserved(project, () => {
+      throw new Error('наблюдатель сломан');
+    });
+
+    assert.equal(observed.status, clean.status);
+    assert.equal(observed.exitCode, clean.exitCode);
+    assert.deepEqual(steps(observed).map((step) => step.status), steps(clean).map((step) => step.status));
   });
 });

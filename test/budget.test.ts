@@ -1495,6 +1495,39 @@ jobs:
   });
 });
 
+describe('usage-snapshot: снимок накопленного расхода для наблюдателя событий', () => {
+  it('снимок несёт токены, время и цену той же величины, что и блок budget', () => {
+    const usage = new UsageAccumulator(() => 1);
+    usage.record('build', 'plan', 1, usageWith({ tokens_in: 100, tokens_out: 0, reported_cost_usd: 0.5 }));
+
+    const snapshot = usage.snapshot();
+    assert.equal(snapshot.tokens, usage.runTokens());
+    assert.equal(snapshot.costMicroUsd, usage.runCostMicroUsd());
+    assert.equal(snapshot.costUnreportedAttempts, usage.costUnreportedAttemptCount());
+    assert.ok(snapshot.elapsedMs >= 0);
+  });
+
+  it('прогон без единой сообщённой цены не несёт цены в снимке', () => {
+    const usage = new UsageAccumulator(() => 1);
+    usage.record('build', 'plan', 1, usageWith({ tokens_in: 100, tokens_out: 0 }));
+
+    const snapshot = usage.snapshot();
+    assert.equal(snapshot.costMicroUsd, undefined, 'несообщённая цена — отсутствующая величина, не ноль');
+  });
+
+  it('снимок не убывает между двумя последовательными вызовами', () => {
+    const usage = new UsageAccumulator(() => 1);
+    usage.record('build', 'plan', 1, usageWith({ tokens_in: 100, tokens_out: 0 }));
+    const first = usage.snapshot();
+
+    usage.record('build', 'plan', 1, usageWith({ tokens_in: 150, tokens_out: 0 }));
+    const second = usage.snapshot();
+
+    assert.ok(second.tokens >= first.tokens);
+    assert.ok(second.elapsedMs >= first.elapsedMs);
+  });
+});
+
 describe('budget-parallel: превышение при нескольких идущих работах', () => {
   // Работы `дорогая` и `долгая` идут одновременно и обращаются к разным
   // бэкендам — предел мест их не выстраивает в очередь. Командный шаг

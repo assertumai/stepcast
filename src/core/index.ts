@@ -89,4 +89,10 @@ export { executeAgentStep, createSessionRegistry, type AgentStepResult } from '.
 export { assembleContext, estimateTokens, type AssembleOptions } from './context/assemble.js';
 export { matchesGlob, matchesAnyGlob, globToRegExp } from './context/glob.js';
 export { evaluatePredicates, type EvaluationInput } from './expect/evaluate.js';
-export { UsageAccumulator, describeExceeded, type Exceeded } from './budget/accumulator.js';
+export {
+  UsageAccumulator,
+  ZERO_USAGE_SNAPSHOT,
+  describeExceeded,
+  type Exceeded,
+  type UsageSnapshot,
+} from './budget/accumulator.js';

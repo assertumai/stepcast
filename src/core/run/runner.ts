@@ -20,7 +20,14 @@ import {
   type BackendAdapter,
   type BackendRefusal,
 } from '../backend/types.js';
-import { UsageAccumulator, describeExceeded, type BudgetScope, type Exceeded } from '../budget/accumulator.js';
+import {
+  UsageAccumulator,
+  ZERO_USAGE_SNAPSHOT,
+  describeExceeded,
+  type BudgetScope,
+  type Exceeded,
+  type UsageSnapshot,
+} from '../budget/accumulator.js';
 import type { Config } from '../config/resolve.js';
 import { formatDuration } from '../units.js';
 import { assembleContext, type UpstreamOutput } from '../context/assemble.js';
@@ -55,6 +62,7 @@ import type {
   Step,
 } from '../pipeline/model.js';
 import type {
+  Event,
   JobRecord,
   PredicateResult,
   RunManifest,
@@ -87,6 +95,13 @@ export interface RunOptions {
     readonly scope: string;
     readonly repoDir?: string;
   }) => TreeAnchorer;
+  /**
+   * Наблюдение за потоком событий: вызывается синхронно с записью каждого
+   * события в журнал, рядом со снимком накопленного расхода прогона.
+   * Событие `run.started` доставляется раньше, чем накопитель расхода
+   * создан, — со снимком `ZERO_USAGE_SNAPSHOT`, а не падением.
+   */
+  readonly onEvent?: (event: Event, usage: UsageSnapshot) => void;
 }
 
 export interface ResumeContext {
@@ -150,9 +165,20 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   const lock = serializeLock(pipeline);
   const lockHash = createHash('sha256').update(lock).digest('hex').slice(0, 16);
 
+  // Накопитель расхода создаётся ниже, после первых событий манифеста —
+  // `run.started` доставляется наблюдателю раньше, чем он существует.
+  // Ссылка через объект, а не порядком создания: событие не должно ждать
+  // накопитель, а накопитель не должен создаваться раньше журнала.
+  const usageForEvents: { current: UsageAccumulator | undefined } = { current: undefined };
   const journal = RunJournal.create({
     runsRoot: config.runs.root,
     projectRoot: options.projectRoot,
+    ...(options.onEvent === undefined
+      ? {}
+      : {
+          onEvent: (event) =>
+            options.onEvent?.(event, usageForEvents.current?.snapshot() ?? ZERO_USAGE_SNAPSHOT),
+        }),
   });
   journal.writeLock(lock);
 
@@ -182,6 +208,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   const usage = new UsageAccumulator(
     (backend) => config.backends[backend]?.cacheReadWeight ?? 1,
   );
+  usageForEvents.current = usage;
   const records = new Map<string, JobRecord>(
     pipeline.jobs.map((job) => [
       job.id,
@@ -1722,6 +1749,7 @@ async function runAgentStep(
       scope: exceeded.scope,
       job: job.id,
       step: step.id,
+      dimension: exceeded.dimension,
       used: exceeded.used,
       limit: exceeded.limit,
     });

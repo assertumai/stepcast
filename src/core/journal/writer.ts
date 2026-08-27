@@ -34,6 +34,16 @@ const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
 
 /**
+ * Сколько отказов наблюдателя подряд журнал терпит, прежде чем отключить его.
+ *
+ * Отказ обычно устойчив, а не случаен: закрытый поток вывода (`stepcast run |
+ * head`) валит печать на каждом событии. Без предела каждое событие прогона
+ * тянуло бы за собой `bookkeeping.failed`, и файл событий удваивался бы до
+ * самого конца.
+ */
+const OBSERVER_FAILURE_LIMIT = 3;
+
+/**
  * Запись журнала.
  *
  * События дописываются построчно, состояние заменяется целиком через
@@ -45,10 +55,16 @@ export class RunJournal {
   readonly paths: RunPaths;
   readonly projectRoot: string;
   private sequence = 0;
+  /** Снимается, когда наблюдатель отказал подряд `OBSERVER_FAILURE_LIMIT` раз. */
+  private onEvent: ((event: Event) => void) | undefined;
+  /** Подавляет повторный вход: неудача наблюдателя не должна звать его снова на себе. */
+  private deliveringEvent = false;
+  private observerFailures = 0;
 
-  private constructor(paths: RunPaths, projectRoot: string) {
+  private constructor(paths: RunPaths, projectRoot: string, onEvent: ((event: Event) => void) | undefined) {
     this.paths = paths;
     this.projectRoot = projectRoot;
+    this.onEvent = onEvent;
   }
 
   static create(options: {
@@ -56,6 +72,8 @@ export class RunJournal {
     readonly projectRoot: string;
     readonly now?: Date;
     readonly runId?: string;
+    /** Вызывается после того, как событие дописано в файл, — тем же составом и в том же порядке. */
+    readonly onEvent?: (event: Event) => void;
   }): RunJournal {
     const key = projectKey(options.projectRoot);
     const runId =
@@ -67,7 +85,7 @@ export class RunJournal {
     mkdirSync(paths.jobs, { recursive: true, mode: DIR_MODE });
     mkdirSync(paths.anchors, { recursive: true, mode: DIR_MODE });
 
-    const journal = new RunJournal(paths, options.projectRoot);
+    const journal = new RunJournal(paths, options.projectRoot, options.onEvent);
     journal.updateProjectIndex(options.runsRoot, key);
     journal.linkLatest();
     return journal;
@@ -101,6 +119,43 @@ export class RunJournal {
   event(input: EventInput): void {
     const event = { ts: new Date().toISOString(), seq: this.sequence++, ...input } as Event;
     appendFileSync(this.paths.events, `${JSON.stringify(event)}\n`, { mode: FILE_MODE });
+    this.notify(event);
+  }
+
+  /**
+   * Доставить событие наблюдателю после того, как оно уже легло в файл.
+   *
+   * Исключение наблюдателя гасится и превращается в `bookkeeping.failed` — тем
+   * же путём, что и прочий внутренний учёт (`core/run/bookkeeping.ts`):
+   * сломанная печать не имеет права остановить прогон. `deliveringEvent`
+   * защищает от рекурсии: запись `bookkeeping.failed`, случившаяся отсюда же,
+   * идёт через `event()` и значит через `notify()` снова, но, пока флаг
+   * поднят, наблюдатель на неё не зовётся.
+   *
+   * Устойчивый отказ отключает наблюдение после `OBSERVER_FAILURE_LIMIT`
+   * неудач подряд: журнал важнее печати и не должен наполняться жалобами на
+   * неё. Удачная доставка счётчик обнуляет.
+   */
+  private notify(event: Event): void {
+    if (this.onEvent === undefined || this.deliveringEvent) return;
+    this.deliveringEvent = true;
+    try {
+      this.onEvent(event);
+      this.observerFailures = 0;
+    } catch (error) {
+      this.observerFailures += 1;
+      const detached = this.observerFailures >= OBSERVER_FAILURE_LIMIT;
+      if (detached) this.onEvent = undefined;
+      this.event({
+        kind: 'bookkeeping.failed',
+        operation: detached
+          ? 'наблюдение за событием (отключено после повторных отказов)'
+          : 'наблюдение за событием',
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      this.deliveringEvent = false;
+    }
   }
 
   writeManifest(manifest: RunManifest): void {

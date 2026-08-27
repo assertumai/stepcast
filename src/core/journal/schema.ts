@@ -327,6 +327,15 @@ export const UsageReportSchema = z
 
 const eventBase = { ts: z.string(), seq: z.number().int().nonnegative() };
 
+/**
+ * Измерение потолка бюджета: в чём считаны `used` и `limit`. Без него
+ * величины события — голые числа, одинаково похожие на токены, микродоллары,
+ * миллисекунды и проценты.
+ */
+export const BudgetDimensionSchema = z.enum(['tokens', 'cost', 'wallclock', 'rate_limit']);
+
+export type BudgetDimension = z.infer<typeof BudgetDimensionSchema>;
+
 export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('run.started'), pipeline: z.string(), run_id: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('run.finished'), status: StatusValueSchema, exit_code: z.number() }).strict(),
@@ -341,10 +350,12 @@ export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('context.denied'), job: z.string().optional(), step: z.string().optional(), path: z.string(), pattern: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('context.downgraded'), job: z.string(), step: z.string(), path: z.string(), tokens: z.number() }).strict(),
   z.object({ ...eventBase, kind: z.literal('context.note_truncated'), job: z.string(), step: z.string(), original_tokens: z.number(), final_tokens: z.number() }).strict(),
-  z.object({ ...eventBase, kind: z.literal('budget.warning'), scope: z.string(), job: z.string().optional(), step: z.string().optional(), used: z.number(), limit: z.number() }).strict(),
+  // `dimension` необязателен только ради журналов, записанных до его появления:
+  // пишущая сторона задаёт его всегда.
+  z.object({ ...eventBase, kind: z.literal('budget.warning'), scope: z.string(), job: z.string().optional(), step: z.string().optional(), dimension: BudgetDimensionSchema.optional(), used: z.number(), limit: z.number() }).strict(),
   // Работа и шаг названы отдельно от `scope`: имя области — текст для чтения,
   // а разбирать чересполосный поток нужно по идентификаторам.
-  z.object({ ...eventBase, kind: z.literal('budget.exceeded'), scope: z.string(), job: z.string().optional(), step: z.string().optional(), used: z.number(), limit: z.number() }).strict(),
+  z.object({ ...eventBase, kind: z.literal('budget.exceeded'), scope: z.string(), job: z.string().optional(), step: z.string().optional(), dimension: BudgetDimensionSchema.optional(), used: z.number(), limit: z.number() }).strict(),
   z.object({
     ...eventBase,
     kind: z.literal('budget.waiting'),

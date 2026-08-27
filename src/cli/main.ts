@@ -23,6 +23,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
     flags: {
       input: { kind: 'keyValue', description: 'значение входа пайплайна: --input имя=значение' },
       'dry-run': { kind: 'boolean', description: 'только проверить, не запуская работы' },
+      quiet: { kind: 'boolean', description: 'не печатать ход прогона' },
     },
   },
   lint: {

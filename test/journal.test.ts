@@ -487,6 +487,126 @@ describe('run-journal: раскладка и состояние', () => {
   });
 });
 
+describe('run-journal: наблюдение за потоком событий', () => {
+  it('доставляет событие наблюдателю после того, как оно уже в файле', () => {
+    const { runsRoot, projectRoot } = bed();
+    const delivered: string[] = [];
+    let seenInFile: string[] = [];
+    const journal = RunJournal.create({
+      runsRoot,
+      projectRoot,
+      onEvent: (event) => {
+        delivered.push(event.kind);
+        seenInFile = readEvents(journal.paths).map((item) => item.kind);
+      },
+    });
+
+    journal.event({ kind: 'job.started', job: 'build' });
+
+    assert.deepEqual(delivered, ['job.started']);
+    assert.deepEqual(seenInFile, ['job.started']);
+  });
+
+  it('последовательность и состав доставленного совпадают с файлом', () => {
+    const { runsRoot, projectRoot } = bed();
+    const delivered: string[] = [];
+    const journal = RunJournal.create({
+      runsRoot,
+      projectRoot,
+      onEvent: (event) => delivered.push(event.kind),
+    });
+
+    journal.event({ kind: 'run.started', pipeline: 'demo', run_id: journal.paths.runId });
+    journal.event({ kind: 'job.started', job: 'build' });
+    journal.event({ kind: 'job.finished', job: 'build', status: 'success' });
+
+    assert.deepEqual(
+      delivered,
+      readEvents(journal.paths).map((event) => event.kind),
+    );
+  });
+
+  it('исключение наблюдателя не прерывает прогон и попадает в журнал как bookkeeping.failed', () => {
+    const { runsRoot, projectRoot } = bed();
+    let calls = 0;
+    const journal = RunJournal.create({
+      runsRoot,
+      projectRoot,
+      onEvent: () => {
+        calls += 1;
+        throw new Error('вывод сломан');
+      },
+    });
+
+    journal.event({ kind: 'job.started', job: 'build' });
+
+    const events = readEvents(journal.paths);
+    assert.equal(events.some((event) => event.kind === 'job.started'), true);
+    const failure = events.find((event) => event.kind === 'bookkeeping.failed');
+    assert.ok(failure !== undefined && failure.kind === 'bookkeeping.failed');
+    assert.match(failure.operation, /наблюдение/);
+    // Наблюдатель позвался ровно на исходное событие: запись о его же
+    // неудаче рекурсии не вызывает.
+    assert.equal(calls, 1);
+  });
+
+  it('устойчиво падающий наблюдатель отключается и перестаёт множить bookkeeping.failed', () => {
+    const { runsRoot, projectRoot } = bed();
+    let calls = 0;
+    const journal = RunJournal.create({
+      runsRoot,
+      projectRoot,
+      onEvent: () => {
+        calls += 1;
+        throw new Error('поток вывода закрыт');
+      },
+    });
+
+    for (let index = 0; index < 10; index += 1) {
+      journal.event({ kind: 'job.started', job: `job-${index}` });
+    }
+
+    // Наблюдатель отключён после третьего отказа подряд: дальше события идут
+    // в файл, но печатать их некому.
+    assert.equal(calls, 3);
+    const events = readEvents(journal.paths);
+    const failures = events.filter((event) => event.kind === 'bookkeeping.failed');
+    assert.equal(failures.length, 3);
+    const last = failures.at(-1);
+    assert.ok(last !== undefined && last.kind === 'bookkeeping.failed');
+    assert.match(last.operation, /отключено/);
+    assert.equal(events.filter((event) => event.kind === 'job.started').length, 10);
+  });
+
+  it('удачная доставка обнуляет счёт отказов: наблюдатель, оживший после сбоя, не отключается', () => {
+    const { runsRoot, projectRoot } = bed();
+    let calls = 0;
+    const journal = RunJournal.create({
+      runsRoot,
+      projectRoot,
+      onEvent: () => {
+        calls += 1;
+        // Отказ на каждом втором вызове: подряд трёх не набирается.
+        if (calls % 2 === 0) throw new Error('единичный сбой');
+      },
+    });
+
+    for (let index = 0; index < 10; index += 1) {
+      journal.event({ kind: 'job.started', job: `job-${index}` });
+    }
+
+    assert.equal(calls, 10);
+  });
+
+  it('прогон без объявленного наблюдателя ведёт журнал как прежде', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+
+    assert.doesNotThrow(() => journal.event({ kind: 'job.started', job: 'build' }));
+    assert.equal(readEvents(journal.paths).length, 1);
+  });
+});
+
 /**
  * Начало прогона, который считается живым: живость сверяется с моментом
  * последней загрузки машины, поэтому прогон «из прошлого» живым не бывает.

@@ -1,13 +1,15 @@
 import { resolve as resolvePath } from 'node:path';
 
-import { resolveConfig } from '../../core/config/resolve.js';
+import { resolveConfig, type Config } from '../../core/config/resolve.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
-import { findProjectRoot } from '../../core/journal/paths.js';
-import { shortRunId } from '../../core/journal/paths.js';
+import { findProjectRoot, projectKey, runPaths, shortRunId } from '../../core/journal/paths.js';
 import { readStatus } from '../../core/journal/reader.js';
+import type { Event } from '../../core/journal/schema.js';
 import { hasErrors, lintPipeline } from '../../core/lint.js';
 import { expandPipeline } from '../../core/pipeline/expand.js';
 import { runPipeline } from '../../core/run/runner.js';
+import type { UsageSnapshot } from '../../core/budget/accumulator.js';
+import { renderProgressLine } from '../progress.js';
 import { formatDiagnostic } from './lint.js';
 import type { ParsedArgs } from '../args.js';
 
@@ -42,13 +44,17 @@ export async function runRunCommand(
   process.once('SIGINT', onSignal);
   process.once('SIGTERM', onSignal);
 
+  const projectRoot = findProjectRoot(cwd);
+  const onEvent = args.flags.quiet === true ? undefined : buildProgressObserver(config, projectRoot, write);
+
   try {
     const result = await runPipeline({
       expanded,
       config,
-      projectRoot: findProjectRoot(cwd),
+      projectRoot,
       cwd,
       signal: controller.signal,
+      ...(onEvent === undefined ? {} : { onEvent }),
     });
 
     const runId = shortRunId(result.journal.paths.runId);
@@ -91,4 +97,32 @@ export async function runRunCommand(
     process.removeListener('SIGINT', onSignal);
     process.removeListener('SIGTERM', onSignal);
   }
+}
+
+/**
+ * Наблюдатель ленты хода прогона: по `run.started` первыми строками печатает
+ * идентификатор прогона и путь к каталогу журнала — до того, как исполнится
+ * хоть одна работа, — затем по одной строке на печатаемое событие.
+ *
+ * Время строки считается от `run.started` по меткам времени самих событий, а
+ * не через `usage.elapsedMs()` снимка: тот вычитает сон и после
+ * `budget.waiting` пошёл бы назад.
+ */
+function buildProgressObserver(
+  config: Config,
+  projectRoot: string,
+  write: (line: string) => void,
+): (event: Event, usage: UsageSnapshot) => void {
+  let startedAtMs: number | undefined;
+  return (event, usage) => {
+    if (event.kind === 'run.started') {
+      startedAtMs = Date.parse(event.ts);
+      const paths = runPaths(config.runs.root, projectKey(projectRoot), event.run_id);
+      write(`прогон ${shortRunId(event.run_id)}`);
+      write(`журнал: ${paths.dir}`);
+    }
+    const elapsedMs = startedAtMs === undefined ? 0 : Date.parse(event.ts) - startedAtMs;
+    const rendered = renderProgressLine(event, usage, elapsedMs);
+    if (rendered !== undefined) write(rendered);
+  };
 }

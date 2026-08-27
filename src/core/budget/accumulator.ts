@@ -1,6 +1,6 @@
 import { formatDuration, formatMoney, formatTokens } from '../units.js';
 import type { Budget } from '../pipeline/model.js';
-import type { Usage, UsageReport } from '../journal/schema.js';
+import type { BudgetDimension, Usage, UsageReport } from '../journal/schema.js';
 
 /**
  * Учёт расхода и применение бюджета.
@@ -42,7 +42,7 @@ export type BudgetScope =
 
 export interface Exceeded {
   readonly scope: string;
-  readonly dimension: 'tokens' | 'cost' | 'wallclock' | 'rate_limit';
+  readonly dimension: BudgetDimension;
   readonly used: number;
   readonly limit: number;
   /** Режим области, чей потолок упёрся: решает, ждать или остановиться. */
@@ -106,6 +106,27 @@ function maxOptional(a: number | undefined, b: number | undefined): number | und
   if (b === undefined) return a;
   return Math.max(a, b);
 }
+
+/**
+ * Снимок накопленного расхода прогона на момент события: те же величины, что
+ * уходят в блок `budget` состояния прогона (`writeStatus` в `run/runner.ts`).
+ * `costMicroUsd` отсутствует, а не равен нулю, если ни одна попытка прогона
+ * ещё не сообщила цены, — молчание бэкенда не должно выглядеть как бесплатный
+ * прогон.
+ */
+export interface UsageSnapshot {
+  readonly tokens: number;
+  readonly costMicroUsd?: number;
+  readonly elapsedMs: number;
+  readonly costUnreportedAttempts: number;
+}
+
+/** Снимок, отдаваемый событиям до того, как накопитель прогона создан. */
+export const ZERO_USAGE_SNAPSHOT: UsageSnapshot = {
+  tokens: 0,
+  elapsedMs: 0,
+  costUnreportedAttempts: 0,
+};
 
 export class UsageAccumulator {
   private readonly run = emptyCounters();
@@ -230,6 +251,16 @@ export class UsageAccumulator {
 
   elapsedMs(): number {
     return Date.now() - this.startedAt - this.sleptMs();
+  }
+
+  /** Снимок расхода прогона теми же вызовами, что собирают блок `budget` состояния. */
+  snapshot(): UsageSnapshot {
+    return {
+      tokens: this.runTokens(),
+      ...(this.runCostNeverReported() ? {} : { costMicroUsd: this.runCostMicroUsd() }),
+      elapsedMs: this.elapsedMs(),
+      costUnreportedAttempts: this.costUnreportedAttemptCount(),
+    };
   }
 
   /** Записать интервал сна: вычитается из `elapsedMs()` и из длительности застигнутых им областей. */
@@ -574,17 +605,32 @@ export function describeExceeded(exceeded: Exceeded): string {
 }
 
 function describeExceededDimension(exceeded: Exceeded): string {
-  switch (exceeded.dimension) {
+  return `${exceeded.scope}: ${describeBudgetAmounts(exceeded.dimension, exceeded.used, exceeded.limit)}`;
+}
+
+/**
+ * Израсходованное и потолок в единицах своего измерения.
+ *
+ * Отдельно от `describeExceeded`, потому что те же величины приходят голыми
+ * числами в события `budget.warning`/`budget.exceeded`: микродоллары,
+ * миллисекунды и проценты, напечатанные как есть, читаются как токены.
+ */
+export function describeBudgetAmounts(
+  dimension: BudgetDimension,
+  used: number,
+  limit: number,
+): string {
+  switch (dimension) {
     case 'tokens':
       // «Трафик», не «размер»/«объём»: потолок считает сумму по всем
       // обращениям к API, а не то, что одновременно лежит в контексте, —
       // см. docs/pipeline-format.md, раздел «Бюджет».
-      return `${exceeded.scope}: передано ${formatTokens(exceeded.used)} трафика при потолке ${formatTokens(exceeded.limit)}`;
+      return `передано ${formatTokens(used)} трафика при потолке ${formatTokens(limit)}`;
     case 'cost':
-      return `${exceeded.scope}: потрачено ${formatMoney(exceeded.used)} при потолке ${formatMoney(exceeded.limit)}`;
+      return `потрачено ${formatMoney(used)} при потолке ${formatMoney(limit)}`;
     case 'wallclock':
-      return `${exceeded.scope}: прошло ${formatDuration(exceeded.used)} при потолке ${formatDuration(exceeded.limit)}`;
+      return `прошло ${formatDuration(used)} при потолке ${formatDuration(limit)}`;
     case 'rate_limit':
-      return `${exceeded.scope}: окно лимитов израсходовано на ${exceeded.used}% при потолке ${exceeded.limit}%`;
+      return `окно лимитов израсходовано на ${used}% при потолке ${limit}%`;
   }
 }
