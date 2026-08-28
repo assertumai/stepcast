@@ -6,7 +6,13 @@ import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { interpolate, type Scope } from '../src/core/pipeline/interpolate.js';
 import { serializeLock } from '../src/core/pipeline/lock.js';
 import { StepcastError } from '../src/core/errors.js';
+import type { Config } from '../src/core/config/resolve.js';
 import { asAgent, asRun, makeProject, MINIMAL_PIPELINE, type Project } from './helpers.js';
+
+/** Тот же проект, но с указанным `project.check`, будто он объявлен в `.stepcast/config.yml`. */
+function withProjectCheck(project: Project, check: string | undefined): Config {
+  return { ...project.config, project: { check } };
+}
 
 function expand(project: Project, file = 'stepcast.yml', inputs?: Record<string, string>) {
   return expandPipeline({
@@ -14,6 +20,21 @@ function expand(project: Project, file = 'stepcast.yml', inputs?: Record<string,
     config: project.config,
     ...(inputs === undefined ? {} : { inputs }),
   });
+}
+
+function expandWith(project: Project, config: Config, file = 'stepcast.yml') {
+  return expandPipeline({ pipelinePath: project.path(file), config });
+}
+
+/** Отказ, пойманный ради самого сообщения: `assert.throws` его не возвращает. */
+function thrown(fn: () => unknown): StepcastError {
+  try {
+    fn();
+  } catch (error) {
+    assert.ok(error instanceof StepcastError);
+    return error;
+  }
+  assert.fail('ожидался отказ разбора');
 }
 
 describe('pipeline-definition: разбор и раскрытие', () => {
@@ -1386,6 +1407,310 @@ jobs:
       assert.match(error.message, /github/);
       return true;
     });
+  });
+});
+
+describe('pipeline-definition: секция project документа', () => {
+  it('разбирает верхний ключ project', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  check: make check
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.check}" }]
+`,
+    });
+    const step = asRun(expand(project).pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.command, 'make check');
+  });
+
+  it('отклоняет пустую project.check в пайплайне, называя ключ', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  check: ""
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.at ?? error.message, /project\.check/);
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет неизвестное поле внутри секции project', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  name: x
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+    assert.throws(() => expand(project), StepcastError);
+  });
+});
+
+describe('pipeline-definition: действующее значение project.check', () => {
+  it('пайплайн перекрывает конфигурацию', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  check: make check
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.check}" }]
+`,
+    });
+    const config = withProjectCheck(project, 'npm run check');
+    const step = asRun(expandWith(project, config).pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.command, 'make check');
+  });
+
+  it('раскрывается значением из пайплайна, когда конфигурация секции не содержит', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  check: make check
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.check}" }]
+`,
+    });
+    const config = withProjectCheck(project, undefined);
+    const step = asRun(expandWith(project, config).pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.command, 'make check');
+  });
+
+  it('раскрывается значением из конфигурации, когда пайплайн секцию не объявляет', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.check}" }]
+`,
+    });
+    const config = withProjectCheck(project, 'npm run check');
+    const step = asRun(expandWith(project, config).pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.command, 'npm run check');
+  });
+
+  it('документ без ссылки на подстановку разбирается без ошибки, даже если ключ не объявлен ни там ни там', () => {
+    const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
+    const config = withProjectCheck(project, undefined);
+    assert.doesNotThrow(() => expandWith(project, config));
+  });
+});
+
+describe('pipeline-definition: подстановка ${project.check}', () => {
+  function projectPipeline(): Project {
+    return makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+context: [{ text: "проверяется \${project.check}" }]
+jobs:
+  loop:
+    until:
+      max_iterations: 3
+      check: [{ cmd: "\${project.check}" }]
+    steps:
+      - id: run-str
+        run: "\${project.check}"
+      - id: run-arr
+        run: ["\${project.check}"]
+      - id: ask
+        prompt: "file:./prompts/ask.md"
+`,
+      'prompts/ask.md': 'Проверка: ${project.check}\n',
+    });
+  }
+
+  it('раскрывается в until.check[].cmd, в run строкой и массивом, в тексте промпта и в context', () => {
+    const project = projectPipeline();
+    const config = withProjectCheck(project, 'npm run check');
+    const { pipeline } = expandWith(project, config);
+    const job = pipeline.jobs[0]!;
+
+    assert.equal(job.until?.check[0]?.kind, 'cmd');
+    assert.equal((job.until?.check[0] as { command: string }).command, 'npm run check');
+
+    assert.equal(asRun(job.steps[0]!).command, 'npm run check');
+    assert.deepEqual(asRun(job.steps[1]!).command, ['npm run check']);
+    assert.equal(asAgent(job.steps[2]!).prompt.trim(), 'Проверка: npm run check');
+
+    assert.deepEqual(pipeline.context[0], { kind: 'text', text: 'проверяется npm run check' });
+  });
+
+  it('раскрытый пайплайн несёт команду, а не подстановку', () => {
+    const project = projectPipeline();
+    const config = withProjectCheck(project, 'npm run check');
+    const { pipeline } = expandWith(project, config);
+
+    const lock = serializeLock(pipeline);
+    assert.doesNotMatch(lock, /\$\{project\.check\}/);
+    assert.match(lock, /npm run check/);
+  });
+
+  it('ссылка на необъявленный project.check — отказ разбора, называющий оба места объявления', () => {
+    const project = projectPipeline();
+    const config = withProjectCheck(project, undefined);
+
+    assert.throws(
+      () => expandWith(project, config),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.hint ?? '', /project\.check/);
+        assert.match(error.hint ?? '', new RegExp(project.path('stepcast.yml').replace(/[/\\]/g, '\\$&')));
+        assert.match(error.hint ?? '', /\.stepcast\/config\.yml/);
+        return true;
+      },
+    );
+  });
+
+  it('обращение к имени вне состава пространства называет доступные имена', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.name}" }]
+`,
+    });
+    const config = withProjectCheck(project, 'npm run check');
+
+    assert.throws(
+      () => expandWith(project, config),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        // Сообщение о составе, а не о том, где объявить: имя `name`
+        // пространству не принадлежит вовсе, и объявлять его негде. Обе ветки
+        // содержат слово «check», поэтому различает их не оно.
+        assert.match(error.hint ?? '', /содержит только check/);
+        assert.doesNotMatch(error.hint ?? '', /Объявите/);
+        return true;
+      },
+    );
+  });
+
+  it('необъявленный ключ и имя вне состава — разные сообщения', () => {
+    const undeclared = projectPipeline();
+    const outside = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.name}" }]
+`,
+    });
+
+    const first = thrown(() => expandWith(undeclared, withProjectCheck(undeclared, undefined)));
+    const second = thrown(() => expandWith(outside, withProjectCheck(outside, 'npm run check')));
+
+    assert.notEqual(first.hint, second.hint);
+    assert.match(first.hint ?? '', /Объявите/);
+    assert.doesNotMatch(first.hint ?? '', /содержит только/);
+  });
+});
+
+/**
+ * Работа, подключённая через `uses:`, раскрывается в собственной области
+ * видимости (`bodyScope`) — не в области пайплайна. Именно этим путём петля и
+ * пользуется: `verify`, `implement`, `fix-review` и `merge` подключены файлами,
+ * поэтому подстановка в описанной на месте работе ничего о них не доказывает.
+ */
+describe('pipeline-definition: ${project.check} в подключённой работе', () => {
+  function usesProject(): Project {
+    return makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  loop:
+    uses: ./.stepcast/jobs/loop.yml
+`,
+      '.stepcast/jobs/loop.yml': `
+kind: job
+until:
+  max_iterations: 3
+  check: [{ cmd: "\${project.check}" }]
+steps:
+  - id: run-str
+    run: "\${project.check}"
+  - id: run-arr
+    run: ["\${project.check}"]
+  - id: ask
+    prompt: "file:../prompts/ask.md"
+`,
+      '.stepcast/prompts/ask.md': 'Проверка: ${project.check}\n',
+    });
+  }
+
+  it('раскрывается в until, в шагах и в промпте файла работы', () => {
+    const project = usesProject();
+    const { pipeline } = expandWith(project, withProjectCheck(project, 'npm run check'));
+    const job = pipeline.jobs[0]!;
+
+    assert.equal(job.source, project.path('.stepcast/jobs/loop.yml'));
+    assert.equal((job.until?.check[0] as { command: string }).command, 'npm run check');
+    assert.equal(asRun(job.steps[0]!).command, 'npm run check');
+    assert.deepEqual(asRun(job.steps[1]!).command, ['npm run check']);
+    assert.equal(asAgent(job.steps[2]!).prompt.trim(), 'Проверка: npm run check');
+  });
+
+  it('ссылка из файла работы на необъявленный ключ — отказ с тем же объяснением', () => {
+    const project = usesProject();
+
+    assert.throws(
+      () => expandWith(project, withProjectCheck(project, undefined)),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        // Диагностика называет файл работы — там объявлено поле, — а подсказка
+        // оба места, где команду можно объявить.
+        assert.equal(error.file, project.path('.stepcast/jobs/loop.yml'));
+        assert.match(error.hint ?? '', /Объявите project\.check/);
+        assert.match(error.hint ?? '', /\.stepcast\/config\.yml/);
+        return true;
+      },
+    );
+  });
+
+  it('файл работы адресует project даже без параметров: подсказка про inputs его не касается', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: ./jobs/build.yml
+`,
+      'jobs/build.yml': `
+kind: job
+steps: [{ id: c, run: "\${project.name}" }]
+`,
+    });
+
+    assert.throws(
+      () => expandWith(project, withProjectCheck(project, 'npm run check')),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.hint ?? '', /содержит только check/);
+        return true;
+      },
+    );
   });
 });
 

@@ -93,6 +93,29 @@ export const RawUiSchema = z
   })
   .strict();
 
+/**
+ * Команда проверки репозитория. Пустая строка отклоняется здесь же: пустая
+ * команда даёт нулевой код возврата, то есть зелёный гейт на любом коде.
+ *
+ * Требование записано дважды нарочно. `.trim().min(1)` отвергает строку из
+ * одних пробелов в движке; `.regex(/\S/)` говорит то же самое образцом,
+ * который переносится в публикуемую JSON Schema. Обрезку JSON Schema выразить
+ * не умеет, и без образца редактор принимал бы `check: "   "`, которое движок
+ * отклоняет, — опубликованный контракт врал бы о поведении.
+ *
+ * Модель одна на конфигурацию и на документ пайплайна (`src/core/pipeline/
+ * schema.ts`): объявление в пайплайне перекрывает конфигурацию, а не заводит
+ * второй формат, и разъехаться этим двум требованиям нечем.
+ */
+export const CheckCommandSchema = z.string().trim().min(1).regex(/\S/);
+
+/** Свойства проекта, а не движка — сегодня одно: команда проверки. */
+export const RawProjectSchema = z
+  .object({
+    check: CheckCommandSchema,
+  })
+  .strict();
+
 export const RawConfigSchema = z
   .object({
     version: z.literal(1).optional(),
@@ -104,6 +127,7 @@ export const RawConfigSchema = z
     context: RawContextSchema.optional(),
     backends: z.record(z.string(), RawBackendSchema).optional(),
     ui: RawUiSchema.optional(),
+    project: RawProjectSchema.optional(),
   })
   .strict();
 
@@ -116,6 +140,12 @@ export type RawBackend = z.infer<typeof RawBackendSchema>;
  * Шаблон `*` совпадает с одним сегментом пути.
  */
 export const GLOBAL_ONLY_KEYS = ['runs.root', 'backends.*.command'] as const;
+
+/**
+ * Ключи, допустимые только в проектном конфиге. Глобальный конфиг общий всем
+ * репозиториям машины и не может объявлять команду одного из них.
+ */
+export const PROJECT_ONLY_KEYS = ['project.*'] as const;
 
 /** Списки, которые между слоями объединяются, а не заменяются. */
 export const UNION_LIST_KEYS = ['env_deny', 'context.deny'] as const;

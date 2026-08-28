@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
+import { run, type CliIo } from '../src/cli/main.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../src/core/lint.js';
-import { StepcastError } from '../src/core/errors.js';
-import { makeProject, type Project } from './helpers.js';
+import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
+import { makeProject, withHome, type Project } from './helpers.js';
 
 function lint(project: Project, inputs?: Record<string, string>): Diagnostic[] {
   const expanded = expandPipeline({
@@ -1665,5 +1668,89 @@ jobs:
       }),
     );
     assert.deepEqual(errors(diagnostics), []);
+  });
+});
+
+/**
+ * Проверки идут настоящими командами `stepcast lint` и `stepcast run`, а не
+ * прямым вызовом `expandPipeline`: сценарии спеки говорят именно о них, и
+ * важно не только то, что раскрытие отказывает, но и то, что отказ случается
+ * до заведения каталога прогона.
+ */
+describe('pipeline-definition: команды о необъявленном project.check', () => {
+  async function cli(
+    project: Project,
+    argv: readonly string[],
+  ): Promise<{ code: ExitCodeValue; out: string }> {
+    const lines: string[] = [];
+    const io: CliIo = {
+      out: (line) => lines.push(line),
+      err: (line) => lines.push(line),
+      cwd: project.root,
+    };
+    const code = await withHome(project.home, () => run(argv, io));
+    return { code, out: lines.join('\n') };
+  }
+
+  const REFERRING = `
+kind: pipeline
+name: ссылается
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.check}", expect: [{ exit_code: 0 }] }]
+`;
+
+  it('lint отказывает на ссылке без объявления, называя оба места объявления', async () => {
+    const project = makeProject({ 'stepcast.yml': REFERRING });
+
+    const result = await cli(project, ['lint', 'stepcast.yml']);
+
+    assert.equal(result.code, ExitCode.configError);
+    assert.match(result.out, /project\.check/);
+    assert.match(result.out, /\.stepcast\/config\.yml/);
+  });
+
+  it('lint отказывает на имени вне состава пространства — другим сообщением', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.name}", expect: [{ exit_code: 0 }] }]
+`,
+    });
+
+    const result = await cli(project, ['lint', 'stepcast.yml']);
+
+    assert.equal(result.code, ExitCode.configError);
+    assert.match(result.out, /содержит только check/);
+    assert.doesNotMatch(result.out, /Объявите/);
+  });
+
+  it('lint принимает пайплайн, когда команду объявляет .stepcast/config.yml проекта', async () => {
+    const project = makeProject({
+      'stepcast.yml': REFERRING,
+      '.stepcast/config.yml': 'project:\n  check: npm run check\n',
+    });
+
+    const result = await cli(project, ['lint', 'stepcast.yml']);
+
+    assert.equal(result.code, ExitCode.ok);
+    assert.match(result.out, /^ok: stepcast\.yml/m);
+  });
+
+  it('run не начинает прогон: каталога журнала не появляется', async () => {
+    const project = makeProject({ 'stepcast.yml': REFERRING });
+
+    const result = await cli(project, ['run', 'stepcast.yml']);
+
+    assert.equal(result.code, ExitCode.configError);
+    assert.match(result.out, /project\.check/);
+    // `runs.root` умолчанием — `~/.stepcast/runs`, а HOME на время вызова
+    // подменён каталогом проекта: отсутствие каталога и значит, что прогон не
+    // начинался.
+    assert.equal(existsSync(join(project.home, '.stepcast', 'runs')), false);
   });
 });

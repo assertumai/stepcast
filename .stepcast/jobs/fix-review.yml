@@ -6,7 +6,7 @@
 version: 1
 kind: job
 name: fix-review
-description: Устранить находки ревью до зелёного npm run check
+description: Устранить находки ревью до зелёной объявленной проверки
 
 params:
   change: { type: string, required: true }
@@ -20,7 +20,7 @@ output:
 until:
   max_iterations: 2
   check:
-    - cmd: npm run check
+    - cmd: ${project.check}
 
 steps:
   # Модель того же класса, что и у ревью: находки сформулировал opus, и модель
@@ -61,6 +61,11 @@ steps:
           # См. implement.yml: замок ходит вместе с package.json.
           - package-lock.json
           - .gitattributes
+          # Конфигурация проекта — часть петли (объявляет, например,
+          # project.check), и завести её должен уметь заход, а не человек.
+          # Действует со следующего прогона: предикат фиксируется вместе с
+          # раскрытым пайплайном в начале текущего.
+          - .stepcast/config.yml
           - .stepcast/prompts/**
           - .stepcast/jobs/**
           - .stepcast/pipelines/**

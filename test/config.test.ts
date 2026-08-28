@@ -266,4 +266,69 @@ describe('stepcast-configuration', () => {
       box.projectPath,
     );
   });
+
+  // Сценарий: «Команда объявлена в проектном конфиге»
+  it('принимает project.check в проектном конфиге', () => {
+    const box = sandbox({ project: 'project:\n  check: npm run check\n' });
+    const { config, provenance } = resolveIn(box);
+    assert.equal(config.project.check, 'npm run check');
+    assert.equal(describeSource(provenance.get('project.check')!), box.projectPath);
+  });
+
+  // Сценарий: «Пустая команда»
+  it('отклоняет пустую project.check', () => {
+    const box = sandbox({ project: 'project:\n  check: "   "\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.check');
+        assert.equal(error.file, box.projectPath);
+        return true;
+      },
+    );
+  });
+
+  // Сценарий: «Неизвестный ключ секции»
+  it('отклоняет неизвестный ключ секции project', () => {
+    const box = sandbox({ project: 'project:\n  chek: npm run check\n' });
+    assert.throws(() => resolveIn(box), StepcastError);
+  });
+
+  // Сценарий: «Команда не объявлена»
+  it('project.check отсутствует, если не объявлен ни одним слоем', () => {
+    const box = sandbox({});
+    const { config } = resolveIn(box);
+    assert.equal(config.project.check, undefined);
+  });
+
+  // Сценарий: «Команда проверки в глобальном конфиге»
+  it('отклоняет project.check в глобальном конфиге', () => {
+    const box = sandbox({ global: 'project:\n  check: npm run check\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /project\.check/);
+        assert.equal(error.file, box.globalPath);
+        assert.match(error.hint ?? '', /\.stepcast\/config\.yml/);
+        return true;
+      },
+    );
+  });
+
+  // Сценарий: «Проектный конфиг не ограничен этим правилом»
+  it('принимает project.check в проектном, даже если глобальный без секции project', () => {
+    const box = sandbox({ project: 'project:\n  check: "./gradlew check"\n' });
+    assert.doesNotThrow(() => resolveIn(box));
+  });
+
+  it('печатает project.check в отчёте stepcast config с файлом-источником', () => {
+    const box = sandbox({ project: 'project:\n  check: npm run check\n' });
+    const lines = renderConfigReport(resolveIn(box));
+    const line = lines.find((item) => item.startsWith('project.check'));
+    assert.ok(line !== undefined);
+    assert.match(line, /npm run check/);
+    assert.match(line, new RegExp(box.projectPath.replace(/[/\\]/g, '\\$&')));
+  });
 });

@@ -172,6 +172,20 @@
       },
       "additionalProperties": false
     },
+    "project": {
+      "type": "object",
+      "properties": {
+        "check": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "check"
+      ],
+      "additionalProperties": false
+    },
     "defaults": {
       "type": "object",
       "properties": {

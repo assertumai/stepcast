@@ -38,6 +38,24 @@ import type {
 /** Пространства, чьи значения известны только в прогоне. */
 const DEFERRED_NAMESPACES = new Set(['jobs', 'run', 'env']);
 
+/** Состав пространства `project`. */
+const PROJECT_NAMES = ['check'];
+
+/**
+ * Разное объяснение для двух разных ошибок пространства `project`:
+ * обращение к имени вне состава — про сам состав, обращение к необъявленному
+ * `check` — про оба места, где его можно объявить.
+ */
+function explainProject(pipelinePath: string) {
+  return (_expression: string, namespace: string, path: string): string | undefined => {
+    if (namespace !== 'project') return undefined;
+    if (!PROJECT_NAMES.includes(path)) {
+      return `Пространство project содержит только ${PROJECT_NAMES.join(', ')}`;
+    }
+    return `Объявите project.check верхним ключом пайплайна (${pipelinePath}) либо в .stepcast/config.yml`;
+  };
+}
+
 export interface ExpandOptions {
   readonly pipelinePath: string;
   readonly config: Config;
@@ -375,10 +393,16 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     what: 'inputs',
   });
 
+  // Пайплайн поверх конфигурации, ни один слой не обязателен. Разрешается
+  // ровно один раз: оба потребителя (область пайплайна и область тела работы)
+  // берут уже посчитанное значение.
+  const projectCheck = document.project?.check ?? config.project.check;
+
   const pipelineScope: Scope = {
-    values: { inputs },
+    values: { inputs, project: { check: projectCheck } },
     deferred: DEFERRED_NAMESPACES,
     file: pipelinePath,
+    explain: explainProject(pipelinePath),
   };
 
   const substitutions = new Map<string, readonly Substitution[]>();
@@ -388,8 +412,17 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
 
   // Скалярные поля документа раскрываются здесь, на уровне пайплайна: `jobs`
   // раскрывается отдельно, каждая работа — в собственной области видимости.
-  const { version: _version, kind: _kind, inputs: _inputsDecl, jobs: _jobsField, ...pipelineRest } =
-    document;
+  // `project` исключён наравне с ними: значение уже посчитано выше, а
+  // подстановка секции как обычного поля дала бы `doc.project`, которым
+  // никто дальше не пользуется.
+  const {
+    version: _version,
+    kind: _kind,
+    inputs: _inputsDecl,
+    jobs: _jobsField,
+    project: _projectField,
+    ...pipelineRest
+  } = document;
   const interpolatedPipeline = interpolateTree(pipelineRest as Record<string, unknown>, pipelineScope, '');
   collect(interpolatedPipeline.substitutions);
   const doc = interpolatedPipeline.value as typeof pipelineRest;
@@ -446,7 +479,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
 
       declaringFile = usesPath;
       bodyScope = {
-        values: { params },
+        values: { params, project: { check: projectCheck } },
         deferred: DEFERRED_NAMESPACES,
         // Поля тела объявлены в файле работы: диагностика должна называть его,
         // а не пайплайн, где работа только подключена.
@@ -456,6 +489,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
           // пайплайну и перестаёт быть переиспользуемой.
           inputs: 'Работе недоступны inputs пайплайна — передайте значение через with и объявите его в params',
         },
+        explain: explainProject(pipelinePath),
       };
 
       const { params: _params, kind: _kind, version: _version, ...rest } = jobDocument;

@@ -439,7 +439,9 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
           sendJson(res, 200, { pipelines: [], generatedAt: new Date().toISOString() });
           return;
         }
-        sendJson(res, 200, buildPipelines(runsRoot, config));
+        // `home` доезжает сюда, потому что секцию `project` витрина читает у
+        // каждого проекта своей: команда проверки объявлена в репозитории.
+        sendJson(res, 200, buildPipelines(runsRoot, config, home === undefined ? {} : { home }));
         return;
       case '/api/settings':
         sendJson(res, 200, home === undefined ? readSettings() : readSettings(home));

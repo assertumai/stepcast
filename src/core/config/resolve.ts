@@ -6,6 +6,7 @@ import { parse as parseYaml } from 'yaml';
 import { StepcastError } from '../errors.js';
 import {
   GLOBAL_ONLY_KEYS,
+  PROJECT_ONLY_KEYS,
   RawConfigSchema,
   TIGHTEN_ONLY_KEYS,
   UNION_LIST_KEYS,
@@ -74,6 +75,8 @@ export interface Config {
   };
   readonly backends: Readonly<Record<string, BackendConfig>>;
   readonly ui: { readonly port: number };
+  /** Команда проверки репозитория. Нет встроенного умолчания: неверная угадка исполнялась бы в чужом дереве. */
+  readonly project: { readonly check: string | undefined };
 }
 
 export interface ResolvedConfig {
@@ -170,6 +173,21 @@ function rejectGlobalOnlyKeys(config: RawConfig, path: string): void {
   }
 }
 
+/** Глобальный конфиг общий всем репозиториям машины, поэтому команда одного из них там не место. */
+function rejectProjectOnlyKeys(config: RawConfig, path: string): void {
+  for (const [keyPath] of flatten(config as Record<string, unknown>)) {
+    for (const pattern of PROJECT_ONLY_KEYS) {
+      if (matchesKeyPattern(keyPath, pattern)) {
+        throw new StepcastError(`Ключ ${keyPath} допустим только в проектной конфигурации`, {
+          file: path,
+          at: keyPath,
+          hint: 'Перенесите значение в .stepcast/config.yml',
+        });
+      }
+    }
+  }
+}
+
 function requireNumber(values: ReadonlyMap<string, unknown>, path: string): number {
   const value = values.get(path);
   if (typeof value !== 'number') {
@@ -231,6 +249,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
 
   const globalConfig = readConfigFile(globalPath);
   if (globalConfig !== undefined) {
+    rejectProjectOnlyKeys(globalConfig, globalPath);
     layers.push({ source: { kind: 'file', path: globalPath }, values: globalConfig as Record<string, unknown> });
   }
 
@@ -257,6 +276,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   const workspaceMode = (values.get('defaults.workspace.mode') ?? 'cwd') as 'cwd' | 'worktree' | 'copy';
   const workspacePath = values.get('defaults.workspace.path');
   const model = values.get('defaults.model');
+  const projectCheck = values.get('project.check');
   const runsRoot = expandHome(requireString(values, 'runs.root'), home);
 
   const config: Config = {
@@ -295,6 +315,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
     },
     backends: buildBackends(values, home),
     ui: { port: requireNumber(values, 'ui.port') },
+    project: { check: typeof projectCheck === 'string' ? projectCheck : undefined },
   };
 
   return {

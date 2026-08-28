@@ -57,11 +57,12 @@ started_at: 2026-08-27T23:46:44.167Z
 
 ## configurable-check-command
 
-status: pending
+status: done
 title: Команда проверки объявляется, а не зашита
 group: portable-loop
 why: npm run check вшит в петлю по меньшей мере в пяти местах: литералом в merge-lanes.mjs, четырьмя шагами npm run typecheck|lint|build|test:only в работе verify, циклами until работ implement и fix-review, словами в промптах implement.md и fix-review.md и в context самого пайплайна. Для Go проверка — go vet ./... && go test ./..., для Gradle — ./gradlew check, у документации её нет вовсе. Пока команда зашита, петля пригодна ровно для одного npm-репозитория, а объективный гейт — единственное, на чём держится качество её работы.
 done_when: команда проверки объявляется в одном месте настройкой проекта; работы verify, implement, fix-review и сведение берут её оттуда; промпты называют её подстановкой, а не текстом; литералов npm run check в файлах петли не остаётся; петля этого репозитория работает с прежней проверкой без правок поведения
+started_at: 2026-08-28T08:27:57.266Z
 
 ## drop-status-doc
 

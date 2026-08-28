@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { CheckCommandSchema } from '../config/schema.js';
+
 /**
  * Схемы документов пайплайна и работы в исходном виде — до подстановок и
  * раскрытия. Строгие: неизвестный ключ почти всегда опечатка.
@@ -225,6 +227,18 @@ const ScheduleTriggerEntrySchema = z
  */
 const TriggersSchema = z.object({ schedule: z.array(ScheduleTriggerEntrySchema).optional() }).strict();
 
+/**
+ * Тот же состав и та же непустота, что у секции `project` конфигурации:
+ * объявление здесь перекрывает конфигурацию, а не заводит второй формат.
+ * Требование к значению — буквально та же модель, а не её копия: копии
+ * расходятся.
+ */
+const ProjectSchema = z
+  .object({
+    check: CheckCommandSchema,
+  })
+  .strict();
+
 export const PipelineDocumentSchema = z
   .object({
     version: z.literal(1).optional(),
@@ -238,6 +252,7 @@ export const PipelineDocumentSchema = z
     context: z.array(ContextEntrySchema).optional(),
     context_upstream: ContextUpstreamSchema.optional(),
     triggers: TriggersSchema.optional(),
+    project: ProjectSchema.optional(),
     defaults: z
       .object({
         agent: z.string().optional(),
@@ -265,6 +280,7 @@ export type RawBudget = z.infer<typeof BudgetSchema>;
 export type RawParam = z.infer<typeof ParamSchema>;
 export type RawScheduleTrigger = z.infer<typeof ScheduleTriggerEntrySchema>;
 export type RawTriggers = z.infer<typeof TriggersSchema>;
+export type RawProject = z.infer<typeof ProjectSchema>;
 
 /** Ключи обвязки, недопустимые внутри документа работы. */
 export const WIRING_KEYS = ['needs', 'on', 'if', 'with', 'triggers', 'lane'] as const;

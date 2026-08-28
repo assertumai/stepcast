@@ -5,7 +5,7 @@ import { listPipelineFiles } from '../core/project/pipelines.js';
 import { listProjects } from '../core/journal/reader.js';
 import { expandPipeline } from '../core/pipeline/expand.js';
 import { isStepcastError } from '../core/errors.js';
-import type { Config } from '../core/config/resolve.js';
+import { resolveConfig, type Config } from '../core/config/resolve.js';
 import type { Job, Pipeline } from '../core/pipeline/model.js';
 import { layoutJobs, type JobGraph } from './graph.js';
 
@@ -106,6 +106,20 @@ function toView(projectKey: string, projectPath: string, file: string, pipeline:
   };
 }
 
+function message(error: unknown): string {
+  return isStepcastError(error) ? error.message : (error as Error).message;
+}
+
+/** Карточка с объяснением вместо устройства: имя берётся из файла, раскрытие до `name` не дошло. */
+function errorView(
+  projectKey: string,
+  projectPath: string,
+  file: string,
+  error: string,
+): PipelineView {
+  return { projectKey, projectPath, file, name: file, jobs: [], error };
+}
+
 function readPipeline(
   projectKey: string,
   projectPath: string,
@@ -117,33 +131,68 @@ function readPipeline(
     const { pipeline } = expandPipeline({ pipelinePath: absolute, config });
     return toView(projectKey, projectPath, file, pipeline);
   } catch (error) {
-    const message = isStepcastError(error) ? error.message : (error as Error).message;
-    return {
-      projectKey,
-      projectPath,
-      file,
-      // Имя берётся из файла: раскрытие до `name` не дошло.
-      name: file,
-      jobs: [],
-      error: message,
-    };
+    return errorView(projectKey, projectPath, file, message(error));
   }
+}
+
+/**
+ * Секция `project` того репозитория, чей пайплайн раскрывается.
+ *
+ * Витрина смотрит на все проекты корня прогонов сразу, а конфигурация у неё
+ * одна — резолвнутая по каталогу, из которого подняли `stepcast up`. Для
+ * умолчаний и потолков это безразлично: они влияют на вид пайплайна, а не на
+ * его разбор. `project.check`, наоборот, объявляется в самом репозитории, и
+ * чужое значение здесь либо соврало бы о команде проверки, либо — при
+ * отсутствии — обратило бы карточку проекта, объявившего команду у себя, в
+ * ошибку «подстановка не определена».
+ */
+function projectSection(projectPath: string, home: string | undefined): Config['project'] {
+  return resolveConfig({ cwd: projectPath, ...(home === undefined ? {} : { home }) }).config.project;
+}
+
+export interface BuildPipelinesOptions {
+  /** Домашний каталог: из него читается глобальный слой конфигурации проекта. */
+  readonly home?: string;
+  readonly now?: Date;
 }
 
 export function buildPipelines(
   runsRoot: string,
   config: Config,
-  now: Date = new Date(),
+  options: BuildPipelinesOptions = {},
 ): PipelinesOverview {
   const pipelines: PipelineView[] = [];
 
   for (const project of listProjects(runsRoot)) {
     // Проект, чей путь неизвестен, обходить негде: в указателе его нет.
     if (project.path === undefined || !existsSync(project.path)) continue;
-    for (const file of listPipelineFiles(project.path)) {
-      pipelines.push(readPipeline(project.key, project.path, file, config));
+    const files = listPipelineFiles(project.path);
+    if (files.length === 0) continue;
+
+    // Нечитаемая конфигурация проекта показывается так же, как неразбираемый
+    // пайплайн: с объяснением. Молча раскрыть его чужой конфигурацией значило
+    // бы показать устройство, которого у прогона в этом проекте не будет.
+    let forProject: Config | undefined;
+    let failure = '';
+    try {
+      forProject = { ...config, project: projectSection(project.path, options.home) };
+    } catch (error) {
+      failure = message(error);
+    }
+
+    for (const file of files) {
+      pipelines.push(
+        forProject === undefined
+          ? errorView(
+              project.key,
+              project.path,
+              relative(project.path, file).replace(/\\/g, '/'),
+              failure,
+            )
+          : readPipeline(project.key, project.path, file, forProject),
+      );
     }
   }
 
-  return { pipelines, generatedAt: now.toISOString() };
+  return { pipelines, generatedAt: (options.now ?? new Date()).toISOString() };
 }

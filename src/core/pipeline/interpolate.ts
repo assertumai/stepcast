@@ -149,6 +149,10 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
         const available = [...Object.keys(scope.values), ...scope.deferred].sort().join(', ');
         throw new StepcastError(`Неизвестное пространство подстановки: ${namespace}`, {
           ...(at === undefined ? {} : { at }),
+          // Точечный путь поля называет место внутри документа, но не сам
+          // документ: у работы, подключённой через `uses`, это файл работы, а
+          // не пайплайн, откуда её видно.
+          ...(scope.file === undefined ? {} : { file: scope.file }),
           hint: scope.hints?.[namespace] ?? `Доступны: ${available}`,
         });
       }
@@ -157,6 +161,7 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
       if (resolved === undefined) {
         throw new StepcastError(`Подстановка ${expression} не определена`, {
           ...(at === undefined ? {} : { at }),
+          ...(scope.file === undefined ? {} : { file: scope.file }),
           hint:
             scope.explain?.(expression, namespace, rest.join('.')) ??
             `Проверьте, что ${namespace}.${rest.join('.')} объявлено`,

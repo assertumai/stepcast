@@ -946,4 +946,53 @@ describe('ui-dashboard: пайплайны проектов', () => {
     const pipelines = await fetchJson(server, '/api/pipelines');
     assert.deepEqual(pipelines.json.pipelines, []);
   });
+
+  it('раскрывает пайплайн секцией project того проекта, которому он принадлежит', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    mkdirSync(join(projectRoot, '.stepcast'), { recursive: true });
+    writeFileSync(
+      join(projectRoot, '.stepcast', 'config.yml'),
+      'project:\n  check: ./gradlew check\n',
+    );
+    writeFileSync(
+      join(projectRoot, 'stepcast.yml'),
+      `version: 1
+kind: pipeline
+name: свой
+jobs:
+  build:
+    steps:
+      - id: check
+        run: \${project.check}
+`,
+    );
+    // Конфигурация демона проектного слоя не знает — она общая для всех
+    // проектов корня прогонов. Команда проверки объявлена в репозитории, и
+    // читать её витрина обязана оттуда же.
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'error'), undefined);
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'name'), 'свой');
+    assert.equal(
+      pick(pipelines.json, 'pipelines', 0, 'jobs', 0, 'steps', 0, 'command'),
+      './gradlew check',
+    );
+  });
+
+  it('показывает нечитаемую конфигурацию проекта ошибкой, а не чужими значениями', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    mkdirSync(join(projectRoot, '.stepcast'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'config.yml'), 'project:\n  check: "   "\n');
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'file'), 'stepcast.yml');
+    assert.match(String(pick(pipelines.json, 'pipelines', 0, 'error')), /схеме/);
+  });
 });
