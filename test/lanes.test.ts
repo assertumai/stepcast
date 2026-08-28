@@ -94,6 +94,30 @@ describe('lanes: tree', () => {
     assert.throws(() => assertCleanTree(dir), StepcastError);
   });
 
+  it('assertCleanTree прощает правку названного учётного файла', () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, 'backlog.md'), 'очередь\n');
+    gitCommit(dir, 'очередь');
+    writeFileSync(join(dir, 'backlog.md'), 'очередь: in_progress\n');
+
+    assert.doesNotThrow(() => assertCleanTree(dir, { allow: ['backlog.md'] }));
+    assert.doesNotThrow(() => assertCleanTree(dir, { allow: [join(dir, 'backlog.md')] }));
+    assert.throws(() => assertCleanTree(dir), StepcastError, 'без allow правка по-прежнему отказывает');
+  });
+
+  it('assertCleanTree прощает неотслеживаемый учётный файл', () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, 'backlog.md'), 'очередь\n');
+    assert.doesNotThrow(() => assertCleanTree(dir, { allow: ['backlog.md'] }));
+  });
+
+  it('assertCleanTree прощает только названное, а не остальное дерево', () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, 'backlog.md'), 'очередь\n');
+    writeFileSync(join(dir, 'seed.txt'), 'правка агента\n');
+    assert.throws(() => assertCleanTree(dir, { allow: ['backlog.md'] }), StepcastError);
+  });
+
   it('assertCleanTree отказывает вне репозитория git', () => {
     const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-notgit-'));
     assert.throws(() => assertCleanTree(dir), StepcastError);

@@ -655,6 +655,87 @@ describe('core: mergeLanes — предусловие чистого дерев�
     );
   });
 
+  it('незакоммиченная отметка очереди сведению не мешает', async () => {
+    // Голова петли ставит пункту `in_progress` в начале прогона, а сведение
+    // идёт в конце того же прогона: к этому мигу файл очереди закономерно
+    // расходится с последним коммитом, и отказывать из-за него нельзя.
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item', 'queued'));
+    commit(project, 'добавлена очередь');
+    // Правка после коммита — та самая, что делает петля перед прогоном.
+    writeFileSync(backlogFile, `${backlogItem('a-item')}started_at: 2026-08-28T00:00:00Z\n`);
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+    });
+
+    assert.equal(outcomes[0]?.kind, 'merged');
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'done');
+  });
+
+  it('правка вне файла очереди отказывает и при исключённой очереди', async () => {
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    commit(project, 'начальный');
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    writeFileSync(project.path('stepcast.yml'), `${twoLanePipeline(SUCCESS_A, SUCCESS_B)}\n# правка\n`);
+
+    await assert.rejects(
+      () =>
+        mergeLanes({
+          paths: bogusPaths(project.root),
+          cwd: project.root,
+          lanes: ['a'],
+          check: 'exit 0',
+          file: backlogFile,
+        }),
+      StepcastError,
+    );
+  });
+
+  it('откат красной проверки возвращает незакоммиченную отметку очереди', async () => {
+    // `reset --hard` снёс бы `started_at`, проставленный головой петли и
+    // никаким коммитом не закреплённый: снимок очереди до наложения обязан
+    // вернуть его на место, а исход дорожки лечь уже поверх.
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item', 'queued'));
+    commit(project, 'добавлена очередь');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}started_at: 2026-08-28T00:00:00Z\n`);
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 1',
+      file: backlogFile,
+    });
+
+    assert.equal(outcomes[0]?.kind, 'check_failed');
+    const text = readFileSync(backlogFile, 'utf8');
+    assert.equal(statusOf(text, 'a-item'), 'failed');
+    assert.equal(fieldOf(text, 'a-item', 'started_at'), '2026-08-28T00:00:00Z');
+  });
+
   it('каталог вне git отказывает, называя причину', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-notgit-'));
 

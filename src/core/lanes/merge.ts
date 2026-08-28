@@ -1,3 +1,5 @@
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+
 import { StepcastError, isStepcastError } from '../errors.js';
 import { REASON_LIMIT, finishItem, tailLine } from '../backlog/index.js';
 import type { RunPaths } from '../journal/paths.js';
@@ -52,7 +54,12 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
   const { paths, cwd, lanes, check, file } = options;
   const runDir = paths.dir;
 
-  assertCleanTree(cwd);
+  // Файл очереди из проверки чистоты исключён: отметку `in_progress` в него
+  // ставит голова той же петли, в начале того же прогона, и к сведению она
+  // закономерно не закоммичена. Требовать её коммита значило бы требовать
+  // коммита посреди прогона — правки же агента дерево по-прежнему обязано
+  // не содержать.
+  assertCleanTree(cwd, { allow: [file] });
 
   const status = readStatus(paths);
   const known = knownLanes(status.jobs);
@@ -67,30 +74,31 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
   const results: LaneMergeResult[] = [];
   let stoppedAt: string | undefined;
 
-  /**
-   * Исходы, проставленные в очереди, но ещё не попавшие ни в один коммит.
-   *
-   * Файл очереди отслеживается git, а откат красной проверки — `git reset
-   * --hard` на коммит до наложения: он снимает вместе с диффом дорожки и
-   * отметки, проставленные более ранним дорожкам этого же обхода. Список
-   * держит их, чтобы после отката проставить заново; коммит сведённой
-   * дорожки список опустошает — эти правки уже в истории.
-   */
-  const uncommitted: { readonly slug: string; readonly reason: string }[] = [];
-
   /** Проставить дорожке `failed`, только если ей вообще достался пункт очереди. */
   const markFailed = (lane: string, reason: string): void => {
     if (!hasLaneItem(runDir, lane)) return;
     const item = readLaneItem(runDir, lane);
-    if (finishItem(file, item.slug, 'failed', reason) === 'set') {
-      uncommitted.push({ slug: item.slug, reason });
-    }
+    finishItem(file, item.slug, 'failed', reason);
   };
 
-  /** Вернуть дерево к коммиту до наложения, восстановив стёртые им отметки очереди. */
-  const rollback = (to: string): void => {
+  /**
+   * Снимок очереди на момент до наложения дорожки — то, к чему её откат
+   * обязан вернуть файл.
+   *
+   * Откат красной проверки — `git reset --hard` с `clean -fd`, и он сносит
+   * из очереди всё, что не попало в коммит: и отметку `in_progress`,
+   * проставленную головой петли до сведения, и исходы более ранних дорожек
+   * этого же обхода. Снимок берётся на каждую дорожку заново, поэтому несёт
+   * их все, независимо от того, закоммичены они или нет, — и восстановление
+   * им не путает содержимое очереди ни при отслеживаемом файле, ни при
+   * игнорируемом, ни при лежащем вне дерева.
+   */
+  const snapshotBacklog = (): Buffer | undefined => (existsSync(file) ? readFileSync(file) : undefined);
+
+  /** Вернуть дерево к коммиту до наложения, восстановив снятую им очередь. */
+  const rollback = (to: string, backlog: Buffer | undefined): void => {
     resetToCommit(cwd, to);
-    for (const mark of uncommitted) finishItem(file, mark.slug, 'failed', mark.reason);
+    if (backlog !== undefined) writeFileSync(file, backlog);
   };
 
   for (const lane of lanes) {
@@ -130,6 +138,7 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
     const item = readLaneItem(runDir, lane);
 
     const before = currentCommit(cwd);
+    const backlogBefore = snapshotBacklog();
 
     let applied: ReturnType<typeof applyRun>;
     try {
@@ -158,7 +167,7 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
     const green = checked.outcome === 'exited' && checked.exitCode === 0;
 
     if (!green) {
-      rollback(before);
+      rollback(before, backlogBefore);
       const workspace = workspaceOf(status, lane);
       const output = checked.stderr.trim() !== '' ? checked.stderr : checked.stdout;
       const reason = reasonWithOutput(
@@ -175,9 +184,6 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
     // одним событием, которое `git revert` снимает целиком.
     finishItem(file, item.slug, 'done');
     commitAll(cwd, `${item.slug}: ${item.title ?? 'улучшение из очереди'}`);
-    // Коммит забрал в историю и отметки прежних дорожек: откатывать их
-    // будущему `reset --hard` больше нечего.
-    uncommitted.length = 0;
     results.push({ lane, kind: 'merged', slug: item.slug });
   }
 
