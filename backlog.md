@@ -66,11 +66,12 @@ started_at: 2026-08-28T08:27:57.266Z
 
 ## drop-status-doc
 
-status: pending
+status: done
 title: Упразднить docs/status.md — очередь остаётся единственным учётом
 group: portable-loop
 why: docs/status.md собирается скриптом scripts/status.mjs из docs/status.base.md и фрагментов openspec/changes/*/status.md, а npm run status:check это стережёт. Учёт дублирует очередь: пункт уже несёт why и done_when, а статус done в очереди и есть отметка о сделанном. Для переносимости абстракция вредна вдвойне — тянет третий скрипт проекта и жёсткое устройство каталогов openspec, — а её собственная преамбула называет status.md источником кандидатов для очереди, то есть учёт и очередь ссылаются друг на друга.
 done_when: docs/status.md, docs/status.base.md, фрагменты изменений и scripts/status.mjs удалены; status:check убран из npm run check; преамбула очереди на status.md не ссылается; промпты и работы петли его обновления не требуют; ничто в движке о нём не знает
+started_at: 2026-08-28T09:20:39.595Z
 
 ## openspec-follows-repo
 
