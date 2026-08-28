@@ -68,6 +68,14 @@ interface DeclaredPath {
  * появляется только в прогоне, а произведённый работой выше по графу файл на
  * момент линта и не обязан существовать; глоб — по той же причине, что и
  * пустой результат поиска не ошибка.
+ *
+ * Исключение — путь, целиком собранный из `${project.*}`: это пространство
+ * объявляет то, что в репозитории есть до прогона (команда проверки, каталог
+ * документов, файл правил), а не то, что прогон произведёт, — в отличие от
+ * `inputs` и `params`, которыми как раз и адресуют ещё не созданное
+ * (`changes/${inputs.change}/tasks.md`). Пропуск такого пути прятал бы
+ * опечатку в объявлении: файл, названный `project.spec.rules`, иначе не
+ * проверяет никто, и промах виден только отказом работы посреди прогона.
  */
 function checkDeclaredPath(
   declared: DeclaredPath,
@@ -75,7 +83,8 @@ function checkDeclaredPath(
   push: (diagnostic: Diagnostic) => void,
 ): void {
   const keys = declared.keys ?? [declared.declaredAt];
-  if (keys.some((key) => (substitutions.get(key) ?? []).length > 0)) return;
+  const applied = keys.flatMap((key) => [...(substitutions.get(key) ?? [])]);
+  if (applied.some((item) => item.deferred || item.namespace !== 'project')) return;
   if (declared.path.includes('${') || GLOB.test(declared.path)) return;
 
   const full =

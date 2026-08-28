@@ -112,6 +112,9 @@
                   "reference",
                   "auto"
                 ]
+              },
+              "required": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -433,6 +436,9 @@
                             "reference",
                             "auto"
                           ]
+                        },
+                        "required": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -779,6 +785,9 @@
                             "reference",
                             "auto"
                           ]
+                        },
+                        "required": {
+                          "type": "boolean"
                         }
                       },
                       "required": [

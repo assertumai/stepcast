@@ -15,8 +15,11 @@ params:
 
 session: shared
 
+# required: true — по той же причине, что в plan.yml: глоб без совпадений
+# оставил бы ревьюера без документов изменения, не сказав об этом.
 context:
-  - "openspec/changes/${params.change}/specs/**/*.md"
+  - path: "${project.spec.dir}/${params.change}/**/*.md"
+    required: true
 
 output:
   from: review-diff

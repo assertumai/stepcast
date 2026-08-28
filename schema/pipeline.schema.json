@@ -111,6 +111,9 @@
                   "reference",
                   "auto"
                 ]
+              },
+              "required": {
+                "type": "boolean"
               }
             },
             "required": [
@@ -179,11 +182,29 @@
           "type": "string",
           "minLength": 1,
           "pattern": "\\S"
+        },
+        "spec": {
+          "type": "object",
+          "properties": {
+            "dir": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "rules": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "tool": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "additionalProperties": false
         }
       },
-      "required": [
-        "check"
-      ],
       "additionalProperties": false
     },
     "defaults": {
@@ -407,6 +428,9 @@
                             "reference",
                             "auto"
                           ]
+                        },
+                        "required": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -599,6 +623,9 @@
                             "reference",
                             "auto"
                           ]
+                        },
+                        "required": {
+                          "type": "boolean"
                         }
                       },
                       "required": [
@@ -920,6 +947,9 @@
                                       "reference",
                                       "auto"
                                     ]
+                                  },
+                                  "required": {
+                                    "type": "boolean"
                                   }
                                 },
                                 "required": [
@@ -1266,6 +1296,9 @@
                                       "reference",
                                       "auto"
                                     ]
+                                  },
+                                  "required": {
+                                    "type": "boolean"
                                   }
                                 },
                                 "required": [

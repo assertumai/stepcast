@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { CheckCommandSchema } from '../config/schema.js';
+import { CheckCommandSchema, RawSpecSchema } from '../config/schema.js';
 
 /**
  * Схемы документов пайплайна и работы в исходном виде — до подстановок и
@@ -19,7 +19,13 @@ const count = z.union([z.string(), z.number()]);
 const ContextEntrySchema = z.union([
   z.string(),
   z
-    .object({ path: z.string(), mode: z.enum(['inline', 'reference', 'auto']).optional() })
+    .object({
+      path: z.string(),
+      mode: z.enum(['inline', 'reference', 'auto']).optional(),
+      // Только у формы объектом: строковая запись — это короткая форма для
+      // «как получится», и требование совпадений в ней негде выразить.
+      required: z.boolean().optional(),
+    })
     .strict(),
   z.object({ text: z.string() }).strict(),
 ]);
@@ -228,14 +234,14 @@ const ScheduleTriggerEntrySchema = z
 const TriggersSchema = z.object({ schedule: z.array(ScheduleTriggerEntrySchema).optional() }).strict();
 
 /**
- * Тот же состав и та же непустота, что у секции `project` конфигурации:
- * объявление здесь перекрывает конфигурацию, а не заводит второй формат.
- * Требование к значению — буквально та же модель, а не её копия: копии
- * расходятся.
+ * Тот же состав, что у секции `project` конфигурации: объявление здесь
+ * перекрывает конфигурацию, а не заводит второй формат. Модели значений —
+ * буквально те же, что в конфигурации, а не их копия: копии расходятся.
  */
 const ProjectSchema = z
   .object({
-    check: CheckCommandSchema,
+    check: CheckCommandSchema.optional(),
+    spec: RawSpecSchema.optional(),
   })
   .strict();
 

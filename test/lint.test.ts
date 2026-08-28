@@ -1754,3 +1754,66 @@ jobs:
     assert.equal(existsSync(join(project.home, '.stepcast', 'runs')), false);
   });
 });
+
+/**
+ * Тот же контракт, что у `project.check` выше, но для составного имени
+ * пространства `project.spec.*` (задача 3.5): настоящие команды, не прямой
+ * вызов `expandPipeline`, — сценарий спеки говорит именно про `stepcast lint`
+ * и `stepcast run`.
+ */
+describe('pipeline-definition: команды о необъявленном project.spec.dir', () => {
+  async function cli(
+    project: Project,
+    argv: readonly string[],
+  ): Promise<{ code: ExitCodeValue; out: string }> {
+    const lines: string[] = [];
+    const io: CliIo = {
+      out: (line) => lines.push(line),
+      err: (line) => lines.push(line),
+      cwd: project.root,
+    };
+    const code = await withHome(project.home, () => run(argv, io));
+    return { code, out: lines.join('\n') };
+  }
+
+  const REFERRING = `
+kind: pipeline
+name: ссылается
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec.dir}", expect: [{ exit_code: 0 }] }]
+`;
+
+  it('lint отказывает на ссылке без объявления, называя ключ и оба места объявления', async () => {
+    const project = makeProject({ 'stepcast.yml': REFERRING });
+
+    const result = await cli(project, ['lint', 'stepcast.yml']);
+
+    assert.equal(result.code, ExitCode.configError);
+    assert.match(result.out, /project\.spec\.dir/);
+    assert.match(result.out, /\.stepcast\/config\.yml/);
+  });
+
+  it('lint принимает пайплайн, когда группу объявляет .stepcast/config.yml проекта', async () => {
+    const project = makeProject({
+      'stepcast.yml': REFERRING,
+      '.stepcast/config.yml': 'project:\n  spec:\n    dir: openspec/changes\n',
+    });
+
+    const result = await cli(project, ['lint', 'stepcast.yml']);
+
+    assert.equal(result.code, ExitCode.ok);
+    assert.match(result.out, /^ok: stepcast\.yml/m);
+  });
+
+  it('run не начинает прогон: каталога журнала не появляется', async () => {
+    const project = makeProject({ 'stepcast.yml': REFERRING });
+
+    const result = await cli(project, ['run', 'stepcast.yml']);
+
+    assert.equal(result.code, ExitCode.configError);
+    assert.match(result.out, /project\.spec\.dir/);
+    assert.equal(existsSync(join(project.home, '.stepcast', 'runs')), false);
+  });
+});

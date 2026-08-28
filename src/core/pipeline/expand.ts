@@ -38,13 +38,14 @@ import type {
 /** Пространства, чьи значения известны только в прогоне. */
 const DEFERRED_NAMESPACES = new Set(['jobs', 'run', 'env']);
 
-/** Состав пространства `project`. */
-const PROJECT_NAMES = ['check'];
+/** Состав пространства `project`: имя команды проверки и группа практики спецификации. */
+const PROJECT_NAMES = ['check', 'spec.dir', 'spec.rules', 'spec.tool'];
 
 /**
  * Разное объяснение для двух разных ошибок пространства `project`:
  * обращение к имени вне состава — про сам состав, обращение к необъявленному
- * `check` — про оба места, где его можно объявить.
+ * имени из состава (`check`, `spec.dir`, `spec.rules`, `spec.tool`) — про оба
+ * места, где его можно объявить.
  */
 function explainProject(pipelinePath: string) {
   return (_expression: string, namespace: string, path: string): string | undefined => {
@@ -52,7 +53,28 @@ function explainProject(pipelinePath: string) {
     if (!PROJECT_NAMES.includes(path)) {
       return `Пространство project содержит только ${PROJECT_NAMES.join(', ')}`;
     }
-    return `Объявите project.check верхним ключом пайплайна (${pipelinePath}) либо в .stepcast/config.yml`;
+    return `Объявите project.${path} верхним ключом пайплайна (${pipelinePath}) либо в .stepcast/config.yml`;
+  };
+}
+
+/**
+ * Действующие значения пространства `project`: пайплайн поверх конфигурации,
+ * по каждому ключу отдельно — ни один слой не обязателен, и объявление части
+ * группы в одном слое не должно затенять часть, объявленную в другом.
+ * Разрешается один раз в `expandPipeline`; оба потребителя (`pipelineScope` и
+ * `bodyScope`) получают уже посчитанный объект.
+ */
+function resolveProjectValues(
+  document: Pick<PipelineDocument, 'project'>,
+  config: Config,
+): Readonly<Record<string, unknown>> {
+  return {
+    check: document.project?.check ?? config.project.check,
+    spec: {
+      dir: document.project?.spec?.dir ?? config.project.spec.dir,
+      rules: document.project?.spec?.rules ?? config.project.spec.rules,
+      tool: document.project?.spec?.tool ?? config.project.spec.tool,
+    },
   };
 }
 
@@ -154,7 +176,14 @@ function toContext(raw: readonly RawContextEntry[] | undefined): ContextEntry[] 
   return (raw ?? []).map((entry) => {
     if (typeof entry === 'string') return { kind: 'path', path: entry, mode: 'auto' };
     if ('text' in entry) return { kind: 'text', text: entry.text };
-    return { kind: 'path', path: entry.path, mode: entry.mode ?? 'auto' };
+    return {
+      kind: 'path',
+      path: entry.path,
+      mode: entry.mode ?? 'auto',
+      // Только объявленное: необъявленное требование не должно отличать
+      // запись от прежней ни в снимке пайплайна, ни в отчёте.
+      ...(entry.required === undefined ? {} : { required: entry.required }),
+    };
   });
 }
 
@@ -396,10 +425,10 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   // Пайплайн поверх конфигурации, ни один слой не обязателен. Разрешается
   // ровно один раз: оба потребителя (область пайплайна и область тела работы)
   // берут уже посчитанное значение.
-  const projectCheck = document.project?.check ?? config.project.check;
+  const projectValues = resolveProjectValues(document, config);
 
   const pipelineScope: Scope = {
-    values: { inputs, project: { check: projectCheck } },
+    values: { inputs, project: projectValues },
     deferred: DEFERRED_NAMESPACES,
     file: pipelinePath,
     explain: explainProject(pipelinePath),
@@ -479,7 +508,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
 
       declaringFile = usesPath;
       bodyScope = {
-        values: { params, project: { check: projectCheck } },
+        values: { params, project: projectValues },
         deferred: DEFERRED_NAMESPACES,
         // Поля тела объявлены в файле работы: диагностика должна называть его,
         // а не пайплайн, где работа только подключена.

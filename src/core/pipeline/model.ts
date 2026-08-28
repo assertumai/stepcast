@@ -35,7 +35,19 @@ export interface Budget {
 export type ContextMode = 'inline' | 'reference' | 'auto';
 
 export type ContextEntry =
-  | { readonly kind: 'path'; readonly path: string; readonly mode: ContextMode }
+  | {
+      readonly kind: 'path';
+      readonly path: string;
+      readonly mode: ContextMode;
+      /**
+       * Запись обязана дать хотя бы один файл. Нужна глобу: путь без глоба и
+       * так роняет сборку контекста, когда файла нет, а глоб без совпадений
+       * молча даёт пусто — и шаг уходит к агенту с контекстом беднее
+       * объявленного. Записывается, только когда объявлена: умолчание —
+       * прежнее поведение.
+       */
+      readonly required?: boolean;
+    }
   | { readonly kind: 'text'; readonly text: string };
 
 export type ContextUpstream = 'all' | 'none' | readonly string[];

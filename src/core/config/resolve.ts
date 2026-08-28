@@ -75,8 +75,21 @@ export interface Config {
   };
   readonly backends: Readonly<Record<string, BackendConfig>>;
   readonly ui: { readonly port: number };
-  /** Команда проверки репозитория. Нет встроенного умолчания: неверная угадка исполнялась бы в чужом дереве. */
-  readonly project: { readonly check: string | undefined };
+  readonly project: {
+    /** Команда проверки репозитория. Нет встроенного умолчания: неверная угадка исполнялась бы в чужом дереве. */
+    readonly check: string | undefined;
+    /**
+     * Практика спецификации репозитория: место документов изменения, файл
+     * правил их написания, имя инструмента. Умолчаний нет по той же причине,
+     * что у `check`, — угаданное значение указывало бы в чужом репозитории на
+     * несуществующее.
+     */
+    readonly spec: {
+      readonly dir: string | undefined;
+      readonly rules: string | undefined;
+      readonly tool: string | undefined;
+    };
+  };
 }
 
 export interface ResolvedConfig {
@@ -277,6 +290,9 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   const workspacePath = values.get('defaults.workspace.path');
   const model = values.get('defaults.model');
   const projectCheck = values.get('project.check');
+  const projectSpecDir = values.get('project.spec.dir');
+  const projectSpecRules = values.get('project.spec.rules');
+  const projectSpecTool = values.get('project.spec.tool');
   const runsRoot = expandHome(requireString(values, 'runs.root'), home);
 
   const config: Config = {
@@ -315,7 +331,14 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
     },
     backends: buildBackends(values, home),
     ui: { port: requireNumber(values, 'ui.port') },
-    project: { check: typeof projectCheck === 'string' ? projectCheck : undefined },
+    project: {
+      check: typeof projectCheck === 'string' ? projectCheck : undefined,
+      spec: {
+        dir: typeof projectSpecDir === 'string' ? projectSpecDir : undefined,
+        rules: typeof projectSpecRules === 'string' ? projectSpecRules : undefined,
+        tool: typeof projectSpecTool === 'string' ? projectSpecTool : undefined,
+      },
+    },
   };
 
   return {

@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { resolveConfig } from '../src/core/config/resolve.js';
-import { describeSource } from '../src/core/config/merge.js';
+import { describeSource, matchesKeyPattern } from '../src/core/config/merge.js';
+import { RawSpecSchema, RelativeRepoPathSchema } from '../src/core/config/schema.js';
 import { StepcastError } from '../src/core/errors.js';
 import { renderConfigReport } from '../src/cli/commands/config.js';
 
@@ -330,5 +331,184 @@ describe('stepcast-configuration', () => {
     assert.ok(line !== undefined);
     assert.match(line, /npm run check/);
     assert.match(line, new RegExp(box.projectPath.replace(/[/\\]/g, '\\$&')));
+  });
+
+  // Задача 1.3 / Сценарий: «Группа объявлена в проектном конфиге»
+  it('принимает project.spec в проектном конфиге и печатает значения в отчёте', () => {
+    const box = sandbox({
+      project:
+        'project:\n  spec:\n    dir: openspec/changes\n    rules: .stepcast/prompts/spec-rules.md\n    tool: openspec\n',
+    });
+    const resolved = resolveIn(box);
+    assert.equal(resolved.config.project.spec.dir, 'openspec/changes');
+    assert.equal(resolved.config.project.spec.rules, '.stepcast/prompts/spec-rules.md');
+    assert.equal(resolved.config.project.spec.tool, 'openspec');
+    assert.equal(describeSource(resolved.provenance.get('project.spec.dir')!), box.projectPath);
+
+    const lines = renderConfigReport(resolved);
+    const line = lines.find((item) => item.startsWith('project.spec.tool'));
+    assert.ok(line !== undefined);
+    assert.match(line, /openspec/);
+  });
+
+  // Задача 1.3 / Сценарий: «Часть группы»
+  it('принимает часть группы project.spec', () => {
+    const box = sandbox({ project: 'project:\n  spec:\n    dir: openspec/changes\n' });
+    const { config } = resolveIn(box);
+    assert.equal(config.project.spec.dir, 'openspec/changes');
+    assert.equal(config.project.spec.rules, undefined);
+    assert.equal(config.project.spec.tool, undefined);
+  });
+
+  // Задача 1.3 / Сценарий: «Группа не объявлена»
+  it('project.spec отсутствует, если не объявлен ни одним слоем', () => {
+    const box = sandbox({});
+    const { config } = resolveIn(box);
+    assert.equal(config.project.spec.dir, undefined);
+    assert.equal(config.project.spec.rules, undefined);
+    assert.equal(config.project.spec.tool, undefined);
+  });
+
+  // Задача 1.2 / Сценарий: «Неизвестный ключ группы»
+  it('отклоняет неизвестный ключ группы project.spec', () => {
+    const box = sandbox({ project: 'project:\n  spec:\n    folder: openspec/changes\n' });
+    assert.throws(() => resolveIn(box), StepcastError);
+  });
+
+  // Задача 1.1 / Сценарий: «Пустой каталог документов»
+  it('отклоняет пустой project.spec.dir', () => {
+    const box = sandbox({ project: 'project:\n  spec:\n    dir: "   "\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.spec.dir');
+        assert.equal(error.file, box.projectPath);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.1 / Сценарий: «Абсолютный путь»
+  it('отклоняет абсолютный путь project.spec.dir', () => {
+    const box = sandbox({ project: 'project:\n  spec:\n    dir: /tmp/changes\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.spec.dir');
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.1 / Сценарий: «Выход за корень репозитория»
+  it('отклоняет project.spec.rules с сегментом ..', () => {
+    const box = sandbox({ project: 'project:\n  spec:\n    rules: "../rules.md"\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.spec.rules');
+        return true;
+      },
+    );
+  });
+});
+
+describe('stepcast-configuration: модель относительного пути репозитория', () => {
+  // Задача 1.1
+  it('принимает непустой относительный путь', () => {
+    assert.equal(RelativeRepoPathSchema.safeParse('openspec/changes').success, true);
+  });
+
+  it('отклоняет пустую строку', () => {
+    assert.equal(RelativeRepoPathSchema.safeParse('').success, false);
+  });
+
+  it('отклоняет строку из пробелов', () => {
+    assert.equal(RelativeRepoPathSchema.safeParse('   ').success, false);
+  });
+
+  it('отклоняет абсолютный путь', () => {
+    assert.equal(RelativeRepoPathSchema.safeParse('/tmp/changes').success, false);
+  });
+
+  it('отклоняет путь с сегментом ..', () => {
+    assert.equal(RelativeRepoPathSchema.safeParse('../changes').success, false);
+  });
+});
+
+describe('stepcast-configuration: RawSpecSchema', () => {
+  // Задача 1.2
+  it('принимает полную группу', () => {
+    const result = RawSpecSchema.safeParse({
+      dir: 'openspec/changes',
+      rules: '.stepcast/prompts/spec-rules.md',
+      tool: 'openspec',
+    });
+    assert.equal(result.success, true);
+  });
+
+  it('принимает любую часть группы', () => {
+    assert.equal(RawSpecSchema.safeParse({ dir: 'openspec/changes' }).success, true);
+    assert.equal(RawSpecSchema.safeParse({}).success, true);
+  });
+
+  it('отклоняет неизвестный ключ группы', () => {
+    assert.equal(RawSpecSchema.safeParse({ folder: 'openspec/changes' }).success, false);
+  });
+});
+
+describe('stepcast-configuration: запрет глобального слоя на вложенных ключах', () => {
+  // Задача 2.1
+  it('project.** ловит ключ первого уровня и вложенный, не ловит соседнюю секцию', () => {
+    assert.equal(matchesKeyPattern('project.check', 'project.**'), true);
+    assert.equal(matchesKeyPattern('project.spec.dir', 'project.**'), true);
+    assert.equal(matchesKeyPattern('defaults.model', 'project.**'), false);
+  });
+
+  it('отклоняет форму ** посередине шаблона', () => {
+    assert.throws(() => matchesKeyPattern('project.spec.dir', 'project.**.dir'));
+  });
+
+  // Задача 2.2 / Сценарий: «Вложенный ключ в глобальном конфиге»
+  it('отклоняет project.spec.dir в глобальном конфиге, называя ключ и .stepcast/config.yml', () => {
+    const box = sandbox({ global: 'project:\n  spec:\n    dir: openspec/changes\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /project\.spec\.dir/);
+        assert.equal(error.file, box.globalPath);
+        assert.match(error.hint ?? '', /\.stepcast\/config\.yml/);
+        return true;
+      },
+    );
+  });
+
+  // Задача 2.2 / Сценарий: «Ключ первого уровня по-прежнему отклоняется»
+  it('по-прежнему отклоняет project.check в глобальном конфиге', () => {
+    const box = sandbox({ global: 'project:\n  check: npm run check\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /project\.check/);
+        return true;
+      },
+    );
+  });
+
+  // Задача 2.2 / Сценарий: «Проектный конфиг не ограничен запретом»
+  it('принимает project.spec.dir в проектном конфиге', () => {
+    const box = sandbox({ project: 'project:\n  spec:\n    dir: docs/changes\n' });
+    assert.doesNotThrow(() => resolveIn(box));
+  });
+
+  // Задача 2.2 / Сценарий: «Соседняя секция не задета шаблоном»
+  it('не задевает соседнюю секцию defaults в глобальном конфиге', () => {
+    const box = sandbox({ global: 'defaults:\n  model: sonnet\n' });
+    assert.doesNotThrow(() => resolveIn(box));
   });
 });

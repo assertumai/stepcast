@@ -13,6 +13,13 @@ params:
 
 session: shared
 
+# Файл правил вставкой — по той же причине, что в implement.yml: устранение
+# находки правит код и обязано соблюдать ту же практику репозитория, включая
+# то, что она требует обновить по итогам правки.
+context:
+  - path: ${project.spec.rules}
+    mode: inline
+
 output:
   from: apply-fixes
   schema: ../schemas/implement.json
@@ -51,7 +58,7 @@ steps:
           - src/**
           - test/**
           - docs/**
-          - openspec/changes/**
+          - ${project.spec.dir}/**
           # Схемы формата — часть кода, а не постороннее: изменение, вводящее
           # настройку или поле, обязано их обновить, иначе объявленный формат
           # разойдётся с принимаемым.
@@ -74,6 +81,9 @@ steps:
           - README.md
           - .stepcast/schemas/**
           - eslint.config.js
+          # Правила спецификации — часть петли, а не сторонний файл: см.
+          # implement.yml — заход обязан уметь их поправить.
+          - ${project.spec.rules}
     attempts:
       max: 2
       escalation:

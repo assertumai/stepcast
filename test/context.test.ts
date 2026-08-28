@@ -677,3 +677,66 @@ describe('assembleContext: предел размера считается по �
     );
   });
 });
+
+/**
+ * Требование совпадений. Пустой глоб — единственный способ получить контекст
+ * беднее объявленного, ничего об этом не узнав: путь без глоба роняет сборку
+ * сам, а отсев по `deny` и `context_exclude` сопровождается событием.
+ */
+describe('assembleContext: required у записи контекста', () => {
+  it('глоб без совпадений роняет сборку, называя путь', () => {
+    const project = makeProject({ 'docs/other.txt': 'не markdown' });
+
+    assert.throws(
+      () =>
+        assembleContext({
+          ...assembleBase(),
+          workspace: project.root,
+          pipeline: [],
+          job: [{ kind: 'path', path: 'changes/demo/**/*.md', mode: 'auto', required: true }],
+          step: [],
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /changes\/demo\/\*\*\/\*\.md/);
+        return true;
+      },
+    );
+  });
+
+  it('глоб без совпадений без требования по-прежнему даёт пустую запись', () => {
+    const project = makeProject({ 'docs/other.txt': 'не markdown' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [],
+      job: [{ kind: 'path', path: 'changes/demo/**/*.md', mode: 'auto' }],
+      step: [],
+    });
+
+    assert.deepEqual(
+      assembled.report.entries.filter((entry) => entry.kind === 'path'),
+      [],
+    );
+  });
+
+  // Частичный набор документов практика допускает — требование его пропускает:
+  // речь о записи, не нашедшей вообще ничего.
+  it('хотя бы одно совпадение требование удовлетворяет', () => {
+    const project = makeProject({ 'changes/demo/proposal.md': 'предложение' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      pipeline: [],
+      job: [{ kind: 'path', path: 'changes/demo/**/*.md', mode: 'auto', required: true }],
+      step: [],
+    });
+
+    assert.deepEqual(
+      assembled.report.entries.filter((entry) => entry.kind === 'path').map((entry) => entry.path),
+      ['changes/demo/proposal.md'],
+    );
+  });
+});

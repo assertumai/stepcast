@@ -1,14 +1,18 @@
-# Работа: завести OpenSpec-изменение под пункт очереди, выданный дорожке.
+# Работа: завести описание изменения под пункт очереди, выданный дорожке.
 #
 # Выбор пункта из очереди больше не входит в эту работу: слоты дорожек и
 # проверку чистоты дерева делает работа slots — одна на весь заход, до того
 # как какая-либо дорожка тронет рабочую копию. Эта работа читает уже выданный
 # пункт из файла своей дорожки.
+#
+# Место документов, правила их написания и имя инструмента — объявление
+# репозитория (${project.spec.*}), а не эта работа: она получает файл правил
+# контекстом и право на объявленный инструмент, не зная его имени заранее.
 
 version: 1
 kind: job
 name: propose
-description: Завести OpenSpec-изменение под пункт очереди, выданный дорожке
+description: Завести описание изменения под пункт очереди, выданный дорожке
 
 params:
   lane: { type: string, required: true }
@@ -27,6 +31,8 @@ steps:
     context:
       - path: ${run.dir}/item-${params.lane}.json
         mode: inline
+      - path: ${project.spec.rules}
+        mode: inline
     output_schema: ../schemas/propose.json
     permissions:
       enforce: strict
@@ -36,7 +42,7 @@ steps:
         - Glob
         - Edit
         - Write
-        - Bash(openspec *)
+        - Bash(${project.spec.tool} *)
         - Bash(git status*)
         - Bash(git diff*)
         - Bash(git log*)
@@ -48,7 +54,7 @@ steps:
     expect:
       - schema: ../schemas/propose.json
       - changed_only:
-          - openspec/changes/**
+          - ${project.spec.dir}/**
     attempts:
       max: 2
       escalation:

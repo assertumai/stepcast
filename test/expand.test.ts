@@ -11,7 +11,15 @@ import { asAgent, asRun, makeProject, MINIMAL_PIPELINE, type Project } from './h
 
 /** Тот же проект, но с указанным `project.check`, будто он объявлен в `.stepcast/config.yml`. */
 function withProjectCheck(project: Project, check: string | undefined): Config {
-  return { ...project.config, project: { check } };
+  return { ...project.config, project: { ...project.config.project, check } };
+}
+
+/** Тот же проект, но с указанной группой `project.spec`, будто она объявлена в `.stepcast/config.yml`. */
+function withProjectSpec(project: Project, spec: Partial<Config['project']['spec']>): Config {
+  return {
+    ...project.config,
+    project: { ...project.config.project, spec: { ...project.config.project.spec, ...spec } },
+  };
 }
 
 function expand(project: Project, file = 'stepcast.yml', inputs?: Record<string, string>) {
@@ -1462,6 +1470,307 @@ jobs:
   });
 });
 
+describe('pipeline-definition: группа project.spec документа', () => {
+  it('разбирает группу spec внутри верхнего ключа project', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  spec:
+    dir: openspec/changes
+    rules: .stepcast/prompts/spec-rules.md
+    tool: openspec
+jobs:
+  build:
+    steps:
+      - id: dir
+        run: "\${project.spec.dir}"
+      - id: rules
+        run: "\${project.spec.rules}"
+      - id: tool
+        run: "\${project.spec.tool}"
+`,
+    });
+    const steps = expand(project).pipeline.jobs[0]!.steps;
+    assert.equal(asRun(steps[0]!).command, 'openspec/changes');
+    assert.equal(asRun(steps[1]!).command, '.stepcast/prompts/spec-rules.md');
+    assert.equal(asRun(steps[2]!).command, 'openspec');
+  });
+
+  it('отклоняет пустой dir внутри группы spec', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  spec:
+    dir: "   "
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+    assert.throws(() => expand(project), StepcastError);
+  });
+
+  it('отклоняет абсолютный путь внутри группы spec', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  spec:
+    dir: /tmp/changes
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+    assert.throws(() => expand(project), StepcastError);
+  });
+
+  it('отклоняет неизвестный ключ внутри группы spec', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  spec:
+    folder: openspec/changes
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+    assert.throws(() => expand(project), StepcastError);
+  });
+});
+
+describe('pipeline-definition: действующее значение project.spec.*', () => {
+  const PIPELINE_WITH_SPEC_DIR = `
+kind: pipeline
+project:
+  spec:
+    dir: docs/changes
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec.dir}" }]
+`;
+
+  it('пайплайн перекрывает конфигурацию по ключу', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE_WITH_SPEC_DIR });
+    const config = withProjectSpec(project, { dir: 'openspec/changes' });
+    const step = asRun(expandWith(project, config).pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.command, 'docs/changes');
+  });
+
+  it('объявление только в пайплайне раскрывается им', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE_WITH_SPEC_DIR });
+    const config = withProjectSpec(project, {});
+    const step = asRun(expandWith(project, config).pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.command, 'docs/changes');
+  });
+
+  it('объявление только в конфигурации раскрывается им, когда пайплайн ключ не называет', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec.dir}" }]
+`,
+    });
+    const config = withProjectSpec(project, { dir: 'openspec/changes' });
+    const step = asRun(expandWith(project, config).pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.command, 'openspec/changes');
+  });
+
+  it('частичное объявление в обоих слоях сливается по ключу, а не по группе целиком', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  spec:
+    dir: docs/changes
+jobs:
+  build:
+    steps:
+      - id: dir
+        run: "\${project.spec.dir}"
+      - id: tool
+        run: "\${project.spec.tool}"
+`,
+    });
+    const config = withProjectSpec(project, { tool: 'make' });
+    const steps = expandWith(project, config).pipeline.jobs[0]!.steps;
+    assert.equal(asRun(steps[0]!).command, 'docs/changes');
+    assert.equal(asRun(steps[1]!).command, 'make');
+  });
+});
+
+describe('pipeline-definition: состав пространства project.spec.*', () => {
+  it('ссылка на необъявленный project.spec.dir — отказ, называющий ключ и оба места', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec.dir}" }]
+`,
+    });
+
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.hint ?? '', /project\.spec\.dir/);
+        assert.match(error.hint ?? '', new RegExp(project.path('stepcast.yml').replace(/[/\\]/g, '\\$&')));
+        assert.match(error.hint ?? '', /\.stepcast\/config\.yml/);
+        return true;
+      },
+    );
+  });
+
+  it('обращение к имени вне состава пространства называет доступные имена, включая составные', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec.folder}" }]
+`,
+    });
+
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.hint ?? '', /spec\.dir/);
+        assert.match(error.hint ?? '', /spec\.rules/);
+        assert.match(error.hint ?? '', /spec\.tool/);
+        return true;
+      },
+    );
+  });
+
+  it('необъявленный составной ключ и имя вне состава — разные сообщения', () => {
+    const undeclared = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec.dir}" }]
+`,
+    });
+    const outside = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec.folder}" }]
+`,
+    });
+
+    const first = thrown(() => expand(undeclared));
+    const second = thrown(() => expand(outside));
+
+    assert.notEqual(first.hint, second.hint);
+    assert.match(first.hint ?? '', /Объявите project\.spec\.dir/);
+    assert.doesNotMatch(first.hint ?? '', /содержит только/);
+    assert.match(second.hint ?? '', /содержит только/);
+    assert.doesNotMatch(second.hint ?? '', /Объявите/);
+  });
+
+  // Обращение к группе, а не к её листу: `spec` — не имя пространства, и
+  // отказ обязан перечислить состав так же, как на `spec.folder`, а не
+  // отделаться сообщением о непредставимом строкой значении.
+  it('обращение к группе без листа называет доступные имена', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  spec:
+    dir: openspec/changes
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec}" }]
+`,
+    });
+
+    const error = thrown(() => expand(project));
+    assert.match(error.hint ?? '', /содержит только/);
+    assert.match(error.hint ?? '', /spec\.dir/);
+    assert.doesNotMatch(error.hint ?? '', /допустимы строки/);
+  });
+});
+
+/**
+ * `${project.spec.*}` — это то, чем петля пользуется в файлах работ,
+ * подключённых через `uses`: путь контекста, `changed_only`,
+ * `permissions.allow` и текст промпта. Все четыре проверяются в одной работе,
+ * подключённой файлом, чтобы доказать раскрытие именно в `bodyScope`, а не
+ * только в области пайплайна (её и так покрывают тесты выше).
+ */
+describe('pipeline-definition: ${project.spec.*} в подключённой работе', () => {
+  function usesProject(): Project {
+    return makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+project:
+  spec:
+    dir: openspec/changes
+    rules: .stepcast/prompts/spec-rules.md
+    tool: openspec
+jobs:
+  work:
+    uses: ./.stepcast/jobs/work.yml
+`,
+      '.stepcast/jobs/work.yml': `
+kind: job
+context:
+  - path: "\${project.spec.dir}/**/*.md"
+steps:
+  - id: agent
+    prompt: "file:../prompts/agent.md"
+    permissions:
+      allow: ["Bash(\${project.spec.tool} *)"]
+    expect:
+      - changed_only: ["\${project.spec.dir}/**"]
+`,
+      '.stepcast/prompts/agent.md': 'Правила: ${project.spec.rules}\n',
+    });
+  }
+
+  it('раскрывает путь контекста, changed_only, permissions.allow и текст промпта', () => {
+    const project = usesProject();
+    const { pipeline } = expandWith(
+      project,
+      withProjectSpec(project, {}),
+      'stepcast.yml',
+    );
+    const job = pipeline.jobs[0]!;
+
+    assert.deepEqual(job.context[0], {
+      kind: 'path',
+      path: 'openspec/changes/**/*.md',
+      mode: 'auto',
+    });
+
+    const step = asAgent(job.steps[0]!);
+    assert.equal(step.prompt.trim(), 'Правила: .stepcast/prompts/spec-rules.md');
+    assert.deepEqual(step.permissions?.allow, ['Bash(openspec *)']);
+    assert.deepEqual(step.expect[0], { kind: 'changed_only', globs: ['openspec/changes/**'] });
+  });
+
+  it('раскрытый пайплайн несёт значения, а не подстановки', () => {
+    const project = usesProject();
+    const { pipeline } = expandWith(project, withProjectSpec(project, {}), 'stepcast.yml');
+
+    const lock = serializeLock(pipeline);
+    assert.doesNotMatch(lock, /\$\{project\.spec\.\w+\}/);
+    assert.match(lock, /openspec\/changes/);
+    assert.match(lock, /Bash\(openspec \*\)/);
+  });
+});
+
 describe('pipeline-definition: действующее значение project.check', () => {
   it('пайплайн перекрывает конфигурацию', () => {
     const project = makeProject({
@@ -1755,5 +2064,48 @@ describe('pipeline-definition: позиция подстановки', () => {
 
     const withOrigin = interpolate('${params.x}', { ...scope, origin: '/tmp/prompt.md' });
     assert.equal(withOrigin.substitutions[0]?.origin, '/tmp/prompt.md');
+  });
+});
+
+describe('pipeline-definition: required у записи контекста', () => {
+  it('доезжает до раскрытой записи, а необъявленное требование её не меняет', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    context:
+      - path: "changes/**/*.md"
+        required: true
+      - path: AGENTS.md
+    steps:
+      - id: agent
+        agent: claude
+        prompt: ok
+`,
+    });
+
+    const { pipeline } = expand(project);
+
+    assert.deepEqual(pipeline.jobs[0]!.context, [
+      { kind: 'path', path: 'changes/**/*.md', mode: 'auto', required: true },
+      { kind: 'path', path: 'AGENTS.md', mode: 'auto' },
+    ]);
+  });
+
+  it('опечатка в имени ключа записи отклоняется разбором', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    context:
+      - path: AGENTS.md
+        require: true
+    steps: [{ id: c, run: "true" }]
+`,
+    });
+
+    assert.throws(() => expand(project), StepcastError);
   });
 });

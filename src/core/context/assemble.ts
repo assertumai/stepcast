@@ -225,7 +225,18 @@ function resolveEntry(
     return;
   }
 
-  for (const path of expandPaths(entry.path, options.workspace)) {
+  const paths = expandPaths(entry.path, options.workspace);
+
+  // Требование совпадений проверяется до отсева: `deny` и `context_exclude` —
+  // осознанное решение автора, о котором движок и так сообщает событием, а
+  // здесь речь о другом — о записи, не нашедшей вообще ничего.
+  if (entry.required === true && paths.length === 0) {
+    throw new StepcastError(`Обязательная запись контекста не дала ни одного файла: ${entry.path}`, {
+      hint: 'Запись объявлена required: true — проверьте путь или снимите требование',
+    });
+  }
+
+  for (const path of paths) {
     const relativePath = toRelative(path, options.workspace);
     const key = registryKey(path, options.workspace);
 

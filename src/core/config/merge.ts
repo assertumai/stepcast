@@ -122,10 +122,28 @@ export function unflatten(values: ReadonlyMap<string, unknown>): Record<string, 
   return root;
 }
 
-/** Совпадение точечного пути с шаблоном, где `*` покрывает один сегмент. */
+/**
+ * Совпадение точечного пути с шаблоном, где `*` покрывает один сегмент, а
+ * хвостовой `**` — сам сегмент и всё под ним. `**` допускается только
+ * последним сегментом шаблона: семантика «любое число сегментов посередине»
+ * потребовала бы сопоставления с откатом, у которого здесь нет ни одного
+ * потребителя.
+ */
 export function matchesKeyPattern(path: string, pattern: string): boolean {
   const pathSegments = path.split('.');
   const patternSegments = pattern.split('.');
+
+  const tailIndex = patternSegments.indexOf('**');
+  if (tailIndex !== -1 && tailIndex !== patternSegments.length - 1) {
+    throw new Error(`Форма ** допустима только хвостом шаблона ключей: ${pattern}`);
+  }
+
+  if (tailIndex === patternSegments.length - 1) {
+    const head = patternSegments.slice(0, tailIndex);
+    if (pathSegments.length < head.length) return false;
+    return head.every((segment, index) => segment === '*' || segment === pathSegments[index]);
+  }
+
   if (pathSegments.length !== patternSegments.length) return false;
   return patternSegments.every((segment, index) => segment === '*' || segment === pathSegments[index]);
 }

@@ -176,6 +176,75 @@ ${AGENT_STEP}`),
     );
   });
 
+  // Подстановка, раскрытая при разборе, оставляет путь известным — и опечатку
+  // в объявлении (`project.spec.rules`, указывающий не туда) не видит больше
+  // никто: работа отказывает уже посреди прогона.
+  it('путь из подстановки, раскрытой при разборе, проверяется наравне с литералом', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: probe
+budget: { tokens: 100k }
+project:
+  spec:
+    rules: .stepcast/prompts/no-such-rules.md
+jobs:
+  probe:
+    context:
+      - "\${project.spec.rules}"
+    steps:
+      - id: think
+        agent: claude
+        prompt: ok
+`,
+    });
+
+    const found = errors(
+      lintPipeline(
+        expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+        { config: project.config },
+      ),
+    );
+
+    assert.equal(found.length, 1);
+    assert.match(found[0]?.message ?? '', /Файл контекста не найден/);
+    assert.match(found[0]?.message ?? '', /no-such-rules\.md/);
+  });
+
+  it('существующий путь из такой подстановки ошибки не даёт', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: probe
+budget: { tokens: 100k }
+project:
+  spec:
+    rules: .stepcast/prompts/spec-rules.md
+jobs:
+  probe:
+    context:
+      - "\${project.spec.rules}"
+    steps:
+      - id: think
+        agent: claude
+        prompt: ok
+`,
+      '.stepcast/prompts/spec-rules.md': 'правила',
+    });
+
+    assert.deepEqual(
+      errors(
+        lintPipeline(
+          expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+          { config: project.config },
+        ),
+      ),
+      [],
+    );
+  });
+
   it('запись контекста в объектной форме тоже проверяется', () => {
     const found = errors(
       lint(`context:

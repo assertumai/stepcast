@@ -71,12 +71,31 @@ function lookup(values: Readonly<Record<string, unknown>>, path: readonly string
   return cursor;
 }
 
-function renderValue(value: unknown, expression: string, at: string | undefined): string {
+/**
+ * Значение подстановки строкой.
+ *
+ * Непредставимое значение — это чаще всего обращение к группе вместо её листа
+ * (`${project.spec}` там, где объявлены `spec.dir` и прочие), а не попытка
+ * подставить структуру. Поэтому подсказку здесь даёт то же объяснение области
+ * видимости, что и у неопределённого имени: оно называет состав пространства,
+ * тогда как «допустимы строки, числа и логические значения» о составе молчит.
+ */
+function renderValue(
+  value: unknown,
+  expression: string,
+  at: string | undefined,
+  scope: Scope,
+  namespace: string,
+  path: string,
+): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   throw new StepcastError(`Подстановка ${expression} даёт значение, непредставимое строкой`, {
     ...(at === undefined ? {} : { at }),
-    hint: 'В подстановке допустимы строки, числа и логические значения',
+    ...(scope.file === undefined ? {} : { file: scope.file }),
+    hint:
+      scope.explain?.(expression, namespace, path) ??
+      'В подстановке допустимы строки, числа и логические значения',
   });
 }
 
@@ -178,7 +197,7 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
         line,
         column,
       });
-      return renderValue(resolved, expression, at);
+      return renderValue(resolved, expression, at, scope, namespace, rest.join('.'));
     },
   );
 
