@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -48,6 +49,29 @@ export function makeProject(files: Readonly<Record<string, string>> = {}): Proje
 
   for (const [name, content] of Object.entries(files)) project.write(name, content);
   return project;
+}
+
+/**
+ * Репозиторий git во временном каталоге: одна копия на все тесты, которым
+ * нужны настоящие якоря, наложение или сведение дорожек. Имя и почта задаются
+ * прямо в репозитории — глобальной настройки git у гоняющего тесты может не
+ * быть вовсе.
+ */
+export function gitInit(dir: string): void {
+  const git = (...args: string[]): void => {
+    execFileSync('git', ['-C', dir, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+  };
+  git('init', '--quiet', '--initial-branch=main');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Тест');
+}
+
+/** Закоммитить всё дерево репозитория одним коммитом. */
+export function gitCommit(dir: string, message: string): void {
+  execFileSync('git', ['-C', dir, 'add', '-A'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  execFileSync('git', ['-C', dir, 'commit', '--quiet', '-m', message], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 }
 
 /**

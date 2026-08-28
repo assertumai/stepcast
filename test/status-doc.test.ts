@@ -8,9 +8,8 @@ import { describe, it } from 'node:test';
 
 /**
  * Сборщик — обычный `.mjs` без сборки, поэтому тест зовёт его отдельным
- * процессом, как `test/finalize.test.ts` зовёт `scripts/finalize.mjs`. Путь
- * считается от собранного файла теста (`dist/test/`), а не от рабочего
- * каталога.
+ * процессом. Путь считается от собранного файла теста (`dist/test/`), а не
+ * от рабочего каталога.
  */
 const SCRIPT = fileURLToPath(new URL('../../scripts/status.mjs', import.meta.url));
 

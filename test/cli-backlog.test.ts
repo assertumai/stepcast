@@ -302,3 +302,87 @@ describe('CLI: stepcast backlog finish', () => {
     assert.match(result.stderr, /missing-item/);
   });
 });
+
+describe('CLI: stepcast backlog settle', () => {
+  function itemFile(runDir: string, lane: string, slug: string): void {
+    writeFileSync(join(runDir, `item-${lane}.json`), JSON.stringify({ slug, title: `Улучшение ${slug}` }));
+  }
+
+  it('незакрытый пункт помечается failed с причиной', async () => {
+    const dir = bed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
+    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    itemFile(runDir, 'a', 'a-item');
+
+    const result = await backlog(dir, ['settle', '--run-dir', runDir]);
+
+    assert.equal(result.code, ExitCode.ok, result.stderr);
+    const text = readFileSync(join(dir, 'backlog.md'), 'utf8');
+    assert.equal(fieldOf(text, 'a-item', 'status'), 'failed');
+    assert.match(fieldOf(text, 'a-item', 'reason') ?? '', /не дошёл/);
+    assert.match(result.stdout, /a-item/);
+  });
+
+  it('уже закрытый пункт остаётся нетронутым', async () => {
+    const dir = bed(item('a-item', { ...COMPLETE, status: 'done' }));
+    const before = readFileSync(join(dir, 'backlog.md'), 'utf8');
+    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    itemFile(runDir, 'a', 'a-item');
+
+    const result = await backlog(dir, ['settle', '--run-dir', runDir]);
+
+    assert.equal(result.code, ExitCode.ok, result.stderr);
+    assert.equal(readFileSync(join(dir, 'backlog.md'), 'utf8'), before);
+  });
+
+  it('пустой каталог прогона (без item-*.json) даёт код 0 и не правит очередь', async () => {
+    const dir = bed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
+    const before = readFileSync(join(dir, 'backlog.md'), 'utf8');
+    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+
+    const result = await backlog(dir, ['settle', '--run-dir', runDir]);
+
+    assert.equal(result.code, ExitCode.ok, result.stderr);
+    assert.match(result.stdout, /проставлять нечего/);
+    assert.equal(readFileSync(join(dir, 'backlog.md'), 'utf8'), before);
+  });
+
+  it('отсутствующий каталог прогона отказывает кодом 2', async () => {
+    const dir = bed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
+    const result = await backlog(dir, ['settle', '--run-dir', join(dir, 'нет-такого')]);
+    assert.equal(result.code, ExitCode.configError);
+  });
+
+  it('--run-dir не задан отказывает кодом 2', async () => {
+    const dir = bed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
+    const result = await backlog(dir, ['settle']);
+    assert.equal(result.code, ExitCode.configError);
+  });
+
+  it('файл дорожки без слага отказывает кодом 2', async () => {
+    const dir = bed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
+    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    writeFileSync(join(runDir, 'item-a.json'), JSON.stringify({ title: 'без слага' }));
+
+    const result = await backlog(dir, ['settle', '--run-dir', runDir]);
+
+    assert.equal(result.code, ExitCode.configError);
+  });
+
+  it('две дорожки: одна done остаётся нетронутой, другая in_progress становится failed', async () => {
+    const dir = bed(
+      item('a-item', { ...COMPLETE, status: 'done' }),
+      item('b-item', { ...COMPLETE, status: 'in_progress' }),
+    );
+    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    itemFile(runDir, 'a', 'a-item');
+    itemFile(runDir, 'b', 'b-item');
+
+    const result = await backlog(dir, ['settle', '--run-dir', runDir]);
+
+    assert.equal(result.code, ExitCode.ok, result.stderr);
+    const text = readFileSync(join(dir, 'backlog.md'), 'utf8');
+    assert.equal(fieldOf(text, 'a-item', 'status'), 'done');
+    assert.equal(fieldOf(text, 'a-item', 'reason'), undefined);
+    assert.equal(fieldOf(text, 'b-item', 'status'), 'failed');
+  });
+});

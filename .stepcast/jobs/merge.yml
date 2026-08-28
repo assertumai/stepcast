@@ -5,15 +5,21 @@
 # on: always — дорожка, чей propose не запустился (слот пуст), даёт verify
 # статусом skipped, а не success, и без always work merge не запустилась бы
 # вовсе.
+#
+# Команда проверки — литерал `npm run check` здесь, в файле работы, а не в
+# коде движка: `merge-lanes` принимает её ключом `--check` и ничего не знает
+# о том, чем проверяется этот конкретный репозиторий. Вынести литерал в
+# настройку проекта — пункт группы `configurable-check-command`, отдельный от
+# этого изменения.
 
 version: 1
 kind: job
 name: merge
-description: Наложить дорожки по очереди, проверить и закоммитить зелёные
+description: Наложить дорожки по очереди, проверить и закоммитить зелёную
 
 steps:
   - id: merge-lanes
-    run: [node, scripts/merge-lanes.mjs, --lanes, 'a,b']
+    run: [sh, -c, '"$STEPCAST_BIN" merge-lanes "$STEPCAST_RUN_ID" --lanes a,b --check "npm run check"']
     # npm run check гоняется внутри, на дорожку, дважды при двух дорожках —
     # запас кратно щедрее, чем у одиночного verify.
     timeout: 30m

@@ -14,22 +14,16 @@ import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { StepcastError } from '../src/core/errors.js';
 import { applyRun } from '../src/core/run/apply.js';
 import { HaltCause } from '../src/core/run/halt.js';
-import { makeProject, type Project } from './helpers.js';
+import { gitCommit, gitInit as gitInitDir, makeProject, type Project } from './helpers.js';
 
+// Переходники к общим помощникам (`test/helpers.ts`): здесь репозиторий
+// всегда корень проекта, и звать их проектом короче, чем путём.
 function gitInit(project: Project): void {
-  const run = (...args: string[]): void => {
-    execFileSync('git', ['-C', project.root, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
-  };
-  run('init', '--quiet', '--initial-branch=main');
-  run('config', 'user.email', 'test@example.com');
-  run('config', 'user.name', 'Тест');
+  gitInitDir(project.root);
 }
 
 function commit(project: Project, message: string): void {
-  execFileSync('git', ['-C', project.root, 'add', '-A'], { stdio: ['ignore', 'pipe', 'pipe'] });
-  execFileSync('git', ['-C', project.root, 'commit', '--quiet', '-m', message], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  gitCommit(project.root, message);
 }
 
 async function run(project: Project): Promise<RunResult> {

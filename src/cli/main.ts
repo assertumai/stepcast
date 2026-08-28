@@ -11,6 +11,7 @@ import { runGcCommand } from './commands/gc.js';
 import { runInitCommand } from './commands/init.js';
 import { runLintCommand } from './commands/lint.js';
 import { runLogsCommand } from './commands/logs.js';
+import { runMergeLanesCommand } from './commands/merge-lanes.js';
 import { runResumeCommand } from './commands/resume.js';
 import { runRunCommand } from './commands/run.js';
 import { runStatusCommand } from './commands/status.js';
@@ -120,7 +121,7 @@ export const COMMANDS: Record<string, CommandSpec> = {
     positional: ['run'],
   },
   backlog: {
-    description: 'вести очередь улучшений backlog.md: list|pick|finish, см. docs/backlog.md',
+    description: 'вести очередь улучшений backlog.md: list|pick|finish|settle, см. docs/backlog.md',
     positional: ['action', 'slug'],
     flags: {
       file: { kind: 'string', description: 'путь к файлу очереди, по умолчанию backlog.md в рабочем каталоге' },
@@ -132,10 +133,20 @@ export const COMMANDS: Record<string, CommandSpec> = {
       },
       'run-dir': {
         kind: 'string',
-        description: 'pick --lanes: каталог для файлов item-<дорожка>.json на каждую заполненную дорожку',
+        description:
+          'pick --lanes: каталог для файлов item-<дорожка>.json на каждую заполненную дорожку; settle: тот же каталог, обязателен',
       },
       status: { kind: 'string', description: 'finish: исход done либо failed' },
       reason: { kind: 'string', description: 'finish --status failed: причина отказа' },
+    },
+  },
+  'merge-lanes': {
+    description: 'свести названные дорожки прогона в дерево запуска: наложить, проверить, закоммитить зелёную',
+    positional: ['run'],
+    flags: {
+      lanes: { kind: 'string', description: 'перечень дорожек через запятую, обязателен' },
+      check: { kind: 'string', description: 'команда проверки объединённого дерева, обязателен' },
+      file: { kind: 'string', description: 'путь к файлу очереди, по умолчанию backlog.md в рабочем каталоге' },
     },
   },
 };
@@ -180,6 +191,8 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
         return runUsageCommand(args, io.out, io.cwd);
       case 'backlog':
         return runBacklogCommand(args, io.out, io.cwd);
+      case 'merge-lanes':
+        return await runMergeLanesCommand(args, io.out, io.cwd);
       default:
         return ExitCode.configError;
     }

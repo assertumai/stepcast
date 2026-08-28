@@ -13,6 +13,6 @@ description: Проставить failed пунктам дорожек, чей �
 
 steps:
   - id: settle
-    run: [node, scripts/finalize.mjs]
+    run: [sh, -c, '"$STEPCAST_BIN" backlog settle --run-dir "$STEPCAST_RUN_DIR"']
     timeout: 3m
     expect: [{ exit_code: 0 }]

@@ -1,17 +1,21 @@
-import { chmodSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 
 import {
   DEFAULT_STALE_HOURS,
-  parse,
+  finishItem,
+  parseBacklogFile,
+  readBacklogFile,
   selectItems,
   toRecord,
   withFields,
+  writeBacklogFile,
   type BacklogEntry,
   type BacklogRecord,
 } from '../../core/backlog/index.js';
 import { atomicWrite } from '../../core/journal/writer.js';
-import { ExitCode, StepcastError, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
+import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
+import { readLaneItem, takenLanes } from '../../core/lanes/item.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -23,17 +27,10 @@ import type { ParsedArgs } from '../args.js';
  */
 
 const KEBAB_CASE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const ACTIONS = ['list', 'pick', 'finish'] as const;
+const ACTIONS = ['list', 'pick', 'finish', 'settle'] as const;
 
-/**
- * Длина причины отказа, после которой она урезается.
- *
- * Причина приходит целым куском чужого вывода — `finalize.mjs` собирает её из
- * `stderr` красной проверки, — и в очередь, которую читает человек, такой
- * кусок целиком не нужен: полный текст остаётся в логе шага и в
- * `merge-<дорожка>.json` того же прогона.
- */
-const REASON_LIMIT = 500;
+/** Единая причина `settle`: различимые причины несведения проставляет само сведение дорожек. */
+const SETTLE_REASON = 'заход до сведения дорожки не дошёл';
 
 function stringFlag(flags: ParsedArgs['flags'], name: string): string | undefined {
   const value = flags[name];
@@ -43,65 +40,6 @@ function stringFlag(flags: ParsedArgs['flags'], name: string): string | undefine
 function numberFlag(flags: ParsedArgs['flags'], name: string): number | undefined {
   const value = flags[name];
   return typeof value === 'number' ? value : undefined;
-}
-
-function readBacklogFile(path: string): string {
-  try {
-    return readFileSync(path, 'utf8');
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    throw new StepcastError(
-      code === 'ENOENT'
-        ? `Файл очереди не найден: ${path}`
-        : `Не удалось прочитать файл очереди: ${(error as Error).message}`,
-      { file: path, cause: error },
-    );
-  }
-}
-
-/** Разбор с приложенным путём: ядро само о файле ничего не знает. */
-function parseBacklogFile(path: string, text: string): readonly BacklogEntry[] {
-  try {
-    return parse(text);
-  } catch (error) {
-    if (!isStepcastError(error)) throw error;
-    throw new StepcastError(error.message, {
-      file: path,
-      ...(error.at === undefined ? {} : { at: error.at }),
-      ...(error.hint === undefined ? {} : { hint: error.hint }),
-      cause: error,
-    });
-  }
-}
-
-/**
- * Записать файл очереди, сохранив его исходный режим доступа.
- *
- * `atomicWrite` подменяет файл переименованием временного — временный
- * создаётся заново с режимом `0o600`, и без восстановления первый же `pick`
- * сузил бы права `backlog.md` вопреки тому, что было в рабочем дереве.
- */
-function writeBacklogFile(path: string, content: string): void {
-  let mode: number | undefined;
-  try {
-    mode = statSync(path).mode;
-  } catch {
-    mode = undefined;
-  }
-  atomicWrite(path, content);
-  if (mode !== undefined) chmodSync(path, mode & 0o777);
-}
-
-/**
- * Свести чужой текст к одной строке: поле очереди однострочно, и ядро
- * значение с переводом строки отвергает (`withFields`). Сведение делается
- * здесь, на границе команды, а не в ядре: без него бухгалтерия петли
- * отказывала бы ровно в том случае, ради которого заведена, — причина
- * `check_failed` собирается из многострочного `stderr` красной проверки.
- */
-function oneLine(value: string): string {
-  const flat = value.replace(/\s+/gu, ' ').trim();
-  return flat.length <= REASON_LIMIT ? flat : `${flat.slice(0, REASON_LIMIT - 1)}…`;
 }
 
 /**
@@ -154,6 +92,8 @@ export function runBacklogCommand(
       return runPick(args, file, cwd, write);
     case 'finish':
       return runFinish(args, slug, file);
+    case 'settle':
+      return runSettle(args, file, cwd, write);
     default:
       throw new StepcastError(
         `неизвестное действие «${action ?? ''}» у команды backlog, ожидалось одно из ${ACTIONS.join(', ')}`,
@@ -274,19 +214,52 @@ function runFinish(args: ParsedArgs, slug: string | undefined, file: string): Ex
     throw new StepcastError('исход failed требует ключа --reason с причиной');
   }
 
-  const text = readBacklogFile(file);
-  const entries = parseBacklogFile(file, text);
-  const entry = entries.find((candidate) => candidate.slug === slug);
-  if (entry === undefined) {
-    throw new StepcastError(`пункт «${slug}» в очереди не найден`, { file, at: slug });
+  // Чтение, сведение причины к одной строке и неприкосновенность уже
+  // проставленного исхода — забота `core/backlog/file.ts`: тем же кодом
+  // проставляет исход и сведение дорожек.
+  finishItem(file, slug, status, reason);
+  return ExitCode.ok;
+}
+
+/**
+ * `backlog settle` — закрытие захода: каждому пункту, взятому в прогон
+ * (файлы `item-<дорожка>.json` каталога прогона, см. `core/lanes/item.ts`) и
+ * оставшемуся без исхода, проставляется `failed` с единой причиной.
+ * Различимые причины несведения — забота `stepcast merge-lanes`; `settle`
+ * закрывает ровно тот случай, когда до неё дело не дошло вовсе.
+ */
+function runSettle(
+  args: ParsedArgs,
+  file: string,
+  cwd: string,
+  write: (line: string) => void,
+): ExitCodeValue {
+  const runDirFlag = stringFlag(args.flags, 'run-dir');
+  if (runDirFlag === undefined) {
+    throw new StepcastError('ключ --run-dir обязателен для settle');
+  }
+  const runDir = resolvePath(cwd, runDirFlag);
+  if (!existsSync(runDir)) {
+    throw new StepcastError(`каталог прогона не найден: ${runDir}`, { file: runDir });
   }
 
-  // Исход, уже проставленный, не переписывается: повторный finish (например,
-  // после отказа сети) не должен состязаться за последнее слово — первый
-  // проставленный исход и есть окончательный.
-  if (entry.data.status === 'done' || entry.data.status === 'failed') return ExitCode.ok;
+  const lanes = takenLanes(runDir);
+  if (lanes.length === 0) {
+    write('пункты очереди не брались — проставлять нечего');
+    return ExitCode.ok;
+  }
 
-  const values = status === 'failed' ? { status, reason: oneLine(reason as string) } : { status };
-  writeBacklogFile(file, withFields(text, slug, values));
+  let settled = 0;
+
+  for (const lane of lanes) {
+    const item = readLaneItem(runDir, lane);
+    // Пункт с уже проставленным исходом `finishItem` не трогает: settle
+    // закрывает заход, а не переписывает его результат.
+    if (finishItem(file, item.slug, 'failed', SETTLE_REASON) === 'already-final') continue;
+    settled += 1;
+    write(`пункт «${item.slug}» (дорожка ${lane}) помечен failed: ${SETTLE_REASON}`);
+  }
+
+  if (settled === 0) write('все взятые пункты уже свели свой исход — проставлять нечего');
   return ExitCode.ok;
 }

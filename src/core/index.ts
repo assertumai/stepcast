@@ -103,6 +103,13 @@ export {
   isFree,
   selectItems,
   withFields,
+  readBacklogFile,
+  parseBacklogFile,
+  writeBacklogFile,
+  oneLine,
+  tailLine,
+  finishItem,
+  REASON_LIMIT,
   DEFAULT_STALE_HOURS,
   BacklogSlugSchema,
   BacklogStatusSchema,
@@ -115,4 +122,10 @@ export {
   type BacklogItem,
   type BacklogRecord,
   type BacklogSlotsResponse,
+  type FinishOutcome,
 } from './backlog/index.js';
+export { laneJobs, knownLanes, evaluateLane, type LaneJobStatus, type LaneOutcome } from './lanes/lanes.js';
+export { assertCleanTree, currentCommit, resetToCommit, commitAll } from './lanes/tree.js';
+export { runCheck, CHECK_TIMEOUT_MS, type CheckOptions } from './lanes/check.js';
+export { hasLaneItem, takenLanes, readLaneItem, type LaneItem } from './lanes/item.js';
+export { mergeLanes, type MergeLanesOptions, type LaneMergeResult } from './lanes/merge.js';
