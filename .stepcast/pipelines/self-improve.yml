@@ -1,9 +1,14 @@
 # Петля саморазвития: stepcast улучшает сам stepcast.
 #
 # Заход берёт до двух свободных пунктов из backlog.md — по одному на дорожку
-# — и ведёт их одновременно: propose → plan → implement → review →
-# fix-review → verify на каждой. Дорожка без свободного пункта пропускает всю
-# свою цепочку. После того как обе дорожки дошли до verify (или были
+# — и ведёт их одновременно: build → review-fix → verify на каждой. Дорожка
+# без свободного пункта пропускает всю свою цепочку.
+#
+# Две агентские работы, а не пять: сессия живёт в пределах работы, и каждая
+# граница между ними обрывала диалог вместе с кешем промптов. Заведение
+# изменения, план и реализация идут одной сессией (build), ревью и устранение
+# находок — другой (review-fix). Граница осталась ровно там, где стерегла
+# существенное: ревьюер не сидит в диалоге, где сам писал рецензируемый код. После того как обе дорожки дошли до verify (или были
 # пропущены), work merge накладывает зелёные дорожки на дерево проекта по
 # очереди, проверяя каждую свежей объявленной командой (project.check ниже)
 # перед коммитом. work finalize
@@ -143,86 +148,51 @@ jobs:
 
   # --- Дорожка a ---
 
-  propose-a:
-    uses: ../jobs/propose.yml
-    with: { lane: a }
+  build-a:
+    uses: ../jobs/build.yml
+    with: { lane: a, change: "${jobs.slots.output.lanes.a.slug}" }
     lane: a
     needs: [slots]
     workspace: { inherit: none }
     # Неопределённое значение (слот не заполнен, а то и вовсе work slots не
     # дошла до успеха) сравнением с true даёт false — работа пропускается,
-    # а не запускается на пустоте.
+    # а не запускается на пустоте. Слаг из того же выхода при этом не
+    # раскрывается вовсе: пропущенная работа не резолвится.
     if: "jobs.slots.output.lanes.a.filled == true"
 
-  plan-a:
-    uses: ../jobs/plan.yml
-    with: { change: "${jobs.propose-a.output.slug}" }
+  review-fix-a:
+    uses: ../jobs/review-fix.yml
+    with: { change: "${jobs.slots.output.lanes.a.slug}" }
     lane: a
-    needs: [propose-a]
-
-  implement-a:
-    uses: ../jobs/implement.yml
-    with: { change: "${jobs.propose-a.output.slug}", lane: a }
-    lane: a
-    needs: [plan-a]
-
-  review-a:
-    uses: ../jobs/review.yml
-    with: { change: "${jobs.propose-a.output.slug}" }
-    lane: a
-    needs: [implement-a]
-
-  fix-review-a:
-    uses: ../jobs/fix-review.yml
-    with: { change: "${jobs.propose-a.output.slug}" }
-    lane: a
-    needs: [review-a]
+    needs: [build-a]
 
   verify-a:
     uses: ../jobs/verify.yml
-    with: { change: "${jobs.propose-a.output.slug}" }
+    with: { change: "${jobs.slots.output.lanes.a.slug}" }
     lane: a
-    needs: [fix-review-a]
+    needs: [review-fix-a]
 
   # --- Дорожка b: та же цепочка, те же файлы работ ---
 
-  propose-b:
-    uses: ../jobs/propose.yml
-    with: { lane: b }
+  build-b:
+    uses: ../jobs/build.yml
+    with: { lane: b, change: "${jobs.slots.output.lanes.b.slug}" }
     lane: b
     needs: [slots]
     workspace: { inherit: none }
     if: "jobs.slots.output.lanes.b.filled == true"
 
-  plan-b:
-    uses: ../jobs/plan.yml
-    with: { change: "${jobs.propose-b.output.slug}" }
+  review-fix-b:
+    uses: ../jobs/review-fix.yml
+    with: { change: "${jobs.slots.output.lanes.b.slug}" }
     lane: b
-    needs: [propose-b]
-
-  implement-b:
-    uses: ../jobs/implement.yml
-    with: { change: "${jobs.propose-b.output.slug}", lane: b }
-    lane: b
-    needs: [plan-b]
-
-  review-b:
-    uses: ../jobs/review.yml
-    with: { change: "${jobs.propose-b.output.slug}" }
-    lane: b
-    needs: [implement-b]
-
-  fix-review-b:
-    uses: ../jobs/fix-review.yml
-    with: { change: "${jobs.propose-b.output.slug}" }
-    lane: b
-    needs: [review-b]
+    needs: [build-b]
 
   verify-b:
     uses: ../jobs/verify.yml
-    with: { change: "${jobs.propose-b.output.slug}" }
+    with: { change: "${jobs.slots.output.lanes.b.slug}" }
     lane: b
-    needs: [fix-review-b]
+    needs: [review-fix-b]
 
   # --- Сведение и завершение ---
 
