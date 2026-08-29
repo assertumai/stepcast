@@ -1,7 +1,18 @@
 import { useState, type JSX } from 'react';
 
-import { fetchFile, type JournalFileRef } from '../api';
+import { fetchFile, type FileSide, type JournalFileRef } from '../api';
 import { fmtBytes } from '../format';
+
+/**
+ * Какой конец крупного файла показать первым.
+ *
+ * У лога смысл в хвосте: причина отказа — упор в лимит, таймаут, последняя
+ * реплика перед обрывом — всегда в конце потока. У JSON-артефакта наоборот,
+ * читают его сверху, да и разобрать в объект можно только целый файл.
+ */
+function defaultSide(name: string): FileSide {
+  return name.endsWith('.json') ? 'head' : 'tail';
+}
 
 /**
  * Файл журнала, раскрываемый на месте.
@@ -20,7 +31,30 @@ export function FileView({
   const [open, setOpen] = useState(false);
   const [text, setText] = useState<string | undefined>(undefined);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [shownSide, setShownSide] = useState<FileSide | undefined>(undefined);
   const [truncated, setTruncated] = useState<number | undefined>(undefined);
+
+  const load = async (side: FileSide): Promise<void> => {
+    setError(undefined);
+    try {
+      const content = await fetchFile(address, file.path, side);
+      // JSON показывается разложенным: журнал пишется компактно, а читают его
+      // глазами. Усечённый файл не разбирается — он заведомо оборван.
+      let shown = content.content;
+      if (file.name.endsWith('.json') && !content.truncated) {
+        try {
+          shown = JSON.stringify(JSON.parse(content.content), null, 2);
+        } catch {
+          // Недописанный на ходу файл остаётся как есть.
+        }
+      }
+      setText(shown);
+      setShownSide(content.side);
+      setTruncated(content.truncated ? content.bytes : undefined);
+    } catch (failure) {
+      setError((failure as Error).message);
+    }
+  };
 
   const toggle = async (): Promise<void> => {
     if (open) {
@@ -29,25 +63,10 @@ export function FileView({
     }
     setOpen(true);
     if (text !== undefined || error !== undefined) return;
-
-    try {
-      const content = await fetchFile(address, file.path);
-      // JSON показывается разложенным: журнал пишется компактно, а читают его
-      // глазами.
-      let shown = content.content;
-      if (file.name.endsWith('.json')) {
-        try {
-          shown = JSON.stringify(JSON.parse(content.content), null, 2);
-        } catch {
-          // Недописанный на ходу файл остаётся как есть.
-        }
-      }
-      setText(shown);
-      if (content.truncated) setTruncated(content.bytes);
-    } catch (failure) {
-      setError((failure as Error).message);
-    }
+    await load(defaultSide(file.name));
   };
+
+  const flip = shownSide === 'head' ? 'tail' : 'head';
 
   return (
     <div>
@@ -55,10 +74,17 @@ export function FileView({
         {file.name} · {fmtBytes(file.bytes)}
       </button>
       {open && error !== undefined ? <p className="error">{error}</p> : null}
-      {open && text !== undefined ? <pre>{text}</pre> : null}
+      {/* Плашка над содержимым: читатель должен знать, какой это кусок, до
+          того, как начнёт читать оборванный с одного края текст. */}
       {open && truncated !== undefined ? (
-        <div className="truncated">файл усечён до 1 МБ из {fmtBytes(truncated)}</div>
+        <div className="truncated">
+          показан {shownSide === 'head' ? 'первый' : 'последний'} 1 МБ из {fmtBytes(truncated)} —{' '}
+          <button onClick={() => void load(flip)}>
+            показать {flip === 'head' ? 'начало' : 'конец'}
+          </button>
+        </div>
       ) : null}
+      {open && text !== undefined ? <pre>{text}</pre> : null}
     </div>
   );
 }
