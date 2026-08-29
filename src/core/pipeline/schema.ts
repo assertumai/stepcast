@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { CheckCommandSchema, RawSpecSchema } from '../config/schema.js';
+import { CheckCommandSchema, RawSpecSchema, RelativeRepoPathSchema } from '../config/schema.js';
 
 /**
  * Схемы документов пайплайна и работы в исходном виде — до подстановок и
@@ -255,6 +255,7 @@ const ProjectSchema = z
     check: CheckCommandSchema.optional(),
     tools: z.array(CheckCommandSchema).min(1).optional(),
     spec: RawSpecSchema.optional(),
+    edit_paths: z.array(RelativeRepoPathSchema).min(1).optional(),
   })
   .strict();
 

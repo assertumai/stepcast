@@ -505,6 +505,123 @@ describe('stepcast-configuration', () => {
     assert.doesNotMatch(line, /шаблон/);
     assert.match(line, new RegExp(box.projectPath.replace(/[/\\]/g, '\\$&')));
   });
+
+  // Задача 1.5 / Сценарий: «Границы правок объявлены в проектном конфиге»
+  it('принимает project.edit_paths в проектном конфиге в объявленном порядке', () => {
+    const box = sandbox({ project: 'project:\n  edit_paths: [src/**, test/**, package.json]\n' });
+    const { config, provenance } = resolveIn(box);
+    assert.deepEqual(config.project.editPaths, ['src/**', 'test/**', 'package.json']);
+    assert.equal(describeSource(provenance.get('project.edit_paths')!), box.projectPath);
+  });
+
+  // Задача 1.5 / Сценарий: «Границы не объявлены»
+  it('project.edit_paths отсутствует, если не объявлен ни одним слоем', () => {
+    const box = sandbox({});
+    const { config } = resolveIn(box);
+    assert.equal(config.project.editPaths, undefined);
+  });
+
+  // Задача 1.5 / Сценарий: «Пустой список»
+  it('отклоняет пустой project.edit_paths', () => {
+    const box = sandbox({ project: 'project:\n  edit_paths: []\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.edit_paths');
+        assert.equal(error.file, box.projectPath);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.5 / Сценарий: «Элемент из одних пробелов»
+  it('отклоняет project.edit_paths с элементом из пробелов', () => {
+    const box = sandbox({ project: 'project:\n  edit_paths: ["   "]\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.edit_paths.0');
+        assert.equal(error.file, box.projectPath);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.5 / Сценарий: «Абсолютный путь»
+  it('отклоняет абсолютный путь в project.edit_paths', () => {
+    const box = sandbox({ project: 'project:\n  edit_paths: ["/etc/**"]\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.edit_paths.0');
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.5 / Сценарий: «Выход за корень репозитория»
+  it('отклоняет project.edit_paths с сегментом ..', () => {
+    const box = sandbox({ project: 'project:\n  edit_paths: ["../other/**"]\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.edit_paths.0');
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.5 / Сценарий: «Шаблоны глоба и обычные пути допущены как есть»
+  it('принимает project.edit_paths с шаблонами глоба и обычными путями', () => {
+    const box = sandbox({ project: 'project:\n  edit_paths: ["cmd/**", "go.mod"]\n' });
+    const { config } = resolveIn(box);
+    assert.deepEqual(config.project.editPaths, ['cmd/**', 'go.mod']);
+  });
+
+  // Задача 1.6 / Сценарий: «Границы правок в глобальном конфиге»
+  it('отклоняет project.edit_paths в глобальном конфиге теми же средствами, что project.check', () => {
+    const box = sandbox({ global: 'project:\n  edit_paths: [src/**]\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /project\.edit_paths/);
+        assert.equal(error.file, box.globalPath);
+        assert.match(error.hint ?? '', /\.stepcast\/config\.yml/);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.7 / Сценарий: «Верхний слой заменяет список целиком»
+  it('верхний слой заменяет project.edit_paths целиком, не подмешивая нижний', () => {
+    const box = sandbox({ project: 'project:\n  edit_paths: [src/**, test/**]\n' });
+    const { config } = resolveIn(box, { 'project.edit_paths': ['cmd/**'] });
+    assert.deepEqual(config.project.editPaths, ['cmd/**']);
+  });
+
+  // Задача 1.7 / Сценарий: «Соседний ключ секции, объявленный другим слоем, не затирается»
+  it('project.check из конфигурации и project.edit_paths из другого слоя действуют оба', () => {
+    const box = sandbox({ project: 'project:\n  check: npm run check\n' });
+    const { config } = resolveIn(box, { 'project.edit_paths': ['src/**'] });
+    assert.equal(config.project.check, 'npm run check');
+    assert.deepEqual(config.project.editPaths, ['src/**']);
+  });
+
+  // Задача 1.8 / Сценарий: «Отчёт печатает пути, а не счётчик»
+  it('печатает project.edit_paths в отчёте stepcast config составом путей', () => {
+    const box = sandbox({ project: 'project:\n  edit_paths: [src/**, test/**, package.json]\n' });
+    const lines = renderConfigReport(resolveIn(box));
+    const line = lines.find((item) => item.startsWith('project.edit_paths'));
+    assert.ok(line !== undefined);
+    assert.match(line, /src\/\*\*, test\/\*\*, package\.json/);
+    assert.doesNotMatch(line, /шаблон/);
+    assert.match(line, new RegExp(box.projectPath.replace(/[/\\]/g, '\\$&')));
+  });
 });
 
 describe('stepcast-configuration: модель относительного пути репозитория', () => {

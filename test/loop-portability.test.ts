@@ -68,6 +68,28 @@ describe('self-improvement-loop: переносимость файлов пет�
     /Bash\(npm\b/,
     /Bash\(npx\b/,
     /Bash\(node\b/,
+    // changed-only-boundaries-declaration: раскладка этого репозитория
+    // называется объявлением project.edit_paths, а не шаблонами changed_only
+    // в файле работы напрямую. Шаблон с `**` — это как раз запись границы
+    // (`docs/config.md` в обычном тексте комментария границей не является).
+    /src\/\*\*/,
+    /test\/\*\*/,
+    /docs\/\*\*/,
+    /schema\/\*\*/,
+    /scripts\/\*\*/,
+    /ui\/\*\*/,
+    /package\.json/,
+    /package-lock\.json/,
+    /vite\.config/,
+    /eslint\.config/,
+    /README\.md/,
+    /\.gitattributes/,
+    // Та же раскладка, пересказанная промптом словами, а не шаблоном
+    // changed_only: каталог, названный в обратных кавычках со слешем, — это
+    // объявление границы промптом, а не случайное упоминание пути в тексте.
+    /`src\//,
+    /`test\//,
+    /`docs\//,
   ];
 
   it('файлы работ петли не называют OpenSpec и его документы', () => {
@@ -139,6 +161,36 @@ describe('self-improvement-loop: настоящий пайплайн петли 
     'Bash(git log*)',
   ];
 
+  /**
+   * changed-only-boundaries-declaration: тот же набор шаблонов, что нёс
+   * предикат до переноса раскладки в `project.edit_paths`, — сравнивается как
+   * множество, а не по порядку: `edit_paths` идёт в предикате одной записью
+   * подстановки, и порядок соседей (`${project.spec.dir}/**`, записи
+   * `.stepcast/**`) внутри списка сегодня другой, но сам набор границ обязан
+   * остаться тождественным.
+   */
+  const EXPECTED_CHANGED_ONLY = new Set([
+    'src/**',
+    'test/**',
+    'docs/**',
+    'openspec/changes/**',
+    'schema/**',
+    'scripts/**',
+    'package.json',
+    'package-lock.json',
+    '.gitattributes',
+    '.stepcast/config.yml',
+    '.stepcast/prompts/**',
+    '.stepcast/prompts/spec-rules.md',
+    '.stepcast/jobs/**',
+    '.stepcast/pipelines/**',
+    '.stepcast/schemas/**',
+    'ui/**',
+    'vite.config.ts',
+    'README.md',
+    'eslint.config.js',
+  ]);
+
   it('implement и fix-review обеих дорожек несут прежние права в прежнем порядке', () => {
     const project = makeProject();
     const { pipeline } = expandPipeline({
@@ -152,6 +204,24 @@ describe('self-improvement-loop: настоящий пайплайн петли 
       assert.deepEqual(asAgent(job.steps[0]!).permissions?.allow, EXPECTED_ALLOW, id);
     }
   });
+
+  it('implement и fix-review обеих дорожек несут прежний набор границ changed_only', () => {
+    const project = makeProject();
+    const { pipeline } = expandPipeline({
+      pipelinePath: join(ROOT, '.stepcast', 'pipelines', 'self-improve.yml'),
+      config: project.config,
+    });
+
+    for (const id of ['implement-a', 'implement-b', 'fix-review-a', 'fix-review-b']) {
+      const job = pipeline.jobs.find((item) => item.id === id);
+      assert.ok(job !== undefined, `работы ${id} нет в пайплайне петли`);
+      const predicate = job.steps[0]!.expect.find((item) => item.kind === 'changed_only') as
+        | { readonly globs: readonly string[] }
+        | undefined;
+      assert.ok(predicate !== undefined, `${id}: нет предиката changed_only`);
+      assert.deepEqual(new Set(predicate.globs), EXPECTED_CHANGED_ONLY, id);
+    }
+  });
 });
 
 /**
@@ -161,7 +231,10 @@ describe('self-improvement-loop: настоящий пайплайн петли 
  * дают только потому, что это объявление этого репозитория.
  */
 describe('self-improvement-loop: настоящие файлы петли против чужого объявления', () => {
-  function foreignPipeline(tools: readonly string[] = ['make']): string {
+  function foreignPipeline(
+    tools: readonly string[] = ['make'],
+    editPaths: readonly string[] = ['cmd/**', 'internal/**', 'go.mod'],
+  ): string {
     return `
 kind: pipeline
 name: foreign
@@ -172,6 +245,7 @@ project:
     dir: docs/changes
     rules: docs/spec-rules.md
     tool: make
+  edit_paths: [${editPaths.join(', ')}]
 jobs:
   propose-a:
     uses: ${JOBS_DIR}/propose.yml
@@ -295,6 +369,74 @@ jobs:
       assert.ok(gradlewIndex < javaIndex, `${id}: порядок не совпадает с объявленным`);
     }
   });
+
+  // changed-only-boundaries-declaration: implement и fix-review читают
+  // раскладку чужим объявлением (project.edit_paths: [cmd/**, internal/**,
+  // go.mod]), а не двенадцатью литералами этого репозитория — границы называют
+  // чужой стек, ни одного из старых npm-шаблонов среди них нет, а каталог
+  // документов изменения и файл правил остаются, потому что их объявляет
+  // отдельный ключ (project.spec), не задетый этим объявлением.
+  it('implement-a и fix-review-a несут границы cmd/**, internal/**, go.mod и ни одной раскладки этого репозитория', () => {
+    const REPO_LAYOUT = [
+      'src/**',
+      'test/**',
+      'docs/**',
+      'schema/**',
+      'scripts/**',
+      'ui/**',
+      'package.json',
+      'package-lock.json',
+      'vite.config.ts',
+      'eslint.config.js',
+      'README.md',
+      '.gitattributes',
+    ];
+
+    const pipeline = expandForeign(makeProject());
+    for (const id of ['implement-a', 'fix-review-a']) {
+      const job = pipeline.jobs.find((item) => item.id === id)!;
+      const globs = (
+        job.steps[0]!.expect.find((item) => item.kind === 'changed_only') as { globs: readonly string[] }
+      ).globs;
+
+      assert.ok(globs.includes('cmd/**'), `${id}: нет cmd/**`);
+      assert.ok(globs.includes('internal/**'), `${id}: нет internal/**`);
+      assert.ok(globs.includes('go.mod'), `${id}: нет go.mod`);
+      for (const pattern of REPO_LAYOUT) {
+        assert.ok(!globs.includes(pattern), `${id}: остался шаблон этого репозитория ${pattern}`);
+      }
+      assert.ok(globs.includes('docs/changes/**'), `${id}: пропал каталог документов изменения`);
+      assert.ok(globs.includes('docs/spec-rules.md'), `${id}: пропал файл правил`);
+    }
+  });
+
+  // Устройство петли задаёт движок, а не репозиторий, поэтому записи
+  // `.stepcast/**` остались в файлах работ литералами и в `project.edit_paths`
+  // не переносятся: чужое объявление границ их не заменяет и не отменяет.
+  // Косвенно это же сторожит сравнение с прежним набором на настоящем
+  // пайплайне, но там свойство видно только через отсутствие записей в
+  // `edit_paths` — здесь оно утверждается прямо.
+  it('записи .stepcast/** остаются в границах и против чужого объявления', () => {
+    const ENGINE_FILES = [
+      '.stepcast/config.yml',
+      '.stepcast/jobs/**',
+      '.stepcast/pipelines/**',
+      '.stepcast/prompts/**',
+      '.stepcast/schemas/**',
+    ];
+
+    const pipeline = expandForeign(makeProject());
+    for (const id of ['implement-a', 'fix-review-a']) {
+      const job = pipeline.jobs.find((item) => item.id === id)!;
+      const globs = (
+        job.steps[0]!.expect.find((item) => item.kind === 'changed_only') as { globs: readonly string[] }
+      ).globs;
+
+      for (const pattern of ENGINE_FILES) {
+        assert.ok(globs.includes(pattern), `${id}: пропала запись ${pattern}`);
+      }
+    }
+  });
 });
 
 /**
@@ -321,6 +463,7 @@ project:
     dir: docs/changes
     rules: docs/spec-rules.md
     tool: make
+  edit_paths: [cmd/**, internal/**, go.mod]
 jobs:
   plan-a:
     uses: ${JOBS_DIR}/plan.yml
@@ -434,6 +577,26 @@ jobs:
       () => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       (error: unknown) => {
         assert.match((error as Error).message ?? '', /project\.tools/);
+        return true;
+      },
+    );
+  });
+
+  // changed-only-boundaries-declaration: implement и fix-review ссылаются на
+  // ${project.edit_paths} — то же правило, что у project.tools: отсутствие
+  // объявления роняет разбор до первого агентского вызова, а не запускает
+  // петлю с границами наугад.
+  it('пайплайн без объявления project.edit_paths роняет разбор до первого агентского вызова', () => {
+    const project = makeProject({
+      'stepcast.yml': RUN_PIPELINE.replace('  edit_paths: [cmd/**, internal/**, go.mod]\n', ''),
+      'docs/spec-rules.md': 'правила\n',
+      'docs/changes/demo-change/README.md': '# demo-change\n',
+    });
+
+    assert.throws(
+      () => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      (error: unknown) => {
+        assert.match((error as Error).message ?? '', /project\.edit_paths/);
         return true;
       },
     );

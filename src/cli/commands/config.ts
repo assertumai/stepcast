@@ -27,11 +27,11 @@ function renderValue(path: string, value: unknown): string {
     if (MONEY_KEYS.has(path)) return formatMoney(value);
   }
   // Списки запретов (env_deny, context.deny) сводятся к счётчику намеренно:
-  // сами шаблоны читатель видит в столбце вклада каждого слоя. project.tools
-  // — не запрет, а объявление, и счётчик скрыл бы единственное, что в отчёте
-  // имеет смысл, — сами имена.
+  // сами шаблоны читатель видит в столбце вклада каждого слоя. Объявления
+  // (project.tools, project.edit_paths) — не запреты, а состав, и счётчик
+  // скрыл бы единственное, что в отчёте имеет смысл, — сами значения.
   if (Array.isArray(value)) {
-    if (path === 'project.tools') return value.join(', ');
+    if (path === 'project.tools' || path === 'project.edit_paths') return value.join(', ');
     return `${value.length} шаблонов`;
   }
   return String(value);

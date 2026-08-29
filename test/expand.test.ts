@@ -27,6 +27,11 @@ function withProjectTools(project: Project, tools: readonly string[] | undefined
   return { ...project.config, project: { ...project.config.project, tools } };
 }
 
+/** Тот же проект, но с указанными `project.edit_paths`, будто они объявлены в `.stepcast/config.yml`. */
+function withProjectEditPaths(project: Project, editPaths: readonly string[] | undefined): Config {
+  return { ...project.config, project: { ...project.config.project, editPaths } };
+}
+
 function expand(project: Project, file = 'stepcast.yml', inputs?: Record<string, string>) {
   return expandPipeline({
     pipelinePath: project.path(file),
@@ -2171,6 +2176,162 @@ jobs:
       'Bash(node *)',
       'Bash(git log*)',
     ]);
+  });
+});
+
+describe('pipeline-definition: действующее значение project.edit_paths', () => {
+  it('пайплайн перекрывает конфигурацию целиком', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  edit_paths: [cmd/**]
+jobs:
+  build:
+    steps: [{ id: c, run: ["\${project.edit_paths}"] }]
+`,
+    });
+    const config = withProjectEditPaths(project, ['src/**', 'test/**']);
+    const step = asRun(expandWith(project, config).pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.command, ['cmd/**']);
+  });
+
+  it('раскрывается значением из конфигурации, когда пайплайн секцию не объявляет', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: ["\${project.edit_paths}"] }]
+`,
+    });
+    const config = withProjectEditPaths(project, ['src/**', 'test/**', 'package.json']);
+    const step = asRun(expandWith(project, config).pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.command, ['src/**', 'test/**', 'package.json']);
+  });
+
+  it('документ без ссылки на подстановку разбирается без ошибки, даже если ключ не объявлен ни там ни там', () => {
+    const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
+    const config = withProjectEditPaths(project, undefined);
+    assert.doesNotThrow(() => expandWith(project, config));
+  });
+});
+
+describe('pipeline-definition: подстановка ${project.edit_paths}', () => {
+  it('ссылка на необъявленный project.edit_paths — отказ разбора, называющий оба места объявления', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: ["\${project.edit_paths}"] }]
+`,
+    });
+    const config = withProjectEditPaths(project, undefined);
+
+    assert.throws(
+      () => expandWith(project, config),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.hint ?? '', /project\.edit_paths/);
+        assert.match(error.hint ?? '', new RegExp(project.path('stepcast.yml').replace(/[/\\]/g, '\\$&')));
+        assert.match(error.hint ?? '', /\.stepcast\/config\.yml/);
+        return true;
+      },
+    );
+  });
+
+  it('обращение к имени вне состава пространства называет доступные имена, включая edit_paths', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.edit_path}" }]
+`,
+    });
+    const config = withProjectEditPaths(project, ['src/**']);
+
+    assert.throws(
+      () => expandWith(project, config),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.hint ?? '', /содержит только/);
+        assert.match(error.hint ?? '', /\bedit_paths\b/);
+        return true;
+      },
+    );
+  });
+
+  it('элемент changed_only со ссылкой даёт по шаблону на объявленный путь, в объявленном порядке, соседи на местах', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  edit_paths: [src/**, test/**, package.json]
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        expect:
+          - changed_only: ["\${project.spec.dir}/**", "\${project.edit_paths}", ".stepcast/**"]
+`,
+    });
+    const { pipeline } = expandWith(project, withProjectSpec(project, { dir: 'openspec/changes' }));
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.expect[0], {
+      kind: 'changed_only',
+      globs: ['openspec/changes/**', 'src/**', 'test/**', 'package.json', '.stepcast/**'],
+    });
+  });
+
+  it('check: ${project.edit_paths} — отказ о значении, непредставимом строкой, с подсказкой про элемент списка', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  edit_paths: [src/**, test/**]
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.edit_paths}" }]
+`,
+    });
+
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /непредставимо/);
+        assert.match(error.hint ?? '', /раскрывается только в элементе списка/);
+        return true;
+      },
+    );
+  });
+
+  it('раскрытое значение попадает в снимок пайплайна путями, а не подстановкой', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  edit_paths: [src/**, test/**, package.json]
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        expect:
+          - changed_only: ["\${project.edit_paths}"]
+`,
+    });
+
+    const lock = serializeLock(expand(project).pipeline);
+    assert.doesNotMatch(lock, /\$\{project\.edit_paths\}/);
+
+    const parsed = parseYaml(lock) as {
+      jobs: Array<{ steps: Array<{ expect?: Array<{ globs?: readonly string[] }> }> }>;
+    };
+    assert.deepEqual(parsed.jobs[0]!.steps[0]!.expect?.[0]?.globs, ['src/**', 'test/**', 'package.json']);
   });
 });
 

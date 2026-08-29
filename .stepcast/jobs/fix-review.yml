@@ -56,35 +56,21 @@ steps:
     expect:
       - schema: ../schemas/implement.json
       - changed_only:
-          - src/**
-          - test/**
-          - docs/**
+          # Раскладка репозитория — объявлена project.edit_paths, а не здесь:
+          # см. implement.yml.
+          - ${project.edit_paths}
+          # Каталог документов изменения объявлен project.spec, отдельным
+          # ключом: см. implement.yml.
           - ${project.spec.dir}/**
-          # Схемы формата — часть кода, а не постороннее: изменение, вводящее
-          # настройку или поле, обязано их обновить, иначе объявленный формат
-          # разойдётся с принимаемым.
-          - schema/**
-          - scripts/**
-          - package.json
-          # См. implement.yml: замок ходит вместе с package.json.
-          - package-lock.json
-          - .gitattributes
-          # Конфигурация проекта — часть петли (объявляет, например,
-          # project.check), и завести её должен уметь заход, а не человек.
-          # Действует со следующего прогона: предикат фиксируется вместе с
-          # раскрытым пайплайном в начале текущего.
+          - ${project.spec.rules}
+          # Устройство петли: каталог .stepcast/ задаёт движок, а не
+          # репозиторий — тот же критерий, по которому литералом осталось
+          # Bash(git status*).
           - .stepcast/config.yml
-          - .stepcast/prompts/**
           - .stepcast/jobs/**
           - .stepcast/pipelines/**
-          - ui/**
-          - vite.config.ts
-          - README.md
+          - .stepcast/prompts/**
           - .stepcast/schemas/**
-          - eslint.config.js
-          # Правила спецификации — часть петли, а не сторонний файл: см.
-          # implement.yml — заход обязан уметь их поправить.
-          - ${project.spec.rules}
     attempts:
       max: 2
       escalation:

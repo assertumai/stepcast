@@ -39,14 +39,17 @@ import type {
 /** Пространства, чьи значения известны только в прогоне. */
 const DEFERRED_NAMESPACES = new Set(['jobs', 'run', 'env']);
 
-/** Состав пространства `project`: имя команды проверки, инструменты репозитория и группа практики спецификации. */
-const PROJECT_NAMES = ['check', 'tools', 'spec.dir', 'spec.rules', 'spec.tool'];
+/**
+ * Состав пространства `project`: имя команды проверки, инструменты
+ * репозитория, границы правок и группа практики спецификации.
+ */
+const PROJECT_NAMES = ['check', 'tools', 'edit_paths', 'spec.dir', 'spec.rules', 'spec.tool'];
 
 /**
  * Разное объяснение для двух разных ошибок пространства `project`:
  * обращение к имени вне состава — про сам состав, обращение к необъявленному
- * имени из состава (`check`, `tools`, `spec.dir`, `spec.rules`, `spec.tool`) —
- * про оба места, где его можно объявить.
+ * имени из состава (`check`, `tools`, `edit_paths`, `spec.dir`, `spec.rules`,
+ * `spec.tool`) — про оба места, где его можно объявить.
  */
 function explainProject(pipelinePath: string) {
   return (_expression: string, namespace: string, path: string): string | undefined => {
@@ -72,6 +75,7 @@ function resolveProjectValues(
   return {
     check: document.project?.check ?? config.project.check,
     tools: document.project?.tools ?? config.project.tools,
+    edit_paths: document.project?.edit_paths ?? config.project.editPaths,
     spec: {
       dir: document.project?.spec?.dir ?? config.project.spec.dir,
       rules: document.project?.spec?.rules ?? config.project.spec.rules,

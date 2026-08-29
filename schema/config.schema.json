@@ -327,6 +327,15 @@
             }
           },
           "additionalProperties": false
+        },
+        "edit_paths": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
         }
       },
       "additionalProperties": false
