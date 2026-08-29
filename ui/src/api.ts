@@ -122,6 +122,9 @@ export interface StepSnapshot {
   readonly status?: StatusValue;
   readonly reason?: string;
   readonly attempts: number;
+  /** Отрезок исполнения шага: начало первой попытки и конец последней. */
+  readonly startedAt?: string;
+  readonly finishedAt?: string;
   readonly prompt?: string;
   readonly command?: string;
   readonly context: readonly string[];
@@ -135,6 +138,9 @@ export interface JobSnapshot {
   readonly description?: string;
   readonly status?: StatusValue;
   readonly reason?: string;
+  /** Отрезок исполнения работы: у идущей конца ещё нет. */
+  readonly startedAt?: string;
+  readonly finishedAt?: string;
   readonly needs: readonly string[];
   readonly if?: string;
   readonly on: 'success' | 'failure' | 'always';

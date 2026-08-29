@@ -1,7 +1,7 @@
 import { useEffect, useState, type JSX } from 'react';
 
 import { fetchRun, type JobSnapshot, type RunSnapshot, type StepSnapshot } from '../api';
-import { fmtDuration, fmtMoney, fmtTokens } from '../format';
+import { fmtDuration, fmtMoney, fmtSpan, fmtTokens } from '../format';
 import { FileView } from '../components/FileView';
 import { JobGraph } from '../components/JobGraph';
 
@@ -40,6 +40,13 @@ function Step({ address, step }: { readonly address: string; readonly step: Step
           </span>
         )}
         {step.attempts > 1 ? <span className="kind">попыток: {step.attempts}</span> : null}
+        {/*
+          Длительность шага и его расход — разные величины: первая говорит,
+          сколько шаг занял часов, второй — сколько за него заплачено.
+        */}
+        {fmtSpan(step.startedAt, step.finishedAt) === undefined ? null : (
+          <span className="kind">{fmtSpan(step.startedAt, step.finishedAt)}</span>
+        )}
         <span className="kind">
           {fmtTokens(step.usage.billableTokens)} · {fmtDuration(step.usage.wallclockMs)} ·{' '}
           {fmtMoney(step.usage.costUsd)}
@@ -69,6 +76,36 @@ function Step({ address, step }: { readonly address: string; readonly step: Step
   );
 }
 
+/**
+ * Пары «ключ — значение» построчно.
+ *
+ * Склеенные в одну строку через разделитель, они нечитаемы уже на трёх полях:
+ * значения здесь — целые фразы, а не короткие метки. Пара занимает строку
+ * поля: ключ встаёт в колонку подписей, значение — в колонку значений, и
+ * длинное значение переносится там же, не растягивая карточку.
+ */
+function Pairs({
+  label,
+  pairs,
+}: {
+  readonly label: string;
+  readonly pairs: Readonly<Record<string, string>>;
+}): JSX.Element {
+  return (
+    <>
+      <div className="row">
+        <span className="label">{label}</span>
+      </div>
+      {Object.entries(pairs).map(([key, value]) => (
+        <div className="row" key={key}>
+          <span className="label mono">{key}</span>
+          <span className="desc">{value}</span>
+        </div>
+      ))}
+    </>
+  );
+}
+
 function Job({ address, job }: { readonly address: string; readonly job: JobSnapshot }): JSX.Element {
   return (
     <div className="job">
@@ -78,6 +115,9 @@ function Job({ address, job }: { readonly address: string; readonly job: JobSnap
         {job.needs.length === 0 ? null : <span className="kind">needs: {job.needs.join(', ')}</span>}
         {job.on === 'success' ? null : <span className="kind">on: {job.on}</span>}
         {job.if === undefined ? null : <span className="kind">if: {job.if}</span>}
+        {fmtSpan(job.startedAt, job.finishedAt) === undefined ? null : (
+          <span className="kind">{fmtSpan(job.startedAt, job.finishedAt)}</span>
+        )}
         <span className="kind">
           {fmtTokens(job.usage.billableTokens)} · {fmtDuration(job.usage.wallclockMs)} ·{' '}
           {fmtMoney(job.usage.costUsd)}
@@ -113,27 +153,9 @@ function Job({ address, job }: { readonly address: string; readonly job: JobSnap
         работа опубликовала сама. Обе строки показываются здесь целиком:
         в узле графа умещается один ключ и одна строка.
       */}
-      {job.display === undefined ? null : (
-        <div className="row">
-          <span className="label">подпись</span>
-          <span className="desc">
-            {Object.entries(job.display)
-              .map(([key, value]) => `${key}: ${value}`)
-              .join(' · ')}
-          </span>
-        </div>
-      )}
+      {job.display === undefined ? null : <Pairs label="подпись" pairs={job.display} />}
 
-      {job.data === undefined ? null : (
-        <div className="row">
-          <span className="label">данные</span>
-          <span className="desc mono">
-            {Object.entries(job.data)
-              .map(([key, value]) => `${key}=${value}`)
-              .join(' · ')}
-          </span>
-        </div>
-      )}
+      {job.data === undefined ? null : <Pairs label="данные" pairs={job.data} />}
 
       {job.steps.map((step) => (
         <Step key={step.id} address={address} step={step} />

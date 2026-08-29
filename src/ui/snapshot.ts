@@ -50,6 +50,13 @@ export interface StepSnapshot {
   readonly status?: StatusValue;
   readonly reason?: string;
   readonly attempts: number;
+  /**
+   * Отрезок исполнения шага: начало первой попытки и конец последней.
+   * Собственных времён у записи шага нет — она пишется целиком по его
+   * завершении, — а попытки свои времена несут.
+   */
+  readonly startedAt?: string;
+  readonly finishedAt?: string;
   /** Промпт агентского шага из лока. */
   readonly prompt?: string;
   /** Команда командного шага из лока. */
@@ -66,6 +73,14 @@ export interface JobSnapshot {
   readonly description?: string;
   readonly status?: StatusValue;
   readonly reason?: string;
+  /**
+   * Отрезок исполнения работы. Это не то же, что `usage.wallclockMs`: там
+   * оплачиваемое время попыток, здесь — реальный отрезок от начала работы до
+   * её конца. У идущей работы конца ещё нет, и по одному началу витрина
+   * считает, сколько работа идёт.
+   */
+  readonly startedAt?: string;
+  readonly finishedAt?: string;
   readonly needs: readonly string[];
   /** Условие исполнения работы: показывает, почему работа может не выполниться. */
   readonly if?: string;
@@ -172,6 +187,12 @@ function buildStep(
     ...(record?.status === undefined ? {} : { status: record.status }),
     ...(record?.reason === undefined ? {} : { reason: record.reason }),
     attempts: record?.attempts.length ?? 0,
+    ...(record?.attempts[0]?.started_at === undefined
+      ? {}
+      : { startedAt: record.attempts[0].started_at }),
+    ...(record?.attempts.at(-1)?.finished_at === undefined
+      ? {}
+      : { finishedAt: record.attempts.at(-1)?.finished_at as string }),
     ...(definition?.agent === undefined ? {} : { agent: definition.agent }),
     ...(definition?.model === undefined ? {} : { model: definition.model }),
     ...(definition?.prompt === undefined ? {} : { prompt: definition.prompt }),
@@ -215,6 +236,8 @@ function buildJob(
     ...(definition?.description === undefined ? {} : { description: definition.description }),
     ...(record?.status === undefined ? {} : { status: record.status }),
     ...(record?.reason === undefined ? {} : { reason: record.reason }),
+    ...(record?.started_at === undefined ? {} : { startedAt: record.started_at }),
+    ...(record?.finished_at === undefined ? {} : { finishedAt: record.finished_at }),
     needs,
     ...(definition?.if === undefined ? {} : { if: definition.if }),
     on: definition?.on ?? 'success',
