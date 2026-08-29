@@ -150,8 +150,11 @@ function handleFile(runsRoot: string, url: URL, res: ServerResponse): void {
     return;
   }
 
+  // Умолчание — хвост: без параметра просят лог, а у лога интересен конец.
+  const side = url.searchParams.get('side') === 'head' ? 'head' : 'tail';
+
   try {
-    sendJson(res, 200, readJournalFile(paths.dir, requested));
+    sendJson(res, 200, readJournalFile(paths.dir, requested, side));
   } catch (error) {
     // Выход за каталог прогона — ошибка клиента, а не сбой сервера.
     const message = isStepcastError(error) ? error.message : 'Файл не читается';

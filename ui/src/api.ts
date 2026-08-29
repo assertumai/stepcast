@@ -201,10 +201,14 @@ export interface PipelinesOverview {
   readonly generatedAt: string;
 }
 
+/** Какой конец крупного файла запрошен и показан. */
+export type FileSide = 'head' | 'tail';
+
 export interface FileContent {
   readonly content: string;
   readonly bytes: number;
   readonly truncated: boolean;
+  readonly side: FileSide;
 }
 
 export interface SettingsValue {
@@ -282,8 +286,16 @@ export async function fetchRun(address: string): Promise<RunSnapshot> {
   return json<RunSnapshot>(await fetch(`/api/run?run=${encodeURIComponent(address)}`));
 }
 
-export async function fetchFile(address: string, path: string): Promise<FileContent> {
-  const query = `run=${encodeURIComponent(address)}&path=${encodeURIComponent(path)}`;
+/**
+ * Содержимое файла журнала. `side` — какой конец показать, если файл крупнее
+ * потолка демона; на файле меньше потолка параметр ничего не меняет.
+ */
+export async function fetchFile(
+  address: string,
+  path: string,
+  side: FileSide = 'tail',
+): Promise<FileContent> {
+  const query = `run=${encodeURIComponent(address)}&path=${encodeURIComponent(path)}&side=${side}`;
   return json<FileContent>(await fetch(`/api/file?${query}`));
 }
 
