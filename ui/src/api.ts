@@ -193,7 +193,13 @@ export interface PipelineView {
   readonly failFast?: boolean;
   readonly jobs: readonly PipelineJobView[];
   readonly graph?: JobGraph;
+  /** Файл не разбирается: текст, место и подсказка — тем же составом, что печатает CLI. */
   readonly error?: string;
+  /** Файл ошибки относительно корня проекта: у `uses` это файл работы, а не пайплайна. */
+  readonly errorFile?: string;
+  /** Место ошибки внутри документа, например `jobs.propose-a`. */
+  readonly errorAt?: string;
+  readonly errorHint?: string;
 }
 
 export interface PipelinesOverview {
