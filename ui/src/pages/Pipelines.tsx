@@ -73,6 +73,35 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
   );
 }
 
+/**
+ * Отказ разбора: текст, место и подсказка — так же, как их печатает CLI.
+ *
+ * Место идёт отдельной строкой, а не приклеено к тексту: файл ошибки не
+ * обязан совпадать с файлом карточки (работа подключается по `uses` из
+ * своего файла), а путь внутри документа — единственное, что отвечает на
+ * вопрос «где именно», ради которого карточка и заводится.
+ */
+function PipelineError({ pipeline }: { readonly pipeline: PipelineView }): JSX.Element {
+  // Файл ошибки повторяется, только если он не тот, что назван в шапке карточки.
+  const where =
+    pipeline.errorFile === undefined || pipeline.errorFile === pipeline.file
+      ? undefined
+      : pipeline.errorFile;
+  return (
+    <>
+      <p className="error">{pipeline.error}</p>
+      {where === undefined && pipeline.errorAt === undefined ? null : (
+        <p className="note dim">
+          где: {where === undefined ? null : <span className="mono">{where}</span>}
+          {where === undefined || pipeline.errorAt === undefined ? null : ' · '}
+          {pipeline.errorAt === undefined ? null : <span className="mono">{pipeline.errorAt}</span>}
+        </p>
+      )}
+      {pipeline.errorHint === undefined ? null : <p className="note dim">{pipeline.errorHint}</p>}
+    </>
+  );
+}
+
 function PipelineCard({
   pipeline,
   runs,
@@ -94,7 +123,7 @@ function PipelineCard({
           <span className="card-title">{pipeline.name}</span>
           <span className="mono small dim">{pipeline.file}</span>
         </div>
-        <p className="error">{pipeline.error}</p>
+        <PipelineError pipeline={pipeline} />
       </div>
     );
   }

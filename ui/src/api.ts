@@ -122,6 +122,9 @@ export interface StepSnapshot {
   readonly status?: StatusValue;
   readonly reason?: string;
   readonly attempts: number;
+  /** Отрезок исполнения шага: начало первой попытки и конец последней. */
+  readonly startedAt?: string;
+  readonly finishedAt?: string;
   readonly prompt?: string;
   readonly command?: string;
   readonly context: readonly string[];
@@ -135,6 +138,9 @@ export interface JobSnapshot {
   readonly description?: string;
   readonly status?: StatusValue;
   readonly reason?: string;
+  /** Отрезок исполнения работы: у идущей конца ещё нет. */
+  readonly startedAt?: string;
+  readonly finishedAt?: string;
   readonly needs: readonly string[];
   readonly if?: string;
   readonly on: 'success' | 'failure' | 'always';
@@ -187,7 +193,13 @@ export interface PipelineView {
   readonly failFast?: boolean;
   readonly jobs: readonly PipelineJobView[];
   readonly graph?: JobGraph;
+  /** Файл не разбирается: текст, место и подсказка — тем же составом, что печатает CLI. */
   readonly error?: string;
+  /** Файл ошибки относительно корня проекта: у `uses` это файл работы, а не пайплайна. */
+  readonly errorFile?: string;
+  /** Место ошибки внутри документа, например `jobs.propose-a`. */
+  readonly errorAt?: string;
+  readonly errorHint?: string;
 }
 
 export interface PipelinesOverview {
@@ -195,10 +207,14 @@ export interface PipelinesOverview {
   readonly generatedAt: string;
 }
 
+/** Какой конец крупного файла запрошен и показан. */
+export type FileSide = 'head' | 'tail';
+
 export interface FileContent {
   readonly content: string;
   readonly bytes: number;
   readonly truncated: boolean;
+  readonly side: FileSide;
 }
 
 export interface SettingsValue {
@@ -276,8 +292,16 @@ export async function fetchRun(address: string): Promise<RunSnapshot> {
   return json<RunSnapshot>(await fetch(`/api/run?run=${encodeURIComponent(address)}`));
 }
 
-export async function fetchFile(address: string, path: string): Promise<FileContent> {
-  const query = `run=${encodeURIComponent(address)}&path=${encodeURIComponent(path)}`;
+/**
+ * Содержимое файла журнала. `side` — какой конец показать, если файл крупнее
+ * потолка демона; на файле меньше потолка параметр ничего не меняет.
+ */
+export async function fetchFile(
+  address: string,
+  path: string,
+  side: FileSide = 'tail',
+): Promise<FileContent> {
+  const query = `run=${encodeURIComponent(address)}&path=${encodeURIComponent(path)}&side=${side}`;
   return json<FileContent>(await fetch(`/api/file?${query}`));
 }
 

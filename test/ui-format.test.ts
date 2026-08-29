@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { fmtBytes, fmtDuration, fmtMoney, fmtTokens } from '../src/ui/format.js';
+import { fmtBytes, fmtDuration, fmtMoney, fmtSpan, fmtTokens } from '../src/ui/format.js';
 
 describe('ui-format: длительность', () => {
   it('не показывает разрядов, которых на часах не бывает', () => {
@@ -49,5 +49,29 @@ describe('ui-format: величины расхода', () => {
     assert.equal(fmtBytes(512), '512 Б');
     assert.equal(fmtBytes(2048), '2.0 КБ');
     assert.equal(fmtBytes(3 * 1024 * 1024), '3.0 МБ');
+  });
+});
+
+describe('ui-format: отрезок исполнения', () => {
+  const START = '2026-08-01T00:00:00.000Z';
+  const NOW = Date.parse('2026-08-01T00:05:00.000Z');
+
+  it('у завершённого — фактическая длительность, у идущего — сколько идёт', () => {
+    assert.equal(fmtSpan(START, '2026-08-01T00:02:00.000Z', NOW), '2м');
+    assert.equal(fmtSpan(START, undefined, NOW), 'идёт 5м');
+  });
+
+  it('без начала отрезка нет вовсе: работа ещё не начиналась', () => {
+    assert.equal(fmtSpan(undefined, undefined, NOW), undefined);
+    assert.equal(fmtSpan(undefined, '2026-08-01T00:02:00.000Z', NOW), undefined);
+  });
+
+  it('расходящиеся часы витрины и прогона не дают отрицательного отрезка', () => {
+    assert.equal(fmtSpan('2026-08-01T00:10:00.000Z', undefined, NOW), 'идёт 0с');
+  });
+
+  it('нечитаемое время — не отрезок, а его отсутствие', () => {
+    assert.equal(fmtSpan('не время', undefined, NOW), undefined);
+    assert.equal(fmtSpan(START, 'не время', NOW), undefined);
   });
 });

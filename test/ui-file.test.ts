@@ -40,6 +40,18 @@ describe('ui-dashboard: чтение файла журнала', () => {
     assert.throws(() => resolveJournalPath(runDir, '../run-other/файл'), StepcastError);
   });
 
+  it('не помечает усечённым файл меньше потолка и отдаёт его целиком', () => {
+    const runDir = bed();
+    const whole = 'строка\n'.repeat(1000);
+    writeFileSync(join(runDir, 'small.log'), whole);
+
+    const file = readJournalFile(runDir, 'small.log');
+
+    assert.equal(file.truncated, false);
+    assert.equal(file.content, whole);
+    assert.equal(file.side, 'head');
+  });
+
   // Сценарий: «Крупный файл усечён»
   it('усекает файл крупнее потолка и помечает это', () => {
     const runDir = bed();
@@ -51,5 +63,45 @@ describe('ui-dashboard: чтение файла журнала', () => {
     assert.equal(file.truncated, true);
     assert.ok(file.bytes > MAX_FILE_BYTES, 'кириллица занимает больше байта на символ');
     assert.ok(Buffer.byteLength(file.content, 'utf8') <= MAX_FILE_BYTES);
+  });
+
+  // Сценарий: «Хвост крупного лога виден»
+  it('по умолчанию отдаёт конец крупного файла, а не начало', () => {
+    const runDir = bed();
+    const tail = 'причина отказа в самом конце\n';
+    writeFileSync(join(runDir, 'stdout.log'), `начало потока\n${'я'.repeat(MAX_FILE_BYTES)}${tail}`);
+
+    const file = readJournalFile(runDir, 'stdout.log');
+
+    assert.equal(file.truncated, true);
+    assert.equal(file.side, 'tail');
+    assert.ok(file.content.endsWith(tail), 'хвост должен быть виден целиком');
+    assert.ok(!file.content.includes('начало потока'));
+  });
+
+  it('по запросу отдаёт начало крупного файла', () => {
+    const runDir = bed();
+    writeFileSync(join(runDir, 'big.json'), `{"первое поле": "${'я'.repeat(MAX_FILE_BYTES)}"}`);
+
+    const file = readJournalFile(runDir, 'big.json', 'head');
+
+    assert.equal(file.side, 'head');
+    assert.ok(file.content.startsWith('{"первое поле"'));
+  });
+
+  // Сценарий: «Многобайтовый символ на границе окна»
+  it('не оставляет обрубка многобайтового символа ни на одном крае окна', () => {
+    const runDir = bed();
+    // Нечётный сдвиг гарантирует, что граница окна придётся на середину
+    // двухбайтовой кириллицы с обоих концов.
+    writeFileSync(join(runDir, 'края.log'), `x${'я'.repeat(MAX_FILE_BYTES)}x`);
+
+    const tail = readJournalFile(runDir, 'края.log', 'tail');
+    const head = readJournalFile(runDir, 'края.log', 'head');
+
+    assert.ok(!tail.content.includes('�'), 'хвост не должен начинаться с обрубка');
+    assert.ok(!head.content.includes('�'), 'начало не должно кончаться обрубком');
+    assert.ok(tail.content.endsWith('x'));
+    assert.ok(head.content.startsWith('x'));
   });
 });

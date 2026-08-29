@@ -56,8 +56,24 @@ export interface PipelineView {
    * Пайплайн не разбирается. Как и нечитаемый прогон в обзоре, он остаётся
    * видимым с объяснением: молча пропущенный файл выглядел бы как его
    * отсутствие, а это разные вещи.
+   *
+   * Место ошибки и подсказка идут соседними полями, а не приклеены к тексту:
+   * склеенную строку экран не может ни выделить, ни показать иначе, чем
+   * прочий текст, — а карточка заводится именно ради объяснения. Поля
+   * плоские, потому что `error` склейка прогонов (`src/ui/grouping.ts`)
+   * читает как признак «файл не разбирается».
    */
   readonly error?: string;
+  /**
+   * Файл, к которому относится ошибка, относительно корня проекта. Он не
+   * всегда совпадает с файлом пайплайна: ошибка приходит и из файла работы,
+   * подключённой по `uses`.
+   */
+  readonly errorFile?: string;
+  /** Место ошибки внутри документа, например `jobs.propose-a`. */
+  readonly errorAt?: string;
+  /** Что делать пользователю — та же подсказка, что печатает CLI. */
+  readonly errorHint?: string;
 }
 
 export interface PipelinesOverview {
@@ -106,8 +122,31 @@ function toView(projectKey: string, projectPath: string, file: string, pipeline:
   };
 }
 
-function message(error: unknown): string {
-  return isStepcastError(error) ? error.message : (error as Error).message;
+/** Отказ разбора в полях карточки: место и подсказка — половина объяснения. */
+interface Failure {
+  readonly error: string;
+  readonly errorFile?: string;
+  readonly errorAt?: string;
+  readonly errorHint?: string;
+}
+
+/**
+ * Место ошибки и подсказка доезжают до экрана наравне с текстом: CLI печатает
+ * их отдельными строками, и витрина, показывая один только `message`,
+ * оставляла бы пользователя без ответа на вопрос «где именно».
+ */
+function toFailure(error: unknown, projectPath: string): Failure {
+  if (!isStepcastError(error)) return { error: (error as Error).message };
+  // Путь файла — в том же виде, что `PipelineView.file`: абсолютный путь
+  // машины демона на экране проекта ничего не добавляет.
+  const file =
+    error.file === undefined ? undefined : relative(projectPath, error.file).replace(/\\/g, '/');
+  return {
+    error: error.message,
+    ...(file === undefined || file === '' ? {} : { errorFile: file }),
+    ...(error.at === undefined ? {} : { errorAt: error.at }),
+    ...(error.hint === undefined ? {} : { errorHint: error.hint }),
+  };
 }
 
 /** Карточка с объяснением вместо устройства: имя берётся из файла, раскрытие до `name` не дошло. */
@@ -115,9 +154,9 @@ function errorView(
   projectKey: string,
   projectPath: string,
   file: string,
-  error: string,
+  failure: Failure,
 ): PipelineView {
-  return { projectKey, projectPath, file, name: file, jobs: [], error };
+  return { projectKey, projectPath, file, name: file, jobs: [], ...failure };
 }
 
 function readPipeline(
@@ -131,7 +170,7 @@ function readPipeline(
     const { pipeline } = expandPipeline({ pipelinePath: absolute, config });
     return toView(projectKey, projectPath, file, pipeline);
   } catch (error) {
-    return errorView(projectKey, projectPath, file, message(error));
+    return errorView(projectKey, projectPath, file, toFailure(error, projectPath));
   }
 }
 
@@ -173,21 +212,21 @@ export function buildPipelines(
     // пайплайн: с объяснением. Молча раскрыть его чужой конфигурацией значило
     // бы показать устройство, которого у прогона в этом проекте не будет.
     let forProject: Config | undefined;
-    let failure = '';
+    let failure: Failure | undefined;
     try {
       forProject = { ...config, project: projectSection(project.path, options.home) };
     } catch (error) {
-      failure = message(error);
+      failure = toFailure(error, project.path);
     }
 
     for (const file of files) {
       pipelines.push(
-        forProject === undefined
+        failure !== undefined || forProject === undefined
           ? errorView(
               project.key,
               project.path,
               relative(project.path, file).replace(/\\/g, '/'),
-              failure,
+              failure ?? { error: 'Конфигурация проекта не читается' },
             )
           : readPipeline(project.key, project.path, file, forProject),
       );

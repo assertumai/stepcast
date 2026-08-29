@@ -544,6 +544,11 @@ async function executeJob(
     status: 'running',
     started_at: new Date().toISOString(),
   });
+  // Начало работы сбрасывается на диск сразу, а не вместе с исходом первого
+  // шага: у работы с одним долгим агентским шагом между этими моментами
+  // проходят десятки минут, и всё это время состояние утверждало бы, что
+  // работа ещё не начиналась.
+  context.refreshStatus();
 
   try {
     return await runJob(declared, scope, context);
