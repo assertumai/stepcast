@@ -278,6 +278,24 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
     });
   }
 
+  const nestedRepos = options.config.project.nestedRepos ?? [];
+  if (nestedRepos.length > 0) {
+    // Составной якорь допускает только режим cwd: изолированное дерево
+    // объявленных частей не содержит, и якорь там снова стал бы
+    // однорепозиторным (см. checkWorkspaceAvailability в run/workspace.ts —
+    // та же причина, тот же отказ, только раньше, статически).
+    for (const job of pipeline.jobs) {
+      if (job.workspace.mode === 'cwd') continue;
+      push({
+        severity: 'error',
+        message: `Работа ${job.id} объявляет режим ${job.workspace.mode}, а вложенные репозитории объявлены составом дерева (project.nested_repos)`,
+        file: job.source,
+        at: `jobs.${job.id}.workspace.mode`,
+        hint: 'Изолированное дерево объявленных частей не содержит, и якорь там снова стал бы однорепозиторным. Уберите nested_repos или переведите работу в режим cwd',
+      });
+    }
+  }
+
   for (const diagnostic of workspaceInheritanceDiagnostics(pipeline, graph)) push(diagnostic);
 
   if (pipeline.workspace.mode === 'cwd' && pipeline.concurrency > 1) {

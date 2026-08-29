@@ -167,6 +167,15 @@ export interface BuildPlanOptions {
    * восстановить ровно эти пути, не трогая остальное дерево.
    */
   readonly producedPaths?: (step: StepRecord) => readonly string[] | undefined;
+  /**
+   * Причина, которой снабжается инвалидация каждого шага, когда `changed`
+   * пришёл значением `'all'`. По умолчанию — «состояние дерева установить не
+   * удалось». Несовпадение состава вложенных репозиториев исходного прогона
+   * с сегодняшним — другой случай «сравнить нечем», и называет обе стороны
+   * состава, а не путает читателя с обычным отказом снятия якоря
+   * (`planResume`).
+   */
+  readonly allReason?: string;
 }
 
 export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
@@ -317,6 +326,10 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
+function describeComposition(nestedRepos: readonly string[]): string {
+  return nestedRepos.length === 0 ? '(без вложенных репозиториев)' : nestedRepos.join(', ');
+}
+
 function outputValue(record: JobRecord | undefined): unknown {
   if (record?.output === undefined || !existsSync(record.output)) return undefined;
   try {
@@ -454,13 +467,13 @@ function invalidationReason(input: ReasonOptions): ReasonOutcome {
     // дереве, но не о том, что источник описывает другой шаг.
     if (keyChanged) return { reason: 'изменилось определение шага, промпт или бэкенд' };
 
-    const touched = touchedInputs(job, previous, changed, producedAfter);
+    const touched = touchedInputs(job, previous, changed, producedAfter, options.allReason);
     const clobbered = clobberedPaths(previous, changed, options.producedPaths);
     const ignored = dedupe([...(touched?.paths ?? []), ...clobbered]);
     return ignored.length > 0 ? { ignoredEdits: ignored } : {};
   }
 
-  const touched = touchedInputs(job, previous, changed, producedAfter);
+  const touched = touchedInputs(job, previous, changed, producedAfter, options.allReason);
   if (touched !== undefined) return { reason: touched.reason };
 
   // Путь, который произвёл этот шаг, входит в число изменившихся после
@@ -491,9 +504,10 @@ function touchedInputs(
   previous: StepRecord,
   changed: ChangedSince,
   producedAfter: ReadonlySet<string>,
+  allReason?: string,
 ): { reason: string; paths: readonly string[] } | undefined {
   if (changed === 'all') {
-    return { reason: 'состояние дерева установить не удалось — считаем изменённым', paths: [] };
+    return { reason: allReason ?? 'состояние дерева установить не удалось — считаем изменённым', paths: [] };
   }
 
   const attributable = changed.filter((path) => !producedAfter.has(path));
@@ -694,22 +708,50 @@ export function planResume(request: ResumeRequest): ResumePlanResult {
     }
   }
 
-  const anchorKind = detectAnchorKind(cwd);
+  const declaredToday = config.project.nestedRepos ?? [];
+  const declaredBefore = source.manifest.nested_repos ?? [];
+  // Состав вложенных репозиториев — форма состояния дерева (design.md,
+  // решение 2): якорь другого состава несравним с сегодняшним по устройству
+  // (разный отпечаток в tree_id), но называть *обе* стороны различия он не
+  // может — состав исходного прогона в самом якоре не записан, только его
+  // отпечаток. Обе стороны известны здесь: сегодняшняя — из конфигурации,
+  // прошлая — из манифеста исходного прогона.
+  const compositionMatches =
+    declaredToday.length === declaredBefore.length &&
+    declaredToday.every((relDir, index) => relDir === declaredBefore[index]);
+
+  const anchorKind = detectAnchorKind(cwd, config.project.nestedRepos);
   const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-plan-'));
   const anchorer = createAnchorer({
     dir: cwd,
     stateDir,
     kind: anchorKind,
     scope: 'plan',
+    ...(config.project.nestedRepos === undefined ? {} : { nested: config.project.nestedRepos }),
     readStores: [manifestStore(source.paths.anchors)],
   });
 
   let changed: ChangedSince;
-  try {
-    changed = changedSince(anchorer, finalAnchorOf(source.status, anchorKind), anchorer.capture());
-  } catch {
+  let allReason: string | undefined;
+  if (!compositionMatches) {
     changed = 'all';
+    allReason = `состав вложенных репозиториев не совпадает: сегодня — ${describeComposition(declaredToday)}, в прошлом прогоне — ${describeComposition(declaredBefore)}`;
+  } else {
+    try {
+      changed = changedSince(anchorer, finalAnchorOf(source.status, anchorKind), anchorer.capture());
+    } catch {
+      changed = 'all';
+    }
   }
+
+  // При несовпавшем составе якоря исходного прогона сегодняшнему не значат
+  // ничего: разбирать их — значит спрашивать у якоря чужого состава, что
+  // произвёл каждый шаг. Ответ всё равно не пригодится (переиспользовать
+  // нечего, восстанавливать нечего), а цена — обход всего прогона git-ом
+  // ради заведомо несравнимых пар.
+  const producedPaths = compositionMatches
+    ? (step: StepRecord): readonly string[] | undefined => producedBy(anchorer, step)
+    : undefined;
 
   const plan = buildResumePlan({
     expanded,
@@ -717,8 +759,9 @@ export function planResume(request: ResumeRequest): ResumePlanResult {
     source,
     changed,
     cwd,
-    producedPaths: (step) => producedBy(anchorer, step),
+    ...(producedPaths === undefined ? {} : { producedPaths }),
     ...(from === undefined ? {} : { from }),
+    ...(allReason === undefined ? {} : { allReason }),
   });
 
   // Якорь нужен плану для вычисления произведённых путей, поэтому

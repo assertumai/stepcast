@@ -83,6 +83,13 @@ export interface Config {
     /** Границы правок репозитория, в объявленном порядке. Нет встроенного умолчания — та же причина, что у `check`. */
     readonly editPaths: readonly string[] | undefined;
     /**
+     * Вложенные репозитории дерева, в каноническом порядке (без хвостового
+     * разделителя, без повторов, отсортирован) независимо от того, как они
+     * объявлены — форма состояния дерева не зависит от порядка объявления.
+     * Нет встроенного умолчания — та же причина, что у `check`.
+     */
+    readonly nestedRepos: readonly string[] | undefined;
+    /**
      * Практика спецификации репозитория: место документов изменения, файл
      * правил их написания, имя инструмента. Умолчаний нет по той же причине,
      * что у `check`, — угаданное значение указывало бы в чужом репозитории на
@@ -205,6 +212,19 @@ function rejectProjectOnlyKeys(config: RawConfig, path: string): void {
   }
 }
 
+/**
+ * Приводит объявленный состав вложенных репозиториев к каноническому виду:
+ * хвостовой разделитель отброшен, повторы отброшены, порядок один и тот же
+ * независимо от объявления. Составной якорь строит отпечаток состава из
+ * этого списка (`anchor/composite.ts`) — несортированный порядок дал бы
+ * разный отпечаток для одного и того же дерева.
+ */
+function canonicalizeNestedRepos(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) return undefined;
+  const unique = new Set((value as string[]).map((item) => item.replace(/\/+$/, '')));
+  return [...unique].sort();
+}
+
 function requireNumber(values: ReadonlyMap<string, unknown>, path: string): number {
   const value = values.get(path);
   if (typeof value !== 'number') {
@@ -296,6 +316,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   const projectCheck = values.get('project.check');
   const projectTools = values.get('project.tools');
   const projectEditPaths = values.get('project.edit_paths');
+  const projectNestedRepos = canonicalizeNestedRepos(values.get('project.nested_repos'));
   const projectSpecDir = values.get('project.spec.dir');
   const projectSpecRules = values.get('project.spec.rules');
   const projectSpecTool = values.get('project.spec.tool');
@@ -347,6 +368,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
         Array.isArray(projectEditPaths) && projectEditPaths.every((item) => typeof item === 'string')
           ? (projectEditPaths as readonly string[])
           : undefined,
+      nestedRepos: projectNestedRepos,
       spec: {
         dir: typeof projectSpecDir === 'string' ? projectSpecDir : undefined,
         rules: typeof projectSpecRules === 'string' ? projectSpecRules : undefined,

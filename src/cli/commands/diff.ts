@@ -27,13 +27,14 @@ export function runDiffCommand(
 
   // Якорь нужен только для сравнения деревьев и читает тела манифестов обоих
   // прогонов: сам он ничего не фиксирует.
-  const anchorKind = detectAnchorKind(cwd);
+  const anchorKind = detectAnchorKind(cwd, config.project.nestedRepos);
   const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-diff-'));
   const anchorer = createAnchorer({
     dir: cwd,
     stateDir,
     kind: anchorKind,
     scope: 'diff',
+    ...(config.project.nestedRepos === undefined ? {} : { nested: config.project.nestedRepos }),
     readStores: [manifestStore(a.anchors), manifestStore(b.anchors)],
   });
 

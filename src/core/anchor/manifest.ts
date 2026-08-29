@@ -125,6 +125,15 @@ export function createManifestAnchorer(options: ManifestAnchorerOptions): TreeAn
         };
       }
       if (from.id === to.id) return { comparable: true, paths: [] };
+      // Способы совпали между собой, но не с нашим: тела манифеста у чужого
+      // идентификатора нет и быть не может, и «тело недоступно» назвало бы
+      // причиной пропажу вместо несовпадения способов.
+      if (from.kind !== 'manifest') {
+        return {
+          comparable: false,
+          reason: `состояния сняты способом ${from.kind}, а действующий якорь — хеш-манифест`,
+        };
+      }
 
       const before = read(from);
       const after = read(to);

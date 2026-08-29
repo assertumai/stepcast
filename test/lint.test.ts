@@ -4,18 +4,28 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { run, type CliIo } from '../src/cli/main.js';
+import type { Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../src/core/lint.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
 import { makeProject, withHome, type Project } from './helpers.js';
 
 function lint(project: Project, inputs?: Record<string, string>): Diagnostic[] {
+  return lintWithConfig(project, project.config, inputs);
+}
+
+function lintWithConfig(project: Project, config: Config, inputs?: Record<string, string>): Diagnostic[] {
   const expanded = expandPipeline({
     pipelinePath: project.path('stepcast.yml'),
-    config: project.config,
+    config,
     ...(inputs === undefined ? {} : { inputs }),
   });
-  return lintPipeline(expanded, { config: project.config });
+  return lintPipeline(expanded, { config });
+}
+
+/** Тот же проект, но с объявленным составом `project.nested_repos`, будто он объявлен в `.stepcast/config.yml`. */
+function withNestedRepos(project: Project, nestedRepos: readonly string[]): Config {
+  return { ...project.config, project: { ...project.config.project, nestedRepos } };
 }
 
 function errors(diagnostics: readonly Diagnostic[]): string[] {
@@ -1269,6 +1279,45 @@ jobs:
     const diagnostics = lint(project);
     assert.ok(
       errors(diagnostics).some((message) => /допустим только при режиме copy/.test(message)),
+    );
+  });
+});
+
+describe('pipeline-definition: изолированные режимы при объявленном составе вложенных репозиториев', () => {
+  const PIPELINE_WORKTREE = `
+version: 1
+kind: pipeline
+name: составной
+workspace: { mode: worktree }
+jobs:
+  build:
+    steps:
+      - id: a
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Задача 8 / Сценарий: диагностика по образцу уже живущих отказов пригодности режима.
+  it('отклоняет работу в режиме worktree при объявленном составе, называя работу, режим и путь', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE_WORKTREE });
+
+    const diagnostics = lintWithConfig(project, withNestedRepos(project, ['public-site']));
+    const found = diagnostics.find((item) => item.at === 'jobs.build.workspace.mode');
+    assert.ok(found !== undefined, 'диагностика по jobs.build.workspace.mode должна найтись');
+    assert.equal(found.severity, 'error');
+    assert.match(found.message, /build/);
+    assert.match(found.message, /worktree/);
+    assert.equal(found.file, project.path('stepcast.yml'));
+  });
+
+  // Задача 8 / Сценарий: без объявленного состава диагностики нет.
+  it('на пустом составе диагностики нет', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE_WORKTREE });
+
+    const diagnostics = lint(project);
+    assert.equal(
+      diagnostics.some((item) => item.at === 'jobs.build.workspace.mode'),
+      false,
     );
   });
 });

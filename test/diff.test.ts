@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -264,6 +265,109 @@ describe('run-diff: несравнимые прогоны', () => {
 
     const comparison = compare(b, first, second);
     assert.ok(comparison.notes.some((note) => note.includes('пайплайны различаются')));
+  });
+});
+
+/** Инициализировать git-репозиторий в каталоге: та же тройка команд, что и в других стендах. */
+function gitInitAt(dir: string): void {
+  const g = (...args: string[]): void => {
+    execFileSync('git', ['-C', dir, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+  };
+  g('init', '--quiet', '--initial-branch=main');
+  g('config', 'user.email', 'test@example.com');
+  g('config', 'user.name', 'Тест');
+}
+
+function gitCommitAt(dir: string, message: string): void {
+  execFileSync('git', ['-C', dir, 'add', '-A'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  execFileSync('git', ['-C', dir, 'commit', '--quiet', '-m', message], { stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+/** Стенд с корневым репозиторием и объявляемыми вложенными репозиториями — части коммитятся первыми. */
+function compositeBed(files: Readonly<Record<string, string>>, parts: readonly string[]): Bed {
+  const b = bed(files);
+  for (const relDir of parts) {
+    const dir = b.project.path(relDir);
+    gitInitAt(dir);
+    gitCommitAt(dir, 'начало части');
+  }
+  gitInitAt(b.project.root);
+  gitCommitAt(b.project.root, 'первый');
+  return b;
+}
+
+async function runWithNested(b: Bed, nestedRepos: readonly string[]): Promise<RunResult> {
+  const config = { ...b.project.config, project: { ...b.project.config.project, nestedRepos } };
+  return runPipeline({
+    expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+    config: { ...config, runs: { ...config.runs, root: b.runsRoot } },
+    projectRoot: b.project.root,
+    cwd: b.project.root,
+  });
+}
+
+describe('run-diff: несравнимый состав вложенных репозиториев', () => {
+  // Задача 11 / Сценарий: два прогона составного якоря разного состава.
+  it('два прогона разного состава дают помеченную несравнимость деревьев, а промпт и контекст сравниваются', async () => {
+    const b = compositeBed(
+      { 'сырьё.txt': 'вход', 'public-site/.gitkeep': '', 'vendor-sdk/.gitkeep': '', 'stepcast.yml': PIPELINE },
+      ['public-site', 'vendor-sdk'],
+    );
+
+    const first = await runWithNested(b, ['public-site']);
+    b.project.write('сырьё.txt', 'другой вход');
+    const second = await runWithNested(b, ['vendor-sdk']);
+
+    const comparison = diffRuns({ a: first.journal.paths, b: second.journal.paths });
+    assert.ok(
+      comparison.notes.some((note) => /состав вложенных репозиториев различается/.test(note)),
+      `заметка о несравнимости состава ожидалась среди: ${JSON.stringify(comparison.notes)}`,
+    );
+
+    const step = comparison.steps[0];
+    assert.equal(step?.category, 'changed');
+    const tree = step?.sources.find((source) => source.source === 'дерево');
+    assert.ok(tree !== undefined);
+    assert.match(tree.note ?? '', /состав вложенных репозиториев различается/);
+
+    // Несравнимость дерева не останавливает сравнение остальных источников.
+    const names = step?.sources.map((source) => source.source) ?? [];
+    assert.ok(names.includes('промпт'));
+    assert.ok(names.includes('контекст'));
+
+    assert.ok(
+      describeComparison(comparison).some((line) => line.includes('состав вложенных репозиториев различается')),
+    );
+  });
+
+  // `stepcast diff` строит якорь сравнения по *сегодняшней* конфигурации: два
+  // составных прогона одного состава, разбираемые там, где nested_repos уже
+  // не объявлен, получают git-якорь. Составной идентификатор ему не значит
+  // ничего — это должно быть помеченной несравнимостью, а не сырой ошибкой git.
+  it('составные прогоны, разбираемые якорем без объявленного состава, помечены несравнимыми', async () => {
+    const b = compositeBed(
+      { 'сырьё.txt': 'вход', 'public-site/.gitkeep': '', 'stepcast.yml': PIPELINE },
+      ['public-site'],
+    );
+
+    const first = await runWithNested(b, ['public-site']);
+    b.project.write('сырьё.txt', 'другой вход');
+    const second = await runWithNested(b, ['public-site']);
+
+    // Тот же `compare`, что и у остальных тестов файла: якорь строится по
+    // дереву без объявленного состава.
+    const comparison = compare(b, first, second);
+    assert.ok(
+      comparison.notes.some((note) => /сегодняшнее дерево фиксируется способом git/.test(note)),
+      `заметка о несовпадении способа ожидалась среди: ${JSON.stringify(comparison.notes)}`,
+    );
+
+    const step = comparison.steps[0];
+    assert.equal(step?.category, 'changed');
+    const tree = step?.sources.find((source) => source.source === 'дерево');
+    assert.match(tree?.note ?? '', /несравнимы/);
+    // Промпт и контекст при этом сравниваются как обычно.
+    assert.ok((step?.sources.map((source) => source.source) ?? []).includes('контекст'));
   });
 });
 

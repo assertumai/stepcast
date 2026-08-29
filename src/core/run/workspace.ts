@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { cpSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { cpSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 
 import { createAnchorer, detectAnchorKind } from '../anchor/index.js';
@@ -45,6 +45,26 @@ function git(dir: string, args: readonly string[]): string {
     maxBuffer: 64 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+}
+
+/** Есть ли в репозитории хотя бы один коммит: `HEAD` разрешается в объект. */
+function hasCommit(dir: string): boolean {
+  try {
+    git(dir, ['rev-parse', '--verify', 'HEAD']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Игнорирует ли репозиторий `root` путь `relDir` своими правилами. */
+function ignoredByRoot(root: string, relDir: string): boolean {
+  try {
+    git(root, ['check-ignore', '-q', '--', relDir]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -217,8 +237,10 @@ export function workspacePathNeedsCopy(workspace: Workspace): boolean {
 export function checkWorkspaceAvailability(options: {
   readonly pipeline: Pipeline;
   readonly cwd: string;
+  /** Объявленный состав вложенных репозиториев (`project.nested_repos`). */
+  readonly nestedRepos?: readonly string[];
 }): void {
-  const { pipeline, cwd } = options;
+  const { pipeline, cwd, nestedRepos } = options;
   const workspaces = pipeline.jobs.map((job) => job.workspace);
 
   // Те же четыре отказа, что и `stepcast lint`: пайплайн, минующий линт,
@@ -279,6 +301,84 @@ export function checkWorkspaceAvailability(options: {
         at: 'workspace.path',
         cause: error,
       });
+    }
+  }
+
+  if (nestedRepos === undefined || nestedRepos.length === 0) return;
+
+  // Изолированные режимы дают дерево без объявленных частей (см.
+  // design.md, решение 7): `worktree` — чистая выкладка `HEAD` корня,
+  // `copy` — видимые корню файлы, а объявленный вложенный репозиторий в
+  // обоих случаях либо отсутствует вовсе, либо представлен одной записью
+  // без содержимого. Составной якорь там снимать нечем, а снять одиночный —
+  // молча вернуть дыру в границах, ради которой всё затевается.
+  const isolated = pipeline.jobs.find((job) => job.workspace.mode !== 'cwd');
+  if (isolated !== undefined) {
+    throw new StepcastError(
+      `Работа ${isolated.id} объявляет режим ${isolated.workspace.mode}, а вложенные репозитории объявлены составом дерева (project.nested_repos)`,
+      {
+        file: isolated.source,
+        at: `jobs.${isolated.id}.workspace.mode`,
+        hint: 'Изолированное дерево объявленных частей не содержит, и якорь там снова стал бы однорепозиторным. Уберите nested_repos или переведите работу в режим cwd',
+      },
+    );
+  }
+
+  if (!isGitWorktree(cwd)) {
+    throw new StepcastError(
+      'Корень рабочего дерева не является репозиторием git, а вложенные репозитории объявлены составом (project.nested_repos)',
+      { file: pipeline.file, at: 'project.nested_repos' },
+    );
+  }
+
+  for (const relDir of nestedRepos) {
+    const full = join(cwd, relDir);
+    let isDirectory: boolean;
+    try {
+      isDirectory = statSync(full).isDirectory();
+    } catch (error) {
+      throw new StepcastError(`Объявленный вложенный репозиторий не существует: ${relDir}`, {
+        file: pipeline.file,
+        at: 'project.nested_repos',
+        hint: 'Проверьте путь в project.nested_repos — опечатку или несклонированный подмодуль',
+        cause: error,
+      });
+    }
+    if (!isDirectory || !isGitWorktree(full)) {
+      throw new StepcastError(`Объявленный вложенный репозиторий не является рабочим деревом git: ${relDir}`, {
+        file: pipeline.file,
+        at: 'project.nested_repos',
+        hint: 'project.nested_repos называет каталог, который сам является отдельным git-репозиторием',
+      });
+    }
+
+    // Вложенный репозиторий без единого коммита корневой `add -A` встроить
+    // не умеет: он отказывает целиком («does not have a commit checked out»),
+    // и снятие первого же якоря провалилось бы отказом бухгалтерии посреди
+    // прогона — тихим, после которого границы правок просто не оцениваются.
+    // Отказ здесь узкий: часть, которую корень игнорирует, в его `add -A` не
+    // попадает вовсе и своим репозиторием снимается без коммита прекрасно.
+    if (!hasCommit(full) && !ignoredByRoot(cwd, relDir)) {
+      throw new StepcastError(
+        `Объявленный вложенный репозиторий ${relDir} не имеет ни одного коммита, а корневой репозиторий его не игнорирует`,
+        {
+          file: pipeline.file,
+          at: 'project.nested_repos',
+          hint: `Корневой git не умеет встроить такой каталог ссылкой на коммит и отказывает целиком. Сделайте в ${relDir} первый коммит или добавьте его в .gitignore корня`,
+        },
+      );
+    }
+
+    const toplevel = git(full, ['rev-parse', '--show-toplevel']).trim();
+    if (realpathSync(toplevel) !== realpathSync(full)) {
+      throw new StepcastError(
+        `Объявленный вложенный репозиторий ${relDir} принадлежит репозиторию ${toplevel}, а не собственному`,
+        {
+          file: pipeline.file,
+          at: 'project.nested_repos',
+          hint: 'project.nested_repos называет каталог собственного репозитория, а не подкаталог корневого',
+        },
+      );
     }
   }
 }

@@ -146,7 +146,7 @@ export const StepRecordSchema = z
     /** Якорь на начало шага: база для `changed_only` и для `diff.patch`. */
     tree_before: z.string().optional(),
     /** Способ фиксации: якоря разных способов несравнимы. */
-    anchor_kind: z.enum(['git', 'manifest']).optional(),
+    anchor_kind: z.enum(['git', 'manifest', 'composite']).optional(),
     /**
      * Почему якорь снять не удалось. Наличие поля означает, что шаг непригоден
      * для переиспользования при возобновлении, но на его статус это не влияло.
@@ -220,7 +220,15 @@ export const RunManifestSchema = z
     project_root: z.string(),
     workspace: z.object({ mode: z.string(), path: z.string().optional() }).strict(),
     /** Способ фиксации состояния дерева: определяется один раз на прогон. */
-    anchor_kind: z.enum(['git', 'manifest']).optional(),
+    anchor_kind: z.enum(['git', 'manifest', 'composite']).optional(),
+    /**
+     * Состав вложенных репозиториев, с которым снимался прогон (`project.
+     * nested_repos`), в каноническом порядке. Отсутствует, если состав не
+     * объявлен. Отпечаток в `tree_id` отвечает «тот же ли состав», это поле —
+     * «а какой был»: без него отчёт о несравнимости составов называл бы
+     * только сегодняшнюю половину.
+     */
+    nested_repos: z.array(z.string()).optional(),
     /** Прогон, из которого этот получен возобновлением. */
     resumed_from: z.string().optional(),
     inputs: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),

@@ -17,6 +17,13 @@ interface Bed {
   read(relativePath: string): string;
 }
 
+function initGitRepo(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  execFileSync('git', ['-C', dir, 'init', '--quiet', '--initial-branch=main']);
+  execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com']);
+  execFileSync('git', ['-C', dir, 'config', 'user.name', 'Тест']);
+}
+
 function bed(options: { readonly git: boolean }): Bed {
   const base = mkdtempSync(join(tmpdir(), 'stepcast-anchor-'));
   const dir = join(base, 'work');
@@ -24,11 +31,7 @@ function bed(options: { readonly git: boolean }): Bed {
   mkdirSync(dir, { recursive: true });
   mkdirSync(stateDir, { recursive: true });
 
-  if (options.git) {
-    execFileSync('git', ['-C', dir, 'init', '--quiet', '--initial-branch=main']);
-    execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com']);
-    execFileSync('git', ['-C', dir, 'config', 'user.name', 'Тест']);
-  }
+  if (options.git) initGitRepo(dir);
 
   return {
     dir,
@@ -275,6 +278,338 @@ describe('workspace-anchor: выбор способа фиксации', () => {
   it('выбирает git внутри репозитория и манифест вне его', () => {
     assert.equal(detectAnchorKind(bed({ git: true }).dir), 'git');
     assert.equal(detectAnchorKind(bed({ git: false }).dir), 'manifest');
+  });
+
+  // Задача 3.9 / Сценарий: пустой состав не меняет поведение
+  it('на пустом составе ведёт себя буква в букву как без него', () => {
+    const dir = bed({ git: true }).dir;
+    assert.equal(detectAnchorKind(dir, []), detectAnchorKind(dir));
+  });
+
+  it('выбирает composite на непустом составе', () => {
+    const b = bed({ git: true });
+    initGitRepo(join(b.dir, 'public-site'));
+    assert.equal(detectAnchorKind(b.dir, ['public-site']), 'composite');
+  });
+});
+
+describe('workspace-anchor: составной способ фиксации', () => {
+  // Стенд задачи 3.10: корень плюс вложенный git-репозиторий `public-site`.
+  //
+  // Часть получает начальный коммит: непустой (`HEAD` есть) вложенный
+  // репозиторий — это то, что `add -A` корня умеет встроить gitlink-записью;
+  // на repo без единого коммита та же команда отказывает («does not have a
+  // commit checked out»). Такое дерево встречается — свежий `git init` в
+  // части, — и отклоняется предстартовой проверкой состава
+  // (`checkWorkspaceAvailability`), а не отказом якоря посреди прогона.
+  function compositeBed(): Bed & { initPart(relDir: string): void } {
+    const b = bed({ git: true });
+    return {
+      ...b,
+      initPart: (relDir) => {
+        const full = join(b.dir, relDir);
+        initGitRepo(full);
+        writeFileSync(join(full, '.gitkeep'), '');
+        commit(full, 'начало части');
+      },
+    };
+  }
+
+  it('правка внутри объявленной части меняет якорь и даёт путь с префиксом', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.write('public-site/src/api.ts', 'один');
+    const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
+    const before = anchorer.capture();
+
+    b.write('public-site/src/api.ts', 'два');
+    const after = anchorer.capture();
+
+    assert.ok(!sameAnchor(before, after));
+    const comparison = anchorer.changedPaths(before, after);
+    assert.ok(comparison.comparable);
+    assert.deepEqual(comparison.paths, ['public-site/src/api.ts']);
+  });
+
+  // Сценарий: правка задевает якорь, даже если корень эту часть игнорирует.
+  it('правка в части, игнорируемой корневым репозиторием, меняет якорь', () => {
+    const b = compositeBed();
+    b.write('.gitignore', 'public-site/\n');
+    b.initPart('public-site');
+    b.write('public-site/src/api.ts', 'один');
+    const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
+    const before = anchorer.capture();
+
+    b.write('public-site/src/api.ts', 'два');
+    const after = anchorer.capture();
+
+    assert.ok(!sameAnchor(before, after));
+  });
+
+  it('правка в файле, игнорируемом самой частью, якорь не меняет', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.write('public-site/.gitignore', '*.log\n');
+    b.write('public-site/src/api.ts', 'один');
+    const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
+    const before = anchorer.capture();
+
+    b.write('public-site/debug.log', 'шум');
+
+    assert.ok(sameAnchor(before, anchorer.capture()));
+  });
+
+  it('правка в необъявленном вложенном репозитории якорь не меняет', () => {
+    const b = compositeBed();
+    b.write('.gitignore', 'public-site/\nother-repo/\n');
+    b.initPart('public-site');
+    initGitRepo(join(b.dir, 'other-repo'));
+    b.write('public-site/src/api.ts', 'один');
+    b.write('other-repo/file.txt', 'один');
+    const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
+    const before = anchorer.capture();
+
+    b.write('other-repo/file.txt', 'два');
+
+    assert.ok(sameAnchor(before, anchorer.capture()));
+  });
+
+  it('порядок объявления состава не влияет на идентификатор', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.initPart('vendor-sdk');
+    b.write('public-site/index.html', 'a');
+    b.write('vendor-sdk/lib.js', 'b');
+
+    const first = createAnchorer({
+      dir: b.dir,
+      stateDir: b.stateDir,
+      scope: 'first',
+      nested: ['public-site', 'vendor-sdk'],
+    }).capture();
+    const second = createAnchorer({
+      dir: b.dir,
+      stateDir: b.stateDir,
+      scope: 'second',
+      nested: ['vendor-sdk', 'public-site'],
+    }).capture();
+
+    assert.ok(sameAnchor(first, second));
+  });
+
+  it('составы разного размера несравнимы с причиной, называющей действующий состав', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.initPart('vendor-sdk');
+    b.write('public-site/a.txt', '1');
+    b.write('vendor-sdk/b.txt', '1');
+
+    const siteOnly = createAnchorer({ dir: b.dir, stateDir: b.stateDir, scope: 'one', nested: ['public-site'] });
+    const both = createAnchorer({
+      dir: b.dir,
+      stateDir: b.stateDir,
+      scope: 'two',
+      nested: ['public-site', 'vendor-sdk'],
+    });
+
+    const anchorOne = siteOnly.capture();
+    const anchorTwo = both.capture();
+
+    const comparison = both.changedPaths(anchorOne, anchorTwo);
+    assert.equal(comparison.comparable, false);
+    const reason = (comparison as { reason: string }).reason;
+    assert.match(reason, /public-site/);
+    assert.match(reason, /vendor-sdk/);
+  });
+
+  it('составы одного размера, но разного содержания несравнимы с причиной', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.initPart('vendor-sdk');
+    b.write('public-site/a.txt', '1');
+    b.write('vendor-sdk/b.txt', '1');
+
+    const siteOnly = createAnchorer({ dir: b.dir, stateDir: b.stateDir, scope: 'site', nested: ['public-site'] });
+    const sdkOnly = createAnchorer({ dir: b.dir, stateDir: b.stateDir, scope: 'sdk', nested: ['vendor-sdk'] });
+
+    const siteAnchor = siteOnly.capture();
+    const sdkAnchor = sdkOnly.capture();
+
+    const comparison = siteOnly.changedPaths(siteAnchor, sdkAnchor);
+    assert.equal(comparison.comparable, false);
+    assert.match((comparison as { reason: string }).reason, /состав/);
+  });
+
+  it('составное состояние и одиночное несравнимы', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.write('public-site/a.txt', '1');
+
+    const composite = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
+    const single = createAnchorer({ dir: b.dir, stateDir: b.stateDir, scope: 'single' });
+
+    const compositeAnchor = composite.capture();
+    const singleAnchor = single.capture();
+
+    const comparison = composite.changedPaths(compositeAnchor, singleAnchor);
+    assert.equal(comparison.comparable, false);
+    assert.match((comparison as { reason: string }).reason, /разными способами/);
+  });
+
+  // Обе стороны сравнения сняты чужим составом: между собой их отпечатки
+  // совпадают, и различие видно только при сверке с отпечатком сегодняшнего
+  // якоря. Без неё oid части чужого состава ушёл бы в `diff-tree` части
+  // сегодняшней — исключением из git или молча неверным перечнем путей.
+  it('две стороны чужого состава несравнимы, а не сравниваются друг с другом', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.initPart('vendor-sdk');
+    b.write('public-site/a.txt', '1');
+    b.write('vendor-sdk/b.txt', '1');
+
+    const foreign = createAnchorer({ dir: b.dir, stateDir: b.stateDir, scope: 'sdk', nested: ['vendor-sdk'] });
+    const today = createAnchorer({ dir: b.dir, stateDir: b.stateDir, scope: 'site', nested: ['public-site'] });
+
+    const before = foreign.capture();
+    b.write('vendor-sdk/b.txt', '2');
+    const after = foreign.capture();
+
+    const comparison = today.changedPaths(before, after);
+    assert.equal(comparison.comparable, false);
+    assert.match((comparison as { reason: string }).reason, /не совпадает с действующим/);
+    assert.match((comparison as { reason: string }).reason, /public-site/);
+    assert.equal(today.diff(before, after), undefined);
+  });
+
+  it('восстановление по якорю чужого состава отказывает, а не лезет в чужую часть', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.initPart('vendor-sdk');
+    b.write('public-site/a.txt', '1');
+    b.write('vendor-sdk/b.txt', '1');
+
+    const foreign = createAnchorer({ dir: b.dir, stateDir: b.stateDir, scope: 'sdk', nested: ['vendor-sdk'] });
+    const today = createAnchorer({ dir: b.dir, stateDir: b.stateDir, scope: 'site', nested: ['public-site'] });
+    const foreignAnchor = foreign.capture();
+
+    assert.throws(
+      () => today.restorePaths(foreignAnchor, ['public-site/a.txt']),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /не совпадает с действующим/);
+        return true;
+      },
+    );
+  });
+
+  // Якорь однорепозиторного прогона, попавший в составной якорь (и наоборот):
+  // сравнение обязано быть объявленно несравнимым, а не «fatal: bad object».
+  it('git-якорь в составном якоре и составной в git-якоре несравнимы без исключения', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.write('public-site/a.txt', '1');
+
+    const composite = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
+    const single = createAnchorer({ dir: b.dir, stateDir: b.stateDir, scope: 'single' });
+
+    const compositeBefore = composite.capture();
+    const gitBefore = single.capture();
+    b.write('root.txt', '2');
+    const compositeAfter = composite.capture();
+    const gitAfter = single.capture();
+
+    const inComposite = composite.changedPaths(gitBefore, gitAfter);
+    assert.equal(inComposite.comparable, false);
+    assert.match((inComposite as { reason: string }).reason, /составной/);
+    assert.equal(composite.diff(gitBefore, gitAfter), undefined);
+
+    const inGit = single.changedPaths(compositeBefore, compositeAfter);
+    assert.equal(inGit.comparable, false);
+    assert.match((inGit as { reason: string }).reason, /composite/);
+    assert.equal(single.diff(compositeBefore, compositeAfter), undefined);
+  });
+
+  it('diff содержит путь с префиксом при правке части', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.write('public-site/a.txt', 'до\n');
+    const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
+    const before = anchorer.capture();
+
+    b.write('public-site/a.txt', 'после\n');
+    const after = anchorer.capture();
+
+    const patch = anchorer.diff(before, after);
+    assert.ok(patch !== undefined);
+    assert.match(patch, /public-site\/a\.txt/);
+    assert.match(patch, /\+после/);
+    assert.equal(anchorer.diff(before, before), undefined);
+  });
+
+  // Сценарий «Изменения корня и части в одном файле»: патч склеивается из
+  // патча корня и патчей частей, и оба изменения должны быть в одном файле.
+  it('diff склеивает изменение корня и изменение части в один патч', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.write('README.md', 'корень до\n');
+    b.write('public-site/a.txt', 'часть до\n');
+    const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
+    const before = anchorer.capture();
+
+    b.write('README.md', 'корень после\n');
+    b.write('public-site/a.txt', 'часть после\n');
+    const after = anchorer.capture();
+
+    const patch = anchorer.diff(before, after);
+    assert.ok(patch !== undefined);
+    assert.match(patch, /b\/README\.md/);
+    assert.match(patch, /\+корень после/);
+    assert.match(patch, /b\/public-site\/a\.txt/);
+    assert.match(patch, /\+часть после/);
+  });
+
+  it('restore отказывает для составного якоря', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.write('public-site/a.txt', '1');
+    const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
+    const anchor = anchorer.capture();
+
+    assert.throws(
+      () => anchorer.restore(anchor),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /составным способом/);
+        return true;
+      },
+    );
+  });
+
+  it('restorePaths восстанавливает файл внутри части', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.write('public-site/a.txt', 'исходное');
+    const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
+    const saved = anchorer.capture();
+
+    b.write('public-site/a.txt', 'испорчено');
+    anchorer.restorePaths(saved, ['public-site/a.txt']);
+
+    assert.equal(b.read('public-site/a.txt'), 'исходное');
+  });
+
+  it('вложенные друг в друга объявленные каталоги маршрутизируются по длинному префиксу', () => {
+    const b = compositeBed();
+    b.initPart('a');
+    b.initPart('a/b');
+    b.write('a/b/file.txt', 'исходное');
+    const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['a', 'a/b'] });
+    const saved = anchorer.capture();
+
+    b.write('a/b/file.txt', 'испорчено');
+    anchorer.restorePaths(saved, ['a/b/file.txt']);
+
+    assert.equal(b.read('a/b/file.txt'), 'исходное');
   });
 });
 

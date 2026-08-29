@@ -622,6 +622,137 @@ describe('stepcast-configuration', () => {
     assert.doesNotMatch(line, /шаблон/);
     assert.match(line, new RegExp(box.projectPath.replace(/[/\\]/g, '\\$&')));
   });
+
+  // Задача 1.7 / Сценарий: «Объявление в проектном конфиге»
+  it('принимает project.nested_repos в проектном конфиге в каноническом составе', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos: [public-site, vendor/sdk]\n' });
+    const { config, provenance } = resolveIn(box);
+    assert.deepEqual(config.project.nestedRepos, ['public-site', 'vendor/sdk']);
+    assert.equal(describeSource(provenance.get('project.nested_repos')!), box.projectPath);
+  });
+
+  // Задача 1.3 / Сценарий: «Хвостовой разделитель, повторы и порядок нормализуются»
+  it('нормализует project.nested_repos: хвостовой разделитель, повторы, порядок', () => {
+    const box = sandbox({
+      project: 'project:\n  nested_repos: ["public-site/", "public-site", "vendor/sdk"]\n',
+    });
+    const { config } = resolveIn(box);
+    assert.deepEqual(config.project.nestedRepos, ['public-site', 'vendor/sdk']);
+  });
+
+  // Задача 1.7 / Сценарий: «Ключ не объявлен»
+  it('project.nested_repos отсутствует, если не объявлен ни одним слоем', () => {
+    const box = sandbox({});
+    const { config } = resolveIn(box);
+    assert.equal(config.project.nestedRepos, undefined);
+  });
+
+  // Задача 1.7 / Сценарий: «Пустой список»
+  it('отклоняет пустой project.nested_repos', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos: []\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.nested_repos');
+        assert.equal(error.file, box.projectPath);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.7 / Сценарий: «Элемент из одних пробелов»
+  it('отклоняет project.nested_repos с элементом из пробелов', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos: ["  "]\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.nested_repos.0');
+        assert.equal(error.file, box.projectPath);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.7 / Сценарий: «Абсолютный путь»
+  it('отклоняет абсолютный путь в project.nested_repos', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos: ["/srv/site"]\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.nested_repos.0');
+        assert.equal(error.file, box.projectPath);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.7 / Сценарий: «Выход за корень репозитория»
+  it('отклоняет project.nested_repos с сегментом ..', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos: ["../site"]\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.nested_repos.0');
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.7 / Сценарий: «Шаблон глоба отклонён»
+  it('отклоняет project.nested_repos с символом шаблона глоба *', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos: ["site/*"]\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.nested_repos.0');
+        assert.equal(error.file, box.projectPath);
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет project.nested_repos с шаблоном глоба **', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos: ["site/**"]\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.nested_repos.0');
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.8 / Сценарий: «Объявление в глобальном конфиге»
+  it('отклоняет project.nested_repos в глобальном конфиге теми же средствами, что project.check', () => {
+    const box = sandbox({ global: 'project:\n  nested_repos: [public-site]\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /project\.nested_repos/);
+        assert.equal(error.file, box.globalPath);
+        assert.match(error.hint ?? '', /\.stepcast\/config\.yml/);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.9 / Сценарий: «Отчёт печатает имена, а не счётчик»
+  it('печатает project.nested_repos в отчёте stepcast config именами каталогов', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos: [public-site, vendor/sdk]\n' });
+    const lines = renderConfigReport(resolveIn(box));
+    const line = lines.find((item) => item.startsWith('project.nested_repos'));
+    assert.ok(line !== undefined);
+    assert.match(line, /public-site, vendor\/sdk/);
+    assert.doesNotMatch(line, /шаблон/);
+    assert.match(line, new RegExp(box.projectPath.replace(/[/\\]/g, '\\$&')));
+  });
 });
 
 describe('stepcast-configuration: модель относительного пути репозитория', () => {

@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 
+import { createCompositeAnchorer } from './composite.js';
 import { createGitAnchorer, isGitWorktree } from './git.js';
 import { createManifestAnchorer } from './manifest.js';
 import type { AnchorKind, TreeAnchorer } from './types.js';
@@ -19,7 +20,13 @@ export function manifestStore(stateDir: string): string {
   return join(stateDir, 'manifests');
 }
 
-export function detectAnchorKind(dir: string): AnchorKind {
+/**
+ * Объявленный состав непуст — способ `composite`; иначе — прежнее правило по
+ * факту наличия репозитория. На пустом или отсутствующем составе функция
+ * ведёт себя буква в букву как до объявления вложенных репозиториев.
+ */
+export function detectAnchorKind(dir: string, nested?: readonly string[]): AnchorKind {
+  if (nested !== undefined && nested.length > 0) return 'composite';
   return isGitWorktree(dir) ? 'git' : 'manifest';
 }
 
@@ -27,7 +34,7 @@ export interface AnchorerOptions {
   readonly dir: string;
   /** Каталог для служебных файлов якоря: индекс git или тела манифестов. */
   readonly stateDir: string;
-  /** Способ фиксации. По умолчанию определяется по каталогу. */
+  /** Способ фиксации. По умолчанию определяется по каталогу и составу. */
   readonly kind?: AnchorKind;
   /** Различает служебные файлы разных работ в пределах прогона. */
   readonly scope?: string;
@@ -39,11 +46,22 @@ export interface AnchorerOptions {
   readonly repoDir?: string;
   /** Хранилища тел манифестов от других прогонов: только для чтения. */
   readonly readStores?: readonly string[];
+  /** Объявленный состав вложенных репозиториев. Способ `composite` — только на нём. */
+  readonly nested?: readonly string[];
 }
 
 export function createAnchorer(options: AnchorerOptions): TreeAnchorer {
-  const kind = options.kind ?? detectAnchorKind(options.dir);
+  const kind = options.kind ?? detectAnchorKind(options.dir, options.nested);
   const scope = options.scope ?? 'run';
+
+  if (kind === 'composite') {
+    return createCompositeAnchorer({
+      dir: options.dir,
+      stateDir: options.stateDir,
+      scope,
+      nested: options.nested ?? [],
+    });
+  }
 
   if (kind === 'git') {
     return createGitAnchorer({

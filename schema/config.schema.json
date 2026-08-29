@@ -336,6 +336,15 @@
             "minLength": 1,
             "pattern": "\\S"
           }
+        },
+        "nested_repos": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
         }
       },
       "additionalProperties": false

@@ -68,12 +68,28 @@ export function diffRuns(options: DiffOptions): RunComparison {
     );
   }
 
-  const treesComparable = a.manifest.anchor_kind === b.manifest.anchor_kind;
-  if (!treesComparable) {
-    notes.push(
-      'состояния деревьев сняты разными способами и несравнимы: сравниваются только промпт, контекст и проверки',
-    );
-  }
+  // Разный способ фиксации — несравнимо по действующему правилу; тот же
+  // способ, но разный состав вложенных репозиториев (`composite`) — тоже:
+  // якорь другого состава несёт другой отпечаток, и складывать их пути в
+  // одно сравнение значило бы сравнивать разные деревья молча.
+  //
+  // Третий случай — способ обоих прогонов совпал, но сегодняшнее дерево
+  // фиксируется другим: `stepcast diff` строит якорь сравнения по
+  // *сегодняшней* конфигурации, и два составных прогона, разбираемые там, где
+  // `project.nested_repos` уже не объявлен, получили бы git-якорь, которому
+  // составной идентификатор не значит ничего.
+  const treesIncomparableReason =
+    a.manifest.anchor_kind !== b.manifest.anchor_kind
+      ? 'состояния деревьев сняты разными способами и несравнимы: сравниваются только промпт, контекст и проверки'
+      : !sameNestedRepos(a.manifest.nested_repos, b.manifest.nested_repos)
+        ? `состав вложенных репозиториев различается: ${describeComposition(a.manifest.nested_repos)} и ${describeComposition(b.manifest.nested_repos)} — деревья несравнимы`
+        : options.anchorer !== undefined &&
+            a.manifest.anchor_kind !== undefined &&
+            options.anchorer.kind !== a.manifest.anchor_kind
+          ? `состояния деревьев сняты способом ${a.manifest.anchor_kind}, а сегодняшнее дерево фиксируется способом ${options.anchorer.kind} — деревья несравнимы`
+          : undefined;
+  if (treesIncomparableReason !== undefined) notes.push(treesIncomparableReason);
+  const treesComparable = treesIncomparableReason === undefined;
 
   const steps: StepComparison[] = [];
   for (const address of orderedAddresses(a.status, b.status)) {
@@ -106,6 +122,7 @@ export function diffRuns(options: DiffOptions): RunComparison {
         left,
         right,
         treesComparable,
+        ...(treesIncomparableReason === undefined ? {} : { treesIncomparableReason }),
         ...(options.anchorer === undefined ? {} : { anchorer: options.anchorer }),
         ...(a.manifest.anchor_kind === undefined ? {} : { anchorKind: a.manifest.anchor_kind }),
       }),
@@ -167,8 +184,21 @@ interface CompareOptions {
   readonly left: StepRecord;
   readonly right: StepRecord;
   readonly treesComparable: boolean;
+  readonly treesIncomparableReason?: string;
   readonly anchorer?: TreeAnchorer;
   readonly anchorKind?: AnchorKind;
+}
+
+function sameNestedRepos(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
+  const left = a ?? [];
+  const right = b ?? [];
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function describeComposition(nestedRepos: readonly string[] | undefined): string {
+  return nestedRepos === undefined || nestedRepos.length === 0
+    ? '(без вложенных репозиториев)'
+    : nestedRepos.join(', ');
 }
 
 /**
@@ -205,10 +235,10 @@ function compareSources(options: CompareOptions): SourceDiff[] {
 }
 
 function compareTrees(options: CompareOptions): SourceDiff {
-  const { left, right, treesComparable, anchorer, anchorKind } = options;
+  const { left, right, treesComparable, treesIncomparableReason, anchorer, anchorKind } = options;
 
   if (!treesComparable) {
-    return { source: 'дерево', lines: [], note: 'способы фиксации различаются — несравнимо' };
+    return { source: 'дерево', lines: [], note: treesIncomparableReason ?? 'способы фиксации различаются — несравнимо' };
   }
   if (left.tree_id === undefined || right.tree_id === undefined) {
     return {

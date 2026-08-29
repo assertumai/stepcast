@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { createFakeBackend, resultLine } from '../src/core/backend/fake.js';
+import type { Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { findStepDir, readEvents, readStatus } from '../src/core/journal/reader.js';
 import { resolveExitCode, runPipeline, type RunResult } from '../src/core/run/runner.js';
@@ -12,27 +13,38 @@ import { HALT_CAUSES, HaltCause } from '../src/core/run/halt.js';
 import { ExitCode } from '../src/core/errors.js';
 import type { Event, StatusValue, StepRecord } from '../src/core/journal/schema.js';
 import type { UsageSnapshot } from '../src/core/budget/accumulator.js';
-import { makeProject, type Project } from './helpers.js';
+import { gitCommit, gitInit, makeProject, type Project } from './helpers.js';
 
 /** Прогнать пайплайн проекта целиком, сложив журнал во временный корень. */
 async function run(
   project: Project,
   options: { readonly signal?: AbortSignal; readonly breakAnchor?: boolean } = {},
 ): Promise<RunResult> {
+  return runWithConfig(project, project.config, options);
+}
+
+/** То же, что `run`, но с конфигурацией, объявляющей состав вложенных репозиториев. */
+async function runWithConfig(
+  project: Project,
+  config: Config,
+  options: { readonly signal?: AbortSignal; readonly breakAnchor?: boolean } = {},
+): Promise<RunResult> {
   const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
-  const expanded = expandPipeline({
-    pipelinePath: project.path('stepcast.yml'),
-    config: project.config,
-  });
+  const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config });
 
   return runPipeline({
     expanded,
-    config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+    config: { ...config, runs: { ...config.runs, root: runsRoot } },
     projectRoot: project.root,
     cwd: project.root,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     ...(options.breakAnchor === true ? { anchorerFor: brokenAnchorer } : {}),
   });
+}
+
+/** Тот же проект, но с объявленным составом `project.nested_repos`, будто он объявлен в `.stepcast/config.yml`. */
+function withNestedRepos(project: Project, nestedRepos: readonly string[]): Config {
+  return { ...project.config, project: { ...project.config.project, nestedRepos } };
 }
 
 /** Якорь, который не умеет ничего: подставляется, чтобы проверить границы. */
@@ -398,6 +410,48 @@ jobs:
     project.write('следят.txt', 'изменено внутри объявленных входов');
     const third = await run(project);
     assert.notEqual(steps(third)[0]?.inputs_fingerprint, before);
+  });
+});
+
+describe('workspace-anchor: составной якорь работ и состав в манифесте', () => {
+  // Задача 9 / Сценарий: объявленный состав даёт способ composite и записывает его в манифест.
+  it('прогон в дереве с объявленным составом даёт anchor_kind composite и nested_repos в манифесте', async () => {
+    const project = makeProject({ 'stepcast.yml': THREE_STEPS, 'public-site/.gitkeep': '' });
+    gitInit(project.root);
+    gitInit(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    gitCommit(project.root, 'первый');
+
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+
+    const manifest = JSON.parse(readFileSync(result.journal.paths.manifest, 'utf8')) as {
+      anchor_kind?: string;
+      nested_repos?: string[];
+    };
+    assert.equal(manifest.anchor_kind, 'composite');
+    assert.deepEqual(manifest.nested_repos, ['public-site']);
+
+    for (const step of steps(result)) {
+      assert.equal(step.anchor_kind, 'composite');
+    }
+  });
+
+  // Задача 9 / Сценарий: прогон без объявления не меняет форму записей.
+  it('прогон без объявленного состава даёт прежний anchor_kind и манифест без nested_repos', async () => {
+    const project = makeProject({ 'stepcast.yml': THREE_STEPS });
+    gitInit(project.root);
+    gitCommit(project.root, 'первый');
+
+    const result = await run(project);
+    assert.equal(result.status, 'success');
+
+    const manifest = JSON.parse(readFileSync(result.journal.paths.manifest, 'utf8')) as {
+      anchor_kind?: string;
+      nested_repos?: string[];
+    };
+    assert.equal(manifest.anchor_kind, 'git');
+    assert.equal(manifest.nested_repos, undefined);
   });
 });
 

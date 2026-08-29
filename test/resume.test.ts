@@ -30,19 +30,41 @@ interface Bed {
   readonly runsRoot: string;
 }
 
-function bed(files: Readonly<Record<string, string>>, options: { git?: boolean } = {}): Bed {
+function bed(
+  files: Readonly<Record<string, string>>,
+  options: { git?: boolean; nestedRepos?: readonly string[] } = {},
+): Bed {
   const project = makeProject(files);
-  if (options.git === true) {
-    const run = (...args: string[]): void => {
-      execFileSync('git', ['-C', project.root, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
-    };
-    run('init', '--quiet', '--initial-branch=main');
-    run('config', 'user.email', 'test@example.com');
-    run('config', 'user.name', 'Тест');
-    run('add', '-A');
-    run('commit', '--quiet', '-m', 'первый');
+  const gitIn = (dir: string, ...args: string[]): void => {
+    execFileSync('git', ['-C', dir, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+  };
+
+  // Части коммитятся раньше корня: `git add -A` в корне отказывает на
+  // вложенном репозитории без единого коммита («does not have a commit
+  // checked out»), а не встраивает его gitlink-записью.
+  for (const relDir of options.nestedRepos ?? []) {
+    const dir = project.path(relDir);
+    gitIn(dir, 'init', '--quiet', '--initial-branch=main');
+    gitIn(dir, 'config', 'user.email', 'test@example.com');
+    gitIn(dir, 'config', 'user.name', 'Тест');
+    gitIn(dir, 'add', '-A');
+    gitIn(dir, 'commit', '--quiet', '-m', 'начало части');
   }
-  return { project, runsRoot: mkdtempSync(join(tmpdir(), 'stepcast-runs-')) };
+
+  if (options.git === true || options.nestedRepos !== undefined) {
+    gitIn(project.root, 'init', '--quiet', '--initial-branch=main');
+    gitIn(project.root, 'config', 'user.email', 'test@example.com');
+    gitIn(project.root, 'config', 'user.name', 'Тест');
+    gitIn(project.root, 'add', '-A');
+    gitIn(project.root, 'commit', '--quiet', '-m', 'первый');
+  }
+
+  const config: Project['config'] =
+    options.nestedRepos === undefined
+      ? project.config
+      : { ...project.config, project: { ...project.config.project, nestedRepos: options.nestedRepos } };
+
+  return { project: { ...project, config }, runsRoot: mkdtempSync(join(tmpdir(), 'stepcast-runs-')) };
 }
 
 function configOf(b: Bed) {
@@ -68,13 +90,15 @@ function planFor(b: Bed, source: RunResult, from?: string): ResumePlan {
     pipelinePath: b.project.path('stepcast.yml'),
     config: b.project.config,
   });
-  const anchorKind = detectAnchorKind(b.project.root);
+  const nested = b.project.config.project.nestedRepos;
+  const anchorKind = detectAnchorKind(b.project.root, nested);
   const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-plan-'));
   const anchorer = createAnchorer({
     dir: b.project.root,
     stateDir,
     kind: anchorKind,
     scope: 'plan',
+    ...(nested === undefined ? {} : { nested }),
     readStores: [manifestStore(source.journal.paths.anchors)],
   });
   const sourceStatus = readSourceRun(source.journal.paths).status;
@@ -1677,6 +1701,208 @@ steps:
     assert.match(
       (plan.steps[0]?.decision as { reason: string }).reason,
       /изменилось определение шага/,
+    );
+  });
+});
+
+describe('run-resume: составной якорь — вложенные репозитории и смена состава', () => {
+  const NESTED_INPUT_PIPELINE = `
+version: 1
+kind: pipeline
+name: составной-вход
+jobs:
+  работа:
+    session: per_step
+    inputs: [public-site/src/api.ts]
+    steps:
+      - id: a
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Задача 10 / Сценарий: правка внутри объявленной части, входящая в
+  // область шага, обесценивает его — причина называет путь с префиксом
+  // каталога части (тот же путь, что печатает `stepcast resume --dry-run`).
+  it('правка во вложенном репозитории, входящая в область шага, обесценивает шаг', async () => {
+    const b = bed(
+      { 'public-site/src/api.ts': 'исходное', 'stepcast.yml': NESTED_INPUT_PIPELINE },
+      { nestedRepos: ['public-site'] },
+    );
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+
+    b.project.write('public-site/src/api.ts', 'изменено');
+
+    const plan = planFor(b, first);
+    assert.equal(plan.steps[0]?.decision.kind, 'rerun');
+    const reason = (plan.steps[0]?.decision as { reason: string }).reason;
+    assert.match(reason, /public-site\/src\/api\.ts/);
+    assert.ok(describePlan(plan).some((line) => line.includes('public-site/src/api.ts')));
+  });
+
+  const OUTSIDE_NESTED_PIPELINE = `
+version: 1
+kind: pipeline
+name: вне-состава
+jobs:
+  работа:
+    session: per_step
+    inputs: [маркер.txt]
+    steps:
+      - id: a
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Задача 10 / Сценарий: правка внутри части, не входящая в объявленные
+  // входы работы, отпечатка шагов не меняет.
+  it('правка во вложенном репозитории вне объявленных входов работы отпечатка её шагов не меняет', async () => {
+    const b = bed(
+      {
+        'маркер.txt': 'есть',
+        'public-site/src/api.ts': 'исходное',
+        'stepcast.yml': OUTSIDE_NESTED_PIPELINE,
+      },
+      { nestedRepos: ['public-site'] },
+    );
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+
+    b.project.write('public-site/src/api.ts', 'изменено');
+
+    const plan = planFor(b, first);
+    assert.equal(plan.steps[0]?.decision.kind, 'reuse');
+  });
+
+  const MARKED_PIPELINE = `
+version: 1
+kind: pipeline
+name: смена-состава
+jobs:
+  работа:
+    session: per_step
+    inputs: [маркер.txt]
+    steps:
+      - id: a
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Задача 10 / Сценарий: состав исходного прогона не совпадает с сегодняшним.
+  it('возобновление прогона другого состава исполняет пайплайн с начала с причиной про состав', async () => {
+    const b = bed(
+      { 'маркер.txt': 'есть', 'public-site/src/api.ts': 'исходное', 'stepcast.yml': MARKED_PIPELINE },
+      { nestedRepos: ['public-site'] },
+    );
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+
+    // Сегодня состав не объявлен вовсе — прошлый прогон снят с public-site.
+    const today = {
+      ...b.project.config,
+      project: { ...b.project.config.project, nestedRepos: undefined },
+    };
+
+    const { plan } = planResume({
+      cwd: b.project.root,
+      config: today,
+      source: readSourceRun(first.journal.paths),
+    });
+
+    assert.equal(plan.fromScratch, true);
+    assert.equal(plan.steps[0]?.decision.kind, 'rerun');
+    const reason = (plan.steps[0]?.decision as { reason: string }).reason;
+    assert.match(reason, /состав/);
+    assert.match(reason, /public-site/);
+    assert.doesNotMatch(reason, /состояние дерева установить не удалось/);
+  });
+
+  const WRITING_PIPELINE = `
+version: 1
+kind: pipeline
+name: смена-состава-с-правкой
+jobs:
+  работа:
+    session: per_step
+    inputs: [маркер.txt]
+    steps:
+      - id: пишет
+        run: [sh, -c, 'printf "вывод\\n" > произведённый.txt']
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Тот же сценарий смены состава, но шаг исходного прогона дерево изменил:
+  // `tree_before` и `tree_id` различаются, и разбор произведённых им путей
+  // доходит до сравнения якорей. Сегодняшнему якорю составные идентификаторы
+  // прошлого состава не значат ничего — это должно быть объявленной
+  // несравнимостью, а не исключением git наружу из planResume.
+  it('смена состава на прогоне, изменившем дерево, даёт план, а не исключение git', async () => {
+    const b = bed(
+      { 'маркер.txt': 'есть', 'public-site/src/api.ts': 'исходное', 'stepcast.yml': WRITING_PIPELINE },
+      { nestedRepos: ['public-site'] },
+    );
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+    const record = readSourceRun(first.journal.paths).status.jobs[0]?.steps[0];
+    assert.notEqual(record?.tree_before, record?.tree_id, 'шаг обязан был изменить дерево');
+
+    const today = {
+      ...b.project.config,
+      project: { ...b.project.config.project, nestedRepos: undefined },
+    };
+
+    const { plan } = planResume({
+      cwd: b.project.root,
+      config: today,
+      source: readSourceRun(first.journal.paths),
+    });
+
+    assert.equal(plan.fromScratch, true);
+    assert.equal(plan.restore, undefined, 'восстанавливать по несравнимому якорю нечего');
+    assert.match((plan.steps[0]?.decision as { reason: string }).reason, /состав/);
+  });
+
+  const RESTORE_PIPELINE = `
+version: 1
+kind: pipeline
+name: восстановление-части
+jobs:
+  первая:
+    session: per_step
+    inputs: [маркер.txt]
+    steps:
+      - id: пишет
+        run: [sh, -c, 'printf "от первой\\n" > public-site/произведённый.txt']
+        expect: [{ exit_code: 0 }]
+  вторая:
+    needs: [первая]
+    session: per_step
+    steps:
+      - id: требует
+        run: [sh, -c, 'test -f маркер-второй.txt']
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Задача 10 / Сценарий: восстановление дерева перед первым переисполняемым
+  // шагом заходит внутрь части — тем же `restorePaths`, что и у корня.
+  it('восстановление дерева перед первым переисполняемым шагом приводит файл внутри части к прежнему состоянию', async () => {
+    const b = bed(
+      { 'маркер.txt': 'есть', 'public-site/src/api.ts': 'исходное', 'stepcast.yml': RESTORE_PIPELINE },
+      { nestedRepos: ['public-site'] },
+    );
+
+    const first = await firstRun(b);
+    assert.equal(first.status, 'failed', 'второй работе не хватает файла-маркера');
+    assert.equal(readFileSync(b.project.path('public-site/произведённый.txt'), 'utf8'), 'от первой\n');
+
+    b.project.write('маркер-второй.txt', 'починил');
+
+    const second = await resume(b, first);
+    assert.equal(second.status, 'success');
+    assert.equal(readFileSync(b.project.path('public-site/произведённый.txt'), 'utf8'), 'от первой\n');
+    assert.ok(
+      readEvents(second.journal.paths).some((event) => event.kind === 'tree.restored'),
+      'восстановление произведённых путей должно попасть в журнал',
     );
   });
 });

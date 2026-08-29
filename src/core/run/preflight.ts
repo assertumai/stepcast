@@ -23,13 +23,20 @@ export interface PreflightOptions {
   readonly cwd: string;
   /** Корень каталога прогонов: он обязан лежать вне рабочего дерева. */
   readonly runsRoot: string;
+  /**
+   * Объявленный состав вложенных репозиториев (`project.nested_repos`).
+   * Приходит значением, а не конфигурацией целиком: предстартовым проверкам
+   * не нужно ничего, кроме состава, и тянуть сюда `Config` значило бы тянуть
+   * зависимость, которой здесь не место.
+   */
+  readonly nestedRepos?: readonly string[];
 }
 
 export type PreflightCheck = (options: PreflightOptions) => void;
 
 /** Режим рабочей директории должен быть подготавливаемым в этом окружении. */
-export const checkWorkspaceMode: PreflightCheck = ({ expanded, cwd }) => {
-  checkWorkspaceAvailability({ pipeline: expanded.pipeline, cwd });
+export const checkWorkspaceMode: PreflightCheck = ({ expanded, cwd, nestedRepos }) => {
+  checkWorkspaceAvailability({ pipeline: expanded.pipeline, cwd, ...(nestedRepos === undefined ? {} : { nestedRepos }) });
 };
 
 /**

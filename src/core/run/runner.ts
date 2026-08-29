@@ -97,6 +97,7 @@ export interface RunOptions {
     readonly kind: AnchorKind;
     readonly scope: string;
     readonly repoDir?: string;
+    readonly nested?: readonly string[];
   }) => TreeAnchorer;
   /**
    * Наблюдение за потоком событий: вызывается синхронно с записью каждого
@@ -159,11 +160,12 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     projectRoot: options.projectRoot,
     cwd: options.cwd,
     runsRoot: config.runs.root,
+    ...(config.project.nestedRepos === undefined ? {} : { nestedRepos: config.project.nestedRepos }),
   });
 
   // Способ фиксации выбирается один раз на прогон: якоря разных способов
   // несравнимы, и смешивать их в пределах прогона нельзя.
-  const anchorKind = detectAnchorKind(options.cwd);
+  const anchorKind = detectAnchorKind(options.cwd, config.project.nestedRepos);
 
   const lock = serializeLock(pipeline);
   const lockHash = createHash('sha256').update(lock).digest('hex').slice(0, 16);
@@ -193,6 +195,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     project_root: options.projectRoot,
     workspace: pipeline.workspace,
     anchor_kind: anchorKind,
+    ...(config.project.nestedRepos === undefined ? {} : { nested_repos: [...config.project.nestedRepos] }),
     ...(options.resume === undefined ? {} : { resumed_from: options.resume.source.manifest.run_id }),
     inputs: pipeline.inputs,
     git: {},
@@ -324,7 +327,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   // `runJobSteps` — так же, как исполненная. Предзаполнение записи об
   // артефакте путём, по которому файл ещё не записан, было бы ложью.
   if (options.resume !== undefined) {
-    restoreForResume(options.resume, journal, options.cwd, anchorKind);
+    restoreForResume(options.resume, journal, options.cwd, anchorKind, config.project.nestedRepos);
     carryOverRunDir(options.resume, journal);
   }
 
@@ -1083,6 +1086,12 @@ async function runJobSteps(
       // Рабочая копия сама рабочим деревом git не является: базу объектов ей
       // даёт репозиторий прогона.
       repoDir: context.runCwd,
+      // Составной способ допускает только режим cwd (checkWorkspaceAvailability),
+      // где `context.cwd` — это корень с объявленным составом; для остальных
+      // способов `nested` попросту не читается.
+      ...(context.config.project.nestedRepos === undefined
+        ? {}
+        : { nested: context.config.project.nestedRepos }),
     }),
   );
   anchorState.anchorer = anchorer;
@@ -2177,6 +2186,7 @@ function restoreForResume(
   journal: RunJournal,
   cwd: string,
   anchorKind: AnchorKind,
+  nestedRepos: readonly string[] | undefined,
 ): void {
   const restore = resume.plan.restore;
   if (restore === undefined) return;
@@ -2186,6 +2196,7 @@ function restoreForResume(
     stateDir: journal.paths.anchors,
     kind: anchorKind,
     scope: 'resume',
+    ...(nestedRepos === undefined ? {} : { nested: nestedRepos }),
   });
 
   try {

@@ -1711,6 +1711,48 @@ jobs:
   });
 });
 
+// Задача 2.4: nested_repos не заводит пайплайновый слой и не публикуется
+// подстановкой — оба факта закреплены отказом, а не молчаливым поведением.
+describe('pipeline-definition: project.nested_repos не имеет пайплайнового слоя', () => {
+  it('документ пайплайна с project.nested_repos отклоняется, называя ключ', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  nested_repos: [public-site]
+jobs:
+  build:
+    steps: [{ id: c, run: echo ok }]
+`,
+    });
+
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /nested_repos/);
+        assert.equal(error.file, project.path('stepcast.yml'));
+        return true;
+      },
+    );
+  });
+
+  it('обращение к ${project.nested_repos} отказывает действующим составом пространства', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.nested_repos}" }]
+`,
+    });
+
+    const error = thrown(() => expand(project));
+    assert.match(error.hint ?? '', /содержит только/);
+    assert.doesNotMatch(error.hint ?? '', /nested_repos/);
+  });
+});
+
 /**
  * `${project.spec.*}` — это то, чем петля пользуется в файлах работ,
  * подключённых через `uses`: путь контекста, `changed_only`,

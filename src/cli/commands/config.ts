@@ -28,10 +28,16 @@ function renderValue(path: string, value: unknown): string {
   }
   // Списки запретов (env_deny, context.deny) сводятся к счётчику намеренно:
   // сами шаблоны читатель видит в столбце вклада каждого слоя. Объявления
-  // (project.tools, project.edit_paths) — не запреты, а состав, и счётчик
-  // скрыл бы единственное, что в отчёте имеет смысл, — сами значения.
+  // (project.tools, project.edit_paths, project.nested_repos) — не запреты,
+  // а состав, и счётчик скрыл бы единственное, что в отчёте имеет смысл, —
+  // сами значения.
   if (Array.isArray(value)) {
-    if (path === 'project.tools' || path === 'project.edit_paths') return value.join(', ');
+    if (
+      path === 'project.tools' ||
+      path === 'project.edit_paths' ||
+      path === 'project.nested_repos'
+    )
+      return value.join(', ');
     return `${value.length} шаблонов`;
   }
   return String(value);

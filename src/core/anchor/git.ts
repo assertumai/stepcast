@@ -66,6 +66,22 @@ interface ExternalRepo {
   readonly gitDir: string;
 }
 
+/**
+ * Патч между двумя состояниями каталога с приписанным префиксом путей —
+ * `--src-prefix=a/<prefix>/ --dst-prefix=b/<prefix>/`.
+ *
+ * Используется составным якорем (`anchor/composite.ts`) для патчей частей:
+ * так пути внутри `diff.patch` совпадают с путями, которые вернул
+ * `changedPaths` (`<каталог части>/<путь>`), и файл читается как один
+ * документ. Часть не нуждается в индексном файле — сравниваются готовые
+ * объекты дерева, а не рабочая копия.
+ */
+export function diffWithPrefix(dir: string, from: string, to: string, prefix: string): string | undefined {
+  if (from === to) return undefined;
+  const patch = git(dir, ['diff', '--binary', `--src-prefix=a/${prefix}/`, `--dst-prefix=b/${prefix}/`, from, to]);
+  return patch === '' ? undefined : patch;
+}
+
 /** Является ли каталог рабочим деревом git. */
 export function isGitWorktree(dir: string): boolean {
   try {
@@ -166,6 +182,22 @@ export function createGitAnchorer(options: GitAnchorerOptions): TreeAnchorer {
         };
       }
       if (from.id === to.id) return { comparable: true, paths: [] };
+      // Способы совпали между собой, но не с нашим: так бывает, когда сегодня
+      // состав вложенных репозиториев не объявлен, а сравниваемые записи
+      // сняты составным способом. Идентификатор чужого способа — не oid, и
+      // отдать его `diff-tree` значило бы получить сырое «fatal: bad object»
+      // вместо объявленной несравнимости.
+      // Способы совпали между собой, но не с нашим: так бывает, когда сегодня
+      // состав вложенных репозиториев не объявлен, а сравниваемые записи
+      // сняты составным способом. Идентификатор чужого способа — не oid, и
+      // отдать его `diff-tree` значило бы получить сырое «fatal: bad object»
+      // вместо объявленной несравнимости.
+      if (from.kind !== 'git') {
+        return {
+          comparable: false,
+          reason: `состояния сняты способом ${from.kind}, а действующий якорь — git`,
+        };
+      }
 
       const output = git(
         dir,
@@ -181,6 +213,7 @@ export function createGitAnchorer(options: GitAnchorerOptions): TreeAnchorer {
 
     diff(from: Anchor, to: Anchor): string | undefined {
       if (from.kind !== to.kind || from.id === to.id) return undefined;
+      if (from.kind !== 'git') return undefined;
       const patch = git(dir, ['diff', '--binary', from.id, to.id], undefined, external);
       return patch === '' ? undefined : patch;
     },

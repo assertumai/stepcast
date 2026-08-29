@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 
 import { createAnchorer } from '../src/core/anchor/index.js';
 import { buildGraph } from '../src/core/graph.js';
+import type { Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { readStatus, resolveRun } from '../src/core/journal/reader.js';
 import { resolveInheritSource, type CompletedJob } from '../src/core/run/inherit.js';
@@ -27,17 +28,24 @@ function commit(project: Project, message: string): void {
 }
 
 async function run(project: Project): Promise<RunResult> {
+  return runWithConfig(project, project.config);
+}
+
+/** То же, что `run`, но с конфигурацией, объявляющей состав вложенных репозиториев. */
+async function runWithConfig(project: Project, config: Config): Promise<RunResult> {
   const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
-  const expanded = expandPipeline({
-    pipelinePath: project.path('stepcast.yml'),
-    config: project.config,
-  });
+  const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config });
   return runPipeline({
     expanded,
-    config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+    config: { ...config, runs: { ...config.runs, root: runsRoot } },
     projectRoot: project.root,
     cwd: project.root,
   });
+}
+
+/** Тот же проект, но с объявленным составом `project.nested_repos`, будто он объявлен в `.stepcast/config.yml`. */
+function withNestedRepos(project: Project, nestedRepos: readonly string[]): Config {
+  return { ...project.config, project: { ...project.config.project, nestedRepos } };
 }
 
 /** Работа, которая пишет файл в свою рабочую директорию и читает соседний. */
@@ -1546,5 +1554,193 @@ jobs:
         return true;
       },
     );
+  });
+});
+
+// Задача 7 (nested-repo-anchor): состав вложенных репозиториев проверяется
+// до запуска первой работы — так же, как остальные предстартовые отказы этого
+// файла.
+describe('workspace-modes: состав вложенных репозиториев проверяется заранее', () => {
+  it('отклоняет объявленный каталог, которого не существует', async () => {
+    const project = makeProject({ 'stepcast.yml': pipelineWriting('cwd') });
+    gitInit(project);
+    commit(project, 'первый');
+
+    await assert.rejects(
+      () => runWithConfig(project, withNestedRepos(project, ['public-site'])),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /не существует/);
+        assert.match(error.message, /public-site/);
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет объявленный каталог, который не является рабочим деревом git', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('cwd'),
+      // Файл, а не каталог: существует, но рабочим деревом git быть не может.
+      'public-site': 'не каталог\n',
+    });
+    gitInit(project);
+    commit(project, 'первый');
+
+    await assert.rejects(
+      () => runWithConfig(project, withNestedRepos(project, ['public-site'])),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /не является рабочим деревом git/);
+        assert.match(error.message, /public-site/);
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет объявленный каталог, принадлежащий корневому репозиторию, а не собственному', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('cwd'),
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project);
+    commit(project, 'первый');
+
+    await assert.rejects(
+      () => runWithConfig(project, withNestedRepos(project, ['public-site'])),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /принадлежит репозиторию/);
+        assert.match(error.message, /а не собственному/);
+        assert.match(error.message, /public-site/);
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет состав, если корень рабочего дерева сам не является репозиторием git', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('cwd'),
+      'public-site/.gitkeep': '',
+    });
+    // Корень нарочно не инициализирован как git — только вложенный каталог.
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+
+    await assert.rejects(
+      () => runWithConfig(project, withNestedRepos(project, ['public-site'])),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /Корень рабочего дерева не является репозиторием git/);
+        return true;
+      },
+    );
+  });
+
+  // Отказ бухгалтерии посреди прогона тихий: `add -A` корня падает на
+  // «does not have a commit checked out», якорь не снимается, и границы
+  // правок после этого просто не оцениваются. Значит, это предстартовый отказ.
+  it('отклоняет объявленный каталог без единого коммита, который корень не игнорирует', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('cwd'),
+      'public-site/index.html': 'сайт\n',
+    });
+    gitInit(project);
+    commit(project, 'первый');
+    // Репозиторий части заведён, но коммита в нём нет.
+    gitInitDir(project.path('public-site'));
+
+    await assert.rejects(
+      () => runWithConfig(project, withNestedRepos(project, ['public-site'])),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /public-site/);
+        assert.match(error.message, /не имеет ни одного коммита/);
+        assert.equal(error.at, 'project.nested_repos');
+        return true;
+      },
+    );
+  });
+
+  // Обратная половина того же отказа: игнорируемая корнем часть в его `add -A`
+  // не попадает вовсе и своим репозиторием снимается без коммита прекрасно —
+  // отказывать здесь значило бы запретить рабочее дерево.
+  it('пропускает объявленный каталог без коммита, если корень его игнорирует', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('cwd'),
+      '.gitignore': 'public-site/\n',
+      'public-site/index.html': 'сайт\n',
+    });
+    gitInit(project);
+    commit(project, 'первый');
+    gitInitDir(project.path('public-site'));
+
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+  });
+
+  it('отклоняет работу в режиме worktree при объявленном составе, называя работу, режим и причину', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('worktree'),
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    commit(project, 'первый');
+
+    await assert.rejects(
+      () => runWithConfig(project, withNestedRepos(project, ['public-site'])),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /build/);
+        assert.match(error.message, /worktree/);
+        assert.match(error.message, /nested_repos/);
+        assert.equal(error.at, 'jobs.build.workspace.mode');
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет работу в режиме copy при объявленном составе', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('copy'),
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    commit(project, 'первый');
+
+    await assert.rejects(
+      () => runWithConfig(project, withNestedRepos(project, ['public-site'])),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /copy/);
+        return true;
+      },
+    );
+  });
+
+  it('пригодный состав в режиме каталога запуска прогону не мешает', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('cwd'),
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    commit(project, 'первый');
+
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+  });
+
+  it('без объявленного состава worktree и copy доступны как прежде', async () => {
+    const project = makeProject({ 'stepcast.yml': pipelineWriting('worktree') });
+    gitInit(project);
+    commit(project, 'первый');
+
+    const result = await run(project);
+    assert.equal(result.status, 'success');
   });
 });
