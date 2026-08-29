@@ -67,9 +67,10 @@ steps:
         - Glob
         - Edit
         - Write
-        - Bash(npm *)
-        - Bash(npx *)
-        - Bash(node *)
+        - Bash(${project.tools} *)
+        # git — инструмент движка, а не репозитория (worktree, tree_id,
+        # changed_only без него не работают нигде), поэтому остаётся
+        # литералом, а не переезжает в project.tools.
         - Bash(git status*)
         - Bash(git diff*)
         - Bash(git log*)

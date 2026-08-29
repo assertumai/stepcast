@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { parse as parseYaml } from 'yaml';
 
 import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { interpolate, type Scope } from '../src/core/pipeline/interpolate.js';
+import { interpolate, interpolateTree, type Scope } from '../src/core/pipeline/interpolate.js';
 import { serializeLock } from '../src/core/pipeline/lock.js';
 import { StepcastError } from '../src/core/errors.js';
 import type { Config } from '../src/core/config/resolve.js';
@@ -20,6 +20,11 @@ function withProjectSpec(project: Project, spec: Partial<Config['project']['spec
     ...project.config,
     project: { ...project.config.project, spec: { ...project.config.project.spec, ...spec } },
   };
+}
+
+/** Тот же проект, но с указанными `project.tools`, будто они объявлены в `.stepcast/config.yml`. */
+function withProjectTools(project: Project, tools: readonly string[] | undefined): Config {
+  return { ...project.config, project: { ...project.config.project, tools } };
 }
 
 function expand(project: Project, file = 'stepcast.yml', inputs?: Record<string, string>) {
@@ -2023,6 +2028,152 @@ steps: [{ id: c, run: "\${project.name}" }]
   });
 });
 
+describe('pipeline-definition: действующее значение project.tools', () => {
+  it('пайплайн перекрывает конфигурацию целиком', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  tools: [make]
+jobs:
+  build:
+    steps: [{ id: c, run: ["\${project.tools}"] }]
+`,
+    });
+    const config = withProjectTools(project, ['npm', 'npx']);
+    const step = asRun(expandWith(project, config).pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.command, ['make']);
+  });
+
+  it('раскрывается значением из конфигурации, когда пайплайн секцию не объявляет', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: ["\${project.tools}"] }]
+`,
+    });
+    const config = withProjectTools(project, ['npm', 'npx', 'node']);
+    const step = asRun(expandWith(project, config).pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.command, ['npm', 'npx', 'node']);
+  });
+
+  it('документ без ссылки на подстановку разбирается без ошибки, даже если ключ не объявлен ни там ни там', () => {
+    const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
+    const config = withProjectTools(project, undefined);
+    assert.doesNotThrow(() => expandWith(project, config));
+  });
+});
+
+describe('pipeline-definition: подстановка ${project.tools}', () => {
+  it('ссылка на необъявленный project.tools — отказ разбора, называющий оба места объявления', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: ["\${project.tools}"] }]
+`,
+    });
+    const config = withProjectTools(project, undefined);
+
+    assert.throws(
+      () => expandWith(project, config),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.hint ?? '', /project\.tools/);
+        assert.match(error.hint ?? '', new RegExp(project.path('stepcast.yml').replace(/[/\\]/g, '\\$&')));
+        assert.match(error.hint ?? '', /\.stepcast\/config\.yml/);
+        return true;
+      },
+    );
+  });
+
+  it('обращение к имени вне состава пространства называет доступные имена, включая tools', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.toolchain}" }]
+`,
+    });
+    const config = withProjectTools(project, ['npm']);
+
+    assert.throws(
+      () => expandWith(project, config),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.hint ?? '', /содержит только/);
+        assert.match(error.hint ?? '', /\btools\b/);
+        return true;
+      },
+    );
+  });
+
+  it('шаг с правом Bash(${project.tools} *) уходит в permissions.allow тремя записями в объявленном порядке', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  tools: [npm, npx, node]
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        permissions:
+          allow: [Read, "Bash(\${project.tools} *)", "Bash(git log*)"]
+`,
+    });
+    const { pipeline } = expand(project);
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.permissions?.allow, [
+      'Read',
+      'Bash(npm *)',
+      'Bash(npx *)',
+      'Bash(node *)',
+      'Bash(git log*)',
+    ]);
+  });
+
+  // Значение известно до прогона, поэтому в снимке на его месте обязаны стоять
+  // объявленные строки: подстановка, дожившая до pipeline.lock.yml, означала бы,
+  // что раскрытие отложилось до исполнения и снимок описывает не то, что пойдёт
+  // в бэкенд.
+  it('раскрытое значение попадает в снимок пайплайна строками, а не подстановкой', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  tools: [npm, npx, node]
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        permissions:
+          allow: [Read, "Bash(\${project.tools} *)", "Bash(git log*)"]
+`,
+    });
+
+    const lock = serializeLock(expand(project).pipeline);
+    assert.doesNotMatch(lock, /\$\{project\.tools\}/);
+
+    const parsed = parseYaml(lock) as {
+      jobs: Array<{ steps: Array<{ permissions?: { allow?: readonly string[] } }> }>;
+    };
+    assert.deepEqual(parsed.jobs[0]!.steps[0]!.permissions?.allow, [
+      'Read',
+      'Bash(npm *)',
+      'Bash(npx *)',
+      'Bash(node *)',
+      'Bash(git log*)',
+    ]);
+  });
+});
+
 describe('pipeline-definition: позиция подстановки', () => {
   const scope: Scope = { values: { params: { x: 'ok' } }, deferred: new Set() };
 
@@ -2064,6 +2215,127 @@ describe('pipeline-definition: позиция подстановки', () => {
 
     const withOrigin = interpolate('${params.x}', { ...scope, origin: '/tmp/prompt.md' });
     assert.equal(withOrigin.substitutions[0]?.origin, '/tmp/prompt.md');
+  });
+});
+
+describe('pipeline-definition: раскрытие списочного значения в элемент списка', () => {
+  const scope: Scope = {
+    values: { project: { tools: ['npm', 'npx', 'node'] } },
+    deferred: new Set(['jobs']),
+  };
+
+  it('элемент со списочной подстановкой размножается по числу значений', () => {
+    const { value } = interpolateTree({ allow: ['Bash(${project.tools} *)'] }, scope, '');
+    assert.deepEqual(value.allow, ['Bash(npm *)', 'Bash(npx *)', 'Bash(node *)']);
+  });
+
+  it('список из одного значения даёт один элемент', () => {
+    const single: Scope = { values: { project: { tools: ['make'] } }, deferred: new Set() };
+    const { value } = interpolateTree({ allow: ['Bash(${project.tools} *)'] }, single, '');
+    assert.deepEqual(value.allow, ['Bash(make *)']);
+  });
+
+  it('окружающий текст применяется к каждому значению, порядок соседей сохранён', () => {
+    const { value } = interpolateTree(
+      { allow: ['Read', 'Bash(${project.tools} *)', 'Bash(git log*)'] },
+      scope,
+      '',
+    );
+    assert.deepEqual(value.allow, ['Read', 'Bash(npm *)', 'Bash(npx *)', 'Bash(node *)', 'Bash(git log*)']);
+  });
+
+  it('отложенная подстановка того же элемента выживает в каждой копии', () => {
+    const { value, substitutions } = interpolateTree(
+      { allow: ['Bash(${project.tools} ${jobs.build.output.x})'] },
+      scope,
+      '',
+    );
+    assert.deepEqual(value.allow, [
+      'Bash(npm ${jobs.build.output.x})',
+      'Bash(npx ${jobs.build.output.x})',
+      'Bash(node ${jobs.build.output.x})',
+    ]);
+    assert.equal(substitutions.get('allow.0')?.some((item) => item.deferred), true);
+    assert.equal(substitutions.get('allow.1')?.some((item) => item.deferred), true);
+    assert.equal(substitutions.get('allow.2')?.some((item) => item.deferred), true);
+  });
+
+  it('карта подстановок пишется по путям произведённых элементов, не исходного индекса', () => {
+    const { substitutions } = interpolateTree(
+      { allow: ['Read', 'Bash(${project.tools} *)', 'Bash(git log*)'] },
+      scope,
+      '',
+    );
+    assert.ok(substitutions.has('allow.1'));
+    assert.ok(substitutions.has('allow.2'));
+    assert.ok(substitutions.has('allow.3'));
+    // Путь allow.1 в исходном дереве указывал на "Bash(${project.tools} *)" —
+    // после размножения по этому пути стоит "Bash(git log*)", у которой своих
+    // подстановок нет, поэтому единственная запись под allow.1 должна быть той,
+    // что относится к произведённому npm-элементу, а не к прежнему индексу.
+    assert.equal(substitutions.get('allow.1')?.[0]?.expression, 'project.tools');
+  });
+
+  it('две списочные подстановки в одном элементе — отказ, называющий поле и оба выражения', () => {
+    assert.throws(
+      () => interpolateTree({ allow: ['${project.tools}-${project.tools}'] }, scope, ''),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'allow.0');
+        assert.match(error.message, /project\.tools/);
+        return true;
+      },
+    );
+  });
+
+  it('списочное значение в скалярном поле — отказ с подсказкой о раскрытии в элементе списка', () => {
+    assert.throws(
+      () => interpolateTree({ check: '${project.tools}' }, scope, ''),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'check');
+        assert.match(error.hint ?? '', /раскрывается только в элементе списка/);
+        return true;
+      },
+    );
+  });
+
+  /**
+   * Ноль значений дал бы ноль элементов: в `permissions.allow` — исчезнувшее
+   * право, в `changed_only` — исчезнувшую границу правок. Обе схемы пустой
+   * список отклоняют, но значение доезжает сюда и мимо них (слоем флагов), и
+   * тихо удалять элемент нельзя.
+   */
+  it('пустой список — отказ, а не исчезнувший элемент', () => {
+    const empty: Scope = { values: { project: { tools: [] } }, deferred: new Set() };
+    assert.throws(
+      () => interpolateTree({ allow: ['Read', 'Bash(${project.tools} *)'] }, empty, ''),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'allow.1');
+        assert.match(error.message, /пустой список/);
+        return true;
+      },
+    );
+  });
+
+  /**
+   * Размножается только список строк. Разнородный массив до размножения не
+   * доходит и падает в `renderValue` — там, где автор уже стоит в элементе
+   * списка, подсказка «раскрывается только в элементе списка» была бы тупиком,
+   * поэтому выдаётся перечень допустимых значений.
+   */
+  it('массив не из строк в элементе списка отказывает перечнем допустимых значений', () => {
+    const mixed: Scope = { values: { project: { tools: ['npm', 2] } }, deferred: new Set() };
+    assert.throws(
+      () => interpolateTree({ allow: ['Bash(${project.tools} *)'] }, mixed, ''),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'allow.0');
+        assert.match(error.hint ?? '', /допустимы строки, числа и логические значения/);
+        return true;
+      },
+    );
   });
 });
 

@@ -298,6 +298,15 @@
           "minLength": 1,
           "pattern": "\\S"
         },
+        "tools": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        },
         "spec": {
           "type": "object",
           "properties": {

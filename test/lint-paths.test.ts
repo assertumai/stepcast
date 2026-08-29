@@ -246,6 +246,43 @@ jobs:
     );
   });
 
+  // Список путей, объявленный одним элементом со списочной подстановкой,
+  // размножается при раскрытии в T4 — линт обязан проверить каждый
+  // произведённый путь по отдельности, а не потерять их за одним ключом.
+  it('список путей из списочной подстановки ${project.*} проверяется поэлементно', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: probe
+budget: { tokens: 100k }
+project:
+  tools: [real-context.md, no-such-context.md]
+jobs:
+  probe:
+    context:
+      - "\${project.tools}"
+    steps:
+      - id: think
+        agent: claude
+        prompt: ok
+`,
+      'real-context.md': 'текст',
+    });
+
+    const found = errors(
+      lintPipeline(
+        expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+        { config: project.config },
+      ),
+    );
+
+    assert.equal(found.length, 1);
+    assert.match(found[0]?.message ?? '', /Файл контекста не найден/);
+    assert.match(found[0]?.message ?? '', /no-such-context\.md/);
+    assert.doesNotMatch(found[0]?.message ?? '', /real-context\.md/);
+  });
+
   it('запись контекста в объектной форме тоже проверяется', () => {
     const found = errors(
       lint(`context:

@@ -414,6 +414,97 @@ describe('stepcast-configuration', () => {
       },
     );
   });
+
+  // Задача 1.5 / Сценарий: «Инструменты объявлены в проектном конфиге»
+  it('принимает project.tools в проектном конфиге в объявленном порядке', () => {
+    const box = sandbox({ project: 'project:\n  tools: [npm, npx, node]\n' });
+    const { config, provenance } = resolveIn(box);
+    assert.deepEqual(config.project.tools, ['npm', 'npx', 'node']);
+    assert.equal(describeSource(provenance.get('project.tools')!), box.projectPath);
+  });
+
+  // Задача 1.5 / Сценарий: «Инструменты не объявлены»
+  it('project.tools отсутствует, если не объявлен ни одним слоем', () => {
+    const box = sandbox({});
+    const { config } = resolveIn(box);
+    assert.equal(config.project.tools, undefined);
+  });
+
+  // Задача 1.5 / Сценарий: «Пустой список»
+  it('отклоняет пустой project.tools', () => {
+    const box = sandbox({ project: 'project:\n  tools: []\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.tools');
+        assert.equal(error.file, box.projectPath);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.5 / Сценарий: «Элемент из одних пробелов»
+  it('отклоняет project.tools с пустым элементом', () => {
+    const box = sandbox({ project: 'project:\n  tools: ["   "]\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.tools.0');
+        assert.equal(error.file, box.projectPath);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.5 / Сценарий: «Пробел внутри значения допущен»
+  it('принимает имена инструментов с пробелом внутри значения', () => {
+    const box = sandbox({ project: 'project:\n  tools: ["./gradlew", "npm run"]\n' });
+    const { config } = resolveIn(box);
+    assert.deepEqual(config.project.tools, ['./gradlew', 'npm run']);
+  });
+
+  // Задача 1.6 / Сценарий: «Инструменты в глобальном конфиге»
+  it('отклоняет project.tools в глобальном конфиге теми же средствами, что project.check', () => {
+    const box = sandbox({ global: 'project:\n  tools: [npm]\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /project\.tools/);
+        assert.equal(error.file, box.globalPath);
+        assert.match(error.hint ?? '', /\.stepcast\/config\.yml/);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.7 / Сценарий: «Верхний слой заменяет список целиком»
+  it('верхний слой заменяет project.tools целиком, не подмешивая нижний', () => {
+    const box = sandbox({ project: 'project:\n  check: npm run check\n  tools: [npm, npx]\n' });
+    const { config } = resolveIn(box, { 'project.tools': ['make'] });
+    assert.deepEqual(config.project.tools, ['make']);
+  });
+
+  // Задача 1.7 / Сценарий: «Соседний ключ секции не затирается»
+  it('project.tools, объявленный флагом, не затирает project.check из файла', () => {
+    const box = sandbox({ project: 'project:\n  check: npm run check\n  tools: [npm, npx]\n' });
+    const { config } = resolveIn(box, { 'project.tools': ['make'] });
+    assert.equal(config.project.check, 'npm run check');
+    assert.deepEqual(config.project.tools, ['make']);
+  });
+
+  // Задача 1.8 / Сценарий: «Отчёт печатает имена, а не счётчик»
+  it('печатает project.tools в отчёте stepcast config именами инструментов', () => {
+    const box = sandbox({ project: 'project:\n  tools: [npm, npx, node]\n' });
+    const lines = renderConfigReport(resolveIn(box));
+    const line = lines.find((item) => item.startsWith('project.tools'));
+    assert.ok(line !== undefined);
+    assert.match(line, /npm, npx, node/);
+    assert.doesNotMatch(line, /шаблон/);
+    assert.match(line, new RegExp(box.projectPath.replace(/[/\\]/g, '\\$&')));
+  });
 });
 
 describe('stepcast-configuration: модель относительного пути репозитория', () => {

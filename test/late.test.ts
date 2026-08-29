@@ -14,7 +14,14 @@ import type { Job } from '../src/core/pipeline/model.js';
 
 const SCOPE: LateScope = {
   jobs: {
-    plan: { status: 'success', output: { slug: 'add-oauth', count: 3 } },
+    // `files` и `nothing` — списки строк: выход работы это произвольный JSON,
+    // и строковый массив в нём обычен (собственный `implement` этой петли
+    // отдаёт `changed_files`). Правило размножения элемента списка на них
+    // распространяться не должно — см. тесты ниже.
+    plan: {
+      status: 'success',
+      output: { slug: 'add-oauth', count: 3, files: ['src/a.ts', 'src/b.ts'], nothing: [] },
+    },
     empty: { status: 'success' },
     broken: { status: 'failed' },
   },
@@ -235,6 +242,46 @@ jobs:
     assert.throws(
       () => resolveLate(job, SCOPE),
       (error: Error & { hint?: string }) => /выхода не публикует/.test(error.hint ?? ''),
+    );
+  });
+
+  /**
+   * job-tools-declaration: размножение элемента списка — правило разбора
+   * документа, где значение приходит из объявления, прошедшего схему. Выход
+   * работы схемы не проходит и списком строк бывает сплошь и рядом; молча
+   * размножить по нему элемент значило бы поменять состав прав или границ
+   * правок уже после того, как раскрытый пайплайн зафиксирован снимком.
+   */
+  it('строковый массив из выхода работы элемент списка не размножает, а роняет раскрытие', () => {
+    const job = expandJob(
+      pipelineWith(`    steps:
+      - id: show
+        run: [echo, "\${jobs.plan.output.files}"]`),
+    );
+
+    assert.throws(
+      () => resolveLate(job, SCOPE),
+      (error: Error & { hint?: string }) => {
+        assert.match(error.message, /непредставимое строкой/);
+        // Подсказка о раскрытии в элементе списка здесь была бы неправдой:
+        // на позднем этапе правило не действует ни в списке, ни вне его.
+        assert.doesNotMatch(error.hint ?? '', /элементе списка/);
+        assert.match(error.hint ?? '', /состав выхода работы plan/);
+        return true;
+      },
+    );
+  });
+
+  it('пустой массив из выхода работы элемент списка не удаляет, а роняет раскрытие', () => {
+    const job = expandJob(
+      pipelineWith(`    steps:
+      - id: show
+        run: [echo, "\${jobs.plan.output.nothing}"]`),
+    );
+
+    assert.throws(
+      () => resolveLate(job, SCOPE),
+      (error: Error & { hint?: string }) => /непредставимое строкой/.test(error.message),
     );
   });
 

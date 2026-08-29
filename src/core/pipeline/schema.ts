@@ -241,6 +241,7 @@ const TriggersSchema = z.object({ schedule: z.array(ScheduleTriggerEntrySchema).
 const ProjectSchema = z
   .object({
     check: CheckCommandSchema.optional(),
+    tools: z.array(CheckCommandSchema).min(1).optional(),
     spec: RawSpecSchema.optional(),
   })
   .strict();

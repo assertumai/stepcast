@@ -61,6 +61,13 @@ describe('self-improvement-loop: переносимость файлов пет�
     // скрипт, которого у него нет.
     /status\.md/,
     /status:build/,
+    // job-tools-declaration: инструментарий этого репозитория называется
+    // объявлением project.tools, а не правом файла работы напрямую. Образец —
+    // само право (`Bash(npm`), а не всякое вхождение слова: комментарий,
+    // поясняющий пример подстановкой, литералом права не является.
+    /Bash\(npm\b/,
+    /Bash\(npx\b/,
+    /Bash\(node\b/,
   ];
 
   it('файлы работ петли не называют OpenSpec и его документы', () => {
@@ -106,18 +113,61 @@ describe('self-improvement-loop: переносимость файлов пет�
 });
 
 /**
+ * job-tools-declaration: настоящий пайплайн петли, раскрытый целиком, обязан
+ * давать `implement` и `fix-review` тот же набор прав, что они несли
+ * литералами до изменения, — в том же порядке и с теми же соседями.
+ *
+ * Проверка идёт по настоящему `.stepcast/pipelines/self-improve.yml`, а не по
+ * его копии: перенос объявления `tools` в `.stepcast/config.yml` или правка
+ * прав в файле работы обязаны быть видны здесь, а копия пайплайна отставала бы
+ * от оригинала молча. Ожидаемый список выписан целиком, а не проверен на
+ * вхождение: смысл требования — тождество прежнему набору, и лишнее право в
+ * нём такой же промах, как недостающее.
+ */
+describe('self-improvement-loop: настоящий пайплайн петли даёт прежний набор прав', () => {
+  const EXPECTED_ALLOW = [
+    'Read',
+    'Grep',
+    'Glob',
+    'Edit',
+    'Write',
+    'Bash(npm *)',
+    'Bash(npx *)',
+    'Bash(node *)',
+    'Bash(git status*)',
+    'Bash(git diff*)',
+    'Bash(git log*)',
+  ];
+
+  it('implement и fix-review обеих дорожек несут прежние права в прежнем порядке', () => {
+    const project = makeProject();
+    const { pipeline } = expandPipeline({
+      pipelinePath: join(ROOT, '.stepcast', 'pipelines', 'self-improve.yml'),
+      config: project.config,
+    });
+
+    for (const id of ['implement-a', 'implement-b', 'fix-review-a', 'fix-review-b']) {
+      const job = pipeline.jobs.find((item) => item.id === id);
+      assert.ok(job !== undefined, `работы ${id} нет в пайплайне петли`);
+      assert.deepEqual(asAgent(job.steps[0]!).permissions?.allow, EXPECTED_ALLOW, id);
+    }
+  });
+});
+
+/**
  * Задача 4.11 (б): настоящие файлы работ петли, раскрытые против чужого
  * объявления `project.spec`, обязаны нести чужие пути и чужое имя
  * инструмента — а не сегодняшние `openspec/changes` и `openspec`, которые
  * дают только потому, что это объявление этого репозитория.
  */
 describe('self-improvement-loop: настоящие файлы петли против чужого объявления', () => {
-  function foreignPipeline(): string {
+  function foreignPipeline(tools: readonly string[] = ['make']): string {
     return `
 kind: pipeline
 name: foreign
 project:
   check: "true"
+  tools: [${tools.join(', ')}]
   spec:
     dir: docs/changes
     rules: docs/spec-rules.md
@@ -145,8 +195,8 @@ jobs:
 `;
   }
 
-  function expandForeign(project: Project) {
-    project.write('stepcast.yml', foreignPipeline());
+  function expandForeign(project: Project, tools?: readonly string[]) {
+    project.write('stepcast.yml', foreignPipeline(tools));
     return expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }).pipeline;
   }
 
@@ -217,6 +267,34 @@ jobs:
     assert.ok(globs.includes('docs/changes/**'));
     assert.ok(globs.includes('docs/spec-rules.md'));
   });
+
+  // job-tools-declaration: implement и fix-review читают инструменты чужим
+  // объявлением (project.tools: [make]), а не тремя литералами этого
+  // репозитория — право называет чужой инструмент, и ни одного из старых
+  // трёх среди прав нет.
+  it('implement-a и fix-review-a несут право Bash(make *) и ни одного из npm/npx/node', () => {
+    const pipeline = expandForeign(makeProject());
+    for (const id of ['implement-a', 'fix-review-a']) {
+      const job = pipeline.jobs.find((item) => item.id === id)!;
+      const allow = asAgent(job.steps[0]!).permissions?.allow ?? [];
+      assert.ok(allow.includes('Bash(make *)'), `${id}: нет Bash(make *)`);
+      assert.ok(!allow.includes('Bash(npm *)'), `${id}: остался Bash(npm *)`);
+      assert.ok(!allow.includes('Bash(npx *)'), `${id}: остался Bash(npx *)`);
+      assert.ok(!allow.includes('Bash(node *)'), `${id}: остался Bash(node *)`);
+    }
+  });
+
+  it('объявление нескольких инструментов даёт записи в объявленном порядке', () => {
+    const pipeline = expandForeign(makeProject(), ['./gradlew', 'java']);
+    for (const id of ['implement-a', 'fix-review-a']) {
+      const job = pipeline.jobs.find((item) => item.id === id)!;
+      const allow = asAgent(job.steps[0]!).permissions?.allow ?? [];
+      const gradlewIndex = allow.indexOf('Bash(./gradlew *)');
+      const javaIndex = allow.indexOf('Bash(java *)');
+      assert.ok(gradlewIndex !== -1 && javaIndex !== -1, `${id}: не нашлись оба права`);
+      assert.ok(gradlewIndex < javaIndex, `${id}: порядок не совпадает с объявленным`);
+    }
+  });
 });
 
 /**
@@ -238,6 +316,7 @@ kind: pipeline
 name: foreign-run
 project:
   check: "true"
+  tools: [make]
   spec:
     dir: docs/changes
     rules: docs/spec-rules.md
@@ -339,6 +418,25 @@ jobs:
     // Отказ именно на записи контекста, а не на чём-то попутном.
     assert.match(plan?.reason ?? '', /docs\/changes\/demo-change/);
     assert.equal(backend.invocations.length, 0);
+  });
+
+  // job-tools-declaration: implement и fix-review ссылаются на ${project.tools}
+  // — объявление обязательно там, где на него ссылаются, и его отсутствие
+  // роняет разбор раньше первого исполнения, а не проезжает мимо молча.
+  it('пайплайн без объявления project.tools роняет разбор', () => {
+    const project = makeProject({
+      'stepcast.yml': RUN_PIPELINE.replace('  tools: [make]\n', ''),
+      'docs/spec-rules.md': 'правила\n',
+      'docs/changes/demo-change/README.md': '# demo-change\n',
+    });
+
+    assert.throws(
+      () => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      (error: unknown) => {
+        assert.match((error as Error).message ?? '', /project\.tools/);
+        return true;
+      },
+    );
   });
 });
 

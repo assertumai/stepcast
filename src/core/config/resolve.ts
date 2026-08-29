@@ -78,6 +78,8 @@ export interface Config {
   readonly project: {
     /** Команда проверки репозитория. Нет встроенного умолчания: неверная угадка исполнялась бы в чужом дереве. */
     readonly check: string | undefined;
+    /** Имена инструментов репозитория, в объявленном порядке. Нет встроенного умолчания — та же причина, что у `check`. */
+    readonly tools: readonly string[] | undefined;
     /**
      * Практика спецификации репозитория: место документов изменения, файл
      * правил их написания, имя инструмента. Умолчаний нет по той же причине,
@@ -290,6 +292,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   const workspacePath = values.get('defaults.workspace.path');
   const model = values.get('defaults.model');
   const projectCheck = values.get('project.check');
+  const projectTools = values.get('project.tools');
   const projectSpecDir = values.get('project.spec.dir');
   const projectSpecRules = values.get('project.spec.rules');
   const projectSpecTool = values.get('project.spec.tool');
@@ -333,6 +336,10 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
     ui: { port: requireNumber(values, 'ui.port') },
     project: {
       check: typeof projectCheck === 'string' ? projectCheck : undefined,
+      tools:
+        Array.isArray(projectTools) && projectTools.every((item) => typeof item === 'string')
+          ? (projectTools as readonly string[])
+          : undefined,
       spec: {
         dir: typeof projectSpecDir === 'string' ? projectSpecDir : undefined,
         rules: typeof projectSpecRules === 'string' ? projectSpecRules : undefined,

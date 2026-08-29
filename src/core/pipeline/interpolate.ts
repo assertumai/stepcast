@@ -71,6 +71,25 @@ function lookup(values: Readonly<Record<string, unknown>>, path: readonly string
   return cursor;
 }
 
+type ResolvedExpression =
+  | { readonly kind: 'deferred' }
+  | { readonly kind: 'unknown-namespace' }
+  | { readonly kind: 'value'; readonly namespace: string; readonly path: string; readonly value: unknown };
+
+/** Классификация выражения без побочных эффектов — используется и раскрытием, и обнаружением списочных подстановок. */
+function resolveExpression(expression: string, scope: Scope): ResolvedExpression {
+  const segments = expression.split('.');
+  const namespace = segments[0] as string;
+  const rest = segments.slice(1);
+  if (scope.deferred.has(namespace)) return { kind: 'deferred' };
+  if (!(namespace in scope.values)) return { kind: 'unknown-namespace' };
+  return { kind: 'value', namespace, path: rest.join('.'), value: lookup(scope.values, segments) };
+}
+
+function isStringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
 /**
  * Значение подстановки строкой.
  *
@@ -79,6 +98,20 @@ function lookup(values: Readonly<Record<string, unknown>>, path: readonly string
  * подставить структуру. Поэтому подсказку здесь даёт то же объяснение области
  * видимости, что и у неопределённого имени: оно называет состав пространства,
  * тогда как «допустимы строки, числа и логические значения» о составе молчит.
+ *
+ * Списочное значение — отдельная причина с отдельной подсказкой: оно вполне
+ * представимо, только не здесь, — и не должно путаться с объяснением
+ * `scope.explain`, которое здесь ответило бы не по существу (путь объявлен, но
+ * не тем значением).
+ *
+ * Подсказка выдаётся ровно там, где она правдива: размножается только список
+ * строк и только при разборе документа (см. `resolveListExpansion`). Массив
+ * чисел или разнородный массив в элементе списка не размножится и дойдёт
+ * сюда — сказать про него «раскрывается только в элементе списка» автору,
+ * который уже в элементе списка, значило бы отправить его в тупик вместо
+ * перечня допустимых значений. То же с поздним раскрытием: строковый массив в
+ * выходе работы не размножается нигде, и объяснение о составе выхода полезнее
+ * правила, которое на этом этапе не действует.
  */
 function renderValue(
   value: unknown,
@@ -90,6 +123,13 @@ function renderValue(
 ): string {
   if (typeof value === 'string') return value;
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (isStringArray(value) && scope.mode !== 'late') {
+    throw new StepcastError(`Подстановка ${expression} даёт значение, непредставимое строкой`, {
+      ...(at === undefined ? {} : { at }),
+      ...(scope.file === undefined ? {} : { file: scope.file }),
+      hint: 'Списочное значение раскрывается только в элементе списка, а не в скалярном поле',
+    });
+  }
   throw new StepcastError(`Подстановка ${expression} даёт значение, непредставимое строкой`, {
     ...(at === undefined ? {} : { at }),
     ...(scope.file === undefined ? {} : { file: scope.file }),
@@ -142,16 +182,15 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
         throw new StepcastError('Пустая подстановка ${}', at === undefined ? {} : { at });
       }
 
-      const segments = expression.split('.');
-      const namespace = segments[0] as string;
-      const rest = segments.slice(1);
       const { line, column } = positionAt(template, offset);
+      const resolved = resolveExpression(expression, scope);
 
-      if (scope.deferred.has(namespace)) {
+      if (resolved.kind === 'deferred') {
+        const namespace = expression.split('.')[0] as string;
         substitutions.push({
           expression,
           namespace,
-          path: rest.join('.'),
+          path: expression.split('.').slice(1).join('.'),
           deferred: true,
           ...(scope.origin === undefined ? {} : { origin: scope.origin }),
           ...(scope.file === undefined ? {} : { file: scope.file }),
@@ -161,10 +200,11 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
         return match;
       }
 
-      if (!(namespace in scope.values)) {
+      if (resolved.kind === 'unknown-namespace') {
         // На позднем этапе чужое пространство — это литерал, полученный
         // экранированием, а не опечатка: опечатку ловит разбор документа.
         if (late) return match;
+        const namespace = expression.split('.')[0] as string;
         const available = [...Object.keys(scope.values), ...scope.deferred].sort().join(', ');
         throw new StepcastError(`Неизвестное пространство подстановки: ${namespace}`, {
           ...(at === undefined ? {} : { at }),
@@ -176,28 +216,26 @@ export function interpolate(template: string, scope: Scope, at?: string): Interp
         });
       }
 
-      const resolved = lookup(scope.values, segments);
-      if (resolved === undefined) {
+      const { namespace, path, value } = resolved;
+      if (value === undefined) {
         throw new StepcastError(`Подстановка ${expression} не определена`, {
           ...(at === undefined ? {} : { at }),
           ...(scope.file === undefined ? {} : { file: scope.file }),
-          hint:
-            scope.explain?.(expression, namespace, rest.join('.')) ??
-            `Проверьте, что ${namespace}.${rest.join('.')} объявлено`,
+          hint: scope.explain?.(expression, namespace, path) ?? `Проверьте, что ${namespace}.${path} объявлено`,
         });
       }
 
       substitutions.push({
         expression,
         namespace,
-        path: rest.join('.'),
+        path,
         deferred: false,
         ...(scope.origin === undefined ? {} : { origin: scope.origin }),
         ...(scope.file === undefined ? {} : { file: scope.file }),
         line,
         column,
       });
-      return renderValue(resolved, expression, at, scope, namespace, rest.join('.'));
+      return renderValue(value, expression, at, scope, namespace, path);
     },
   );
 
@@ -232,6 +270,97 @@ export function hasPlaceholder(template: string): boolean {
   return false;
 }
 
+export interface ListExpansion {
+  readonly expression: string;
+  readonly namespace: string;
+  readonly path: string;
+  readonly values: readonly string[];
+}
+
+/**
+ * Найти подстановку шаблона, дающую список строк, — с возвратом самого
+ * выражения и значений, чтобы вызывающий не разбирал шаблон второй раз ради
+ * того же ответа. Отвечает на два разных вопроса одним проходом: «есть ли
+ * ровно одна» (для решения — размножать элемент или нет) и «какая именно и
+ * что в ней» (для самого размножения).
+ *
+ * Пространства вне области видимости и подстановки, разрешившиеся не в
+ * список, здесь не ошибка: их видит обычный `interpolate` при раскрытии копии
+ * элемента, и там для них уже есть точное сообщение. Здесь считается ошибкой
+ * только то, что этот проход обязан различить сам, — вторая списочная
+ * подстановка в одном элементе (раскрытие копии её не заметит, потому что
+ * копия обрабатывает уже подставленное скалярное значение первой) и пустой
+ * список (иначе элемент исчезает без единого слова).
+ *
+ * Правило действует только при разборе документа. Позднее раскрытие
+ * (`mode: 'late'`) размножения не делает: там значения приходят из выхода
+ * работы — произвольного JSON, не проходившего ни одной схемы, где строковый
+ * массив обычен, — и элемент вроде `"${jobs.x.output.changed_files}"` менял бы
+ * состав прав или границ правок молча и уже после того, как раскрытый пайплайн
+ * зафиксирован в `pipeline.lock.yml`. Списочное значение на этом этапе
+ * остаётся, как и до правила, непредставимым строкой.
+ */
+export function resolveListExpansion(
+  template: string,
+  scope: Scope,
+  at: string | undefined,
+): ListExpansion | undefined {
+  if (scope.mode === 'late') return undefined;
+
+  const found: ListExpansion[] = [];
+  for (const match of template.matchAll(PLACEHOLDER)) {
+    if (match[0].startsWith('$${')) continue;
+    const expression = (match[2] ?? '').trim();
+    if (expression === '') continue;
+    const resolved = resolveExpression(expression, scope);
+    if (resolved.kind !== 'value' || !isStringArray(resolved.value)) continue;
+    found.push({ expression, namespace: resolved.namespace, path: resolved.path, values: resolved.value });
+  }
+
+  if (found.length === 0) return undefined;
+  if (found.length > 1) {
+    throw new StepcastError(
+      `Элемент списка содержит несколько списочных подстановок: ${found
+        .map((item) => `\${${item.expression}}`)
+        .join(', ')}`,
+      {
+        ...(at === undefined ? {} : { at }),
+        ...(scope.file === undefined ? {} : { file: scope.file }),
+        hint: 'Ровно одна списочная подстановка на элемент — иначе не определить, сколько записей получится',
+      },
+    );
+  }
+
+  const only = found[0] as ListExpansion;
+  if (only.values.length === 0) {
+    // Ноль значений дал бы ноль элементов — исчезнувшее право в `allow` или
+    // исчезнувший глоб в `changed_only`, то есть тихую смену политики или
+    // границ правок. Схемы пустой список не пропускают, но значение доезжает
+    // сюда и мимо них — слоем флагов, — и молчать об этом нельзя.
+    throw new StepcastError(`Подстановка \${${only.expression}} даёт пустой список`, {
+      ...(at === undefined ? {} : { at }),
+      ...(scope.file === undefined ? {} : { file: scope.file }),
+      hint: 'Пустой список удалил бы элемент целиком; объявите хотя бы одно значение или снимите ссылку',
+    });
+  }
+  return only;
+}
+
+/** Копия области видимости, где лист `namespace.path` заменён скалярным значением. */
+function withListValue(scope: Scope, namespace: string, path: string, value: string): Scope {
+  const segments = path === '' ? [] : path.split('.');
+  const setAt = (node: unknown, remaining: readonly string[]): unknown => {
+    if (remaining.length === 0) return value;
+    const record = (typeof node === 'object' && node !== null ? node : {}) as Record<string, unknown>;
+    const [head, ...tail] = remaining as [string, ...string[]];
+    return { ...record, [head]: setAt(record[head], tail) };
+  };
+  return {
+    ...scope,
+    values: { ...scope.values, [namespace]: setAt(scope.values[namespace], segments) },
+  };
+}
+
 export interface TreeResult<T> {
   readonly value: T;
   readonly substitutions: Map<string, readonly Substitution[]>;
@@ -240,6 +369,14 @@ export interface TreeResult<T> {
 /**
  * Обойти документ и раскрыть подстановки во всех строках, запомнив по каждому
  * точечному пути, какие подстановки там применялись.
+ *
+ * Элемент списка, чей шаблон даёт ровно одну списочную подстановку,
+ * размножается — по элементу на значение, в объявленном порядке; окружающий
+ * текст и прочие подстановки того же элемента раскрываются заново на каждую
+ * копию. Путь в карте подстановок — это путь произведённого элемента
+ * (`…allow.5`), а не исходного индекса, которого в раскрытом дереве больше
+ * нет. Размножение — правило разбора документа; на позднем раскрытии оно не
+ * действует (см. `resolveListExpansion`).
  */
 export function interpolateTree<T>(node: T, scope: Scope, prefix = ''): TreeResult<T> {
   const substitutions = new Map<string, readonly Substitution[]>();
@@ -251,7 +388,23 @@ export function interpolateTree<T>(node: T, scope: Scope, prefix = ''): TreeResu
       return result.value;
     }
     if (Array.isArray(value)) {
-      return value.map((item, index) => walk(item, path === '' ? String(index) : `${path}.${index}`));
+      const out: unknown[] = [];
+      value.forEach((item, originalIndex) => {
+        const originalPath = path === '' ? String(originalIndex) : `${path}.${originalIndex}`;
+        const expansion = typeof item === 'string' ? resolveListExpansion(item, scope, originalPath) : undefined;
+        if (expansion === undefined) {
+          out.push(walk(item, path === '' ? String(out.length) : `${path}.${out.length}`));
+          return;
+        }
+        for (const single of expansion.values) {
+          const producedPath = path === '' ? String(out.length) : `${path}.${out.length}`;
+          const itemScope = withListValue(scope, expansion.namespace, expansion.path, single);
+          const result = interpolate(item as string, itemScope, producedPath);
+          if (result.substitutions.length > 0) substitutions.set(producedPath, result.substitutions);
+          out.push(result.value);
+        }
+      });
+      return out;
     }
     if (typeof value === 'object' && value !== null) {
       const out: Record<string, unknown> = {};
