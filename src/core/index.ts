@@ -15,6 +15,7 @@ export {
   type Source,
 } from './config/merge.js';
 export { BUILTIN_CONFIG } from './config/defaults.js';
+export { findPackageRoot, packagedSchemaPath, type SchemaReference } from './package-schema.js';
 export { RawConfigSchema, type RawConfig } from './config/schema.js';
 export { expandPipeline, type ExpandOptions } from './pipeline/expand.js';
 export { serializeLock, writeLock, pipelineToPlain } from './pipeline/lock.js';

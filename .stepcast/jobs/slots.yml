@@ -12,7 +12,7 @@ description: Проверить чистоту дерева и раздать с
 
 output:
   from: pick-lanes
-  schema: ../../schema/backlog-slots.schema.json
+  schema: stepcast:backlog-slots
 
 steps:
   - id: guard-clean-tree
@@ -31,6 +31,6 @@ steps:
   - id: pick-lanes
     run: [sh, -c, '"$STEPCAST_BIN" backlog pick --lanes a --run-dir "$STEPCAST_RUN_DIR"']
     timeout: 1m
-    output_schema: ../../schema/backlog-slots.schema.json
+    output_schema: stepcast:backlog-slots
     expect:
-      - schema: ../../schema/backlog-slots.schema.json
+      - schema: stepcast:backlog-slots

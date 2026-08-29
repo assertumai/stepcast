@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, isAbsolute, join, relative as relativePath, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import { parse as parseYaml } from 'yaml';
@@ -21,6 +21,26 @@ import { makeProject, type Project } from './helpers.js';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const JOBS_DIR = join(ROOT, '.stepcast', 'jobs');
 const PROMPTS_DIR = join(ROOT, '.stepcast', 'prompts');
+
+/**
+ * Файлы с одним из перечисленных расширений во всём поддереве каталога.
+ *
+ * Обход именно рекурсивный: `.stepcast/jobs/**` — это весь поддиректорий работ,
+ * и файл, положенный в подкаталог, обязан попадать в те же проверки, а не
+ * выпадать из них молча.
+ */
+function filesUnder(dir: string, suffixes: readonly string[]): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) return filesUnder(full, suffixes);
+    return suffixes.some((suffix) => entry.name.endsWith(suffix)) ? [full] : [];
+  });
+}
+
+/** Файлы работ петли. Оба написания расширения YAML — движок принимает и то и другое. */
+function jobFiles(): string[] {
+  return filesUnder(JOBS_DIR, ['.yml', '.yaml']);
+}
 
 /**
  * Задача 4.11 (а): файлы петли (кроме файла правил, объявленного самим
@@ -43,14 +63,8 @@ describe('self-improvement-loop: переносимость файлов пет�
     /status:build/,
   ];
 
-  function filesIn(dir: string, suffix: string): string[] {
-    return readdirSync(dir)
-      .filter((name) => name.endsWith(suffix))
-      .map((name) => join(dir, name));
-  }
-
   it('файлы работ петли не называют OpenSpec и его документы', () => {
-    for (const file of filesIn(JOBS_DIR, '.yml')) {
+    for (const file of jobFiles()) {
       const text = readFileSync(file, 'utf8');
       for (const pattern of FORBIDDEN) {
         assert.doesNotMatch(text, pattern, `${file} содержит ${pattern}`);
@@ -59,7 +73,7 @@ describe('self-improvement-loop: переносимость файлов пет�
   });
 
   it('промпты петли, кроме файла правил, не называют OpenSpec и его документы', () => {
-    for (const file of filesIn(PROMPTS_DIR, '.md')) {
+    for (const file of filesUnder(PROMPTS_DIR, ['.md'])) {
       if (file.endsWith('spec-rules.md')) continue;
       const text = readFileSync(file, 'utf8');
       for (const pattern of FORBIDDEN) {
@@ -325,5 +339,194 @@ jobs:
     // Отказ именно на записи контекста, а не на чём-то попутном.
     assert.match(plan?.reason ?? '', /docs\/changes\/demo-change/);
     assert.equal(backend.invocations.length, 0);
+  });
+});
+
+/**
+ * job-schema-path-portable: ни одна ссылка файла работы петли, разрешаемая от
+ * файла объявления, не должна вести за пределы `.stepcast/` — иначе перенос
+ * `.stepcast/jobs/` в чужой репозиторий требует правки внутри скопированных
+ * файлов. `slots.yml` был последней ссылкой наружу (`../../schema/...`);
+ * форма `stepcast:<имя>` резолвится от расположения движка, а не от файла
+ * объявления, и на границу репозитория не выходит.
+ *
+ * `changed_only` и `context` в обход не входят: это не ссылки на файл рядом с
+ * документом работы, а описание дерева репозитория, который петля правит
+ * (границы правок и контекст, разрешаемый от корня рабочей директории) —
+ * включение их запретило бы петле знать что-либо о правимом репозитории, а
+ * не сузило бы проверку до настоящих ссылок.
+ */
+describe('self-improvement-loop: ссылки файлов работ петли не покидают .stepcast/', () => {
+  const STEPCAST_DIR = join(ROOT, '.stepcast');
+
+  interface DeclaredRef {
+    readonly key: string;
+    readonly value: string;
+  }
+
+  /** Записи предиката (`expect` либо `until.check`), несущие `schema`. */
+  function collectPredicateSchemas(predicates: unknown, prefix: string, refs: DeclaredRef[]): void {
+    for (const [index, predicate] of ((predicates as readonly { schema?: string }[]) ?? []).entries()) {
+      if (typeof predicate?.schema === 'string') {
+        refs.push({ key: `${prefix}.${index}.schema`, value: predicate.schema });
+      }
+    }
+  }
+
+  /** Значение промпта, если это ссылка на файл (`prompt: ok` — текст, а не путь). */
+  function promptRef(prompt: unknown, key: string, refs: DeclaredRef[]): void {
+    if (typeof prompt === 'string' && prompt.startsWith('file:')) {
+      refs.push({ key, value: prompt.slice('file:'.length) });
+    }
+  }
+
+  /** Все ссылки файла работы, разрешаемые от него самого: uses, оба prompt: file: и все три места схемы. */
+  function collectRefs(document: unknown): DeclaredRef[] {
+    const doc = document as {
+      uses?: string;
+      output?: { schema?: string };
+      until?: { check?: unknown };
+      steps?: readonly {
+        output_schema?: string;
+        prompt?: string;
+        expect?: unknown;
+        on_fail?: { prompt?: string };
+      }[];
+    };
+    const refs: DeclaredRef[] = [];
+
+    if (typeof doc.uses === 'string') refs.push({ key: 'uses', value: doc.uses });
+    if (typeof doc.output?.schema === 'string') {
+      refs.push({ key: 'output.schema', value: doc.output.schema });
+    }
+    if (doc.until?.check !== undefined) collectPredicateSchemas(doc.until.check, 'until.check', refs);
+
+    for (const [index, step] of (doc.steps ?? []).entries()) {
+      if (typeof step.output_schema === 'string') {
+        refs.push({ key: `steps.${index}.output_schema`, value: step.output_schema });
+      }
+      promptRef(step.prompt, `steps.${index}.prompt`, refs);
+      // Промпт разбора неудачи — такая же ссылка `file:`, разрешаемая от файла
+      // объявления (`readPrompt` в expand.ts), что и промпт самого шага: работ
+      // с `on_fail` в петле пока нет, но появившаяся ссылка наружу обязана
+      // ронять проверку, а не проезжать мимо сторожа.
+      promptRef(step.on_fail?.prompt, `steps.${index}.on_fail.prompt`, refs);
+      if (step.expect !== undefined) collectPredicateSchemas(step.expect, `steps.${index}.expect`, refs);
+    }
+
+    return refs;
+  }
+
+  /** Ссылки документа работы, ведущие за пределы `.stepcast/`, — с местом объявления. */
+  function outsideRefs(document: unknown, file: string): string[] {
+    return collectRefs(document)
+      .filter((ref) => {
+        // Ссылка на схему пакета не выходит за пределы .stepcast/ по построению:
+        // движок разрешает её от собственного расположения, а не от файла
+        // работы, и файловую систему работы вовсе не затрагивает.
+        if (ref.value.startsWith('stepcast:')) return false;
+
+        const resolved = isAbsolute(ref.value) ? ref.value : resolvePath(dirname(file), ref.value);
+        const rel = relativePath(STEPCAST_DIR, resolved);
+        return rel === '' || rel.startsWith('..') || isAbsolute(rel);
+      })
+      .map((ref) => `${file}: ${ref.key} = ${ref.value}`);
+  }
+
+  it('каждая ссылка uses, prompt: file: и объявленная схема разрешается внутрь .stepcast/', () => {
+    const files = jobFiles();
+    assert.ok(files.length > 0, `в ${JOBS_DIR} не найдено ни одного файла работы`);
+
+    for (const file of files) {
+      assert.deepEqual(outsideRefs(parseYaml(readFileSync(file, 'utf8')), file), []);
+    }
+  });
+
+  /**
+   * Сам сторож: работ с `on_fail` в петле сегодня нет, и обход настоящих файлов
+   * о его ссылке ничего не сказал бы — ни когда она внутри, ни когда наружу.
+   * Здесь проверяется, что ссылка каждого из четырёх видов, выведенная наружу,
+   * обходом ловится и называется ключом объявления.
+   */
+  it('ссылку наружу ловит и называет — в uses, в обоих prompt: file: и в схеме', () => {
+    const file = join(JOBS_DIR, 'probe.yml');
+    const document = parseYaml(`
+kind: job
+name: probe
+uses: ../../other/base.yml
+output:
+  schema: ../../schema/backlog-slots.schema.json
+steps:
+  - id: think
+    agent: claude
+    prompt: file:../../prompts/think.md
+    on_fail:
+      analyze: почему
+      prompt: file:../../prompts/analyze.md
+    expect:
+      - schema: ../../schema/backlog-slots.schema.json
+`);
+
+    assert.deepEqual(outsideRefs(document, file), [
+      `${file}: uses = ../../other/base.yml`,
+      `${file}: output.schema = ../../schema/backlog-slots.schema.json`,
+      `${file}: steps.0.prompt = ../../prompts/think.md`,
+      `${file}: steps.0.on_fail.prompt = ../../prompts/analyze.md`,
+      `${file}: steps.0.expect.0.schema = ../../schema/backlog-slots.schema.json`,
+    ]);
+  });
+
+  it('те же ссылки внутри .stepcast/ и форма stepcast: наружу не считаются', () => {
+    const file = join(JOBS_DIR, 'probe.yml');
+    const document = parseYaml(`
+kind: job
+name: probe
+output:
+  schema: stepcast:backlog-slots
+steps:
+  - id: think
+    agent: claude
+    prompt: file:../prompts/think.md
+    on_fail:
+      analyze: почему
+      prompt: file:../prompts/analyze.md
+    expect:
+      - schema: stepcast:backlog-slots
+`);
+
+    assert.deepEqual(outsideRefs(document, file), []);
+  });
+});
+
+/**
+ * job-schema-path-portable: обход выше доказывает, что ссылка не выходит за
+ * `.stepcast/`; он не доказывает, что `stepcast:backlog-slots` в чужом дереве
+ * во что-то разрешается. Здесь — настоящий `slots.yml`, скопированный (не
+ * подключённый по абсолютному пути — тот всегда лежит рядом с настоящим
+ * `schema/` этого репозитория и ничего бы не доказал) в проект, где каталога
+ * `schema/` нет вовсе, и подключённый оттуда пайплайном.
+ */
+describe('self-improvement-loop: работа slots раскрывается в дереве без schema/', () => {
+  it('output.schema ведёт в схему пакета, существующую и читаемую как JSON', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: probe
+jobs:
+  slots:
+    uses: ./.stepcast/jobs/slots.yml
+`,
+      '.stepcast/jobs/slots.yml': readFileSync(join(JOBS_DIR, 'slots.yml'), 'utf8'),
+    });
+
+    const { pipeline } = expandPipeline({
+      pipelinePath: project.path('stepcast.yml'),
+      config: project.config,
+    });
+
+    const schemaPath = pipeline.jobs.find((job) => job.id === 'slots')?.output?.schemaPath;
+    assert.ok(schemaPath !== undefined, 'output.schema не разрешился');
+    assert.ok(existsSync(schemaPath), `схема не найдена: ${schemaPath}`);
+    assert.doesNotThrow(() => JSON.parse(readFileSync(schemaPath, 'utf8')));
   });
 });

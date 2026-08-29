@@ -3,6 +3,7 @@ import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
 import type { Config } from '../config/resolve.js';
 import { StepcastError } from '../errors.js';
+import { packagedSchemaPath } from '../package-schema.js';
 import { parseCount, parseDuration, parseExitCode, parseMoney, parsePercent, parseTokens } from '../units.js';
 import { interpolateTree, placeholderNamespaces, type Scope } from './interpolate.js';
 import { readYamlDocument, rejectWiringKeys, validateDocument } from './load.js';
@@ -207,7 +208,7 @@ function toPredicate(
   }
   if ('file_exists' in raw) return { kind: 'file_exists', path: raw.file_exists };
   if ('schema' in raw) {
-    return { kind: 'schema', path: resolveDeclaredPath(raw.schema, declaringFile) };
+    return { kind: 'schema', path: resolveSchemaPath(raw.schema, declaringFile, `${at}.schema`) };
   }
   if ('matches' in raw) return { kind: 'matches', pattern: raw.matches };
   if ('not_matches' in raw) return { kind: 'not_matches', pattern: raw.not_matches };
@@ -259,6 +260,26 @@ function toAttempts(
 /** Путь к файлу, объявленному в документе: разрешается от самого документа. */
 function resolveDeclaredPath(value: string, declaringFile: string): string {
   return isAbsolute(value) ? value : resolvePath(dirname(declaringFile), value);
+}
+
+const STEPCAST_SCHEMA_PREFIX = 'stepcast:';
+
+/**
+ * Путь к схеме, объявленной в документе: `stepcast:<имя>` — ссылка на схему,
+ * поставляемую пакетом stepcast, разрешается от расположения движка
+ * (`packagedSchemaPath`), а не от файла объявления. Прочее значение — путь,
+ * разрешаемый как обычно. Ветка применяется только к местам объявления
+ * схемы — `uses` и `prompt: file:` остаются на `resolveDeclaredPath`, движок
+ * не публикует ни работ, ни промптов.
+ */
+function resolveSchemaPath(value: string, declaringFile: string, declaredAt: string): string {
+  if (value.startsWith(STEPCAST_SCHEMA_PREFIX)) {
+    return packagedSchemaPath(value.slice(STEPCAST_SCHEMA_PREFIX.length), {
+      file: declaringFile,
+      declaredAt,
+    });
+  }
+  return resolveDeclaredPath(value, declaringFile);
 }
 
 function readPrompt(
@@ -367,7 +388,7 @@ function toStep(
       ...(onFail === undefined ? {} : { onFail }),
       ...(raw.output_schema === undefined
         ? {}
-        : { outputSchemaPath: resolveDeclaredPath(raw.output_schema, declaringFile) }),
+        : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
     };
   }
 
@@ -390,7 +411,7 @@ function toStep(
     ...(prompt.source === undefined ? {} : { promptSource: prompt.source }),
     ...(raw.output_schema === undefined
       ? {}
-      : { outputSchemaPath: resolveDeclaredPath(raw.output_schema, declaringFile) }),
+      : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
     // Ближайшее объявление побеждает целиком: политика не складывается между
     // уровнями, поэтому job-level политика применяется, только если шаг не
     // назвал своей вовсе.
@@ -645,7 +666,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
               ...(output.from === undefined ? {} : { from: output.from }),
               ...(output.schema === undefined
                 ? {}
-                : { schemaPath: resolveDeclaredPath(output.schema, declaringFile) }),
+                : { schemaPath: resolveSchemaPath(output.schema, declaringFile, `${at}.output.schema`) }),
             },
           }),
       ...(body.budget === undefined

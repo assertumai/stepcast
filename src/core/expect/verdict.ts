@@ -1,18 +1,17 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, parse as parsePath } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
 
 // Сборка для draft 2020-12: см. evaluate.ts — тот же выбор экспорта ajv.
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
-import { StepcastError } from '../errors.js';
+import { packagedSchemaPath } from '../package-schema.js';
 
 /**
  * Схема вердикта судьи.
  *
  * Поставляется со stepcast, а не автором пайплайна: настраивать в ней нечего,
  * а её путь должен резолвиться и из исходников (тесты), и из `dist/` (прогон),
- * поэтому — от расположения этого модуля, а не от текущей директории.
+ * поэтому — от расположения движка, а не от текущей директории
+ * (`packagedSchemaPath` в `../package-schema.js`).
  */
 
 export interface JudgeVerdict {
@@ -21,21 +20,7 @@ export interface JudgeVerdict {
 }
 
 export function judgeVerdictSchemaPath(): string {
-  const here = fileURLToPath(new URL('.', import.meta.url));
-  return join(findPackageRoot(here), 'schema', 'judge-verdict.schema.json');
-}
-
-/** Корень пакета: ближайший каталог с `package.json` вверх по дереву. */
-function findPackageRoot(from: string): string {
-  let current = from;
-  for (;;) {
-    if (existsSync(join(current, 'package.json'))) return current;
-    const parent = dirname(current);
-    if (parent === current || parent === parsePath(current).root) {
-      throw new StepcastError('Не удалось найти корень пакета stepcast для схемы вердикта судьи');
-    }
-    current = parent;
-  }
+  return packagedSchemaPath('judge-verdict');
 }
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });

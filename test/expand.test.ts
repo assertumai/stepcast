@@ -2109,3 +2109,65 @@ jobs:
     assert.throws(() => expand(project), StepcastError);
   });
 });
+
+describe('pipeline-definition: отказ раскрытия на ссылке stepcast:<имя>', () => {
+  it('неизвестное имя схемы роняет раскрытие, называя ссылку, место объявления и перечень имён', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: think
+        agent: claude
+        prompt: ok
+        output_schema: stepcast:no-such
+`,
+    });
+
+    const error = thrown(() => expand(project));
+    assert.match(error.message, /no-such/);
+    assert.match(error.at ?? '', /jobs\.build\.steps\.0\.output_schema/);
+    assert.match(error.hint ?? '', /backlog-slots/);
+  });
+
+  it('имя с .. роняет раскрытие, не заходя в файловую систему', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: think
+        agent: claude
+        prompt: ok
+        expect:
+          - schema: "stepcast:../../etc/passwd"
+`,
+    });
+
+    const error = thrown(() => expand(project));
+    assert.match(error.message, /kebab-case/);
+    assert.match(error.at ?? '', /jobs\.build\.steps\.0\.expect\.0\.schema/);
+  });
+
+  it('обычный путь схемы разрешается как прежде, а не как ссылка на пакет', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: think
+        agent: claude
+        prompt: ok
+        output_schema: schemas/probe.json
+`,
+      'schemas/probe.json': JSON.stringify({ type: 'object' }),
+    });
+
+    const { pipeline } = expand(project);
+    const step = pipeline.jobs[0]!.steps[0] as { outputSchemaPath?: string };
+    assert.equal(step.outputSchemaPath, project.path('schemas/probe.json'));
+  });
+});

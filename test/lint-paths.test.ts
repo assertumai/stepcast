@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import { StepcastError } from '../src/core/errors.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { lintPipeline, type Diagnostic } from '../src/core/lint.js';
 import { makeProject } from './helpers.js';
@@ -314,5 +315,79 @@ ${AGENT_STEP}`),
       ),
       [],
     );
+  });
+
+  it('ссылка stepcast:<имя> на схему пакета ошибки не даёт', () => {
+    assert.deepEqual(
+      errors(
+        lint(`steps:
+  - id: think
+    agent: claude
+    prompt: ok
+    expect:
+      - schema: stepcast:backlog-slots`),
+      ),
+      [],
+    );
+  });
+
+  it('uses: stepcast:implement остаётся обычным путём и даёт ошибку ненайденного файла', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: probe
+budget: { tokens: 100k }
+jobs:
+  probe:
+    uses: stepcast:implement
+`,
+    });
+
+    assert.throws(
+      () => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /Файл не найден/);
+        assert.match(error.file ?? '', /stepcast:implement$/);
+        return true;
+      },
+    );
+  });
+
+  it('prompt: file:stepcast:implement остаётся обычным путём и даёт ошибку ненайденного файла', () => {
+    const project = makeProject({
+      'stepcast.yml': PIPELINE,
+      '.stepcast/jobs/probe.yml': `
+version: 1
+kind: job
+name: probe
+steps:
+  - id: think
+    agent: claude
+    prompt: file:stepcast:implement
+`,
+    });
+
+    assert.throws(
+      () => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /Не удалось прочитать файл промпта/);
+        return true;
+      },
+    );
+  });
+
+  it('context: stepcast:backlog-slots остаётся обычным путём и даёт ошибку ненайденного файла', () => {
+    const found = errors(
+      lint(`context:
+  - stepcast:backlog-slots
+${AGENT_STEP}`),
+    );
+
+    assert.equal(found.length, 1);
+    assert.match(found[0]?.message ?? '', /Файл контекста не найден/);
+    assert.match(found[0]?.message ?? '', /stepcast:backlog-slots$/);
   });
 });
