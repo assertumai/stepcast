@@ -9,7 +9,7 @@ import { applyRun } from '../run/apply.js';
 import { runCheck } from './check.js';
 import { hasLaneItem, readLaneItem } from './item.js';
 import { evaluateLane, knownLanes } from './lanes.js';
-import { assertCleanTree, commitAll, currentCommit, resetToCommit } from './tree.js';
+import { assertCleanTree, commitAll, currentCommit, nestedRepoOf, resetToCommit } from './tree.js';
 
 /**
  * Обход дорожек прогона: наложение, проверка, коммит зелёной, откат красной.
@@ -27,6 +27,12 @@ export interface MergeLanesOptions {
   readonly check: string;
   /** Файл очереди улучшений. */
   readonly file: string;
+  /**
+   * Объявленный состав вложенных репозиториев дерева (`project.nested_repos`)
+   * — читает конфигурацию вызывающая команда, а не это ядро: см. `allow` у
+   * `assertCleanTree`.
+   */
+  readonly nestedRepos?: readonly string[];
 }
 
 export type LaneMergeResult =
@@ -51,15 +57,38 @@ function workspaceOf(status: RunStatus, lane: string): string | undefined {
 }
 
 export async function mergeLanes(options: MergeLanesOptions): Promise<readonly LaneMergeResult[]> {
-  const { paths, cwd, lanes, check, file } = options;
+  const { paths, cwd, lanes, check, file, nestedRepos } = options;
   const runDir = paths.dir;
+
+  // Очередь внутри объявленного вложенного репозитория сведению не годится, и
+  // отказ здесь — первым делом, до единой правки дерева. Отметку `done` в
+  // очередь пишет `finishItem`, а коммитит её `commitAll` в корне: корневой
+  // `git add -A` во вложенный репозиторий не заглядывает, и отметка осталась
+  // бы незакоммиченной — в том самом дереве, чистоты которого предусловие
+  // требует. Следующий заход петли упёрся бы в неё головным `assert-clean`
+  // (умолчания у `--allow` там нет намеренно), то есть петля встала бы вместо
+  // того, чтобы починиться. Коммит по вложенным репозиториям — отдельное
+  // изменение (`merge-lanes-per-repo`); до него честный отказ дешевле
+  // возможности, работающей наполовину.
+  const queueRepo = nestedRepoOf(cwd, nestedRepos ?? [], file);
+  if (queueRepo !== undefined) {
+    throw new StepcastError(
+      `Файл очереди лежит внутри объявленного вложенного репозитория ${queueRepo}: ${file}`,
+      {
+        file: cwd,
+        hint: 'Сведение коммитит только корень, и отметка пункта осталась бы незакоммиченной. Держите очередь в корне дерева',
+      },
+    );
+  }
 
   // Файл очереди из проверки чистоты исключён: отметку `in_progress` в него
   // ставит голова той же петли, в начале того же прогона, и к сведению она
   // закономерно не закоммичена. Требовать её коммита значило бы требовать
   // коммита посреди прогона — правки же агента дерево по-прежнему обязано
-  // не содержать.
-  assertCleanTree(cwd, { allow: [file] });
+  // не содержать. Исключение относится к тому дереву, где очередь лежит (для
+  // сведения это всегда корень — см. отказ выше), и на одноимённые пути в
+  // объявленных вложенных репозиториях не расползается.
+  assertCleanTree(cwd, { allow: [file], ...(nestedRepos === undefined ? {} : { nested: nestedRepos }) });
 
   const status = readStatus(paths);
   const known = knownLanes(status.jobs);

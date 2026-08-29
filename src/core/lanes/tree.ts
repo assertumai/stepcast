@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process';
+import { realpathSync, statSync } from 'node:fs';
 import { relative, resolve as resolvePath } from 'node:path';
 
+import { isGitWorktree } from '../anchor/git.js';
 import { StepcastError } from '../errors.js';
 
 /**
@@ -26,6 +28,15 @@ export interface CleanTreeOptions {
    * относительно `dir`; путь вне дерева просто ни с чем не совпадёт.
    */
   readonly allow?: readonly string[];
+  /**
+   * Объявленный состав вложенных репозиториев дерева (`project.nested_repos`)
+   * — каталоги, каждый из которых сам является рабочим деревом git. `git
+   * status` корня туда не заглядывает, поэтому ядро принимает состав
+   * параметром и снимает состояние в каждом отдельно, тем же приёмом, что и
+   * составной якорь (`src/core/anchor/composite.ts`). Читает его вызывающий
+   * код из конфигурации проекта — этот модуль конфигурации не знает.
+   */
+  readonly nested?: readonly string[];
 }
 
 /** Путь дерева, относительный и в разделителях git, — для сверки с `status --porcelain`. */
@@ -53,17 +64,108 @@ function porcelainPaths(line: string): readonly string[] {
 }
 
 /**
+ * Проверить, что объявленный вложенный каталог годен к снятию `status`: он
+ * существует, является рабочим деревом git и — деревом **собственного**
+ * репозитория, а не подкаталогом корневого (иначе его `status` был бы
+ * status'ом корня под чужим именем). Правила и формулировки те же, что у
+ * `checkWorkspaceAvailability` (`src/core/run/workspace.ts`), включая
+ * отдельное сообщение об отсутствующем каталоге: человек, читающий отказ,
+ * не должен гадать, опечатка это в составе или несклонированная часть.
+ * Оттуда проверка не зовётся: там же живёт требование первого коммита,
+ * нужное запуску пайплайна, а не этой проверке.
+ */
+function assertOwnWorktree(dir: string, relDir: string, full: string): void {
+  let isDirectory: boolean;
+  try {
+    isDirectory = statSync(full).isDirectory();
+  } catch (error) {
+    throw new StepcastError(`Объявленный вложенный репозиторий не существует: ${relDir}`, {
+      file: dir,
+      hint: 'Проверьте путь в project.nested_repos — опечатку или несклонированный подмодуль',
+      cause: error,
+    });
+  }
+  if (!isDirectory || !isGitWorktree(full)) {
+    throw new StepcastError(`Объявленный вложенный репозиторий не является рабочим деревом git: ${relDir}`, {
+      file: dir,
+      hint: 'project.nested_repos называет каталог, который сам является отдельным git-репозиторием',
+    });
+  }
+  const toplevel = git(full, ['rev-parse', '--show-toplevel']).trim();
+  if (realpathSync(toplevel) !== realpathSync(full)) {
+    throw new StepcastError(
+      `Объявленный вложенный репозиторий ${relDir} принадлежит репозиторию ${toplevel}, а не собственному`,
+      {
+        file: dir,
+        hint: 'project.nested_repos называет каталог собственного репозитория, а не подкаталог корневого',
+      },
+    );
+  }
+}
+
+/**
+ * Достать путь (уже приведённый к корню дерева запуска, в разделителях git) к
+ * репозиторию, которому он принадлежит, — по самому длинному совпавшему
+ * объявленному префиксу. Правило то же, что у `routeOf` в
+ * `src/core/anchor/composite.ts`: gitlink (путь равен самому объявленному
+ * каталогу) маршрутизируется в корень — его двигает коммит внутри части, а не
+ * правка рабочего дерева.
+ */
+function routeToOwnRepo(
+  nestedByLengthDesc: readonly string[],
+  rootRelativePath: string,
+): { readonly relDir: string | undefined; readonly localPath: string } {
+  for (const declared of nestedByLengthDesc) {
+    if (rootRelativePath === declared) return { relDir: undefined, localPath: rootRelativePath };
+    if (rootRelativePath.startsWith(`${declared}/`)) {
+      return { relDir: declared, localPath: rootRelativePath.slice(declared.length + 1) };
+    }
+  }
+  return { relDir: undefined, localPath: rootRelativePath };
+}
+
+/**
+ * Объявленный каталог, в чьём рабочем дереве лежит путь, — либо `undefined`,
+ * если путь принадлежит корню (в том числе когда состав не объявлен вовсе или
+ * путь равен самому объявленному каталогу: такую запись двигает коммит внутри
+ * части, и она принадлежит корню).
+ *
+ * Тем же правилом проверка чистоты раздаёт `allow` по деревьям. Наружу оно
+ * вынесено для сведения дорожек: `merge-lanes` обязан узнать, что файл
+ * очереди лежит внутри вложенного репозитория, **до** того как тронет дерево
+ * (`src/core/lanes/merge.ts`).
+ */
+export function nestedRepoOf(
+  dir: string,
+  nested: readonly string[],
+  path: string,
+): string | undefined {
+  const byLengthDesc = [...nested].sort((a, b) => b.length - a.length);
+  return routeToOwnRepo(byLengthDesc, treePath(dir, path)).relDir;
+}
+
+/**
  * Дерево запуска обязано быть репозиторием git без незакоммиченных и
  * неотслеживаемых изменений — откат красной проверки стирает и то, и другое,
  * и команда не вправе полагаться на то, что чистоту проверил кто-то до неё.
  *
+ * `git status` корня во вложенный репозиторий не заглядывает: игнорируемый
+ * корнем не виден вовсе, отслеживаемый виден одной записью gitlink, которую
+ * правка рабочего дерева не двигает. Поэтому при объявленном составе
+ * (`options.nested`, `project.nested_repos`) проверка снимает состояние
+ * отдельно в корне и в каждом объявленном каталоге — своим вызовом git на
+ * своё дерево, тем же приёмом, что и составной якорь
+ * (`src/core/anchor/composite.ts`).
+ *
  * Исключение — перечисленные в `allow` учётные файлы петли: их правки не
- * работа агента, а бухгалтерия прогона, и сведение их бережёт само.
+ * работа агента, а бухгалтерия прогона, и сведение их бережёт само. Каждый
+ * путь прощается тому дереву, где лежит, — не остальным: одноимённый файл в
+ * соседнем дереве исключением не прощается.
  */
 export function assertCleanTree(dir: string, options: CleanTreeOptions = {}): void {
-  let status: string;
+  let rootStatus: string;
   try {
-    status = git(dir, ['status', '--porcelain']);
+    rootStatus = git(dir, ['status', '--porcelain']);
   } catch (error) {
     throw new StepcastError(`Дерево запуска не является репозиторием git: ${dir}`, {
       file: dir,
@@ -72,14 +174,60 @@ export function assertCleanTree(dir: string, options: CleanTreeOptions = {}): vo
     });
   }
 
-  const allowed = new Set((options.allow ?? []).map((path) => treePath(dir, path)));
-  const dirty = status
-    .split('\n')
-    .filter((line) => line.trim() !== '')
-    .filter((line) => porcelainPaths(line).some((path) => !allowed.has(path)));
+  const nested = options.nested ?? [];
+  const nestedDirs = nested.map((relDir) => {
+    const full = resolvePath(dir, relDir);
+    assertOwnWorktree(dir, relDir, full);
+    return { relDir, full };
+  });
 
-  if (dirty.length > 0) {
-    throw new StepcastError('Дерево запуска не чисто: есть незакоммиченные либо неотслеживаемые изменения', {
+  // Каждый путь allow достаётся ровно одному дереву — по самому длинному
+  // совпавшему объявленному префиксу, — и сверяется с его собственным
+  // `status`, а не со status корня.
+  const nestedByLengthDesc = [...nested].sort((a, b) => b.length - a.length);
+  const allowByRepo = new Map<string | undefined, Set<string>>();
+  for (const path of options.allow ?? []) {
+    const { relDir, localPath } = routeToOwnRepo(nestedByLengthDesc, treePath(dir, path));
+    const set = allowByRepo.get(relDir) ?? new Set<string>();
+    set.add(localPath);
+    allowByRepo.set(relDir, set);
+  }
+
+  const isDirty = (status: string, allowed: ReadonlySet<string>): boolean =>
+    status
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .some((line) => porcelainPaths(line).some((path) => !allowed.has(path)));
+
+  const dirtyLabels: string[] = [];
+  if (isDirty(rootStatus, allowByRepo.get(undefined) ?? new Set())) dirtyLabels.push('корень');
+  for (const { relDir, full } of nestedDirs) {
+    let status: string;
+    try {
+      status = git(full, ['status', '--porcelain']);
+    } catch (error) {
+      // Годность каталога проверена выше, поэтому сюда доходит только отказ
+      // самого git — битый индекс, гонка с чужим коммитом, снятая посреди
+      // проверки блокировка. Отказ обязан остаться названным: «внутренняя
+      // ошибка» со стеком в логе шага неотличима от дефекта движка.
+      throw new StepcastError(`Состояние объявленного вложенного репозитория ${relDir} не снять`, {
+        file: dir,
+        hint: 'git отказал на status в этом каталоге — проверьте репозиторий вручную',
+        cause: error,
+      });
+    }
+    if (isDirty(status, allowByRepo.get(relDir) ?? new Set())) dirtyLabels.push(relDir);
+  }
+
+  if (dirtyLabels.length > 0) {
+    // Дерево без объявленного состава отвечает прежним сообщением: слово
+    // «корень» там объясняло бы состав, которого нет, а деревьев в отказе всё
+    // равно ровно одно — оно названо полем `file`.
+    const detail =
+      nested.length === 0
+        ? 'есть незакоммиченные либо неотслеживаемые изменения'
+        : `незакоммиченные либо неотслеживаемые изменения есть в: ${dirtyLabels.join(', ')}`;
+    throw new StepcastError(`Дерево запуска не чисто: ${detail}`, {
       file: dir,
       hint: 'Закоммитьте или отложите правки и повторите — откат красной проверки стирает их безвозвратно',
     });

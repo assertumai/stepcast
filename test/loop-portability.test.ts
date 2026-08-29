@@ -132,6 +132,19 @@ describe('self-improvement-loop: переносимость файлов пет�
     assert.equal(typeof rules, 'string');
     assert.ok(existsSync(join(ROOT, rules as string)), `файла ${rules} нет в дереве`);
   });
+
+  /**
+   * guard-clean-nested: свой `git status` в шаге видит один каталог и не
+   * заглядывает в объявленные вложенные репозитории — проверка чистоты обязана
+   * идти командой бинаря, которая читает `project.nested_repos` из
+   * конфигурации сама. Состав вдобавок не публикуется подстановкой
+   * `${project.*}`, и файлу работы прочитать его неоткуда.
+   */
+  it('шаг проверки чистоты в slots.yml зовёт $STEPCAST_BIN assert-clean, а не git status', () => {
+    const text = readFileSync(join(JOBS_DIR, 'slots.yml'), 'utf8');
+    assert.match(text, /"\$STEPCAST_BIN"\s+assert-clean/);
+    assert.doesNotMatch(text, /git status/);
+  });
 });
 
 /**

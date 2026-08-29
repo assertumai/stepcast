@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -751,6 +751,130 @@ describe('core: mergeLanes — предусловие чистого дерев�
       StepcastError,
     );
   });
+
+  it('грязный вложенный репозиторий при чистом корне отказывает до первого наложения', async () => {
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    writeFileSync(project.path('.gitignore'), 'backend/\n');
+    commit(project, 'начальный');
+
+    const nestedDir = project.path('backend');
+    mkdirSync(nestedDir);
+    gitInitDir(nestedDir);
+    writeFileSync(join(nestedDir, 'seed.txt'), 'затравка backend\n');
+    gitCommit(nestedDir, 'первый backend');
+    writeFileSync(join(nestedDir, 'seed.txt'), 'незакоммиченная правка backend\n');
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    const before = commitCount(project);
+
+    await assert.rejects(
+      () =>
+        mergeLanes({
+          paths: bogusPaths(project.root),
+          cwd: project.root,
+          lanes: ['a'],
+          check: 'exit 0',
+          file: backlogFile,
+          nestedRepos: ['backend'],
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /backend/);
+        return true;
+      },
+    );
+
+    assert.equal(commitCount(project), before, 'дерево не тронуто');
+    assert.equal(readFileSync(backlogFile, 'utf8'), backlogItem('a-item'), 'очередь не правлена');
+  });
+
+  /**
+   * Отметку `done` пишет `finishItem`, а коммитит `commitAll` в корне —
+   * корневой `git add -A` во вложенный репозиторий не заглядывает. Свести
+   * такую очередь значило бы оставить её отметку незакоммиченной в дереве,
+   * чистоты которого требует головное предусловие следующего захода: петля
+   * встала бы, а не починилась. Коммит по вложенным репозиториям —
+   * `merge-lanes-per-repo`; до него это отказ, а не половина возможности.
+   */
+  it('очередь внутри вложенного репозитория — отказ до первого наложения', async () => {
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    writeFileSync(project.path('.gitignore'), 'backend/\n');
+    commit(project, 'начальный');
+
+    const nestedDir = project.path('backend');
+    mkdirSync(nestedDir);
+    gitInitDir(nestedDir);
+    writeFileSync(join(nestedDir, 'seed.txt'), 'затравка backend\n');
+    gitCommit(nestedDir, 'первый backend');
+
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = join(nestedDir, 'backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    const before = commitCount(project);
+
+    await assert.rejects(
+      () =>
+        mergeLanes({
+          paths: result.journal.paths,
+          cwd: project.root,
+          lanes: ['a'],
+          check: 'exit 0',
+          file: backlogFile,
+          nestedRepos: ['backend'],
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /очеред[иь].*backend/i);
+        return true;
+      },
+    );
+
+    assert.equal(commitCount(project), before, 'дерево не тронуто');
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'in_progress', 'очередь не правлена');
+    assert.equal(existsSync(project.path('a.txt')), false, 'дорожка не накладывалась');
+  });
+
+  it('очередь в корне многорепного дерева сведению не мешает', async () => {
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    writeFileSync(project.path('.gitignore'), 'backend/\n');
+    commit(project, 'начальный');
+
+    const nestedDir = project.path('backend');
+    mkdirSync(nestedDir);
+    gitInitDir(nestedDir);
+    writeFileSync(join(nestedDir, 'seed.txt'), 'затравка backend\n');
+    gitCommit(nestedDir, 'первый backend');
+
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    // Очередь в корне, вложенный чист: исключение `--file` относится к корню
+    // и на объявленный состав не влияет — сведение идёт как в однорепном.
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item', 'queued'));
+    commit(project, 'добавлена очередь');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}started_at: 2026-08-28T00:00:00Z\n`);
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+      nestedRepos: ['backend'],
+    });
+
+    assert.equal(outcomes[0]?.kind, 'merged');
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'done');
+  });
 });
 
 describe('core: mergeLanes — дорожка без вклада', () => {
@@ -929,6 +1053,53 @@ describe('CLI: stepcast merge-lanes', () => {
       backlogFile,
     ]);
     assert.equal(noCheck.code, ExitCode.configError);
+  });
+
+  /**
+   * Состав вложенных репозиториев команда берёт из конфигурации сама — этой
+   * связки («прочитан `project.nested_repos`» → «проверка обошла часть») в
+   * ядре не видно: туда состав приходит параметром. Конфиг с составом
+   * пишется после прогона: с ним предстартовая проверка отклонила бы
+   * worktree-пайплайн (изолированное дерево объявленных частей не содержит).
+   */
+  it('состав из конфигурации доходит до предусловия: грязный вложенный — код 2', async () => {
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    writeFileSync(project.path('.gitignore'), '.stepcast/\nbackend/\n');
+    commit(project, 'начальный');
+
+    const nestedDir = project.path('backend');
+    mkdirSync(nestedDir);
+    gitInitDir(nestedDir);
+    writeFileSync(join(nestedDir, 'seed.txt'), 'затравка backend\n');
+    gitCommit(nestedDir, 'первый backend');
+
+    const { result } = await preparedRun(project);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    mkdirSync(project.path('.stepcast'), { recursive: true });
+    writeFileSync(project.path('.stepcast/config.yml'), 'project:\n  nested_repos: [backend]\n');
+    writeFileSync(join(nestedDir, 'seed.txt'), 'незакоммиченная правка backend\n');
+    const before = commitCount(project);
+
+    const out = await cli(project.root, project.home, [
+      result.journal.paths.runId,
+      '--lanes',
+      'a',
+      '--check',
+      'exit 0',
+      '--file',
+      backlogFile,
+    ]);
+
+    assert.equal(out.code, ExitCode.configError);
+    assert.match(out.stderr, /backend/);
+    assert.equal(commitCount(project), before, 'дерево не тронуто');
+    assert.equal(existsSync(project.path('a.txt')), false, 'дорожка не накладывалась');
   });
 
   it('прогон не назван вовсе — отказ кодом 2, ничего не тронуто', async () => {

@@ -71,7 +71,14 @@ export async function runMergeLanesCommand(
   const projectRoot = findProjectRoot(cwd);
   const paths = resolveRun(config.runs.root, projectRoot, runId);
 
-  const results = await mergeLanes({ paths, cwd, lanes, check, file });
+  const results = await mergeLanes({
+    paths,
+    cwd,
+    lanes,
+    check,
+    file,
+    ...(config.project.nestedRepos === undefined ? {} : { nestedRepos: config.project.nestedRepos }),
+  });
 
   let merged = 0;
   for (const result of results) {

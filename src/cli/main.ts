@@ -2,6 +2,7 @@ import { ExitCode, type ExitCodeValue } from '../core/errors.js';
 import { parseArgs, type CommandSpec } from './args.js';
 import { reportError } from './output.js';
 import { runApplyCommand } from './commands/apply.js';
+import { runAssertCleanCommand } from './commands/assert-clean.js';
 import { runBacklogCommand } from './commands/backlog.js';
 import { runConfigCommand } from './commands/config.js';
 import { runDataCommand } from './commands/data.js';
@@ -161,6 +162,16 @@ export const COMMANDS: Record<string, CommandSpec> = {
       file: { kind: 'string', description: 'путь к файлу очереди, по умолчанию backlog.md в рабочем каталоге' },
     },
   },
+  'assert-clean': {
+    description:
+      'проверить чистоту каталога запуска и объявленных вложенных репозиториев (project.nested_repos), ничего не правя',
+    flags: {
+      allow: {
+        kind: 'string',
+        description: 'пути, правки которых чистоту не нарушают, через запятую',
+      },
+    },
+  },
 };
 
 export interface CliIo {
@@ -207,6 +218,8 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
         return runDataCommand(args, io.out);
       case 'merge-lanes':
         return await runMergeLanesCommand(args, io.out, io.cwd);
+      case 'assert-clean':
+        return runAssertCleanCommand(args, io.cwd);
       default:
         return ExitCode.configError;
     }
