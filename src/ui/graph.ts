@@ -20,6 +20,8 @@ export interface GraphInput {
   readonly on?: 'success' | 'failure' | 'always';
   readonly if?: string;
   readonly status?: StatusValue;
+  /** Раскрытая подпись работы: витрина показывает её прямо в узле. */
+  readonly display?: Readonly<Record<string, string>>;
 }
 
 export interface GraphNode {
@@ -35,6 +37,11 @@ export interface GraphNode {
   /** Работа выполняется не всегда: объявлен `if` или `on` не `success`. */
   readonly conditional: boolean;
   readonly status?: StatusValue;
+  /**
+   * Подпись работы, уже раскрытая против её данных. Ключ `title` витрина
+   * показывает строкой в узле графа; прочие ключи — в карточке работы.
+   */
+  readonly display?: Readonly<Record<string, string>>;
   /**
    * Предшественники, чей исход отменил эту работу. Заполняется только у
    * пропущенной работы: в разборе неудачного захода это и есть главный вопрос.
@@ -123,6 +130,7 @@ export function layoutJobs(jobs: readonly GraphInput[]): JobGraph {
       ...(job.if === undefined ? {} : { if: job.if }),
       conditional: job.if !== undefined || on !== 'success',
       ...(job.status === undefined ? {} : { status: job.status }),
+      ...(job.display === undefined ? {} : { display: job.display }),
       blockedBy,
     });
   }

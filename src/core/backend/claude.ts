@@ -21,6 +21,23 @@ import type {
 export const PERMISSIVE_MODES = ['auto', 'acceptEdits', 'dontAsk', 'bypassPermissions'] as const;
 
 /**
+ * Право на публикацию данных работы, добавляемое неявно в жёстком режиме.
+ *
+ * Узко на `stepcast data`, а не на `stepcast *`: там `run`, `apply` и `gc` —
+ * команды, меняющие мир за пределами шага. Публикация же не дотягивается до
+ * рабочего дерева по устройству: команда не принимает путей и пишет только в
+ * каталог своей работы внутри каталога прогона. Без этого права `enforce:
+ * strict` означал бы, что подпись узла доступна кому угодно, кроме агента.
+ */
+export const DATA_COMMAND_PERMISSION = 'Bash(stepcast data *)';
+
+function withDataCommand(allow: readonly string[] | undefined, strict: boolean): readonly string[] {
+  const declared = allow ?? [];
+  if (!strict || declared.includes(DATA_COMMAND_PERMISSION)) return declared;
+  return [...declared, DATA_COMMAND_PERMISSION];
+}
+
+/**
  * Адаптер Claude Code.
  *
  * Запуск неинтерактивный, через каналы, с потоковым структурированным
@@ -65,8 +82,9 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
         if (invocation.scratchDir !== undefined) command.push('--add-dir', invocation.scratchDir);
       }
       if (permissions?.mode !== undefined) command.push('--permission-mode', permissions.mode);
-      if (permissions?.allow !== undefined && permissions.allow.length > 0) {
-        command.push('--allowedTools', permissions.allow.join(' '));
+      const allow = withDataCommand(permissions?.allow, permissions?.enforce === 'strict');
+      if (allow.length > 0) {
+        command.push('--allowedTools', allow.join(' '));
       }
       if (permissions?.deny !== undefined && permissions.deny.length > 0) {
         command.push('--disallowedTools', permissions.deny.join(' '));

@@ -242,7 +242,48 @@ describe('agent-backend: сборка запуска', () => {
 
     assert.equal(spec.command[spec.command.indexOf('--setting-sources') + 1], 'project');
     assert.equal(spec.command[spec.command.indexOf('--permission-mode') + 1], 'manual');
+    // Право на публикацию данных работы добавляется неявно: см. ниже.
+    assert.equal(
+      spec.command[spec.command.indexOf('--allowedTools') + 1],
+      'Read Bash(stepcast data *)',
+    );
+  });
+
+  // Без этого `enforce: strict` означал бы, что подпись узла в витрине
+  // доступна кому угодно, кроме агента, который её и должен публиковать.
+  it('strict неявно разрешает stepcast data и ничего сверх него', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      permissions: { allow: ['Read'], enforce: 'strict' },
+    });
+
+    const allowed = spec.command[spec.command.indexOf('--allowedTools') + 1] ?? '';
+    assert.equal(allowed, 'Read Bash(stepcast data *)');
+    assert.ok(!allowed.includes('Bash(stepcast *)'), 'run, apply и gc остаются запрещёнными');
+  });
+
+  it('без strict неявного права на stepcast data нет', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      permissions: { allow: ['Read'] },
+    });
+
     assert.equal(spec.command[spec.command.indexOf('--allowedTools') + 1], 'Read');
+  });
+
+  it('объявленное явно право на stepcast data не удваивается', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      permissions: { allow: ['Bash(stepcast data *)'], enforce: 'strict' },
+    });
+
+    assert.equal(spec.command[spec.command.indexOf('--allowedTools') + 1], 'Bash(stepcast data *)');
   });
 
   it('явный inherit на шаге ослабляет базовый strict бэкенда', () => {

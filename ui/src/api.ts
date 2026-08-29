@@ -80,6 +80,8 @@ export interface GraphNode {
   readonly if?: string;
   readonly conditional: boolean;
   readonly status?: StatusValue;
+  /** Раскрытая подпись работы: ключ `title` показывается строкой в узле. */
+  readonly display?: Readonly<Record<string, string>>;
   readonly blockedBy: readonly string[];
 }
 
@@ -140,6 +142,10 @@ export interface JobSnapshot {
   readonly inputs: readonly JournalFileRef[];
   readonly output?: JournalFileRef;
   readonly outputDeclared: boolean;
+  /** Подпись работы, раскрытая демоном против данных прогона. */
+  readonly display?: Readonly<Record<string, string>>;
+  /** Данные, опубликованные самой работой командой `stepcast data`. */
+  readonly data?: Readonly<Record<string, string>>;
   readonly steps: readonly StepSnapshot[];
   readonly usage: UsageSnapshot;
 }

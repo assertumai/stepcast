@@ -378,6 +378,15 @@
               "lane": {
                 "type": "string"
               },
+              "display": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
               "description": {
                 "type": "string"
               },
@@ -569,6 +578,15 @@
               },
               "lane": {
                 "type": "string"
+              },
+              "display": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
               },
               "name": {
                 "type": "string"

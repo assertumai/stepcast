@@ -35,6 +35,11 @@ export interface LockJob {
   readonly on: 'success' | 'failure' | 'always';
   /** Работа объявляет выход — значит, у неё может быть `artifacts/<id>.json`. */
   readonly publishesOutput: boolean;
+  /**
+   * Подпись работы, как объявлена: шаблоны нераскрыты. Раскрывает их снимок,
+   * против данных, опубликованных работами этого прогона.
+   */
+  readonly display?: Readonly<Record<string, string>>;
   readonly context: readonly string[];
   readonly steps: readonly LockStep[];
 }
@@ -47,6 +52,17 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+/** Подпись лока: карта строк в строки. Всё, что не строка, отбрасывается. */
+function displayMap(value: unknown): Record<string, string> | undefined {
+  const record = asRecord(value);
+  if (record === undefined) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, item] of Object.entries(record)) {
+    if (typeof item === 'string') out[key] = item;
+  }
+  return Object.keys(out).length === 0 ? undefined : out;
 }
 
 /** Записи контекста лока разнородны: строка, `{ path }` или `{ text }`. */
@@ -123,6 +139,7 @@ function toJob(value: unknown): LockJob | undefined {
   const description = asString(record.description);
   const condition = asString(record.if);
   const on = asString(record.on);
+  const display = displayMap(record.display);
 
   return {
     id,
@@ -131,6 +148,7 @@ function toJob(value: unknown): LockJob | undefined {
     ...(condition === undefined ? {} : { if: condition }),
     on: on === 'failure' || on === 'always' ? on : 'success',
     publishesOutput: asRecord(record.output) !== undefined,
+    ...(display === undefined ? {} : { display }),
     context: contextLabels(record.context),
     steps,
   };

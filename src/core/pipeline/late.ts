@@ -30,6 +30,8 @@ export interface RunScope {
 export interface JobScopeEntry {
   readonly status: string;
   readonly output?: unknown;
+  /** Данные, опубликованные работой по ходу исполнения (`stepcast data`). */
+  readonly data?: Readonly<Record<string, string>>;
 }
 
 export interface LateScope {
@@ -60,6 +62,14 @@ function explain(scope: LateScope) {
     }
 
     const entry = scope.jobs[jobId] as JobScopeEntry;
+
+    if (path.split('.')[1] === 'data') {
+      const published = Object.keys(entry.data ?? {});
+      return published.length === 0
+        ? `Работа ${jobId} данных не публиковала: их пишет сама работа командой stepcast data`
+        : `Работа ${jobId} опубликовала данные ${published.join(', ')}`;
+    }
+
     if (entry.output === undefined) {
       return entry.status === 'success'
         ? `Работа ${jobId} завершилась успехом, но выхода не публикует: объявите output в её определении`
@@ -70,11 +80,19 @@ function explain(scope: LateScope) {
   };
 }
 
-/** Раскрыть отложенные подстановки в определении работы. */
+/**
+ * Раскрыть отложенные подстановки в определении работы.
+ *
+ * Блок `display` через раскрытие не проходит вовсе: его не потребляет ни один
+ * шаг — его читает витрина, — а к этому моменту работа ещё не исполнялась и
+ * собственных данных не публиковала. Раскрытый здесь, он навсегда застыл бы
+ * пустым. Поэтому блок отделяется до обхода и возвращается на место как был.
+ */
 export function resolveLate(job: Job, scope: LateScope): Job {
+  const { display, ...resolvable } = job;
   try {
-    return interpolateTree(
-      job,
+    const resolved = interpolateTree(
+      resolvable,
       {
         values: { jobs: scope.jobs, run: scope.run, env: scope.env },
         deferred: new Set(),
@@ -83,6 +101,7 @@ export function resolveLate(job: Job, scope: LateScope): Job {
       },
       `jobs.${job.id}`,
     ).value;
+    return display === undefined ? resolved : { ...resolved, display };
   } catch (error) {
     // Файл, из которого пришло определение, интерполятору неизвестен, а без
     // него сообщение не говорит, где искать.

@@ -186,12 +186,24 @@ export const JobDocumentSchema = z
   })
   .strict();
 
+/**
+ * Подпись работы в витрине: произвольные имена в шаблоны значений.
+ *
+ * Блок, а не плоское поле `title` прямо в обвязке: обвязка строгая, и
+ * неизвестный ключ в ней отклоняется разбором — это ловит `titile`, `neds` и
+ * `wokspace` на `stepcast lint`, до захода. Разрешить произвольные имена
+ * прямо в обвязке значило бы потерять эту проверку для всей обвязки целиком.
+ * Блок сохраняет строгость снаружи и даёт полную свободу имён внутри.
+ */
+const DisplaySchema = z.record(z.string(), z.string());
+
 /** Обвязка: живёт только на месте подключения, внутри файла работы запрещена. */
 const WiringShape = {
   needs: z.union([z.literal('all'), z.array(z.string())]).optional(),
   on: z.enum(['success', 'failure', 'always']).optional(),
   if: z.string().optional(),
   lane: z.string().optional(),
+  display: DisplaySchema.optional(),
 };
 
 const JobUseSchema = z
@@ -290,4 +302,4 @@ export type RawTriggers = z.infer<typeof TriggersSchema>;
 export type RawProject = z.infer<typeof ProjectSchema>;
 
 /** Ключи обвязки, недопустимые внутри документа работы. */
-export const WIRING_KEYS = ['needs', 'on', 'if', 'with', 'triggers', 'lane'] as const;
+export const WIRING_KEYS = ['needs', 'on', 'if', 'with', 'triggers', 'lane', 'display'] as const;

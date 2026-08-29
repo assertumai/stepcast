@@ -108,6 +108,33 @@ function Job({ address, job }: { readonly address: string; readonly job: JobSnap
         )}
       </div>
 
+      {/*
+        Подпись работы — раскрытая, как её видит граф; данные — то, что
+        работа опубликовала сама. Обе строки показываются здесь целиком:
+        в узле графа умещается один ключ и одна строка.
+      */}
+      {job.display === undefined ? null : (
+        <div className="row">
+          <span className="label">подпись</span>
+          <span className="desc">
+            {Object.entries(job.display)
+              .map(([key, value]) => `${key}: ${value}`)
+              .join(' · ')}
+          </span>
+        </div>
+      )}
+
+      {job.data === undefined ? null : (
+        <div className="row">
+          <span className="label">данные</span>
+          <span className="desc mono">
+            {Object.entries(job.data)
+              .map(([key, value]) => `${key}=${value}`)
+              .join(' · ')}
+          </span>
+        </div>
+      )}
+
       {job.steps.map((step) => (
         <Step key={step.id} address={address} step={step} />
       ))}

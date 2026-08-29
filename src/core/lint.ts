@@ -220,6 +220,7 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
     const upstreamOf = graph.upstream.get(job.id) ?? new Set();
     checkCondition(job, upstreamOf, declaredInputs, graph.byId, pipeline.concurrency, pipeline.file, push);
     checkJobSubstitutions(job, upstreamOf, substitutions, graph.byId, pipeline.file, push);
+    checkDisplaySubstitutions(job, substitutions, graph.byId, pipeline.file, push);
     checkContextUpstream(job, upstreamOf, push);
     checkEnv(job.env, envDenyMatchers, pipeline.envDeny, job.source, `${at}.env`, push);
 
@@ -396,6 +397,69 @@ function checkCondition(
 }
 
 /**
+ * Подстановки внутри блока `display`.
+ *
+ * Правила здесь свои и обратны правилам полей, потребляемых шагом. Подпись
+ * раскрывается витриной в момент отрисовки, против уже записанных данных, —
+ * поэтому самоссылка `${jobs.<сам>.data.*}` тут законна, а требование «работа
+ * выше по графу» бессмысленно: к отрисовке в графе завершились все.
+ *
+ * Проверяется ровно то, что на этапе разбора и правда неверно: имя работы,
+ * которой в пайплайне нет, и обращение не к `data` — единственному
+ * пространству, которое витрина умеет раскрыть.
+ */
+function checkDisplaySubstitutions(
+  job: Job,
+  substitutions: ExpandedPipeline['substitutions'],
+  byId: ReadonlyMap<string, Job>,
+  pipelineFile: string,
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  const prefix = `jobs.${job.id}.display.`;
+
+  for (const [key, list] of substitutions) {
+    if (!key.startsWith(prefix)) continue;
+
+    for (const item of list) {
+      // Неотложенное имя (`inputs`, `params`, `project`) уже раскрыто разбором
+      // и до витрины доезжает литералом: проверять в подписи нечего.
+      if (!item.deferred) continue;
+      const location = substitutionLocation(item, key, pipelineFile);
+
+      if (item.namespace !== 'jobs') {
+        push({
+          severity: 'error',
+          message: `display работы ${job.id} подставляет ${item.expression} — в подписи доступно только пространство jobs.<работа>.data.<ключ>`,
+          ...location,
+          hint: 'Подпись раскрывается витриной, а не движком: пространства run и env к этому моменту принадлежат уже завершённому прогону',
+        });
+        continue;
+      }
+
+      const [other, namespace] = item.path.split('.');
+      if (other === undefined || !byId.has(other)) {
+        push({
+          severity: 'error',
+          message: `display работы ${job.id} подставляет ${item.expression} — работы ${other ?? '?'} нет в пайплайне`,
+          ...location,
+          hint: similarJobsHint(other ?? '', byId.keys()),
+        });
+        continue;
+      }
+
+      if (namespace !== 'data') {
+        push({
+          severity: 'error',
+          message: `display работы ${job.id} подставляет ${item.expression} — в подписи доступны только данные работы`,
+          ...location,
+          hint: `Допустимо ${'${'}jobs.${other}.data.<ключ>${'}'}: их публикует сама работа командой stepcast data`,
+        });
+      }
+    }
+  }
+}
+
+/**
  * Идентификаторы работ, похожие на отсутствующее имя, — для подсказки. Похож
  * тот, чей префикс до первого дефиса совпадает: типичный промах — общий файл
  * промпта на пайплайне с дорожками, называющий работу без её суффикса
@@ -482,16 +546,36 @@ function checkJobSubstitutions(
   push: (diagnostic: Diagnostic) => void,
 ): void {
   const prefix = `jobs.${job.id}.`;
+  const displayPrefix = `${prefix}display.`;
   const flagged = new Set<string>();
 
   for (const [key, list] of substitutions) {
     if (!key.startsWith(prefix)) continue;
+    // Подпись живёт по своим правилам и проверяется отдельно: её раскрывает
+    // витрина в момент отрисовки, а не движок перед исполнением работы.
+    if (key.startsWith(displayPrefix)) continue;
 
     for (const item of list) {
       if (item.namespace !== 'jobs') continue;
       // path подстановки уже без пространства: у `${jobs.propose.output.slug}`
       // это `propose.output.slug`, поэтому идентификатор работы — первый сегмент.
       const other = item.path.split('.')[0];
+
+      // Собственные данные вне подписи: поля, потребляемые шагом, раскрываются
+      // один раз на работу, до первого её шага, — и там работа заведомо ещё
+      // ничего не опубликовала. Ссылка не опасна, она попросту не работает.
+      if (other === job.id && item.path.split('.')[1] === 'data') {
+        if (flagged.has(`${job.id}.data`)) continue;
+        flagged.add(`${job.id}.data`);
+        push({
+          severity: 'error',
+          message: `Работа ${job.id} подставляет ${item.expression} — собственные данные вне display`,
+          ...substitutionLocation(item, key, pipelineFile),
+          hint: 'Поля, потребляемые шагом, раскрываются до первого шага работы, когда данных ещё нет; собственные данные читает только display',
+        });
+        continue;
+      }
+
       if (other === undefined || other === job.id || flagged.has(other)) continue;
 
       const location = substitutionLocation(item, key, pipelineFile);

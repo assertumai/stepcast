@@ -51,7 +51,8 @@ import type { ResumePlan, SourceRun, StepPlan } from './resumePlan.js';
 import { computeStepKey, upstreamForKey } from './stepKey.js';
 import { prepareWorkspace, type PreparedWorkspace } from './workspace.js';
 import { createWaitState } from './waitState.js';
-import { jobScratchDir, shortRunId } from '../journal/paths.js';
+import { jobDataPath, readJobData, writeJobData } from '../journal/data.js';
+import { jobDir, jobScratchDir, shortRunId } from '../journal/paths.js';
 import { findStepDir } from '../journal/reader.js';
 import { RunJournal } from '../journal/writer.js';
 import { jobLockHash, serializeLock } from '../pipeline/lock.js';
@@ -261,6 +262,10 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
         writeStatus('running');
       };
     },
+    // Состояние переписывается после каждого шага: это единственный файл, по
+    // изменению которого витрина узнаёт о ходе прогона, и данные, записанные
+    // работой, доезжают до подписи узла только вместе с ним.
+    refreshStatus: () => writeStatus('running'),
   };
 
   warnAboutDegradedBackends(context);
@@ -333,6 +338,10 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     concurrency: Math.min(pipeline.concurrency, config.limits.concurrency),
     ...(options.signal === undefined ? {} : { signal: options.signal }),
     scopeExtras: { run: { id: journal.paths.runId, dir: journal.paths.dir }, env: {} },
+    // Данные берутся из записи работы, а не читаются с диска заново: движок
+    // складывает их туда после каждого шага, и второй путь к тому же
+    // значению разошёлся бы с первым при первой же уборке прогона.
+    jobData: (jobId) => records.get(jobId)?.data,
     execute: async (job, scope) => executeJob(job, scope, context),
     onSettled: async (job, outcome) => {
       const record = records.get(job.id) as JobRecord;
@@ -425,6 +434,13 @@ interface RunContext extends RunOptions {
    * быть несколько.
    */
   readonly beginWait: (wakeAt: string) => () => void;
+  /**
+   * Переписать `status.json` по текущим записям работ. Файлом владеет движок и
+   * только он: подпроцесс `stepcast data` пишет свой `data.json`, а состояние
+   * прогона переписывается здесь — конкурентная запись двух процессов в один
+   * файл была бы гонкой.
+   */
+  readonly refreshStatus: () => void;
 }
 
 /** Отсутствие поддержки сессий не отказ, а деградация с предупреждением. */
@@ -614,6 +630,11 @@ async function runJob(
   // вопрос, с каким путём шаг на самом деле пошёл в файловую систему,
   // восстанавливается только из логов.
   journal.writeJobJson(job.id, 'resolved.json', job);
+
+  // Данные переиспользованных шагов переносятся до первого шага: работа ниже
+  // по графу читает их подстановкой, и пустота здесь ломала бы её ровно при
+  // возобновлении.
+  transferJobData(context, job.id);
 
   // Ниже по коду `context` — контекст работы: у него своя рабочая директория.
   const jobContext: RunContext = { ...context, cwd: prepared.dir };
@@ -1125,6 +1146,7 @@ async function runJobSteps(
         ...(context.records.get(job.id) as JobRecord),
         steps: [...steps],
       });
+      foldJobData(context, job.id);
       if (
         (step.kind === 'agent' || step.outputSchemaPath !== undefined) &&
         planned.decision.record.status === 'success'
@@ -1314,6 +1336,7 @@ async function runJobSteps(
       ...(context.records.get(job.id) as JobRecord),
       steps: [...steps],
     });
+    foldJobData(context, job.id);
 
     if (status !== 'success') {
       return {
@@ -2035,6 +2058,62 @@ function transferStepOutput(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Сложить данные, опубликованные работой, в её запись и переписать состояние.
+ *
+ * Зовётся после каждого шага — и исполненного, и переиспользованного. Файл
+ * `data.json` пишет подпроцесс `stepcast data`, состояние прогона —
+ * исключительно движок: два процесса, пишущих один `status.json`, наступали
+ * бы друг на друга. Отсюда же и живость витрины: она опрашивает корень
+ * прогонов по mtime состояния, и данные доезжают до подписи узла ровно тем же
+ * событием, что и статус шага.
+ *
+ * Следствие честное и его стоит знать: данные, записанные в середине долгого
+ * шага, появятся в витрине по его завершении, а не в момент записи.
+ */
+function foldJobData(context: RunContext, jobId: string): void {
+  const record = context.records.get(jobId);
+  if (record === undefined) return;
+
+  const data = readJobData(jobDir(context.journal.paths, jobId));
+  context.records.set(jobId, {
+    ...record,
+    ...(Object.keys(data).length === 0 ? {} : { data }),
+  });
+  context.refreshStatus();
+}
+
+/**
+ * Перенести данные работы из исходного прогона в новый.
+ *
+ * Возобновление заводит новый каталог прогона, а переиспользованный шаг не
+ * исполняется и ничего не пишет — без переноса потребитель
+ * `${jobs.X.data.*}` ломался бы на пустоте именно при возобновлении, то есть
+ * там, где всё остальное как раз сохранено. Тот же перенос уже сделан для
+ * выхода работы (`transferStepOutput`).
+ *
+ * Переносится всё, что успел записать исходный прогон, и только когда хотя бы
+ * один шаг работы переиспользуется: работа, переисполняемая с начала, обязана
+ * начать с чистого листа. Уже записанное в этом прогоне не затирается.
+ */
+function transferJobData(context: RunContext, jobId: string): void {
+  const source = context.resume?.source;
+  if (source === undefined) return;
+  if (!context.resume?.plan.steps.some((step) => step.job === jobId && step.decision.kind === 'reuse')) {
+    return;
+  }
+
+  const target = jobDir(context.journal.paths, jobId);
+  if (existsSync(jobDataPath(target))) return;
+
+  const carried = readJobData(jobDir(source.paths, jobId));
+  if (Object.keys(carried).length === 0) return;
+
+  bookkeep({ journal: context.journal, job: jobId }, 'перенос данных работы', () => {
+    writeJobData(target, carried);
+  });
 }
 
 /**

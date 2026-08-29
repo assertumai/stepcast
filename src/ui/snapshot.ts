@@ -4,6 +4,7 @@ import { join, relative } from 'node:path';
 import { findStepDir, readStatus, readUsageSoft } from '../core/journal/reader.js';
 import type { RunPaths } from '../core/journal/paths.js';
 import { ContextReportSchema, type StatusValue, type UsageReport } from '../core/journal/schema.js';
+import { renderDisplay, type DisplayData } from '../core/pipeline/display.js';
 import { readLockJobs, type LockJob, type LockStep } from './lock.js';
 import { layoutJobs, type JobGraph } from './graph.js';
 import { readJournalJson } from './file.js';
@@ -76,6 +77,13 @@ export interface JobSnapshot {
   readonly output?: JournalFileRef;
   /** Работа объявляет выход, но ещё не опубликовала его. */
   readonly outputDeclared: boolean;
+  /**
+   * Подпись работы, раскрытая против данных прогона. Отсутствует и когда
+   * подпись не объявлена, и когда ни одно её поле не раскрылось.
+   */
+  readonly display?: Readonly<Record<string, string>>;
+  /** Данные, опубликованные самой работой (`stepcast data`). */
+  readonly data?: Readonly<Record<string, string>>;
   readonly steps: readonly StepSnapshot[];
   readonly usage: UsageSnapshot;
 }
@@ -181,6 +189,7 @@ function buildJob(
   record: ReturnType<typeof readStatus>['jobs'][number] | undefined,
   publishedJobs: ReadonlySet<string>,
   summary: UsageReport | undefined,
+  data: DisplayData,
 ): JobSnapshot {
   const id = definition?.id ?? record?.id ?? '';
   const needs = definition?.needs ?? [];
@@ -213,6 +222,15 @@ function buildJob(
     inputs,
     ...(output === undefined ? {} : { output }),
     outputDeclared: definition?.publishesOutput ?? false,
+    // Подпись раскрывается здесь и только здесь — против данных, записанных к
+    // этому моменту. Отсюда и работает самоссылка `${jobs.<сам>.data.*}`:
+    // движок раскрывает определение работы до её первого шага, а витрина —
+    // после того, как работа успела записать.
+    ...((): { display?: Readonly<Record<string, string>> } => {
+      const rendered = renderDisplay(definition?.display, data);
+      return rendered === undefined ? {} : { display: rendered };
+    })(),
+    ...(record?.data === undefined ? {} : { data: record.data }),
     steps: stepIds.map((stepId) =>
       buildStep(
         paths,
@@ -257,6 +275,13 @@ export function buildSnapshot(paths: RunPaths, projectKeyValue: string): RunSnap
 
   // Порядок работ задаёт лок; работы, оставшиеся только в состоянии
   // (например, после уборки лока), дописываются следом.
+  // Данные всех работ прогона: подпись одной работы вправе назвать другую.
+  const data: DisplayData = Object.fromEntries(
+    (status?.jobs ?? [])
+      .filter((job) => job.data !== undefined)
+      .map((job) => [job.id, { data: job.data as Readonly<Record<string, string>> }]),
+  );
+
   const ids = [...definitions.map((job) => job.id)];
   for (const record of status?.jobs ?? []) {
     if (!ids.includes(record.id)) ids.push(record.id);
@@ -269,6 +294,7 @@ export function buildSnapshot(paths: RunPaths, projectKeyValue: string): RunSnap
       status?.jobs.find((job) => job.id === id),
       published,
       summary,
+      data,
     ),
   );
 
@@ -285,6 +311,7 @@ export function buildSnapshot(paths: RunPaths, projectKeyValue: string): RunSnap
         on: job.on,
         ...(job.if === undefined ? {} : { if: job.if }),
         ...(job.status === undefined ? {} : { status: job.status }),
+        ...(job.display === undefined ? {} : { display: job.display }),
       })),
     ),
     swept,

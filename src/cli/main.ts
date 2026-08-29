@@ -4,6 +4,7 @@ import { reportError } from './output.js';
 import { runApplyCommand } from './commands/apply.js';
 import { runBacklogCommand } from './commands/backlog.js';
 import { runConfigCommand } from './commands/config.js';
+import { runDataCommand } from './commands/data.js';
 import { runContextCommand } from './commands/context.js';
 import { runDiffCommand } from './commands/diff.js';
 import { runDownCommand } from './commands/down.js';
@@ -140,6 +141,17 @@ export const COMMANDS: Record<string, CommandSpec> = {
       reason: { kind: 'string', description: 'finish --status failed: причина отказа' },
     },
   },
+  data: {
+    description:
+      'опубликовать данные работы, видимые в витрине и подстановкой ${jobs.<работа>.data.<ключ>}: set|merge|get',
+    positional: ['action', 'key', 'value'],
+    flags: {
+      json: {
+        kind: 'string',
+        description: 'merge: объект вида {"ключ": "значение"}, дописываемый поверх опубликованного',
+      },
+    },
+  },
   'merge-lanes': {
     description: 'свести названные дорожки прогона в дерево запуска: наложить, проверить, закоммитить зелёную',
     positional: ['run'],
@@ -191,6 +203,8 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
         return runUsageCommand(args, io.out, io.cwd);
       case 'backlog':
         return runBacklogCommand(args, io.out, io.cwd);
+      case 'data':
+        return runDataCommand(args, io.out);
       case 'merge-lanes':
         return await runMergeLanesCommand(args, io.out, io.cwd);
       default:

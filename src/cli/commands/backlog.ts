@@ -13,6 +13,7 @@ import {
   type BacklogEntry,
   type BacklogRecord,
 } from '../../core/backlog/index.js';
+import { mergeJobData } from '../../core/journal/data.js';
 import { atomicWrite } from '../../core/journal/writer.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { readLaneItem, takenLanes } from '../../core/lanes/item.js';
@@ -187,7 +188,56 @@ function runPickLanes(
     }
   });
 
+  publishPickedTitles(lanes, chosen);
   write(JSON.stringify({ lanes: result }, null, 2));
+}
+
+/**
+ * Опубликовать выбранные пункты данными работы — тем же вызовом, что и выбор.
+ *
+ * Отдельного шага для этого не заводится: `pick` уже знает выбранный пункт, и
+ * выковыривать значение из JSON в командной строке ради того же результата
+ * значило бы платить вторым процессом за то, что здесь уже в руках.
+ *
+ * Пишется, только когда команда исполняется внутри шага прогона: вне его
+ * `STEPCAST_JOB_DIR` нет, и публиковать некуда — но и отказывать не за что,
+ * `backlog pick` остаётся командой, работающей без прогона.
+ *
+ * Для нескольких дорожек заголовок и слаг пишутся по ключу на дорожку
+ * (`title-a`, `slug-a`), а `title` без суффикса склеивается из заполненных
+ * дорожек. Склейка — потому что подпись узла одна: узел `slots` в графе один
+ * на все дорожки, и выбрать «какую из двух дорожек показать» нечем. Ключи с
+ * суффиксом — потому что склеенная строка не разбирается обратно, а
+ * потребителю, которому нужна одна дорожка, нужна именно она.
+ */
+function publishPickedTitles(
+  lanes: readonly string[],
+  chosen: readonly BacklogEntry[],
+): void {
+  const jobDir = process.env.STEPCAST_JOB_DIR;
+  if (jobDir === undefined || jobDir.trim() === '') return;
+
+  const patch: Record<string, string> = {};
+  const titles: string[] = [];
+
+  lanes.forEach((lane, index) => {
+    const entry = chosen[index];
+    if (entry === undefined) return;
+    const record = toRecord(entry);
+    patch[`slug-${lane}`] = record.slug;
+    patch[`title-${lane}`] = record.title;
+    titles.push(record.title);
+  });
+
+  patch['title'] = titles.length === 0 ? 'свободных пунктов нет' : `Выбрано: ${titles.join('; ')}`;
+
+  // Отказ публикации не отменяет выбор: пункты уже помечены в очереди, и
+  // уронить команду из-за подписи значило бы потерять сделанную работу.
+  try {
+    mergeJobData(jobDir, patch);
+  } catch {
+    // Данные — необязательная публикация; молчание здесь намеренное.
+  }
 }
 
 /** Проставить `status: in_progress` и общую метку `started_at` выбранным пунктам. */

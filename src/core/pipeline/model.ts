@@ -156,6 +156,14 @@ export interface Job {
   readonly if?: string;
   /** Метка обвязки, объявленная на месте подключения работы. Не влияет на порядок исполнения графа. */
   readonly lane?: string;
+  /**
+   * Подпись работы в витрине: имена в шаблоны. Хранится нераскрытой — эти
+   * поля не потребляет ни один шаг, их читает витрина, и раскрываются они в
+   * момент сборки снимка, против текущих данных работы. Поэтому же
+   * `resolveLate` их не трогает: к раскрытию определения работа ещё ничего не
+   * опубликовала, и самоссылка `${jobs.<сам>.data.*}` дала бы там пустоту.
+   */
+  readonly display?: Readonly<Record<string, string>>;
   readonly session: 'shared' | 'per_step';
   readonly workspace: Workspace;
   readonly env: Readonly<Record<string, string>>;

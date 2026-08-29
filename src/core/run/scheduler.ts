@@ -45,6 +45,13 @@ export interface ScheduleOptions {
   /** Дополнительные значения для условий и подстановок: `run`, `env`. */
   readonly scopeExtras?: Readonly<Record<string, unknown>>;
   /**
+   * Данные, опубликованные завершившейся работой (`stepcast data`). Приходят
+   * запросом, а не полем исхода: их пишет посторонний процесс по ходу
+   * работы, и владелец их накопления — журнал прогона, а не планировщик,
+   * который файлов не касается вовсе.
+   */
+  readonly jobData?: (jobId: string) => Readonly<Record<string, string>> | undefined;
+  /**
    * Предел числа одновременно идущих работ. Приходит уже сведённым с потолком
    * конфигурации: планировщик знает граф, а не конфигурацию, и читать её здесь
    * значило бы завести второй источник истины о том же числе. Отсутствие —
@@ -113,13 +120,17 @@ export async function schedule(options: ScheduleOptions): Promise<ScheduleResult
   const conditionScope = (): Record<string, unknown> => {
     const jobs: Record<string, unknown> = {};
     for (const [id, outcome] of settled) {
+      // Данные публикуются по ходу работы и переживают её отказ: они
+      // рассказывают, что работа успела сделать, — в том числе и о том, на
+      // чём она встала. Выход упавшей работы, в отличие от них, не
+      // публикуется вовсе.
+      const data = options.jobData?.(id);
       jobs[id] = {
         status: outcome.status,
-        // Выход упавшей работы не публикуется: обращение к нему делает
-        // условие ложным, а не роняет прогон.
         ...(outcome.status === 'success' && outcome.output !== undefined
           ? { output: outcome.output }
           : {}),
+        ...(data === undefined || Object.keys(data).length === 0 ? {} : { data }),
       };
     }
     return { inputs: pipeline.inputs, jobs, ...(options.scopeExtras ?? {}) };
