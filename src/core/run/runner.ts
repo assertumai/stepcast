@@ -248,6 +248,8 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     adapters,
     backendSlots,
     reportedDenials,
+    sessions: createSessionRegistry(),
+    pipelineContextSent: new Set<string>(),
     lockHash,
     anchorKind,
     runCwd: options.cwd,
@@ -405,6 +407,20 @@ interface RunContext extends RunOptions {
   readonly backendSlots: BackendSlots;
   /** Одна и та же переменная вычёркивается на каждом шаге — сообщаем однажды. */
   readonly reportedDenials: Set<string>;
+  /**
+   * Реестр сессий прогона. Здесь, а не в исполнении работы, ровно ради
+   * `session_group`: работы одной группы обязаны продолжать один диалог, а
+   * реестр, живущий работу, обрывал бы его на её границе. Пространство имён
+   * псевдонимов замыкается ключом (см. `sessionKey`), поэтому работа без
+   * объявленной группы ведёт себя в точности как прежде.
+   */
+  readonly sessions: ReturnType<typeof createSessionRegistry>;
+  /**
+   * Сессии, в которые уже отправлен контекст пайплайна. Отслеживание живёт в
+   * прогоне вместе с реестром: свод правил пайплайна агент читает один раз на
+   * диалог, а не заново на каждой его работе.
+   */
+  readonly pipelineContextSent: Set<string>;
   readonly lockHash: string;
   /** Способ фиксации состояния: определён один раз на прогон. */
   readonly anchorKind: AnchorKind;
@@ -1107,12 +1123,29 @@ async function runJobSteps(
   let treeAnchor = capture();
   anchorState.lastAnchor = treeAnchor;
 
-  const sessions = createSessionRegistry();
-  // Сессии, в которые уже отправлен унаследованный контекст. Отслеживание
-  // живёт в работе, а не в шаге: иначе каждый шаг общей сессии заново
-  // получает свод правил, который агент уже прочитал, и весь смысл общей
-  // сессии теряется.
-  const contextSent = new Set<string>();
+  /**
+   * Псевдоним сессии, замкнутый на её пространство имён.
+   *
+   * Без объявленной группы пространство — работа и итерация её цикла: это
+   * ровно сегодняшнее поведение, при котором реестр жил в исполнении работы и
+   * новая итерация `until` начинала сессии заново.
+   *
+   * С объявленной группой пространство — сама группа, и итерация в ключ не
+   * входит: сессия группы переживает границу работы, и «начинать заново» на
+   * итерации было бы нечего — предыдущие работы группы уже закончились. Работе
+   * группы цикл `until` поэтому и запрещён (см. линт).
+   */
+  const sessionKey = (alias: string): string =>
+    job.sessionGroup === undefined
+      ? `${job.id}#${iteration ?? 1}/${alias}`
+      : `${job.sessionGroup}/${alias}`;
+
+  // Сессии, в которые уже отправлен контекст самой работы и выходы
+  // предшественников. Отслеживание живёт в работе, а не в прогоне, в отличие
+  // от контекста пайплайна: собственный контекст второй работы группы — это
+  // новое знание, и умолчать о нём потому, что диалог уже начат, значило бы
+  // отправить её работать по пустому месту.
+  const jobContextSent = new Set<string>();
   const steps: StepRecord[] = [];
   let lastStructuredOutput: unknown;
   let outputFromStep: unknown;
@@ -1237,14 +1270,23 @@ async function runJobSteps(
 
     const outcome =
       step.kind === 'run'
-        ? await runCommandStep(step, job, context, stepDirPath, sessions, budgetScopes, changedPaths)
+        ? await runCommandStep(
+            step,
+            job,
+            context,
+            stepDirPath,
+            context.sessions,
+            budgetScopes,
+            changedPaths,
+          )
         : await runAgentStep(
             step,
             job,
             context,
             stepDirPath,
-            sessions,
-            contextSent,
+            context.sessions,
+            sessionKey,
+            jobContextSent,
             budgetScopes,
             changedPaths,
           );
@@ -1649,7 +1691,9 @@ async function runAgentStep(
   context: RunContext,
   stepDirPath: string,
   sessions: ReturnType<typeof createSessionRegistry>,
-  contextSent: Set<string>,
+  /** Псевдоним шага в пространстве имён сессий его работы (см. `sessionKey`). */
+  sessionKey: (alias: string) => string,
+  jobContextSent: Set<string>,
   budgetScopes: () => BudgetScope[],
   changedPaths: () => readonly string[] | undefined,
 ): Promise<StepOutcome> {
@@ -1681,6 +1725,7 @@ async function runAgentStep(
     stepDir: stepDirPath,
     scratchDir: jobScratchDir(journal.paths, job.id),
     sessions,
+    sessionAlias: sessionKey(step.session),
     backendSlots: context.backendSlots,
     stallTimeoutMs: config.defaults.stallTimeoutMs,
     signal: abort.controller.signal,
@@ -1688,8 +1733,14 @@ async function runAgentStep(
     buildPrompt: (_plan, previousFailure) => {
       // Унаследованный контекст уходит в первое сообщение сессии: повторять
       // агенту то, что он уже прочитал в этой же сессии, незачем.
-      const first = !contextSent.has(step.session);
-      contextSent.add(step.session);
+      const key = sessionKey(step.session);
+      // Контекст пайплайна — один раз на диалог; контекст работы и выходы
+      // предшественников — один раз на работу внутри диалога. У работы без
+      // объявленной группы оба совпадают, и поведение прежнее.
+      const first = !context.pipelineContextSent.has(key);
+      const firstInJob = !jobContextSent.has(key);
+      context.pipelineContextSent.add(key);
+      jobContextSent.add(key);
 
       const stepEntries = withIterationNote(
         context,
@@ -1712,9 +1763,9 @@ async function runAgentStep(
       const assembled = assembleContext({
         workspace: context.cwd,
         pipeline: first ? pipeline.context : [],
-        job: first ? job.context : [],
+        job: firstInJob ? job.context : [],
         step: stepEntries.entries,
-        upstream: first ? upstreamOutputs(context.graph, job.id, context.outputs) : [],
+        upstream: firstInJob ? upstreamOutputs(context.graph, job.id, context.outputs) : [],
         contextUpstream: job.contextUpstream,
         inherit: step.contextInherit,
         exclude: step.contextExclude,
@@ -1738,7 +1789,10 @@ async function runAgentStep(
       });
 
       journal.writeContextReport(stepDirPath, {
-        session: step.session,
+        // Ключ, а не псевдоним шага: в группе один псевдоним встречается в
+        // нескольких работах, и отчёт обязан называть тот диалог, в который
+        // контекст на самом деле ушёл.
+        session: key,
         ...assembled.report,
       });
 

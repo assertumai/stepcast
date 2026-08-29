@@ -130,6 +130,88 @@ function checkContext(
 /** Пространства, чьи имена в `if` известны заранее. */
 const STATIC_NAMESPACES = new Set(['inputs', 'run', 'env', 'jobs']);
 
+/**
+ * Группа сессий: работы, объявившие одинаковый `session_group`, продолжают
+ * один диалог агента. Три условия делают это исполнимым, и ни одно из них не
+ * видно в прогоне до того, как станет поздно, — поэтому они здесь.
+ */
+function checkSessionGroups(
+  pipeline: ExpandedPipeline['pipeline'],
+  graph: ReturnType<typeof buildGraph>['graph'],
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  const groups = new Map<string, Job[]>();
+  for (const job of pipeline.jobs) {
+    if (job.sessionGroup === undefined) continue;
+    const members = groups.get(job.sessionGroup) ?? [];
+    members.push(job);
+    groups.set(job.sessionGroup, members);
+  }
+
+  for (const [name, members] of groups) {
+    // Цикл until: его новая итерация начинает сессии заново, а сессия группы
+    // переживает границу работы — «заново» для неё значило бы оборвать диалог
+    // работам, которые уже закончились. Разрешить одно из двух нельзя молча.
+    for (const job of members) {
+      if (job.until === undefined) continue;
+      push({
+        severity: 'error',
+        message: `Работа ${job.id} объявляет цикл until и состоит в группе сессий ${name}`,
+        file: pipeline.file,
+        at: `jobs.${job.id}.session_group`,
+        hint: 'Новая итерация until начинает сессии заново, а сессия группы живёт дольше работы: перенесите условие в предикат cmd шага и повторяйте шаг через attempts',
+      });
+    }
+
+    // Порядок: две работы группы не вправе идти одновременно — иначе один и
+    // тот же диалог продолжают два процесса разом.
+    for (const [index, job] of members.entries()) {
+      for (const other of members.slice(index + 1)) {
+        const ordered =
+          graph.upstream.get(job.id)?.has(other.id) === true ||
+          graph.upstream.get(other.id)?.has(job.id) === true;
+        if (ordered) continue;
+        push({
+          severity: 'error',
+          message: `Работы ${job.id} и ${other.id} состоят в группе сессий ${name}, но не упорядочены зависимостями`,
+          file: pipeline.file,
+          at: `jobs.${other.id}.needs`,
+          hint: 'Одну сессию нельзя продолжать двумя работами одновременно — свяжите их needs либо разведите по разным группам',
+        });
+      }
+    }
+
+    // Рабочее дерево: у агента посреди диалога не должен смениться каталог.
+    // Первая работа группы своё дерево заводит — остальные обязаны его
+    // продолжить.
+    const inOrder = [...members].sort(
+      (left, right) =>
+        (graph.upstream.get(left.id)?.size ?? 0) - (graph.upstream.get(right.id)?.size ?? 0),
+    );
+    for (const job of inOrder.slice(1)) {
+      const first = inOrder[0]!;
+      if (job.workspace.inherit === 'none') {
+        push({
+          severity: 'error',
+          message: `Работа ${job.id} в группе сессий ${name} заводит своё рабочее дерево`,
+          file: pipeline.file,
+          at: `jobs.${job.id}.workspace.inherit`,
+          hint: `Диалог продолжается в дереве работы ${first.id}: inherit: none сменил бы агенту каталог посреди сессии`,
+        });
+      }
+      if (job.workspace.mode !== first.workspace.mode) {
+        push({
+          severity: 'error',
+          message: `Работы группы сессий ${name} объявляют разные режимы рабочего дерева: ${first.id} — ${first.workspace.mode}, ${job.id} — ${job.workspace.mode}`,
+          file: pipeline.file,
+          at: `jobs.${job.id}.workspace.mode`,
+          hint: 'Работы одного диалога обязаны видеть одно дерево',
+        });
+      }
+    }
+  }
+}
+
 export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): Diagnostic[] {
   const { pipeline, substitutions } = expanded;
   const diagnostics: Diagnostic[] = [];
@@ -188,6 +270,7 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
 
   checkContext(pipeline.context, base, pipeline.file, 'context', substitutions, push);
   checkPipelineSubstitutions(substitutions, graph.byId, pipeline.file, push);
+  checkSessionGroups(pipeline, graph, push);
 
   for (const job of pipeline.jobs) {
     const at = `jobs.${job.id}`;

@@ -1,14 +1,23 @@
 # Петля саморазвития: stepcast улучшает сам stepcast.
 #
 # Заход берёт до двух свободных пунктов из backlog.md — по одному на дорожку
-# — и ведёт их одновременно: build → review-fix → verify на каждой. Дорожка
-# без свободного пункта пропускает всю свою цепочку.
+# — и ведёт их одновременно: propose → plan → implement → review →
+# fix-review → verify на каждой. Дорожка без свободного пункта пропускает всю
+# свою цепочку.
 #
-# Две агентские работы, а не пять: сессия живёт в пределах работы, и каждая
-# граница между ними обрывала диалог вместе с кешем промптов. Заведение
-# изменения, план и реализация идут одной сессией (build), ревью и устранение
-# находок — другой (review-fix). Граница осталась ровно там, где стерегла
-# существенное: ревьюер не сидит в диалоге, где сам писал рецензируемый код. После того как обе дорожки дошли до verify (или были
+# Сессии агента объявлены обвязкой, ключом session_group. Дорожка идёт двумя
+# диалогами, а не пятью: заведение изменения, план и реализация — один
+# (build-<дорожка>), ревью и устранение находок — другой
+# (review-<дорожка>). Пять сессий означали пять чтений репозитория с нуля:
+# 20-45 млн токенов чтения кеша на заход и 75 минут одного только propose за
+# 2026-08-29. Граница между двумя группами проходит там, где стерегла
+# существенное: ревьюер не сидит в диалоге, где сам писал рецензируемый код.
+#
+# Работы при этом остались пятью: у каждой свой выход, свои права, своя
+# гранулярность возобновления. Цена — цикл until: работе в группе он
+# запрещён (его новая итерация начинала бы сессии заново, а сессия группы
+# живёт дольше работы), и гейт проверки у implement и fix-review стоит
+# предикатом cmd в expect шага, повторяясь через attempts. После того как обе дорожки дошли до verify (или были
 # пропущены), work merge накладывает зелёные дорожки на дерево проекта по
 # очереди, проверяя каждую свежей объявленной командой (project.check ниже)
 # перед коммитом. work finalize
@@ -148,51 +157,96 @@ jobs:
 
   # --- Дорожка a ---
 
-  build-a:
-    uses: ../jobs/build.yml
-    with: { lane: a, change: "${jobs.slots.output.lanes.a.slug}" }
+  propose-a:
+    uses: ../jobs/propose.yml
+    session_group: build-a
+    with: { lane: a }
     lane: a
     needs: [slots]
     workspace: { inherit: none }
     # Неопределённое значение (слот не заполнен, а то и вовсе work slots не
     # дошла до успеха) сравнением с true даёт false — работа пропускается,
-    # а не запускается на пустоте. Слаг из того же выхода при этом не
-    # раскрывается вовсе: пропущенная работа не резолвится.
+    # а не запускается на пустоте.
     if: "jobs.slots.output.lanes.a.filled == true"
 
-  review-fix-a:
-    uses: ../jobs/review-fix.yml
-    with: { change: "${jobs.slots.output.lanes.a.slug}" }
+  plan-a:
+    uses: ../jobs/plan.yml
+    session_group: build-a
+    with: { change: "${jobs.propose-a.output.slug}" }
     lane: a
-    needs: [build-a]
+    needs: [propose-a]
+
+  implement-a:
+    uses: ../jobs/implement.yml
+    session_group: build-a
+    with: { change: "${jobs.propose-a.output.slug}", lane: a }
+    lane: a
+    needs: [plan-a]
+
+  review-a:
+    uses: ../jobs/review.yml
+    session_group: review-a
+    with: { change: "${jobs.propose-a.output.slug}" }
+    lane: a
+    needs: [implement-a]
+
+  fix-review-a:
+    uses: ../jobs/fix-review.yml
+    session_group: review-a
+    with: { change: "${jobs.propose-a.output.slug}" }
+    lane: a
+    needs: [review-a]
 
   verify-a:
     uses: ../jobs/verify.yml
-    with: { change: "${jobs.slots.output.lanes.a.slug}" }
+    with: { change: "${jobs.propose-a.output.slug}" }
     lane: a
-    needs: [review-fix-a]
+    needs: [fix-review-a]
 
   # --- Дорожка b: та же цепочка, те же файлы работ ---
 
-  build-b:
-    uses: ../jobs/build.yml
-    with: { lane: b, change: "${jobs.slots.output.lanes.b.slug}" }
+  propose-b:
+    uses: ../jobs/propose.yml
+    session_group: build-b
+    with: { lane: b }
     lane: b
     needs: [slots]
     workspace: { inherit: none }
     if: "jobs.slots.output.lanes.b.filled == true"
 
-  review-fix-b:
-    uses: ../jobs/review-fix.yml
-    with: { change: "${jobs.slots.output.lanes.b.slug}" }
+  plan-b:
+    uses: ../jobs/plan.yml
+    session_group: build-b
+    with: { change: "${jobs.propose-b.output.slug}" }
     lane: b
-    needs: [build-b]
+    needs: [propose-b]
+
+  implement-b:
+    uses: ../jobs/implement.yml
+    session_group: build-b
+    with: { change: "${jobs.propose-b.output.slug}", lane: b }
+    lane: b
+    needs: [plan-b]
+
+  review-b:
+    uses: ../jobs/review.yml
+    session_group: review-b
+    with: { change: "${jobs.propose-b.output.slug}" }
+    lane: b
+    needs: [implement-b]
+
+  fix-review-b:
+    uses: ../jobs/fix-review.yml
+    session_group: review-b
+    with: { change: "${jobs.propose-b.output.slug}" }
+    lane: b
+    needs: [review-b]
 
   verify-b:
     uses: ../jobs/verify.yml
-    with: { change: "${jobs.slots.output.lanes.b.slug}" }
+    with: { change: "${jobs.propose-b.output.slug}" }
     lane: b
-    needs: [review-fix-b]
+    needs: [fix-review-b]
 
   # --- Сведение и завершение ---
 

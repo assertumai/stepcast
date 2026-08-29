@@ -17,7 +17,7 @@
 - **Формат**: пайплайн и файлы работ, `uses`/`with`, подстановки (включая числовые поля — `concurrency`, `until.max_iterations`, `attempts.max`, `budget.rate_limit_pct`, `exit_code`), умолчания, `pipeline.lock.yml`
 - **Граф**: `needs`, `on`, `if`, `needs: all`, `fail_fast`, отмена по сигналу
 - **Шаги**: `run` (argv и строка) и `agent` (Claude Code), таймаут, детектор тишины, попытки с эскалацией
-- **Сессии**: `shared`, `per_step`, именованные псевдонимы; деградация при отсутствии поддержки
+- **Сессии**: `shared`, `per_step`, именованные псевдонимы, общая сессия нескольких работ (`session_group`); деградация при отсутствии поддержки
 - **Контекст**: три уровня, блок выходов предшественников, `inline`/`reference`/`auto`, предел с понижением
 - **Проверки**: `exit_code`, `file_exists`, `schema`, `matches`, `not_matches`, `cmd`, `judge` (оценка агентом-судьёй)
 - **Выход работы**: `output.from`, публикация в `artifacts/`, `${jobs.<id>.output.*}`

@@ -204,6 +204,14 @@ const WiringShape = {
   if: z.string().optional(),
   lane: z.string().optional(),
   display: DisplaySchema.optional(),
+  /**
+   * Имя сессии, общей нескольким работам. Ключ обвязки, а не поля работы:
+   * работа не знает, с кем её поставят в один диалог, — это решает тот, кто
+   * собирает пайплайн. Отдельное имя, а не строка на `session`: там уже живёт
+   * перечисление `shared | per_step`, и два вида значения на одном ключе
+   * различались бы только формой.
+   */
+  session_group: z.string().optional(),
 };
 
 const JobUseSchema = z
@@ -303,4 +311,13 @@ export type RawTriggers = z.infer<typeof TriggersSchema>;
 export type RawProject = z.infer<typeof ProjectSchema>;
 
 /** Ключи обвязки, недопустимые внутри документа работы. */
-export const WIRING_KEYS = ['needs', 'on', 'if', 'with', 'triggers', 'lane', 'display'] as const;
+export const WIRING_KEYS = [
+  'needs',
+  'on',
+  'if',
+  'with',
+  'triggers',
+  'lane',
+  'display',
+  'session_group',
+] as const;

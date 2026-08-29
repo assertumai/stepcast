@@ -1,0 +1,52 @@
+# Работа: ревью изменений против плана и спеки.
+#
+# Отдельная работа, а не шаг внутри implement, сознательно: граница работы
+# даёт независимую агентскую сессию, и ревьюер не сидит в том же диалоге, где
+# сам писал рецензируемый код. Находки уезжают в artifacts/review.json, откуда
+# механизм выходов предшественников кладёт их в контекст следующей работы.
+
+version: 1
+kind: job
+name: review
+description: Отревьюить изменения рабочего дерева против плана и спеки
+
+params:
+  change: { type: string, required: true }
+
+session: shared
+
+# required: true — по той же причине, что в plan.yml: глоб без совпадений
+# оставил бы ревьюера без документов изменения, не сказав об этом.
+context:
+  - path: "${project.spec.dir}/${params.change}/**/*.md"
+    required: true
+
+output:
+  from: review-diff
+  schema: ../schemas/review.json
+
+steps:
+  # Права только на чтение: работа ищет, но не правит. Отсутствие Edit и Write
+  # делает это ограничением, а не просьбой в промпте.
+  - id: review-diff
+    agent: claude
+    model: opus
+    prompt: file:../prompts/review.md
+    output_schema: ../schemas/review.json
+    permissions:
+      enforce: strict
+      allow:
+        - Read
+        - Grep
+        - Glob
+        - Bash(git diff*)
+        - Bash(git log*)
+        - Bash(git status*)
+    timeout: 25m
+    expect:
+      - schema: ../schemas/review.json
+      - changed_only: []
+    attempts:
+      max: 2
+      escalation:
+        - include_failure: true

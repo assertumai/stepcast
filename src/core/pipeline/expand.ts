@@ -505,6 +505,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         if: 'if' in entry ? entry.if : undefined,
         lane: 'lane' in entry ? entry.lane : undefined,
         display: 'display' in entry ? entry.display : undefined,
+        session_group: 'session_group' in entry ? entry.session_group : undefined,
       },
       pipelineScope,
       at,
@@ -572,7 +573,15 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     } else {
       declaringFile = pipelinePath;
       bodyScope = pipelineScope;
-      const { needs: _needs, on: _on, if: _if, lane: _lane, display: _display, ...rest } = entry;
+      const {
+        needs: _needs,
+        on: _on,
+        if: _if,
+        lane: _lane,
+        display: _display,
+        session_group: _sessionGroup,
+        ...rest
+      } = entry;
       const interpolated = interpolateTree(rest as Record<string, unknown>, pipelineScope, at);
       collect(interpolated.substitutions);
       body = interpolated.value;
@@ -642,6 +651,9 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       on: (wiring.value.on as Job['on'] | undefined) ?? 'success',
       ...(wiring.value.if === undefined ? {} : { if: wiring.value.if as string }),
       ...(wiring.value.lane === undefined ? {} : { lane: wiring.value.lane as string }),
+      ...(wiring.value.session_group === undefined
+        ? {}
+        : { sessionGroup: wiring.value.session_group as string }),
       ...(wiring.value.display === undefined
         ? {}
         : { display: wiring.value.display as Readonly<Record<string, string>> }),

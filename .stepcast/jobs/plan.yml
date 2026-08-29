@@ -1,0 +1,54 @@
+# Работа: разобрать заведённое изменение и составить план реализации.
+# Ничего не знает о том, кто её запускает и что будет после неё.
+
+version: 1
+kind: job
+name: plan
+description: Разобрать описание изменения и составить план реализации
+
+params:
+  change: { type: string, required: true }
+
+session: shared
+
+# Глоб, а не перечень документов: работа не знает их имён и состава — это
+# дело правил репозитория (${project.spec.rules}). Перечень требовал бы
+# документа, который практика допускает не заводить, от каждого изменения.
+#
+# required: true возвращает то, что перечень путей давал даром: путь без глоба
+# обязан существовать, а глоб без совпадений молча даёт пусто — и работа пошла
+# бы планировать по пустому контексту. Частичный набор документов требование
+# пропускает: хотя бы один файл в каталоге изменения есть всегда.
+context:
+  - path: "${project.spec.dir}/${params.change}/**/*.md"
+    required: true
+
+output:
+  from: read-change
+  schema: ../schemas/plan.json
+
+steps:
+  # Модель старшая: ошибка плана размножается на все последующие работы, а
+  # автоматического гейта на неё нет. Токенов шаг тратит мало — итераций нет.
+  - id: read-change
+    agent: claude
+    model: opus
+    prompt: file:../prompts/plan.md
+    output_schema: ../schemas/plan.json
+    permissions:
+      enforce: strict
+      allow:
+        - Read
+        - Grep
+        - Glob
+        - Bash(git log*)
+        - Bash(git diff*)
+    timeout: 20m
+    expect:
+      - schema: ../schemas/plan.json
+      # План не реализует: дерево после него должно остаться нетронутым.
+      - changed_only: []
+    attempts:
+      max: 2
+      escalation:
+        - include_failure: true
