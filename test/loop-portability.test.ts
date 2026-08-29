@@ -191,35 +191,54 @@ describe('self-improvement-loop: настоящий пайплайн петли 
     'eslint.config.js',
   ]);
 
-  it('implement и fix-review обеих дорожек несут прежние права в прежнем порядке', () => {
+  /**
+   * merged-sessions: правящие шаги переехали внутрь слитых работ, и адрес
+   * теперь пара «работа, идентификатор шага», а не работа целиком. Шаг ищется
+   * по имени, а не по индексу: индекс сместится при первой же вставке
+   * соседнего шага, и тест начнёт проверять не то, о чём написан.
+   */
+  const EDITING_STEPS = [
+    ['build-a', 'write-code'],
+    ['build-b', 'write-code'],
+    ['review-fix-a', 'apply-fixes'],
+    ['review-fix-b', 'apply-fixes'],
+  ] as const;
+
+  const editingStep = (pipelineJobs: ReturnType<typeof expandPipeline>['pipeline']['jobs'], jobId: string, stepId: string) => {
+    const job = pipelineJobs.find((item) => item.id === jobId);
+    assert.ok(job !== undefined, `работы ${jobId} нет в пайплайне петли`);
+    const step = job.steps.find((item) => item.id === stepId);
+    assert.ok(step !== undefined, `${jobId}: нет шага ${stepId}`);
+    return step;
+  };
+
+  it('правящие шаги обеих дорожек несут прежние права в прежнем порядке', () => {
     const project = makeProject();
     const { pipeline } = expandPipeline({
       pipelinePath: join(ROOT, '.stepcast', 'pipelines', 'self-improve.yml'),
       config: project.config,
     });
 
-    for (const id of ['implement-a', 'implement-b', 'fix-review-a', 'fix-review-b']) {
-      const job = pipeline.jobs.find((item) => item.id === id);
-      assert.ok(job !== undefined, `работы ${id} нет в пайплайне петли`);
-      assert.deepEqual(asAgent(job.steps[0]!).permissions?.allow, EXPECTED_ALLOW, id);
+    for (const [jobId, stepId] of EDITING_STEPS) {
+      const step = editingStep(pipeline.jobs, jobId, stepId);
+      assert.deepEqual(asAgent(step).permissions?.allow, EXPECTED_ALLOW, `${jobId}/${stepId}`);
     }
   });
 
-  it('implement и fix-review обеих дорожек несут прежний набор границ changed_only', () => {
+  it('правящие шаги обеих дорожек несут прежний набор границ changed_only', () => {
     const project = makeProject();
     const { pipeline } = expandPipeline({
       pipelinePath: join(ROOT, '.stepcast', 'pipelines', 'self-improve.yml'),
       config: project.config,
     });
 
-    for (const id of ['implement-a', 'implement-b', 'fix-review-a', 'fix-review-b']) {
-      const job = pipeline.jobs.find((item) => item.id === id);
-      assert.ok(job !== undefined, `работы ${id} нет в пайплайне петли`);
-      const predicate = job.steps[0]!.expect.find((item) => item.kind === 'changed_only') as
+    for (const [jobId, stepId] of EDITING_STEPS) {
+      const step = editingStep(pipeline.jobs, jobId, stepId);
+      const predicate = step.expect.find((item) => item.kind === 'changed_only') as
         | { readonly globs: readonly string[] }
         | undefined;
-      assert.ok(predicate !== undefined, `${id}: нет предиката changed_only`);
-      assert.deepEqual(new Set(predicate.globs), EXPECTED_CHANGED_ONLY, id);
+      assert.ok(predicate !== undefined, `${jobId}/${stepId}: нет предиката changed_only`);
+      assert.deepEqual(new Set(predicate.globs), EXPECTED_CHANGED_ONLY, `${jobId}/${stepId}`);
     }
   });
 });
@@ -247,25 +266,13 @@ project:
     tool: make
   edit_paths: [${editPaths.join(', ')}]
 jobs:
-  propose-a:
-    uses: ${JOBS_DIR}/propose.yml
-    with: { lane: a }
-  plan-a:
-    uses: ${JOBS_DIR}/plan.yml
+  build-a:
+    uses: ${JOBS_DIR}/build.yml
+    with: { lane: a, change: demo-change }
+  review-fix-a:
+    uses: ${JOBS_DIR}/review-fix.yml
     with: { change: demo-change }
-    needs: [propose-a]
-  implement-a:
-    uses: ${JOBS_DIR}/implement.yml
-    with: { change: demo-change, lane: a }
-    needs: [plan-a]
-  review-a:
-    uses: ${JOBS_DIR}/review.yml
-    with: { change: demo-change }
-    needs: [implement-a]
-  fix-review-a:
-    uses: ${JOBS_DIR}/fix-review.yml
-    with: { change: demo-change }
-    needs: [review-a]
+    needs: [build-a]
 `;
   }
 
@@ -274,99 +281,121 @@ jobs:
     return expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }).pipeline;
   }
 
-  it('propose-a: границы и право на инструмент называют чужие значения', () => {
-    const pipeline = expandForeign(makeProject());
-    const job = pipeline.jobs.find((item) => item.id === 'propose-a')!;
-    const step = asAgent(job.steps[0]!);
+  type Pipeline = ReturnType<typeof expandForeign>;
 
-    assert.deepEqual(
-      job.steps[0]!.expect.find((item) => item.kind === 'changed_only'),
-      { kind: 'changed_only', globs: ['docs/changes/**'] },
-    );
-    assert.ok(step.permissions?.allow?.includes('Bash(make *)'));
-    assert.deepEqual(
-      step.context.find((entry) => entry.kind === 'path' && entry.path === 'docs/spec-rules.md'),
+  /**
+   * merged-sessions: адрес правящего места — пара «работа, шаг», а не работа
+   * целиком. Шаг ищется по идентификатору, а не по индексу: индекс сместится
+   * при первой же вставке соседа, и проверка начнёт утверждать не то, о чём
+   * написана.
+   */
+  function jobOf(pipeline: Pipeline, jobId: string) {
+    const job = pipeline.jobs.find((item) => item.id === jobId);
+    assert.ok(job !== undefined, `работы ${jobId} нет в пайплайне`);
+    return job;
+  }
+
+  function step(pipeline: Pipeline, jobId: string, stepId: string) {
+    const found = jobOf(pipeline, jobId).steps.find((item) => item.id === stepId);
+    assert.ok(found !== undefined, `${jobId}: нет шага ${stepId}`);
+    return found;
+  }
+
+  function changedOnlyGlobs(pipeline: Pipeline, jobId: string, stepId: string): readonly string[] {
+    const predicate = step(pipeline, jobId, stepId).expect.find((item) => item.kind === 'changed_only') as
+      | { readonly globs: readonly string[] }
+      | undefined;
+    assert.ok(predicate !== undefined, `${jobId}/${stepId}: нет предиката changed_only`);
+    return predicate.globs;
+  }
+
+  /** Правящие места петли: где объявлены права инструментов и границы правок. */
+  const EDITING = [
+    ['build-a', 'write-code'],
+    ['review-fix-a', 'apply-fixes'],
+  ] as const;
+
+  it('шаг заведения изменения: границы и право на инструмент называют чужие значения', () => {
+    const pipeline = expandForeign(makeProject());
+    const created = step(pipeline, 'build-a', 'create-change');
+
+    assert.deepEqual(created.expect.find((item) => item.kind === 'changed_only'), {
+      kind: 'changed_only',
+      globs: ['docs/changes/**'],
+    });
+    assert.ok(asAgent(created).permissions?.allow?.includes('Bash(make *)'));
+    // Файл правил переехал в контекст работы: общая сессия отправляет его один
+    // раз на все три шага, а не по вставке в каждый.
+    assert.deepEqual(jobOf(pipeline, 'build-a').context, [
       { kind: 'path', path: 'docs/spec-rules.md', mode: 'inline' },
-    );
+    ]);
   });
 
-  it('plan-a: путь контекста ведёт в чужой каталог документов', () => {
+  it('шаг планирования: путь контекста ведёт в чужой каталог документов', () => {
     const pipeline = expandForeign(makeProject());
-    const job = pipeline.jobs.find((item) => item.id === 'plan-a')!;
 
-    assert.deepEqual(job.context, [
+    assert.deepEqual(step(pipeline, 'build-a', 'read-change').context, [
       { kind: 'path', path: 'docs/changes/demo-change/**/*.md', mode: 'auto', required: true },
     ]);
   });
 
-  it('implement-a: контекст, границы и правила ведут в чужой каталог', () => {
+  it('шаг реализации: контекст, границы и правила ведут в чужой каталог', () => {
     const pipeline = expandForeign(makeProject());
-    const job = pipeline.jobs.find((item) => item.id === 'implement-a')!;
 
-    assert.deepEqual(job.context, [
+    assert.deepEqual(step(pipeline, 'build-a', 'write-code').context, [
       {
         kind: 'path',
         path: 'docs/changes/demo-change/**/*.md',
         mode: 'reference',
         required: true,
       },
-      { kind: 'path', path: 'docs/spec-rules.md', mode: 'inline' },
     ]);
-    const globs = (
-      job.steps[0]!.expect.find((item) => item.kind === 'changed_only') as { globs: readonly string[] }
-    ).globs;
+    const globs = changedOnlyGlobs(pipeline, 'build-a', 'write-code');
     assert.ok(globs.includes('docs/changes/**'));
     assert.ok(globs.includes('docs/spec-rules.md'));
   });
 
-  it('review-a: путь контекста ведёт в чужой каталог документов', () => {
+  it('работа ревью и правки: контекст ведёт в чужой каталог документов и к чужим правилам', () => {
     const pipeline = expandForeign(makeProject());
-    const job = pipeline.jobs.find((item) => item.id === 'review-a')!;
 
-    assert.deepEqual(job.context, [
+    assert.deepEqual(jobOf(pipeline, 'review-fix-a').context, [
       { kind: 'path', path: 'docs/changes/demo-change/**/*.md', mode: 'auto', required: true },
+      { kind: 'path', path: 'docs/spec-rules.md', mode: 'inline' },
     ]);
   });
 
-  it('fix-review-a: границы включают чужой каталог и чужие правила', () => {
+  it('шаг устранения находок: границы включают чужой каталог и чужие правила', () => {
     const pipeline = expandForeign(makeProject());
-    const job = pipeline.jobs.find((item) => item.id === 'fix-review-a')!;
+    const globs = changedOnlyGlobs(pipeline, 'review-fix-a', 'apply-fixes');
 
-    assert.deepEqual(job.context, [
-      { kind: 'path', path: 'docs/spec-rules.md', mode: 'inline' },
-    ]);
-    const globs = (
-      job.steps[0]!.expect.find((item) => item.kind === 'changed_only') as { globs: readonly string[] }
-    ).globs;
     assert.ok(globs.includes('docs/changes/**'));
     assert.ok(globs.includes('docs/spec-rules.md'));
   });
 
-  // job-tools-declaration: implement и fix-review читают инструменты чужим
-  // объявлением (project.tools: [make]), а не тремя литералами этого
-  // репозитория — право называет чужой инструмент, и ни одного из старых
-  // трёх среди прав нет.
-  it('implement-a и fix-review-a несут право Bash(make *) и ни одного из npm/npx/node', () => {
+  // job-tools-declaration: правящие шаги читают инструменты чужим объявлением
+  // (project.tools: [make]), а не тремя литералами этого репозитория — право
+  // называет чужой инструмент, и ни одного из старых трёх среди прав нет.
+  it('правящие шаги несут право Bash(make *) и ни одного из npm/npx/node', () => {
     const pipeline = expandForeign(makeProject());
-    for (const id of ['implement-a', 'fix-review-a']) {
-      const job = pipeline.jobs.find((item) => item.id === id)!;
-      const allow = asAgent(job.steps[0]!).permissions?.allow ?? [];
-      assert.ok(allow.includes('Bash(make *)'), `${id}: нет Bash(make *)`);
-      assert.ok(!allow.includes('Bash(npm *)'), `${id}: остался Bash(npm *)`);
-      assert.ok(!allow.includes('Bash(npx *)'), `${id}: остался Bash(npx *)`);
-      assert.ok(!allow.includes('Bash(node *)'), `${id}: остался Bash(node *)`);
+    for (const [jobId, stepId] of EDITING) {
+      const allow = asAgent(step(pipeline, jobId, stepId)).permissions?.allow ?? [];
+      const where = `${jobId}/${stepId}`;
+      assert.ok(allow.includes('Bash(make *)'), `${where}: нет Bash(make *)`);
+      assert.ok(!allow.includes('Bash(npm *)'), `${where}: остался Bash(npm *)`);
+      assert.ok(!allow.includes('Bash(npx *)'), `${where}: остался Bash(npx *)`);
+      assert.ok(!allow.includes('Bash(node *)'), `${where}: остался Bash(node *)`);
     }
   });
 
   it('объявление нескольких инструментов даёт записи в объявленном порядке', () => {
     const pipeline = expandForeign(makeProject(), ['./gradlew', 'java']);
-    for (const id of ['implement-a', 'fix-review-a']) {
-      const job = pipeline.jobs.find((item) => item.id === id)!;
-      const allow = asAgent(job.steps[0]!).permissions?.allow ?? [];
+    for (const [jobId, stepId] of EDITING) {
+      const allow = asAgent(step(pipeline, jobId, stepId)).permissions?.allow ?? [];
+      const where = `${jobId}/${stepId}`;
       const gradlewIndex = allow.indexOf('Bash(./gradlew *)');
       const javaIndex = allow.indexOf('Bash(java *)');
-      assert.ok(gradlewIndex !== -1 && javaIndex !== -1, `${id}: не нашлись оба права`);
-      assert.ok(gradlewIndex < javaIndex, `${id}: порядок не совпадает с объявленным`);
+      assert.ok(gradlewIndex !== -1 && javaIndex !== -1, `${where}: не нашлись оба права`);
+      assert.ok(gradlewIndex < javaIndex, `${where}: порядок не совпадает с объявленным`);
     }
   });
 
@@ -376,7 +405,7 @@ jobs:
   // чужой стек, ни одного из старых npm-шаблонов среди них нет, а каталог
   // документов изменения и файл правил остаются, потому что их объявляет
   // отдельный ключ (project.spec), не задетый этим объявлением.
-  it('implement-a и fix-review-a несут границы cmd/**, internal/**, go.mod и ни одной раскладки этого репозитория', () => {
+  it('правящие шаги несут границы cmd/**, internal/**, go.mod и ни одной раскладки этого репозитория', () => {
     const REPO_LAYOUT = [
       'src/**',
       'test/**',
@@ -393,20 +422,17 @@ jobs:
     ];
 
     const pipeline = expandForeign(makeProject());
-    for (const id of ['implement-a', 'fix-review-a']) {
-      const job = pipeline.jobs.find((item) => item.id === id)!;
-      const globs = (
-        job.steps[0]!.expect.find((item) => item.kind === 'changed_only') as { globs: readonly string[] }
-      ).globs;
-
-      assert.ok(globs.includes('cmd/**'), `${id}: нет cmd/**`);
-      assert.ok(globs.includes('internal/**'), `${id}: нет internal/**`);
-      assert.ok(globs.includes('go.mod'), `${id}: нет go.mod`);
+    for (const [jobId, stepId] of EDITING) {
+      const globs = changedOnlyGlobs(pipeline, jobId, stepId);
+      const where = `${jobId}/${stepId}`;
+      assert.ok(globs.includes('cmd/**'), `${where}: нет cmd/**`);
+      assert.ok(globs.includes('internal/**'), `${where}: нет internal/**`);
+      assert.ok(globs.includes('go.mod'), `${where}: нет go.mod`);
       for (const pattern of REPO_LAYOUT) {
-        assert.ok(!globs.includes(pattern), `${id}: остался шаблон этого репозитория ${pattern}`);
+        assert.ok(!globs.includes(pattern), `${where}: остался шаблон этого репозитория ${pattern}`);
       }
-      assert.ok(globs.includes('docs/changes/**'), `${id}: пропал каталог документов изменения`);
-      assert.ok(globs.includes('docs/spec-rules.md'), `${id}: пропал файл правил`);
+      assert.ok(globs.includes('docs/changes/**'), `${where}: пропал каталог документов изменения`);
+      assert.ok(globs.includes('docs/spec-rules.md'), `${where}: пропал файл правил`);
     }
   });
 
@@ -426,14 +452,10 @@ jobs:
     ];
 
     const pipeline = expandForeign(makeProject());
-    for (const id of ['implement-a', 'fix-review-a']) {
-      const job = pipeline.jobs.find((item) => item.id === id)!;
-      const globs = (
-        job.steps[0]!.expect.find((item) => item.kind === 'changed_only') as { globs: readonly string[] }
-      ).globs;
-
+    for (const [jobId, stepId] of EDITING) {
+      const globs = changedOnlyGlobs(pipeline, jobId, stepId);
       for (const pattern of ENGINE_FILES) {
-        assert.ok(globs.includes(pattern), `${id}: пропала запись ${pattern}`);
+        assert.ok(globs.includes(pattern), `${jobId}/${stepId}: пропала запись ${pattern}`);
       }
     }
   });
@@ -443,14 +465,24 @@ jobs:
  * Задача 4.11 (в): сквозной прогон петли на поддельном бэкенде в дереве без
  * каталога `openspec/` доходит до последней работы.
  *
- * Цепочка сокращена до `plan → implement → review → fix-review` — работы
- * `propose`, `slots`, `merge` и `finalize` заняты выбором пункта очереди и
- * сведением дорожек, устройством, не связанным с этим изменением (у `propose`
- * есть свой файл `${run.dir}/item-<дорожка>.json`, который в настоящей петле
- * пишет `slots`). Четырёх оставшихся работ достаточно, чтобы доказать: чужое
- * объявление `project.spec` доезжает подстановкой через контекст, цикл
- * `until` (командой `${project.check}`), границы `changed_only` и права —
- * до самого конца, ни разу не споткнувшись о литерал OpenSpec.
+ * Цепочка — обе агентские работы петли целиком (`build → review-fix`); из
+ * обвязки выброшены `slots`, `merge` и `finalize`, занятые выбором пункта
+ * очереди и сведением дорожек, устройством, не связанным с этим изменением.
+ * Файл выбранного пункта (`${run.dir}/item-<дорожка>.json`, который в
+ * настоящей петле пишет `slots`) подкладывает командный шаг `seed`: после
+ * слияния работ заведение изменения — первый шаг `build`, и обойти его,
+ * начав цепочку с планирования, больше нельзя.
+ *
+ * Пяти агентских шагов достаточно, чтобы доказать: чужое объявление
+ * `project.spec` доезжает подстановкой через контекст, предикаты `cmd`
+ * (командой `${project.check}` и командой инструмента практики), границы
+ * `changed_only` и права — до самого конца, ни разу не споткнувшись о литерал
+ * OpenSpec.
+ *
+ * `spec.tool: "true"` здесь, а не `make`: инструмент практики попал в
+ * предикат шага и теперь исполняется, а не только раскрывается, — а `make` в
+ * дереве проверок звать нечем. Статические проверки выше по-прежнему берут
+ * `make` и стерегут именно раскрытие.
  */
 describe('self-improvement-loop: сквозной прогон против чужого объявления', () => {
   const RUN_PIPELINE = `
@@ -462,24 +494,21 @@ project:
   spec:
     dir: docs/changes
     rules: docs/spec-rules.md
-    tool: make
+    tool: "true"
   edit_paths: [cmd/**, internal/**, go.mod]
 jobs:
-  plan-a:
-    uses: ${JOBS_DIR}/plan.yml
+  seed:
+    steps:
+      - id: write-item
+        run: [sh, -c, 'echo demo-change > "$STEPCAST_RUN_DIR/item-a.json"']
+  build-a:
+    uses: ${JOBS_DIR}/build.yml
+    with: { lane: a, change: demo-change }
+    needs: [seed]
+  review-fix-a:
+    uses: ${JOBS_DIR}/review-fix.yml
     with: { change: demo-change }
-  implement-a:
-    uses: ${JOBS_DIR}/implement.yml
-    with: { change: demo-change, lane: a }
-    needs: [plan-a]
-  review-a:
-    uses: ${JOBS_DIR}/review.yml
-    with: { change: demo-change }
-    needs: [implement-a]
-  fix-review-a:
-    uses: ${JOBS_DIR}/fix-review.yml
-    with: { change: demo-change }
-    needs: [review-a]
+    needs: [build-a]
 `;
 
   /**
@@ -500,6 +529,12 @@ jobs:
     const project = foreignTree();
 
     const structuredByInvocation = [
+      {
+        slug: 'demo-change',
+        change_dir: 'docs/changes/demo-change',
+        artifacts: ['README.md'],
+        summary: 'демонстрационное изменение',
+      },
       { tasks: [{ id: 't1', title: 'demo', files: ['src/x.ts'], done_when: 'tests pass' }] },
       { changed_files: [], completed: ['t1'], remaining: [] },
       { findings: [] },
@@ -520,12 +555,14 @@ jobs:
 
     assert.equal(result.status, 'success');
     const status = readStatus(result.journal.paths);
-    assert.equal(status.jobs.find((job) => job.id === 'fix-review-a')?.status, 'success');
-    assert.equal(backend.invocations.length, 4);
+    assert.equal(status.jobs.find((job) => job.id === 'review-fix-a')?.status, 'success');
+    assert.equal(backend.invocations.length, 5);
 
     // Документы изменения дошли до агента: глоб раскрылся в чужом каталоге, а
-    // не остался пустым, — иначе успех цепочки ничего бы не доказывал.
-    assert.match(backend.invocations[0]?.prompt ?? '', /docs\/changes\/demo-change\/README\.md/);
+    // не остался пустым, — иначе успех цепочки ничего бы не доказывал. Второй
+    // вызов, а не первый: первый — заведение изменения, и каталог документов
+    // ему приходит не глобом, а файлом выбранного пункта.
+    assert.match(backend.invocations[1]?.prompt ?? '', /docs\/changes\/demo-change\/README\.md/);
   });
 
   /**
@@ -535,14 +572,27 @@ jobs:
    * из четырёх работ проходила в дереве, где каталога `docs/changes/` нет
    * вовсе.
    */
-  it('пустой каталог изменения роняет первую же работу, а не проходит молча', async () => {
+  it('пустой каталог изменения роняет шаг планирования, а не проходит молча', async () => {
     const project = makeProject({
       'stepcast.yml': RUN_PIPELINE,
       'docs/spec-rules.md': 'правила\n',
     });
 
+    // Заведение изменения проходит: отказать обязан следующий шаг — тот, чей
+    // контекст глобом ведёт в каталог, которого нет.
     const backend = createFakeBackend({
-      lines: () => [initLine(), resultLine({ text: 'ок', structured: { tasks: [] } })],
+      lines: () => [
+        initLine(),
+        resultLine({
+          text: 'ок',
+          structured: {
+            slug: 'demo-change',
+            change_dir: 'docs/changes/demo-change',
+            artifacts: ['README.md'],
+            summary: 'демонстрационное изменение',
+          },
+        }),
+      ],
     });
 
     const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
@@ -556,11 +606,13 @@ jobs:
 
     assert.notEqual(result.status, 'success');
     const status = readStatus(result.journal.paths);
-    const plan = status.jobs.find((job) => job.id === 'plan-a');
-    assert.equal(plan?.status, 'failed');
+    const build = status.jobs.find((job) => job.id === 'build-a');
+    assert.equal(build?.status, 'failed');
     // Отказ именно на записи контекста, а не на чём-то попутном.
-    assert.match(plan?.reason ?? '', /docs\/changes\/demo-change/);
-    assert.equal(backend.invocations.length, 0);
+    assert.match(build?.reason ?? '', /docs\/changes\/demo-change/);
+    // Ровно один агентский вызов — заведение изменения; планирование до
+    // бэкенда не дошло.
+    assert.equal(backend.invocations.length, 1);
   });
 
   // job-tools-declaration: implement и fix-review ссылаются на ${project.tools}
