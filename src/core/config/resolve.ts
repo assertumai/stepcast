@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
 import { StepcastError } from '../errors.js';
+import { describeSchemaFailure } from '../pipeline/load.js';
 import {
   GLOBAL_ONLY_KEYS,
   PROJECT_ONLY_KEYS,
@@ -167,16 +168,15 @@ function readConfigFile(path: string): RawConfig | undefined {
 
   const parsed = RawConfigSchema.safeParse(document);
   if (!parsed.success) {
-    const first = parsed.error.issues[0];
-    const at = first === undefined ? undefined : first.path.join('.');
-    throw new StepcastError(
-      `Конфигурация не соответствует схеме: ${first?.message ?? 'неизвестная ошибка'}`,
-      {
-        file: path,
-        ...(at === undefined || at === '' ? {} : { at }),
-        hint: 'Неизвестный ключ почти всегда опечатка — сверьтесь с docs/config.md',
-      },
-    );
+    // Разбор дерева замечаний zod общий с документами пайплайна: правило
+    // «называй лишний ключ и спускайся в подходящий вариант объединения» не
+    // зависит от того, какая схема отказала, а две его копии разошлись бы.
+    const failure = describeSchemaFailure(parsed.error);
+    throw new StepcastError(`Конфигурация не соответствует схеме: ${failure.message}`, {
+      file: path,
+      ...(failure.at === undefined ? {} : { at: failure.at }),
+      hint: 'Неизвестный ключ почти всегда опечатка — сверьтесь с docs/config.md',
+    });
   }
 
   return parsed.data;
