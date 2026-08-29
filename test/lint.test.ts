@@ -8,7 +8,7 @@ import type { Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../src/core/lint.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
-import { makeProject, withHome, type Project } from './helpers.js';
+import { gitCommit, gitInit, makeProject, withHome, type Project } from './helpers.js';
 
 function lint(project: Project, inputs?: Record<string, string>): Diagnostic[] {
   return lintWithConfig(project, project.config, inputs);
@@ -1283,7 +1283,7 @@ jobs:
   });
 });
 
-describe('pipeline-definition: изолированные режимы при объявленном составе вложенных репозиториев', () => {
+describe('pipeline-definition: состав вложенных репозиториев в изолированных режимах', () => {
   const PIPELINE_WORKTREE = `
 version: 1
 kind: pipeline
@@ -1297,26 +1297,93 @@ jobs:
         expect: [{ exit_code: 0 }]
 `;
 
-  // Задача 8 / Сценарий: диагностика по образцу уже живущих отказов пригодности режима.
-  it('отклоняет работу в режиме worktree при объявленном составе, называя работу, режим и путь', () => {
-    const project = makeProject({ 'stepcast.yml': PIPELINE_WORKTREE });
+  const PIPELINE_COPY = PIPELINE_WORKTREE.replace('mode: worktree', 'mode: copy');
+
+  // Копия `.git` не содержит — тот же отказ и та же причина, что в
+  // `checkWorkspaceAvailability` (run/workspace.ts), только раньше, статически.
+  it('отклоняет работу в режиме copy при объявленном составе, называя работу и режим', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE_COPY });
 
     const diagnostics = lintWithConfig(project, withNestedRepos(project, ['public-site']));
     const found = diagnostics.find((item) => item.at === 'jobs.build.workspace.mode');
     assert.ok(found !== undefined, 'диагностика по jobs.build.workspace.mode должна найтись');
     assert.equal(found.severity, 'error');
     assert.match(found.message, /build/);
-    assert.match(found.message, /worktree/);
+    assert.match(found.message, /copy/);
     assert.equal(found.file, project.path('stepcast.yml'));
   });
 
-  // Задача 8 / Сценарий: без объявленного состава диагностики нет.
+  // Задача 3 (nested-repo-isolation): worktree при объявленном составе больше
+  // не отклоняется — часть материализуется собственным рабочим деревом.
+  it('worktree при объявленном составе не отклоняется по workspace.mode', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE_WORKTREE });
+
+    const diagnostics = lintWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(
+      diagnostics.some((item) => item.at === 'jobs.build.workspace.mode'),
+      false,
+    );
+  });
+
   it('на пустом составе диагностики нет', () => {
     const project = makeProject({ 'stepcast.yml': PIPELINE_WORKTREE });
 
     const diagnostics = lint(project);
     assert.equal(
-      diagnostics.some((item) => item.at === 'jobs.build.workspace.mode'),
+      diagnostics.some((item) => item.at === 'jobs.build.workspace.mode' || item.at === 'project.nested_repos'),
+      false,
+    );
+  });
+
+  it('отклоняет часть без коммита в режиме worktree, даже если корень её игнорирует', () => {
+    const project = makeProject({
+      'stepcast.yml': PIPELINE_WORKTREE,
+      '.gitignore': 'public-site/\n',
+      'public-site/index.html': 'сайт\n',
+    });
+    gitInit(project.root);
+    gitCommit(project.root, 'первый');
+    gitInit(project.path('public-site'));
+
+    const diagnostics = lintWithConfig(project, withNestedRepos(project, ['public-site']));
+    const found = diagnostics.find((item) => item.at === 'project.nested_repos');
+    assert.ok(found !== undefined, 'диагностика по project.nested_repos должна найтись');
+    assert.equal(found.severity, 'error');
+    assert.match(found.message, /public-site/);
+    assert.match(found.message, /не имеет ни одного коммита/);
+  });
+
+  it('отклоняет часть, чьи файлы отслеживает корень, в режиме worktree', () => {
+    const project = makeProject({
+      'stepcast.yml': PIPELINE_WORKTREE,
+      'public-site/index.html': 'сайт\n',
+    });
+    gitInit(project.root);
+    gitCommit(project.root, 'первый');
+    gitInit(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+
+    const diagnostics = lintWithConfig(project, withNestedRepos(project, ['public-site']));
+    const found = diagnostics.find((item) => item.at === 'project.nested_repos');
+    assert.ok(found !== undefined, 'диагностика по project.nested_repos должна найтись');
+    assert.equal(found.severity, 'error');
+    assert.match(found.message, /public-site/);
+    assert.match(found.message, /отслеживает файлы/);
+  });
+
+  it('пригодный состав в режиме worktree диагностики не даёт', () => {
+    const project = makeProject({
+      'stepcast.yml': PIPELINE_WORKTREE,
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    gitInit(project.root);
+    gitCommit(project.root, 'первый');
+
+    const diagnostics = lintWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(
+      diagnostics.some((item) => item.at === 'jobs.build.workspace.mode' || item.at === 'project.nested_repos'),
       false,
     );
   });

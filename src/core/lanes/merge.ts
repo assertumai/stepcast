@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { StepcastError, isStepcastError } from '../errors.js';
 import { REASON_LIMIT, finishItem, tailLine } from '../backlog/index.js';
 import type { RunPaths } from '../journal/paths.js';
-import { readStatus } from '../journal/reader.js';
+import { readManifest, readStatus } from '../journal/reader.js';
 import type { RunStatus } from '../journal/schema.js';
 import { applyRun } from '../run/apply.js';
 import { runCheck } from './check.js';
@@ -89,6 +89,23 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
   // сведения это всегда корень — см. отказ выше), и на одноимённые пути в
   // объявленных вложенных репозиториях не расползается.
   assertCleanTree(cwd, { allow: [file], ...(nestedRepos === undefined ? {} : { nested: nestedRepos }) });
+
+  // Составной прогон сведению недоступен целиком, а не дорожка за дорожкой:
+  // его патч склеен из патчей разных баз объектов, и `git apply` в корне
+  // применил бы его к чужому индексу. Отказ здесь, до обхода, а не в ловушке
+  // вокруг `applyRun`: та приписывает всякий отказ наложения несошедшемуся
+  // дереву и пометила бы пункт очереди `failed` по несуществующему конфликту.
+  // Пункт остаётся невзятым — его возьмёт заход после `merge-lanes-per-repo`,
+  // где наложение по репозиториям и появится (design.md, решение 10).
+  if (readManifest(paths).anchor_kind === 'composite') {
+    throw new StepcastError(
+      'Прогон снят составным способом фиксации: патч склеен из патчей разных баз объектов, и накладывать его нужно по репозиторию',
+      {
+        file: cwd,
+        hint: 'Сведение составного результата по репозиториям не реализовано — см. merge-lanes-per-repo. Пути рабочих деревьев дорожек — в выводе stepcast run',
+      },
+    );
+  }
 
   const status = readStatus(paths);
   const known = knownLanes(status.jobs);

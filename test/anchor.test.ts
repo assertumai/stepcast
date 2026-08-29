@@ -568,21 +568,90 @@ describe('workspace-anchor: составной способ фиксации', (
     assert.match(patch, /\+часть после/);
   });
 
-  it('restore отказывает для составного якоря', () => {
+  // Задача 4 (nested-repo-isolation): `restore` перестаёт быть безусловным
+  // отказом — приводит и корень, и каждую часть, когда часть на месте.
+  it('restore приводит и корень, и часть к сохранённому состоянию', () => {
     const b = compositeBed();
     b.initPart('public-site');
+    b.write('README.md', 'корень до\n');
+    b.write('public-site/a.txt', 'часть до\n');
+    const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
+    const saved = anchorer.capture();
+
+    b.write('README.md', 'корень после\n');
+    b.write('public-site/a.txt', 'часть после\n');
+    anchorer.capture();
+
+    anchorer.restore(saved);
+
+    assert.equal(b.read('README.md'), 'корень до\n');
+    assert.equal(b.read('public-site/a.txt'), 'часть до\n');
+    assert.ok(sameAnchor(saved, anchorer.capture()), 'состояние должно совпасть с сохранённым');
+  });
+
+  // Каталог части снесён мимо якоря (стал обычным каталогом без .git) — та
+  // же причина отказа, что у git-якоря на недоступных объектах: объекты
+  // части лежат в её собственной базе, которой у такого каталога нет.
+  it('restore отказывает, когда часть в приводимом каталоге не является рабочим деревом своего репозитория', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.write('README.md', 'корень\n');
     b.write('public-site/a.txt', '1');
     const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
-    const anchor = anchorer.capture();
+    const saved = anchorer.capture();
+
+    b.write('README.md', 'корень изменён\n');
+    rmSync(join(b.dir, 'public-site', '.git'), { recursive: true, force: true });
 
     assert.throws(
-      () => anchorer.restore(anchor),
+      () => anchorer.restore(saved),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
-        assert.match(error.message, /составным способом/);
+        assert.match(error.message, /public-site/);
+        assert.match(error.message, /не является рабочим деревом/);
         return true;
       },
     );
+    // Проверка идёт до первой записи: корень не тронут отказавшей попыткой.
+    assert.equal(b.read('README.md'), 'корень изменён\n');
+  });
+
+  // Тот же отказ и той же причиной, когда каталога части нет вовсе: пока
+  // якорь части заводился при создании составного, этот случай ловил
+  // `createGitAnchorer` — сообщением про хеш-манифест, ничего не говорящим о
+  // вложенных репозиториях.
+  it('restore отказывает названной причиной и когда каталога части нет вовсе', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.write('README.md', 'корень\n');
+    b.write('public-site/a.txt', '1');
+    const saved = createAnchorer({
+      dir: b.dir,
+      stateDir: b.stateDir,
+      scope: 'снятый',
+      nested: ['public-site'],
+    }).capture();
+
+    b.write('README.md', 'корень изменён\n');
+    rmSync(join(b.dir, 'public-site'), { recursive: true, force: true });
+
+    const anchorer = createAnchorer({
+      dir: b.dir,
+      stateDir: b.stateDir,
+      scope: 'снятый',
+      nested: ['public-site'],
+    });
+    assert.throws(
+      () => anchorer.restore(saved),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /public-site/);
+        assert.match(error.message, /не является рабочим деревом/);
+        assert.match(error.hint ?? '', /собственных базах/);
+        return true;
+      },
+    );
+    assert.equal(b.read('README.md'), 'корень изменён\n');
   });
 
   it('restorePaths восстанавливает файл внутри части', () => {
@@ -596,6 +665,48 @@ describe('workspace-anchor: составной способ фиксации', (
     anchorer.restorePaths(saved, ['public-site/a.txt']);
 
     assert.equal(b.read('public-site/a.txt'), 'исходное');
+  });
+
+  // Задача 4.4: приведение путей одной части — радиус разрушения не выходит
+  // за её границы (design.md, решение 8).
+  it('restorePaths по путям одной части оставляет незакоммиченные правки соседней части и корня целыми', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.initPart('vendor-sdk');
+    b.write('README.md', 'корень исходное');
+    b.write('public-site/a.txt', 'сайт исходное');
+    b.write('vendor-sdk/b.txt', 'sdk исходное');
+    const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site', 'vendor-sdk'] });
+    const saved = anchorer.capture();
+
+    b.write('README.md', 'корень правка пользователя');
+    b.write('public-site/a.txt', 'сайт испорчено');
+    b.write('vendor-sdk/b.txt', 'sdk правка пользователя');
+
+    anchorer.restorePaths(saved, ['public-site/a.txt']);
+
+    assert.equal(b.read('public-site/a.txt'), 'сайт исходное', 'путь части приведён');
+    assert.equal(b.read('README.md'), 'корень правка пользователя', 'правка корня не тронута');
+    assert.equal(b.read('vendor-sdk/b.txt'), 'sdk правка пользователя', 'правка соседней части не тронута');
+  });
+
+  // Приведение путей только корня не заходит внутрь объявленных частей: их
+  // содержимое остаётся тем, что было до вызова.
+  it('restorePaths по путям только корня не трогает содержимое частей', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.write('README.md', 'корень исходное');
+    b.write('public-site/a.txt', 'сайт исходное');
+    const anchorer = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] });
+    const saved = anchorer.capture();
+
+    b.write('README.md', 'корень испорчено');
+    b.write('public-site/a.txt', 'сайт правка пользователя');
+
+    anchorer.restorePaths(saved, ['README.md']);
+
+    assert.equal(b.read('README.md'), 'корень исходное', 'корень приведён');
+    assert.equal(b.read('public-site/a.txt'), 'сайт правка пользователя', 'содержимое части не тронуто');
   });
 
   it('вложенные друг в друга объявленные каталоги маршрутизируются по длинному префиксу', () => {

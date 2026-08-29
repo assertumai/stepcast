@@ -79,7 +79,14 @@ function isolatedJobs(paths: RunPaths, only: string | undefined): JobRecord[] {
   const status = readStatus(paths);
   const jobs = status.jobs.filter((job) => job.workspace !== undefined && job.workspace.mode !== 'cwd');
 
-  if (only === undefined) return jobs;
+  // Работа, ещё идущая, в наложение «всего прогона» не входит: каталог она
+  // уже завела и записала (перечень нужен уборке прогона, оборванного до
+  // конца), но исхода не записала, и накладывать по ней нечего. Отказ «нет
+  // якорей состояния» на ней превратил бы наложение до конца прогона —
+  // работающее по уже отчитавшимся работам — в отказ целиком. Названная
+  // поимённо работа (`--job`) этого послабления не получает: спросили про
+  // неё — и ответ про её якоря честнее молчания.
+  if (only === undefined) return jobs.filter((job) => job.status !== 'running' && job.status !== 'pending');
 
   const found = jobs.find((job) => job.id === only);
   if (found === undefined) {
@@ -115,6 +122,19 @@ function applyLane(paths: RunPaths, cwd: string, manifest: RunManifest, lane: st
 
   if (from === undefined || to === undefined) return { kind: 'nothing-to-apply' };
 
+  // Составной прогон снят в git, но `diff.patch` дорожки склеен из патчей
+  // разных баз объектов (по одному на репозиторий) — накладывать его надо по
+  // репозиторию, а не одним `git apply` в корне. Отказ «прогон снят вне git»
+  // ниже — про другую причину и притворяться объяснением для составного не
+  // должен (design.md, решение 10).
+  if (manifest.anchor_kind === 'composite') {
+    throw new StepcastError(
+      `Дорожка ${lane} снята составным способом фиксации: патч склеен из патчей разных баз объектов`,
+      {
+        hint: 'Наложение составного результата по репозиториям не реализовано — см. merge-lanes-per-repo. Пути рабочих деревьев — в выводе stepcast run',
+      },
+    );
+  }
   if (manifest.anchor_kind !== 'git') {
     throw new StepcastError(`Дорожка ${lane} снята вне git: накладывать нечего`, {
       hint: 'Объектов деревьев нет, поэтому дифф не вычислить.',
@@ -167,6 +187,15 @@ export function applyRun(options: ApplyOptions): ApplyOutcome {
 
   if (jobs.length === 0) return { kind: 'already-in-place' };
 
+  if (manifest.anchor_kind === 'composite') {
+    const where = jobs.map((job) => `  ${job.id}: ${job.workspace?.path}`).join('\n');
+    throw new StepcastError(
+      'Прогон снят составным способом фиксации: патч склеен из патчей разных баз объектов, и накладывать его нужно по репозиторию',
+      {
+        hint: `Наложение составного результата по репозиториям не реализовано — см. merge-lanes-per-repo. Результат лежит здесь:\n${where}`,
+      },
+    );
+  }
   if (manifest.anchor_kind !== 'git') {
     const where = jobs.map((job) => `  ${job.id}: ${job.workspace?.path}`).join('\n');
     throw new StepcastError('Прогон снят вне git: накладывать нечего', {

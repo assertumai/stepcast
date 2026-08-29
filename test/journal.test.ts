@@ -42,7 +42,14 @@ import { StepcastError } from '../src/core/errors.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { createFakeBackend, resultLine } from '../src/core/backend/fake.js';
-import { makeProject, MINIMAL_PIPELINE, type Project } from './helpers.js';
+import type { Config } from '../src/core/config/resolve.js';
+import {
+  gitCommit,
+  gitInit as gitInitDir,
+  makeProject,
+  MINIMAL_PIPELINE,
+  type Project,
+} from './helpers.js';
 
 function gitInit(project: Project): void {
   const run = (...args: string[]): void => {
@@ -916,6 +923,113 @@ jobs:
       source: 'a',
       via: 'continue',
     });
+  });
+});
+
+describe('run-journal: перечень материализованных частей', () => {
+  /** Тот же проект, но с объявленным составом `project.nested_repos`. */
+  function withNestedRepos(project: Project, nestedRepos: readonly string[]): Config {
+    return { ...project.config, project: { ...project.config.project, nestedRepos } };
+  }
+
+  async function runComposite(
+    command = 'echo ok',
+  ): Promise<Awaited<ReturnType<typeof runPipeline>>> {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: части
+workspace: { mode: worktree }
+jobs:
+  build:
+    steps: [{ id: c, run: [sh, -c, '${command}'], expect: [{ exit_code: 0 }] }]
+`,
+      'public-site/.gitkeep': '',
+    });
+    execFileSync('git', ['-C', project.root, 'init', '--quiet', '--initial-branch=main']);
+    execFileSync('git', ['-C', project.root, 'config', 'user.email', 'test@example.com']);
+    execFileSync('git', ['-C', project.root, 'config', 'user.name', 'Тест']);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    execFileSync('git', ['-C', project.root, 'add', '-A']);
+    execFileSync('git', ['-C', project.root, 'commit', '--quiet', '-m', 'первый']);
+
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const config = withNestedRepos(project, ['public-site']);
+    const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config });
+    return runPipeline({
+      expanded,
+      config: { ...config, runs: { ...config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+    });
+  }
+
+  it('запись работы называет каждый материализованный каталог и его репозиторий', async () => {
+    const result = await runComposite();
+    const status = readStatus(result.journal.paths);
+    const build = status.jobs.find((job) => job.id === 'build');
+    assert.ok(build?.workspace?.nested !== undefined, 'workspace.nested должно быть записано');
+    assert.equal(build.workspace.nested.length, 1);
+    assert.equal(build.workspace.nested[0]?.dir, 'public-site');
+    assert.match(build.workspace.nested[0]?.repo ?? '', /public-site$/);
+  });
+
+  // Сценарий «Перечень доступен после обрыва»: перечень пишется до первого
+  // шага, а не по завершении работы, — на этом держится полнота уборки
+  // прогона, до конца не дошедшего. Снимок состояния делает сам шаг: так
+  // проверяется именно момент записи, а не её наличие в конце.
+  it('перечень частей записан до первого шага и переживает обрыв работы', async () => {
+    const result = await runComposite(
+      'cp "$STEPCAST_RUN_DIR/status.json" "$STEPCAST_RUN_DIR/снимок.json"; exit 1',
+    );
+    assert.equal(result.status, 'failed');
+
+    const snapshot = RunStatusSchema.parse(
+      JSON.parse(readFileSync(join(result.journal.paths.dir, 'снимок.json'), 'utf8')),
+    );
+    const build = snapshot.jobs.find((job) => job.id === 'build');
+    assert.equal(build?.status, 'running', 'снимок сделан до конца работы');
+    assert.ok(build?.workspace?.nested !== undefined, 'перечень частей должен быть записан уже к первому шагу');
+    assert.equal(build.workspace.nested[0]?.dir, 'public-site');
+    assert.match(build.workspace.nested[0]?.repo ?? '', /public-site$/);
+  });
+
+  it('запись работы без объявленного состава поля nested не имеет', async () => {
+    const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
+    const result = await runPipeline({
+      expanded,
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+    });
+    const status = readStatus(result.journal.paths);
+    assert.equal(status.jobs.find((job) => job.id === 'build')?.workspace?.nested, undefined);
+  });
+
+  it('status.json прежней формы, без nested, читается схемой без ошибок', () => {
+    const parsed = RunStatusSchema.parse({
+      run_id: 'r',
+      pipeline: 'p',
+      lock_hash: 'h',
+      status: 'success',
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      jobs: [
+        {
+          id: 'build',
+          status: 'success',
+          workspace: { mode: 'worktree', path: '/tmp/x' },
+          steps: [],
+        },
+      ],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+    assert.equal(parsed.jobs[0]?.workspace?.nested, undefined);
   });
 });
 

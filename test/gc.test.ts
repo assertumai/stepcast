@@ -141,6 +141,68 @@ describe('CLI: stepcast gc', () => {
     assert.match(lines.join('\n'), /освобождено/);
   });
 
+  // run-cleanup: снятие записи не удалось — исход называет её, а прогон
+  // всё равно уходит из-под --older-than.
+  it('называет неснятую запись рабочего дерева, а прогон удаляет как обычно', () => {
+    const { runsRoot, projectRoot, home } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'old' });
+    const workDir = join(journal.paths.dir, 'workspace', 'build');
+    // Репозиторий части не существует — снять её запись нечем.
+    const missingPartRepo = join(mkdtempSync(join(tmpdir(), 'stepcast-gc-missing-')), 'gone');
+
+    journal.writeManifest({
+      run_id: journal.paths.runId,
+      pipeline: 'demo',
+      pipeline_file: '/tmp/stepcast.yml',
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'worktree' },
+      inputs: {},
+      git: {},
+      backends: {},
+      started_at: '2026-06-01T00:00:00.000Z',
+      finished_at: '2026-06-01T00:05:00.000Z',
+    });
+    journal.writeStatus({
+      run_id: journal.paths.runId,
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'success',
+      workspace: { mode: 'worktree' },
+      inputs: {},
+      jobs: [
+        {
+          id: 'build',
+          status: 'success',
+          workspace: {
+            mode: 'worktree',
+            path: workDir,
+            nested: [{ dir: 'public-site', repo: missingPartRepo }],
+          },
+          steps: [],
+        },
+      ],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-06-01T00:05:00.000Z',
+    });
+    journal.writeUsage({
+      run_id: journal.paths.runId,
+      total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 0, wallclock_ms: 0 },
+      unreported: [],
+      jobs: {},
+    });
+
+    const lines: string[] = [];
+    const code = withHome(home, () =>
+      runGcCommand(args({ 'older-than': '1d' }), (line) => lines.push(line), projectRoot),
+    );
+
+    assert.equal(code, ExitCode.ok);
+    assert.ok(!existsSync(journal.paths.jobs), 'каталог прогона всё равно должен уйти');
+    assert.match(lines.join('\n'), /не снята запись рабочего дерева/);
+    assert.match(lines.join('\n'), /public-site/);
+  });
+
   // Сценарий: «Без интерактивного ввода» — команда синхронна и не трогает stdin.
   it('работает без обращения к stdin', () => {
     const { runsRoot, projectRoot, home } = bed();

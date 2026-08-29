@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { dirname, resolve as resolvePath } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 
 import type { BackendConfig, Config } from './config/resolve.js';
 import { PERMISSIVE_MODES } from './backend/claude.js';
@@ -7,8 +7,16 @@ import { effectivePermissions } from './backend/permissions.js';
 import { parseExpression, references } from './expr/parse.js';
 import { buildGraph } from './graph.js';
 import { isStepcastError } from './errors.js';
+import { isGitWorktree } from './anchor/git.js';
 import { workspaceInheritanceDiagnostics } from './run/inherit.js';
-import { workspacePathNeedsCopy } from './run/workspace.js';
+import {
+  describeCopyRejection,
+  describeNoCommitForWorktree,
+  describeTrackedByRoot,
+  hasCommit,
+  rootTracksPart,
+  workspacePathNeedsCopy,
+} from './run/workspace.js';
 import { isKnownTimeZone, isSatisfiable, parseCron } from './trigger/cron.js';
 import { formatDuration, formatMoney, formatTokens } from './units.js';
 import type { ContextEntry, ExpandedPipeline, Job, Predicate, Step, Substitution } from './pipeline/model.js';
@@ -363,19 +371,38 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
 
   const nestedRepos = options.config.project.nestedRepos ?? [];
   if (nestedRepos.length > 0) {
-    // Составной якорь допускает только режим cwd: изолированное дерево
-    // объявленных частей не содержит, и якорь там снова стал бы
-    // однорепозиторным (см. checkWorkspaceAvailability в run/workspace.ts —
-    // та же причина, тот же отказ, только раньше, статически).
+    // Копия `.git` не содержит: то же самое отклонение и та же причина, что
+    // в `checkWorkspaceAvailability` (run/workspace.ts) — только раньше,
+    // статически. `worktree` при пригодном составе не отклоняется.
     for (const job of pipeline.jobs) {
-      if (job.workspace.mode === 'cwd') continue;
-      push({
-        severity: 'error',
-        message: `Работа ${job.id} объявляет режим ${job.workspace.mode}, а вложенные репозитории объявлены составом дерева (project.nested_repos)`,
-        file: job.source,
-        at: `jobs.${job.id}.workspace.mode`,
-        hint: 'Изолированное дерево объявленных частей не содержит, и якорь там снова стал бы однорепозиторным. Уберите nested_repos или переведите работу в режим cwd',
-      });
+      if (job.workspace.mode !== 'copy') continue;
+      const { message, hint } = describeCopyRejection(job.id);
+      push({ severity: 'error', message, file: job.source, at: `jobs.${job.id}.workspace.mode`, hint });
+    }
+
+    // Часть без коммита и путь, занятый файлами корня, — те же два отказа,
+    // что и в `checkWorkspaceAvailability`, и только для работ в режиме
+    // worktree. Требуют настоящего репозитория: на дереве, где `base` им не
+    // является (лог не запущен из проекта, часть ещё не склонирована), они
+    // молчат — тем же правом, каким `checkDeclaredPath` молчит про путь,
+    // который на момент линта проверить нечем. Полная проверка остаётся за
+    // `checkWorkspaceAvailability`, исполняемой перед первой работой.
+    if (pipeline.jobs.some((job) => job.workspace.mode === 'worktree') && isGitWorktree(base)) {
+      for (const relDir of nestedRepos) {
+        const full = join(base, relDir);
+        if (!isGitWorktree(full)) continue;
+
+        if (!hasCommit(full)) {
+          const { message, hint } = describeNoCommitForWorktree(relDir);
+          push({ severity: 'error', message, file: pipeline.file, at: 'project.nested_repos', hint });
+          continue;
+        }
+
+        if (rootTracksPart(base, relDir)) {
+          const { message, hint } = describeTrackedByRoot(relDir);
+          push({ severity: 'error', message, file: pipeline.file, at: 'project.nested_repos', hint });
+        }
+      }
     }
   }
 

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, realpathSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { StepcastError } from '../errors.js';
@@ -86,6 +86,26 @@ export function diffWithPrefix(dir: string, from: string, to: string, prefix: st
 export function isGitWorktree(dir: string): boolean {
   try {
     return git(dir, ['rev-parse', '--is-inside-work-tree']).trim() === 'true';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Является ли каталог **вершиной** рабочего дерева собственного репозитория —
+ * не просто каталогом внутри чужого. `isGitWorktree` этого не различает:
+ * подкаталог без своего `.git`, лежащий внутри чужого рабочего дерева
+ * (например, часть, чей worktree снесён мимо якоря), отвечает на него так же
+ * утвердительно, как настоящая часть, — потому что физически он и правда
+ * лежит внутри чьего-то дерева. Составному якорю (`anchor/composite.ts`)
+ * нужен именно этот, более узкий вопрос: у каталога есть собственная база
+ * объектов, или нет.
+ */
+export function isOwnWorktreeRoot(dir: string): boolean {
+  if (!isGitWorktree(dir)) return false;
+  try {
+    const toplevel = git(dir, ['rev-parse', '--show-toplevel']).trim();
+    return realpathSync(toplevel) === realpathSync(dir);
   } catch {
     return false;
   }

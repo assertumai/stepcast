@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -15,6 +15,7 @@ import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { StepcastError } from '../src/core/errors.js';
 import { applyRun } from '../src/core/run/apply.js';
 import { HaltCause } from '../src/core/run/halt.js';
+import { prepareWorkspace } from '../src/core/run/workspace.js';
 import { gitCommit, gitInit as gitInitDir, makeProject, type Project } from './helpers.js';
 
 // Переходники к общим помощникам (`test/helpers.ts`): здесь репозиторий
@@ -467,6 +468,194 @@ jobs:
     );
 
     assert.equal(existsSync(project.path('результат.txt')), false, 'ни один шаг не исполнен');
+  });
+});
+
+/** Статус --porcelain репозитория: пусто, если дерево чисто. */
+function gitStatus(dir: string): string {
+  return execFileSync('git', ['-C', dir, 'status', '--porcelain'], { encoding: 'utf8' });
+}
+
+function gitHead(dir: string): string {
+  return execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+}
+
+describe('workspace-modes: материализация объявленных частей', () => {
+  it('часть материализована и является рабочим деревом собственного репозитория', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('worktree'),
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    commit(project, 'первый');
+
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+
+    const dir = workspaceOfJob(result, 'build').path;
+    const partDir = join(dir, 'public-site');
+    const toplevel = execFileSync('git', ['-C', partDir, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+    }).trim();
+    assert.equal(realpathSync(toplevel), realpathSync(partDir));
+    // Своя база объектов: HEAD части не совпадает буквально с HEAD корня.
+    assert.notEqual(gitHead(partDir), gitHead(dir));
+  });
+
+  it('незакоммиченная правка части в дерево дорожки не попадает', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('worktree'),
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    project.write('public-site/черновик.txt', 'не закоммичено');
+    gitCommit(project.path('public-site'), 'начало части');
+    // Правка после коммита — не должна попасть в отделённый worktree части.
+    project.write('public-site/после-коммита.txt', 'правка после коммита части');
+    commit(project, 'первый');
+
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+
+    const partDir = join(workspaceOfJob(result, 'build').path, 'public-site');
+    assert.ok(existsSync(join(partDir, 'черновик.txt')), 'закоммиченный файл должен быть на месте');
+    assert.equal(
+      existsSync(join(partDir, 'после-коммита.txt')),
+      false,
+      'незакоммиченная правка части не должна попасть в дерево дорожки',
+    );
+  });
+
+  it('рабочее дерево части в проекте и корневое дерево проекта не изменяются подготовкой', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('worktree'),
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    commit(project, 'первый');
+
+    const rootHeadBefore = gitHead(project.root);
+    const partHeadBefore = gitHead(project.path('public-site'));
+    const rootStatusBefore = gitStatus(project.root);
+    const partStatusBefore = gitStatus(project.path('public-site'));
+
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+
+    assert.equal(gitHead(project.root), rootHeadBefore);
+    assert.equal(gitHead(project.path('public-site')), partHeadBefore);
+    assert.equal(gitStatus(project.root), rootStatusBefore);
+    assert.equal(gitStatus(project.path('public-site')), partStatusBefore);
+  });
+
+  // Задача 2.3: отказ на любой части снимает всё, что подготовка успела
+  // завести, — части в обратном порядке, затем корень. Вызывается
+  // `prepareWorkspace` напрямую: составленный сценарий (репозиторий части без
+  // единого коммита) отклонён бы `checkWorkspaceAvailability` до первой
+  // работы, а здесь нужен именно отказ самой подготовки.
+  it('отказ на второй части не оставляет ни каталогов, ни учётных записей', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('worktree'),
+      // part-b игнорируется корнем: иначе его же add -A отказал бы на
+      // «does not have a commit checked out» ещё до подготовки дерева.
+      '.gitignore': 'part-b/\n',
+      'part-a/.gitkeep': '',
+      'part-b/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('part-a'));
+    gitCommit(project.path('part-a'), 'начало части a');
+    // part-b — репозиторий без единого коммита: worktree add … HEAD в нём невозможен.
+    gitInitDir(project.path('part-b'));
+    commit(project, 'первый');
+
+    const { pipeline } = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
+    const job = pipeline.jobs.find((item) => item.id === 'build')!;
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+
+    assert.throws(() =>
+      prepareWorkspace({
+        job,
+        cwd: project.root,
+        runDir: runsRoot,
+        nestedRepos: ['part-a', 'part-b'],
+      }),
+    );
+
+    /** Пусто, если `.git/worktrees` вовсе нет — как до заведения. */
+    const worktreeRecords = (repoDir: string): string[] =>
+      existsSync(join(repoDir, '.git', 'worktrees')) ? readdirSync(join(repoDir, '.git', 'worktrees')) : [];
+
+    const workspaceDir = join(runsRoot, 'workspace', job.id);
+    assert.equal(existsSync(workspaceDir), false, 'каталог дорожки не должен остаться на диске');
+    assert.deepEqual(worktreeRecords(project.root), [], 'корневая учётная запись не должна остаться');
+    assert.deepEqual(worktreeRecords(project.path('part-a')), [], 'учётная запись части a не должна остаться');
+  });
+
+  // Части, объявленные друг в друге (`a` и `a/b`), заводятся в каноническом
+  // порядке — объемлющая раньше вложенной, — а не в том, в каком их
+  // перечислили: `worktree add` объемлющей отказал бы «not an empty
+  // directory», заведись раньше вложенная.
+  it('порядок объявления состава не влияет на заведение вложенных друг в друга частей', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('worktree'),
+      '.gitignore': 'a/\n',
+      'a/.gitkeep': '',
+      'a/b/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('a'));
+    gitInitDir(project.path('a/b'));
+    gitCommit(project.path('a/b'), 'начало вложенной части');
+    gitCommit(project.path('a'), 'начало объемлющей части');
+    commit(project, 'первый');
+
+    const { pipeline } = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
+    const job = pipeline.jobs.find((item) => item.id === 'build')!;
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+
+    // Перечень намеренно перевёрнут: вложенная часть названа первой.
+    const prepared = prepareWorkspace({
+      job,
+      cwd: project.root,
+      runDir: runsRoot,
+      nestedRepos: ['a/b', 'a'],
+    });
+
+    assert.deepEqual(
+      (prepared.nested ?? []).map((part) => part.dir),
+      ['a', 'a/b'],
+      'перечень материализованного идёт в каноническом порядке',
+    );
+    for (const relDir of ['a', 'a/b']) {
+      const partDir = join(prepared.dir, relDir);
+      const toplevel = execFileSync('git', ['-C', partDir, 'rev-parse', '--show-toplevel'], {
+        encoding: 'utf8',
+      }).trim();
+      assert.equal(realpathSync(toplevel), realpathSync(partDir), `${relDir} должна быть своим рабочим деревом`);
+    }
+  });
+
+  it('режим cwd при том же составе ведёт себя как прежде — части не заводятся', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('cwd'),
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    commit(project, 'первый');
+
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+    assert.equal(workspaceOfJob(result, 'build').path, project.root);
+    // Часть остаётся частью проекта — не отдельным рабочим деревом дорожки.
+    assert.equal(readStatus(result.journal.paths).jobs[0]?.workspace?.nested, undefined);
   });
 });
 
@@ -1228,6 +1417,43 @@ jobs:
       },
     );
   });
+
+  // Задача 6 (nested-repo-isolation): составной прогон снят в git, но патч
+  // склеен из разных баз объектов — отказ называет составной способ, а не
+  // притворяется «прогон снят вне git».
+  it('отклоняет наложение составного прогона, называя составной способ, и не трогает дерево', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('worktree'),
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    commit(project, 'первый');
+
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+
+    const rootHeadBefore = execFileSync('git', ['-C', project.root, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+    });
+
+    assert.throws(
+      () => applyRun({ paths: result.journal.paths, cwd: project.root }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /составным способом/);
+        assert.match(error.hint ?? '', /merge-lanes-per-repo/);
+        return true;
+      },
+    );
+
+    assert.equal(
+      execFileSync('git', ['-C', project.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }),
+      rootHeadBefore,
+      'дерево проекта не должно быть тронуто отказавшим наложением',
+    );
+  });
 });
 
 describe('pipeline-lanes: apply --lane', () => {
@@ -1321,6 +1547,39 @@ jobs:
     );
 
     assert.equal(readFileSync(project.path('спорный.txt'), 'utf8'), beforeApply);
+  });
+
+  it('отклоняет наложение составной дорожки, называя составной способ', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: составная-дорожка
+workspace: { mode: worktree }
+jobs:
+  build:
+    lane: a
+    steps: [{ id: s, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    commit(project, 'первый');
+
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+
+    assert.throws(
+      () => applyRun({ paths: result.journal.paths, cwd: project.root, lane: 'a' }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /составным способом/);
+        assert.match(error.hint ?? '', /merge-lanes-per-repo/);
+        return true;
+      },
+    );
   });
 });
 
@@ -1678,7 +1937,10 @@ describe('workspace-modes: состав вложенных репозитори�
     assert.equal(result.status, 'success');
   });
 
-  it('отклоняет работу в режиме worktree при объявленном составе, называя работу, режим и причину', async () => {
+  // Задача 3 (nested-repo-isolation): изолированный режим worktree при
+  // пригодном составе больше не отклоняется — часть материализуется своим
+  // рабочим деревом, и якорь остаётся составным.
+  it('пригодный состав в режиме worktree не мешает прогону', async () => {
     const project = makeProject({
       'stepcast.yml': pipelineWriting('worktree'),
       'public-site/.gitkeep': '',
@@ -1688,14 +1950,56 @@ describe('workspace-modes: состав вложенных репозитори�
     gitCommit(project.path('public-site'), 'начало части');
     commit(project, 'первый');
 
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+  });
+
+  // Сегодняшнее послабление «часть без коммита допустима, если корень её
+  // игнорирует» относится к корневому `add -A` и на `worktree add … HEAD`
+  // части не распространяется: такой репозиторий вывести из HEAD невозможно.
+  it('отклоняет часть без коммита в режиме worktree, даже если корень её игнорирует', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('worktree'),
+      '.gitignore': 'public-site/\n',
+      'public-site/index.html': 'сайт\n',
+    });
+    gitInit(project);
+    commit(project, 'первый');
+    gitInitDir(project.path('public-site'));
+
     await assert.rejects(
       () => runWithConfig(project, withNestedRepos(project, ['public-site'])),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
-        assert.match(error.message, /build/);
+        assert.match(error.message, /public-site/);
+        assert.match(error.message, /не имеет ни одного коммита/);
         assert.match(error.message, /worktree/);
-        assert.match(error.message, /nested_repos/);
-        assert.equal(error.at, 'jobs.build.workspace.mode');
+        assert.equal(error.at, 'project.nested_repos');
+        return true;
+      },
+    );
+  });
+
+  // Каталог стал репозиторием позже, чем его файлы попали в индекс корня:
+  // выкладка корня в режиме worktree заняла бы этот каталог, и `worktree
+  // add` части отказал бы диагностикой git посреди подготовки.
+  it('отклоняет часть, чьи файлы отслеживает корень, в режиме worktree', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('worktree'),
+      'public-site/index.html': 'сайт\n',
+    });
+    gitInit(project);
+    commit(project, 'первый');
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+
+    await assert.rejects(
+      () => runWithConfig(project, withNestedRepos(project, ['public-site'])),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /public-site/);
+        assert.match(error.message, /отслеживает файлы/);
+        assert.equal(error.at, 'project.nested_repos');
         return true;
       },
     );

@@ -600,6 +600,9 @@ async function runJob(
       source,
       anchorKind: context.anchorKind,
       anchorsDir: journal.paths.anchors,
+      ...(context.config.project.nestedRepos === undefined
+        ? {}
+        : { nestedRepos: context.config.project.nestedRepos }),
       ...(context.anchorerFor === undefined ? {} : { anchorerFor: context.anchorerFor }),
     });
   } catch (error) {
@@ -618,8 +621,17 @@ async function runJob(
       path: prepared.dir,
       ...(prepared.inheritedFrom === undefined ? {} : { inherited_from: prepared.inheritedFrom }),
       ...(prepared.continued === undefined ? {} : { continued: prepared.continued }),
+      // Пишется здесь, до первого шага, а не по завершении работы: уборка
+      // обязана быть полной и после отказа, отмены и остановки по бюджету —
+      // то есть именно тогда, когда «по завершении» не наступает.
+      ...(prepared.nested === undefined ? {} : { nested: prepared.nested.map((part) => ({ ...part })) }),
     },
   });
+  // И на диск — сразу, а не вместе с исходом первого шага: перечень читает
+  // уборка (`collectRunWorktrees` в `run/cleanup.ts`), и прогон, убитый между
+  // подготовкой дерева и концом первого шага, оставил бы учётные записи
+  // частей в чужих репозиториях — ровно ту утечку, ради которой заведён учёт.
+  context.refreshStatus();
 
   if (prepared.inheritedFrom !== undefined) {
     journal.event({
@@ -1107,9 +1119,10 @@ async function runJobSteps(
       // Рабочая копия сама рабочим деревом git не является: базу объектов ей
       // даёт репозиторий прогона.
       repoDir: context.runCwd,
-      // Составной способ допускает только режим cwd (checkWorkspaceAvailability),
-      // где `context.cwd` — это корень с объявленным составом; для остальных
-      // способов `nested` попросту не читается.
+      // Составной способ допустим и в режиме cwd, и в режиме worktree
+      // (checkWorkspaceAvailability): в обоих `context.cwd` — каталог, где
+      // объявленные части уже материализованы своими рабочими деревьями. Для
+      // остальных способов `nested` попросту не читается.
       ...(context.config.project.nestedRepos === undefined
         ? {}
         : { nested: context.config.project.nestedRepos }),

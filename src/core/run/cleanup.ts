@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { isRunAlive, listProjects, listRuns, listRunsByKey, readManifest, readStatus } from '../journal/reader.js';
 import { projectKey, runPaths, type RunPaths } from '../journal/paths.js';
 import { isFailure, type StatusValue } from '../journal/schema.js';
+import { removeWorktree } from './worktrees.js';
 
 /**
  * Уборка прогонов.
@@ -219,7 +220,13 @@ export interface RunAddress {
 }
 
 export type RemovalOutcome =
-  | { readonly address: string; readonly outcome: 'removed'; readonly sizeBytes: number }
+  | {
+      readonly address: string;
+      readonly outcome: 'removed';
+      readonly sizeBytes: number;
+      /** Записи рабочих деревьев, которые снять не удалось. Отсутствует, если их нет. */
+      readonly unresolvedWorktrees?: readonly string[];
+    }
   | { readonly address: string; readonly outcome: 'skipped_alive' }
   | { readonly address: string; readonly outcome: 'skipped_missing' }
   | { readonly address: string; readonly outcome: 'failed'; readonly reason: string };
@@ -255,9 +262,14 @@ export function removeRuns(runsRoot: string, addresses: readonly RunAddress[]): 
 
     try {
       const sizeBytes = known ?? dirSize(paths.dir);
-      removeRun(runsRoot, key, runId);
+      const result = removeRun(runsRoot, key, runId);
       freedBytes += sizeBytes;
-      outcomes.push({ address, outcome: 'removed', sizeBytes });
+      outcomes.push({
+        address,
+        outcome: 'removed',
+        sizeBytes,
+        ...(result.unresolvedWorktrees.length === 0 ? {} : { unresolvedWorktrees: result.unresolvedWorktrees }),
+      });
     } catch (error) {
       outcomes.push({ address, outcome: 'failed', reason: (error as Error).message });
     }
@@ -266,14 +278,94 @@ export function removeRuns(runsRoot: string, addresses: readonly RunAddress[]): 
   return { outcomes, freedBytes };
 }
 
+export interface RunCleanupResult {
+  /**
+   * Записи рабочих деревьев, которые снять не удалось, — путь и причина.
+   * Каталоги при этом всё равно удаляются: молчание здесь было бы худшим
+   * вариантом, именно накопление незамеченных записей и есть цена, ради
+   * которой учёт заведён (design.md, решение 7).
+   */
+  readonly unresolvedWorktrees: readonly string[];
+}
+
+/**
+ * Адреса рабочих деревьев, заведённых этим прогоном, — каждой части каждой
+ * работы и корневого, — по одной записи на путь, части раньше корня и в
+ * порядке, обратном каноническому составу.
+ *
+ * Порядок важен: снятие дерева убирает с диска весь его каталог вместе с
+ * вложенными деревьями, а `git worktree remove` отказывает («not a working
+ * tree»), если каталога по его пути уже нет. Обратный порядок снимает
+ * сначала то, что лежит глубже: части — раньше корня, вложенную друг в
+ * друга часть (`a/b`) — раньше объемлющей (`a`). Тот же разворот, что и у
+ * отката подготовки (`discardWorkspaceDir` в `run/workspace.ts`).
+ *
+ * Дедупликация нужна цепочкам: продолжающая работа делит каталог (и, значит,
+ * записи) с предшественницей, и без неё второй проход по тому же пути видел
+ * бы уже снятую запись как отказ.
+ */
+function collectRunWorktrees(paths: RunPaths): { readonly repoDir: string; readonly path: string }[] {
+  let projectRoot: string | undefined;
+  try {
+    projectRoot = readManifest(paths).project_root;
+  } catch {
+    // Манифест не читается — корневая запись останется неопознанной; части
+    // всё равно опознаются по собственному, явно записанному репозиторию.
+  }
+
+  let jobs: ReturnType<typeof readStatus>['jobs'] = [];
+  try {
+    jobs = readStatus(paths).jobs;
+  } catch {
+    // Состояние не читается — снимать нечего, но каталогам это не помеха.
+  }
+
+  const byPath = new Map<string, { readonly repoDir: string; readonly path: string }>();
+  for (const job of jobs) {
+    const workspace = job.workspace;
+    if (workspace === undefined || workspace.mode !== 'worktree') continue;
+    for (const part of [...(workspace.nested ?? [])].reverse()) {
+      const partPath = join(workspace.path, part.dir);
+      byPath.set(partPath, { repoDir: part.repo, path: partPath });
+    }
+    if (projectRoot !== undefined) {
+      byPath.set(workspace.path, { repoDir: projectRoot, path: workspace.path });
+    }
+  }
+  return [...byPath.values()];
+}
+
+/**
+ * Снять учётные записи всех изолированных деревьев прогона — перед тем, как
+ * его каталоги уйдут под `rmSync`. Каждая запись адресуется в своём
+ * репозитории: корневая — в `project_root` манифеста, каждая часть — в
+ * репозитории, записанном при её заведении (`workspace.nested[].repo`).
+ */
+function removeRunWorktrees(paths: RunPaths): readonly string[] {
+  const unresolved: string[] = [];
+  for (const { repoDir, path } of collectRunWorktrees(paths)) {
+    try {
+      const outcome = removeWorktree({ repoDir, path, runDir: paths.dir });
+      if (outcome.kind === 'record_kept') unresolved.push(`${path}: ${outcome.reason}`);
+    } catch (error) {
+      unresolved.push(`${path}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return unresolved;
+}
+
 /** Удалить всё содержимое прогона, кроме минимума, переживающего уборку. */
-export function cleanupRun(paths: RunPaths): void {
+export function cleanupRun(paths: RunPaths): RunCleanupResult {
+  const unresolvedWorktrees = removeRunWorktrees(paths);
+
   for (const key of Object.keys(paths) as (keyof RunPaths)[]) {
     if (PRESERVED_KEYS.has(key)) continue;
     const value = paths[key];
     if (typeof value !== 'string') continue;
     rmSync(value, { recursive: true, force: true });
   }
+
+  return { unresolvedWorktrees };
 }
 
 /**
@@ -286,12 +378,15 @@ export function cleanupRun(paths: RunPaths): void {
  * ярлык и запись о проекте без единого прогона переживут удаление и будут
  * врать об истории.
  */
-export function removeRun(runsRoot: string, key: string, runId: string): void {
+export function removeRun(runsRoot: string, key: string, runId: string): RunCleanupResult {
   const paths = runPaths(runsRoot, key, runId);
+  const unresolvedWorktrees = removeRunWorktrees(paths);
   rmSync(paths.dir, { recursive: true, force: true });
   repointLatest(paths.projectDir, runsRoot, key);
 
   if (listRunsByKey(runsRoot, key).length === 0) dropProjectEntry(runsRoot, key);
+
+  return { unresolvedWorktrees };
 }
 
 /** Ярлык `latest` после удаления: на новейший оставшийся прогон либо никуда. */

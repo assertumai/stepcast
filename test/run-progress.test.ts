@@ -16,7 +16,7 @@ import { readStatus, resolveRun } from '../src/core/journal/reader.js';
 import type { Event, RunStatus } from '../src/core/journal/schema.js';
 import type { UsageSnapshot } from '../src/core/budget/accumulator.js';
 import { ExitCode } from '../src/core/errors.js';
-import { makeProject, withHome } from './helpers.js';
+import { gitCommit, gitInit, makeProject, withHome } from './helpers.js';
 
 const BASE = { ts: '2026-08-27T10:00:00.000Z', seq: 0 };
 
@@ -559,5 +559,70 @@ describe('run-progress: команда run печатает ход', () => {
     assert.equal(quiet.lines.some((line) => line.includes('build/compile:')), false, 'строк о шаге быть не должно');
     assert.ok(quiet.lines.some((line) => /^прогон .+: success$/.test(line)), 'итог остаётся');
     assert.ok(quiet.lines.some((line) => /^журнал: /.test(line)), 'путь к журналу остаётся');
+  });
+});
+
+describe('run-progress: итог изолированного прогона', () => {
+  it('однорепозиторный прогон предлагает stepcast apply', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: изолированный-итог
+workspace: { mode: worktree }
+jobs:
+  build:
+    steps: [{ id: compile, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+    });
+    gitInit(project.root);
+    gitCommit(project.root, 'первый');
+    const { lines, write } = capture();
+
+    const exitCode = await withHome(project.home, () =>
+      runRunCommand(args(['stepcast.yml']), write, project.root),
+    );
+
+    assert.equal(exitCode, ExitCode.ok);
+    assert.ok(lines.some((line) => line.startsWith('рабочие деревья:')));
+    assert.ok(lines.some((line) => /^наложить результат на текущее дерево: stepcast apply /.test(line)));
+  });
+
+  // Задача 6 (nested-repo-isolation): составной прогон печатает пути
+  // рабочих деревьев, но вместо команды apply — причину её недоступности.
+  it('составной прогон печатает пути рабочих деревьев без команды apply', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: составной-итог
+workspace: { mode: worktree }
+jobs:
+  build:
+    steps: [{ id: compile, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      '.stepcast/config.yml': 'project:\n  nested_repos: [public-site]\n',
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project.root);
+    gitInit(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    gitCommit(project.root, 'первый');
+    const { lines, write } = capture();
+
+    const exitCode = await withHome(project.home, () =>
+      runRunCommand(args(['stepcast.yml']), write, project.root),
+    );
+
+    assert.equal(exitCode, ExitCode.ok);
+    assert.ok(lines.some((line) => line.startsWith('рабочие деревья:')));
+    assert.equal(
+      lines.some((line) => line.includes('stepcast apply')),
+      false,
+      'составной прогон не должен предлагать apply',
+    );
+    assert.ok(
+      lines.some((line) => line.startsWith('наложение недоступно:') && line.includes('merge-lanes-per-repo')),
+    );
   });
 });

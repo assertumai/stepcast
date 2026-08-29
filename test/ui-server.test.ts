@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { get, request } from 'node:http';
 import { describe, it, type TestContext } from 'node:test';
 
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { dashboardPath } from '../src/ui/assets.js';
@@ -76,6 +78,31 @@ async function fetchJson(server: UiServer, path: string): Promise<{ code: number
 /** Адрес прогона в запросе: сегменты экранируются, ключ и id могут быть любыми. */
 function address(key: string, runId: string): string {
   return encodeURIComponent(`${key}/${runId}`);
+}
+
+function initGitRepo(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  const git = (...args: string[]): void => {
+    execFileSync('git', ['-C', dir, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+  };
+  git('init', '--quiet', '--initial-branch=main');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Тест');
+  writeFileSync(join(dir, 'a.txt'), 'x\n');
+  git('add', '-A');
+  git('commit', '--quiet', '-m', 'начало');
+}
+
+function addWorktreeFor(repoDir: string, path: string): void {
+  execFileSync('git', ['-C', repoDir, 'worktree', 'add', '--detach', '--quiet', path, 'HEAD']);
+}
+
+function worktreeRecords(repoDir: string): string[] {
+  try {
+    return readdirSync(join(repoDir, '.git', 'worktrees'));
+  } catch {
+    return [];
+  }
 }
 
 interface Stream {
@@ -547,6 +574,49 @@ describe('ui-dashboard: удаление прогона', () => {
     });
     assert.equal(refused.code, 403);
     assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), true);
+  });
+
+  // run-cleanup: удаление через API снимает записи рабочих деревьев тем же
+  // ядром (`removeRun`), что и `stepcast gc` — не отдельной копией логики.
+  it('снимает записи рабочих деревьев корня и части вместе с прогоном', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const partRepo = mkdtempSync(join(tmpdir(), 'stepcast-ui-part-'));
+    initGitRepo(projectRoot);
+    initGitRepo(partRepo);
+
+    const key = projectKey(projectRoot);
+    const paths = runPaths(runsRoot, key, 'a');
+    const workDir = join(paths.dir, 'workspace', 'build');
+    const partDir = join(workDir, 'public-site');
+    mkdirSync(dirname(workDir), { recursive: true });
+    addWorktreeFor(projectRoot, workDir);
+    addWorktreeFor(partRepo, partDir);
+
+    seedRun(runsRoot, projectRoot, {
+      runId: 'a',
+      manifest: { project_root: projectRoot, workspace: { mode: 'worktree' } },
+      jobs: [
+        {
+          id: 'build',
+          status: 'success',
+          workspace: { mode: 'worktree', path: workDir, nested: [{ dir: 'public-site', repo: partRepo }] },
+          steps: [],
+        },
+      ],
+    });
+    assert.equal(worktreeRecords(projectRoot).length, 1);
+    assert.equal(worktreeRecords(partRepo).length, 1);
+
+    const server = await startServer(t, { runsRoot });
+    const removed = await sendJson(server, {
+      method: 'DELETE',
+      path: `/api/run?run=${address(key, 'a')}`,
+    });
+
+    assert.equal(removed.code, 200);
+    assert.equal(removed.json.unresolvedWorktrees, undefined);
+    assert.deepEqual(worktreeRecords(projectRoot), []);
+    assert.deepEqual(worktreeRecords(partRepo), []);
   });
 });
 

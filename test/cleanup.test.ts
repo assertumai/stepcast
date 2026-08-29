@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   readlinkSync,
   rmSync,
@@ -90,6 +92,31 @@ function makeRun(
   journal.writeLock('version: 1\n');
   journal.event({ kind: 'job.started', job: 'build' });
   return journal;
+}
+
+function initGitRepo(dir: string): void {
+  mkdirSync(dir, { recursive: true });
+  const git = (...args: string[]): void => {
+    execFileSync('git', ['-C', dir, ...args], { stdio: ['ignore', 'pipe', 'pipe'] });
+  };
+  git('init', '--quiet', '--initial-branch=main');
+  git('config', 'user.email', 'test@example.com');
+  git('config', 'user.name', 'Тест');
+  writeFileSync(join(dir, 'a.txt'), 'x\n');
+  git('add', '-A');
+  git('commit', '--quiet', '-m', 'начало');
+}
+
+function addWorktreeFor(repoDir: string, path: string): void {
+  execFileSync('git', ['-C', repoDir, 'worktree', 'add', '--detach', '--quiet', path, 'HEAD']);
+}
+
+function worktreeRecords(repoDir: string): string[] {
+  try {
+    return readdirSync(join(repoDir, '.git', 'worktrees'));
+  } catch {
+    return [];
+  }
 }
 
 /** Прогон с явным статусом — для отбора по признаку, где статус и есть суть проверки. */
@@ -538,5 +565,237 @@ describe('run-cleanup: групповое снятие', () => {
     } finally {
       chmodSync(doomed.paths.projectDir, 0o755);
     }
+  });
+});
+
+describe('run-cleanup: снятие учётных записей рабочих деревьев', () => {
+  /** Прогон с корневым worktree и одной частью, обе — настоящие git-деревья. */
+  function makeWorktreeRun(
+    runsRoot: string,
+    projectRoot: string,
+    partRepo: string,
+    runId: string,
+    status: StatusValue = 'success',
+  ): RunJournal {
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId });
+    const workDir = join(journal.paths.dir, 'workspace', 'build');
+    const partDir = join(workDir, 'public-site');
+    addWorktreeFor(projectRoot, workDir);
+    addWorktreeFor(partRepo, partDir);
+
+    journal.writeManifest({ ...baseManifest(journal.paths.runId), project_root: projectRoot });
+    journal.writeStatus({
+      run_id: journal.paths.runId,
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status,
+      workspace: { mode: 'worktree' },
+      inputs: {},
+      jobs: [
+        {
+          id: 'build',
+          status,
+          workspace: { mode: 'worktree', path: workDir, nested: [{ dir: 'public-site', repo: partRepo }] },
+          steps: [],
+        },
+      ],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+    journal.writeUsage({
+      run_id: journal.paths.runId,
+      total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 0, wallclock_ms: 0 },
+      unreported: [],
+      jobs: {},
+    });
+    return journal;
+  }
+
+  it('cleanupRun снимает записи корня и части перед удалением каталогов прогона', () => {
+    const { runsRoot, projectRoot } = bed();
+    const partRepo = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-part-'));
+    initGitRepo(projectRoot);
+    initGitRepo(partRepo);
+
+    const journal = makeWorktreeRun(runsRoot, projectRoot, partRepo, 'run-a');
+    assert.equal(worktreeRecords(projectRoot).length, 1);
+    assert.equal(worktreeRecords(partRepo).length, 1);
+
+    const result = cleanupRun(journal.paths);
+
+    assert.deepEqual(result.unresolvedWorktrees, []);
+    assert.deepEqual(worktreeRecords(projectRoot), []);
+    assert.deepEqual(worktreeRecords(partRepo), []);
+    // Минимум переживает уборку, как и всегда.
+    assert.ok(existsSync(journal.paths.status));
+  });
+
+  it('removeRun снимает записи, а посторонняя запись того же репозитория цела', () => {
+    const { runsRoot, projectRoot } = bed();
+    const partRepo = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-part-'));
+    initGitRepo(projectRoot);
+    initGitRepo(partRepo);
+
+    const journal = makeWorktreeRun(runsRoot, projectRoot, partRepo, 'run-a');
+    // Постороннее рабочее дерево того же корневого репозитория — заведено не
+    // этим прогоном, и уборка не должна его знать.
+    const foreignDir = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-foreign-'));
+    const foreignPath = join(foreignDir, 'foreign');
+    addWorktreeFor(projectRoot, foreignPath);
+    assert.equal(worktreeRecords(projectRoot).length, 2);
+
+    const result = removeRun(runsRoot, projectKey(projectRoot), journal.paths.runId);
+
+    assert.deepEqual(result.unresolvedWorktrees, []);
+    assert.deepEqual(worktreeRecords(partRepo), []);
+    assert.equal(worktreeRecords(projectRoot).length, 1, 'постороннее рабочее дерево должно остаться');
+    assert.ok(existsSync(foreignPath), 'постороннее дерево должно остаться на месте');
+  });
+
+  // Запись пишется до первого шага (design.md, решение 6) — уборка обязана
+  // быть полной и для прогона, ещё идущего или остановленного до конца.
+  it('уборка прогона, остановленного до конца работы, полна', () => {
+    const { runsRoot, projectRoot } = bed();
+    const partRepo = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-part-'));
+    initGitRepo(projectRoot);
+    initGitRepo(partRepo);
+
+    const journal = makeWorktreeRun(runsRoot, projectRoot, partRepo, 'run-a', 'running');
+
+    const result = cleanupRun(journal.paths);
+
+    assert.deepEqual(result.unresolvedWorktrees, []);
+    assert.deepEqual(worktreeRecords(projectRoot), []);
+    assert.deepEqual(worktreeRecords(partRepo), []);
+  });
+
+  // `cleanupRun` бережёт `status.json`, и второй заход (`gc --older-than`
+  // повторно, следом удаление того же прогона витриной) собирает те же
+  // адреса. Снимать по ним уже нечего — и сказать об этом «неснятой
+  // записью» нельзя: канал обязан называть настоящие утечки.
+  it('повторная уборка того же прогона не выдумывает неснятых записей', () => {
+    const { runsRoot, projectRoot } = bed();
+    const partRepo = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-part-'));
+    initGitRepo(projectRoot);
+    initGitRepo(partRepo);
+
+    const journal = makeWorktreeRun(runsRoot, projectRoot, partRepo, 'run-a');
+    assert.deepEqual(cleanupRun(journal.paths).unresolvedWorktrees, []);
+
+    assert.deepEqual(cleanupRun(journal.paths).unresolvedWorktrees, []);
+    const removal = removeRun(runsRoot, projectKey(projectRoot), journal.paths.runId);
+    assert.deepEqual(removal.unresolvedWorktrees, []);
+  });
+
+  // Части, объявленные друг в друге (`a` и `a/b`): снятие объемлющей уносит
+  // с диска каталог вложенной, поэтому вложенная снимается раньше — а её
+  // запись не остаётся в чужом репозитории ни при каком порядке.
+  it('снимает записи частей, объявленных друг в друге', () => {
+    const { runsRoot, projectRoot } = bed();
+    const outerRepo = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-outer-'));
+    const innerRepo = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-inner-'));
+    initGitRepo(projectRoot);
+    initGitRepo(outerRepo);
+    initGitRepo(innerRepo);
+
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'run-a' });
+    const workDir = join(journal.paths.dir, 'workspace', 'build');
+    addWorktreeFor(projectRoot, workDir);
+    addWorktreeFor(outerRepo, join(workDir, 'a'));
+    addWorktreeFor(innerRepo, join(workDir, 'a', 'b'));
+
+    journal.writeManifest({ ...baseManifest(journal.paths.runId), project_root: projectRoot });
+    journal.writeStatus({
+      run_id: journal.paths.runId,
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'success',
+      workspace: { mode: 'worktree' },
+      inputs: {},
+      jobs: [
+        {
+          id: 'build',
+          status: 'success',
+          workspace: {
+            mode: 'worktree',
+            path: workDir,
+            // Канонический порядок состава — объемлющая часть раньше вложенной.
+            nested: [
+              { dir: 'a', repo: outerRepo },
+              { dir: 'a/b', repo: innerRepo },
+            ],
+          },
+          steps: [],
+        },
+      ],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+    journal.writeUsage({
+      run_id: journal.paths.runId,
+      total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 0, wallclock_ms: 0 },
+      unreported: [],
+      jobs: {},
+    });
+
+    const result = cleanupRun(journal.paths);
+
+    assert.deepEqual(result.unresolvedWorktrees, []);
+    assert.deepEqual(worktreeRecords(outerRepo), []);
+    assert.deepEqual(worktreeRecords(innerRepo), [], 'запись вложенной части не должна остаться');
+    assert.deepEqual(worktreeRecords(projectRoot), []);
+  });
+
+  // Отказ снятия не останавливает уборку каталогов: запись, на которую не
+  // выйти (репозиторий части исчез вместе с ней), называется в исходе, а
+  // каталоги прогона всё равно уходят.
+  it('при отказе снятия каталог прогона удаляется, а неснятая запись названа в исходе', () => {
+    const { runsRoot, projectRoot } = bed();
+    initGitRepo(projectRoot);
+
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'run-a' });
+    const workDir = join(journal.paths.dir, 'workspace', 'build');
+    addWorktreeFor(projectRoot, workDir);
+    // Репозиторий части никогда не существовал — снять запись по её пути нечем.
+    const missingPartRepo = join(mkdtempSync(join(tmpdir(), 'stepcast-cleanup-missing-')), 'gone');
+
+    journal.writeManifest({ ...baseManifest(journal.paths.runId), project_root: projectRoot });
+    journal.writeStatus({
+      run_id: journal.paths.runId,
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'success',
+      workspace: { mode: 'worktree' },
+      inputs: {},
+      jobs: [
+        {
+          id: 'build',
+          status: 'success',
+          workspace: {
+            mode: 'worktree',
+            path: workDir,
+            nested: [{ dir: 'public-site', repo: missingPartRepo }],
+          },
+          steps: [],
+        },
+      ],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+    journal.writeUsage({
+      run_id: journal.paths.runId,
+      total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 0, wallclock_ms: 0 },
+      unreported: [],
+      jobs: {},
+    });
+
+    const result = cleanupRun(journal.paths);
+
+    assert.equal(result.unresolvedWorktrees.length, 1);
+    assert.match(result.unresolvedWorktrees[0]!, /public-site/);
+    // Корневая запись всё равно снята.
+    assert.deepEqual(worktreeRecords(projectRoot), []);
+    // Каталоги прогона удалены, несмотря на неснятую запись части.
+    assert.ok(!existsSync(journal.paths.jobs));
   });
 });

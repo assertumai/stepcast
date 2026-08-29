@@ -50,9 +50,12 @@ export function runGcCommand(
 
   let freed = 0;
   for (const candidate of selected) {
-    cleanupRun(candidate.paths);
+    const result = cleanupRun(candidate.paths);
     freed += candidate.sizeBytes;
     write(`удалён: ${shortRunId(candidate.runId)} (${formatBytes(candidate.sizeBytes)})`);
+    for (const item of result.unresolvedWorktrees) {
+      write(`  не снята запись рабочего дерева: ${item}`);
+    }
   }
   write(`освобождено: ${formatBytes(freed)}, прогонов ${selected.length}`);
   return ExitCode.ok;

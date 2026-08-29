@@ -612,6 +612,69 @@ jobs:
   });
 });
 
+describe('core: mergeLanes — составной прогон', () => {
+  // Наложения через границу репозиториев в движке нет, и сведение обязано
+  // сказать именно это. Отказ `applyRun`, пойманный обходом дорожек, попал бы
+  // в очередь под чужим заголовком — «наложение не сошлось с текущим
+  // деревом», то есть записью о несуществующем конфликте.
+  it('отказывает названной причиной, не тронув ни дерева, ни очереди', async () => {
+    const project = makeProject({
+      'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B),
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    commit(project, 'начальный');
+
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const config = {
+      ...project.config,
+      project: { ...project.config.project, nestedRepos: ['public-site'] },
+    };
+    const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config });
+    const result = await runPipeline({
+      expanded,
+      config: { ...config, runs: { ...config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+    });
+    assert.equal(result.status, 'success');
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    const before = commitCount(project);
+
+    await assert.rejects(
+      () =>
+        mergeLanes({
+          paths: result.journal.paths,
+          cwd: project.root,
+          lanes: ['a'],
+          check: 'exit 0',
+          file: backlogFile,
+          nestedRepos: ['public-site'],
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /составным способом фиксации/);
+        assert.match(error.hint ?? '', /merge-lanes-per-repo/);
+        return true;
+      },
+    );
+
+    assert.equal(existsSync(project.path('a.txt')), false, 'дерево не тронуто отказом');
+    assert.equal(commitCount(project), before);
+    assert.equal(
+      statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'),
+      'in_progress',
+      'пункт очереди не помечен провалившимся по несуществующему конфликту',
+    );
+  });
+});
+
 describe('core: mergeLanes — предусловие чистого дерева', () => {
   function bogusPaths(dir: string) {
     return runPaths(join(dir, 'runs'), 'проект', 'r1');

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 
 import { StepcastError } from '../errors.js';
-import { createGitAnchorer, diffWithPrefix } from './git.js';
+import { createGitAnchorer, diffWithPrefix, isOwnWorktreeRoot } from './git.js';
 import type { Anchor, AnchorComparison, TreeAnchorer } from './types.js';
 
 /**
@@ -61,15 +61,28 @@ export function createCompositeAnchorer(options: CompositeAnchorerOptions): Tree
   const fingerprint = fingerprintOf(nested);
 
   const root = createGitAnchorer({ dir, indexFile: join(stateDir, `${scope}.index`) });
-  const parts = new Map<string, TreeAnchorer>(
-    nested.map((relDir, index) => [
-      relDir,
-      createGitAnchorer({
-        dir: join(dir, relDir),
-        indexFile: join(stateDir, `${scope}.${index}.index`),
-      }),
-    ]),
-  );
+
+  /**
+   * Якорь части заводится по требованию, а не при создании составного.
+   *
+   * `createGitAnchorer` отказывает уже в конструкторе, если каталога части
+   * нет или он не рабочее дерево git, — и отказывает не о том: его сообщение
+   * зовёт хеш-манифест и ничего не говорит ни о вложенных репозиториях, ни об
+   * их собственных базах объектов. Отложенное заведение оставляет первое
+   * слово за проверками самого составного якоря (`restore`), которые называют
+   * часть и причину.
+   */
+  const parts = new Map<string, TreeAnchorer>();
+  const partOf = (relDir: string): TreeAnchorer => {
+    const known = parts.get(relDir);
+    if (known !== undefined) return known;
+    const anchorer = createGitAnchorer({
+      dir: join(dir, relDir),
+      indexFile: join(stateDir, `${scope}.${nested.indexOf(relDir)}.index`),
+    });
+    parts.set(relDir, anchorer);
+    return anchorer;
+  };
   // Самый длинный объявленный каталог выигрывает при маршрутизации пути —
   // так объявленные друг в друге части (`a`, `a/b`) не путаются.
   const byLengthDesc = [...nested].sort((a, b) => b.length - a.length);
@@ -117,21 +130,42 @@ export function createCompositeAnchorer(options: CompositeAnchorerOptions): Tree
 
     capture(): Anchor {
       const rootAnchor = root.capture();
-      const partAnchors = nested.map((relDir) => parts.get(relDir)!.capture());
+      const partAnchors = nested.map((relDir) => partOf(relDir).capture());
       const id = [fingerprint, rootAnchor.id, ...partAnchors.map((anchor) => anchor.id)].join('+');
       return { kind: 'composite', id };
     },
 
     restore(anchor: Anchor): void {
-      // Объекты вложенного репозитория лежат в его собственной базе — у
-      // чужого каталога такой базы нет вовсе, и привести его к составному
-      // состоянию нечем. По образцу отказа хеш-манифеста (anchor/manifest.ts).
-      throw new StepcastError(
-        `Состояние ${anchor.id} снято составным способом и восстановлению целиком не подлежит`,
-        {
-          hint: 'Объекты вложенных репозиториев лежат в их собственных базах, которых у свежей копии нет — восстановите отдельные пути через restorePaths на том же дереве',
-        },
-      );
+      if (anchor.kind !== 'composite') {
+        throw new StepcastError('Состояние снято не составным способом и восстановлению этим способом не подлежит');
+      }
+      const check = parseOwn(anchor.id);
+      if (!check.ok) throw new StepcastError(check.reason);
+      const parsed = check.parsed;
+
+      // Объекты каждой части лежат в базе её собственного репозитория — у
+      // каталога, где часть не является рабочим деревом этого репозитория,
+      // такой базы нет вовсе, и привести его к составному состоянию нечем.
+      // Проверка идёт до первой записи: наполовину приведённого дерева не
+      // остаётся, если откажет часть, а не первая по порядку.
+      for (const relDir of nested) {
+        if (isOwnWorktreeRoot(join(dir, relDir))) continue;
+        throw new StepcastError(
+          `Состояние ${anchor.id} снято составным способом, а часть ${relDir} в этом каталоге не является рабочим деревом своего репозитория`,
+          {
+            hint: 'Объекты частей лежат в их собственных базах, которых у свежего каталога нет — восстановите отдельные пути через restorePaths на дереве, где части заведены',
+          },
+        );
+      }
+
+      // Корень, затем части: выкладка корня может двигать запись gitlink, и
+      // заканчивать хочется состоянием частей, а не записью о них
+      // (design.md, решение 9).
+      root.restore({ kind: 'git', id: parsed.root });
+      for (let index = 0; index < nested.length; index += 1) {
+        const relDir = nested[index]!;
+        partOf(relDir).restore({ kind: 'git', id: parsed.parts[index]! });
+      }
     },
 
     restorePaths(anchor: Anchor, paths: readonly string[]): void {
@@ -160,7 +194,7 @@ export function createCompositeAnchorer(options: CompositeAnchorerOptions): Tree
       for (const [relDir, rest] of partPaths) {
         if (rest.length === 0) continue;
         const index = nested.indexOf(relDir);
-        parts.get(relDir)!.restorePaths({ kind: 'git', id: parsed.parts[index]! }, rest);
+        partOf(relDir).restorePaths({ kind: 'git', id: parsed.parts[index]! }, rest);
       }
     },
 
@@ -192,7 +226,7 @@ export function createCompositeAnchorer(options: CompositeAnchorerOptions): Tree
       const paths = [...rootComparison.paths];
       for (let index = 0; index < nested.length; index += 1) {
         const relDir = nested[index]!;
-        const partComparison = parts.get(relDir)!.changedPaths(
+        const partComparison = partOf(relDir).changedPaths(
           { kind: 'git', id: fromParsed.parts[index]! },
           { kind: 'git', id: toParsed.parts[index]! },
         );

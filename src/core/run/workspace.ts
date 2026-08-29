@@ -14,6 +14,7 @@ import {
   workspaceInheritanceDiagnostics,
   type InheritSource,
 } from './inherit.js';
+import { addWorktree, removeWorktree } from './worktrees.js';
 
 /**
  * Рабочая директория работы.
@@ -34,6 +35,14 @@ export interface PreparedWorkspace {
   readonly inheritedFrom?: string;
   /** Каталог продолжен, а не заведён заново, — работа была в цепочке. */
   readonly continued?: boolean;
+  /**
+   * Материализованные части дерева — объявленный каталог и репозиторий,
+   * которому он принадлежит, в каноническом порядке состава. Заполняется
+   * только в режиме `worktree`, только для работы, которая сама заводила
+   * дерево (не для продолжения цепочки: части предшественника уже на месте,
+   * и заводить их заново нечего).
+   */
+  readonly nested?: readonly { readonly dir: string; readonly repo: string }[];
 }
 
 function git(dir: string, args: readonly string[]): string {
@@ -48,7 +57,7 @@ function git(dir: string, args: readonly string[]): string {
 }
 
 /** Есть ли в репозитории хотя бы один коммит: `HEAD` разрешается в объект. */
-function hasCommit(dir: string): boolean {
+export function hasCommit(dir: string): boolean {
   try {
     git(dir, ['rev-parse', '--verify', 'HEAD']);
     return true;
@@ -65,6 +74,59 @@ function ignoredByRoot(root: string, relDir: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Отслеживает ли репозиторий `root` обычные файлы внутри каталога `relDir` —
+ * не сам каталог гитлинком: пathspec `relDir/` совпадает и с записью
+ * гитлинка (git считает её каталогоподобной), поэтому запись фильтруется по
+ * режиму — `160000` исключается, остальное считается файлом, зашедшим в
+ * индекс раньше, чем каталог стал репозиторием. Выкладка корня в режиме
+ * `worktree` заняла бы такой каталог, и `worktree add` части отказал бы
+ * посреди подготовки (design.md, решение 3).
+ */
+export function rootTracksPart(root: string, relDir: string): boolean {
+  try {
+    return git(root, ['ls-files', '-s', '--', `${relDir}/`])
+      .split('\n')
+      .filter((line) => line !== '')
+      .some((line) => !line.startsWith('160000 '));
+  } catch {
+    return false;
+  }
+}
+
+interface WorkspaceDiagnosticText {
+  readonly message: string;
+  readonly hint: string;
+}
+
+/**
+ * Формулировки трёх отказов состава, действующих только при объявленной
+ * работе в режиме `worktree` (плюс безусловный отказ `copy`) — общие для
+ * предстартовой проверки прогона (`checkWorkspaceAvailability`) и `stepcast
+ * lint`: диагностика, минующая один путь, обязана звучать так же, как та,
+ * что минует другой.
+ */
+export function describeCopyRejection(jobId: string): WorkspaceDiagnosticText {
+  return {
+    message: `Работа ${jobId} объявляет режим copy, а вложенные репозитории объявлены составом дерева (project.nested_repos)`,
+    hint: 'Копия не содержит .git, и объявленная часть в ней была бы каталогом без репозитория. Уберите nested_repos или переведите работу в режим cwd либо worktree',
+  };
+}
+
+export function describeNoCommitForWorktree(relDir: string): WorkspaceDiagnosticText {
+  return {
+    message: `Объявленный вложенный репозиторий ${relDir} не имеет ни одного коммита, а режим worktree заводит его дерево из HEAD`,
+    hint: `git worktree add … HEAD невозможен в репозитории без коммита. Сделайте в ${relDir} первый коммит либо переведите работы в режим cwd`,
+  };
+}
+
+export function describeTrackedByRoot(relDir: string): WorkspaceDiagnosticText {
+  return {
+    message: `Корневой репозиторий отслеживает файлы по пути объявленного вложенного репозитория ${relDir}`,
+    hint: 'Выкладка корня в режиме worktree займёт этот каталог, и git worktree add части откажет посреди подготовки. Уберите файлы части из индекса корня либо переведите работы в режим cwd',
+  };
 }
 
 /**
@@ -106,6 +168,8 @@ export interface PrepareOptions {
   readonly anchorKind?: AnchorKind;
   /** Каталог служебных файлов якорей прогона. */
   readonly anchorsDir?: string;
+  /** Объявленный состав вложенных репозиториев (`project.nested_repos`), в каноническом порядке. */
+  readonly nestedRepos?: readonly string[];
   /** Подмена якоря: тесты подставляют поддельный, как и в `runner.ts`. */
   readonly anchorerFor?: (options: {
     readonly dir: string;
@@ -113,6 +177,7 @@ export interface PrepareOptions {
     readonly kind: AnchorKind;
     readonly scope: string;
     readonly repoDir?: string;
+    readonly nested?: readonly string[];
   }) => TreeAnchorer;
 }
 
@@ -133,12 +198,39 @@ export function prepareWorkspace(options: PrepareOptions): PreparedWorkspace {
 
   const base = workspace.path ?? join(runDir, 'workspace');
   const dir = join(base, job.id);
+  // Канонический порядок состава — отсортированный, тот же, что у составного
+  // якоря (`anchor/composite.ts`). Он приводится здесь, а не берётся на веру у
+  // вызывающего: для вложенных друг в друга объявленных каталогов порядок
+  // значим — `worktree add` объемлющего (`a`) отказал бы «not an empty
+  // directory», заведись раньше вложенный (`a/b`).
+  const nestedRepos = [...(options.nestedRepos ?? [])].sort();
+  const nested: { dir: string; repo: string }[] = [];
 
   if (workspace.mode === 'worktree') {
-    mkdirSync(dirname(dir), { recursive: true, mode: 0o700 });
     // Отделённый worktree от текущего HEAD: незакоммиченные изменения в него
     // не попадают, а ветка проекта остаётся свободной.
-    git(cwd, ['worktree', 'add', '--detach', '--quiet', dir, 'HEAD']);
+    addWorktree({ repoDir: cwd, path: dir });
+
+    try {
+      for (const relDir of nestedRepos) {
+        const repo = join(cwd, relDir);
+        // Часть выкладывается из HEAD своего репозитория — не гитлинка корня
+        // и не рабочего дерева части: gitlink говорит о том, что корень
+        // помнит о части, а не о том, где она сейчас (design.md, решение 2).
+        // Родительский каталог мог не существовать (часть, которую корень
+        // игнорирует) или уже существовать пустым (часть под gitlink'ом) —
+        // `addWorktree` заводит его и принимает оба случая.
+        addWorktree({ repoDir: repo, path: join(dir, relDir) });
+        nested.push({ dir: relDir, repo });
+      }
+    } catch (error) {
+      // Атомарность: отказ на любой части снимает всё, что подготовка успела
+      // завести, — части в обратном порядке, затем корень (design.md,
+      // решение 4). Исходная причина уходит наружу как есть: работа
+      // отказывает прежним spawn_failed, новой причины остановки не заводится.
+      discardWorkspaceDir(dir, cwd, runDir, workspace.mode, nested);
+      throw error;
+    }
   } else {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     for (const relativePath of visibleFiles(cwd)) {
@@ -149,12 +241,13 @@ export function prepareWorkspace(options: PrepareOptions): PreparedWorkspace {
     }
   }
 
-  // Развилка: каталог заведён как обычно, но приведён к якорю источника — тем
-  // же `restore`, что и возобновление. Отказ здесь добирается до вызывающей
-  // стороны как отказ подготовки директории — тем же путём, что и отказ
-  // `git worktree add` строкой выше, — и не оставляет за собой ни наполовину
-  // приведённого дерева (гарантия `restore`), ни заведённого под него
-  // каталога: он убирается здесь же.
+  const nestedField = nested.length === 0 ? {} : { nested };
+
+  // Развилка: каталог заведён как обычно (корень и части), но приведён к
+  // якорю источника — тем же `restore`, что и возобновление. Отказ здесь
+  // добирается до вызывающей стороны как отказ подготовки директории и не
+  // оставляет за собой ни наполовину приведённого дерева (гарантия
+  // `restore`), ни заведённого под него каталога: он убирается здесь же.
   if (source?.kind === 'seed') {
     if (options.anchorKind === undefined || options.anchorsDir === undefined) {
       throw new StepcastError('Внутренняя ошибка: для засева развилки не передан способ фиксации якорей');
@@ -166,6 +259,7 @@ export function prepareWorkspace(options: PrepareOptions): PreparedWorkspace {
         kind: options.anchorKind,
         scope: job.id,
         repoDir: cwd,
+        ...(nestedRepos.length === 0 ? {} : { nested: nestedRepos }),
       });
       try {
         anchorer.restore(source.anchor);
@@ -173,54 +267,57 @@ export function prepareWorkspace(options: PrepareOptions): PreparedWorkspace {
         anchorer.dispose();
       }
     } catch (error) {
-      discardWorkspaceDir(dir, cwd, workspace.mode);
+      discardWorkspaceDir(dir, cwd, runDir, workspace.mode, nested);
       throw error;
     }
-    return { mode: workspace.mode, dir, inheritedFrom: source.job };
+    return { mode: workspace.mode, dir, inheritedFrom: source.job, ...nestedField };
   }
 
-  return { mode: workspace.mode, dir };
+  return { mode: workspace.mode, dir, ...nestedField };
 }
 
 /**
- * Убрать каталог, заведённый под работу, которой он не достался.
+ * Убрать каталог, заведённый под работу, которой он не достался, — в режиме
+ * `worktree` вместе с каждой заведённой частью.
  *
  * Своя ошибка здесь проглатывается сознательно: наружу должна уйти причина
- * отказа подготовки, а не жалоба уборки за ней. Незарегистрированный worktree
- * оставил бы за собой запись в `.git/worktrees` и мешал бы следующему прогону
- * занять то же имя.
+ * отказа подготовки, а не жалоба уборки за ней. Части снимаются в обратном
+ * порядке, затем корень: тот же порядок, что и у отката атомарной подготовки
+ * (design.md, решение 4) — снимать корень раньше частей означало бы убирать
+ * из-под них каталог, в котором они ещё числятся рабочими деревьями.
  *
- * Уборка идёт в три приёма и не полагается на успех первого: `git worktree
- * remove` — это команда в общем на весь прогон репозитории, и параллельные
- * работы зовут её одновременно. Отказ одной из них (а `--force` спасает от
- * грязного дерева, но не от занятого чужой командой репозитория) оставлял бы
- * каталог на диске — то самое, чего эта функция обязана не допустить. Поэтому
- * каталог сносится средствами файловой системы в любом случае, а запись в
- * `.git/worktrees`, осиротевшую после сноса, убирает `worktree prune`.
+ * `removeWorktree` сама не полагается на успех одной лишь `git worktree
+ * remove`: см. её собственный комментарий и `worktrees.ts`. Слепой `git
+ * worktree prune` здесь не зовётся нигде — он снял бы всякую осиротевшую
+ * запись репозитория, не только свою (design.md, решение 5).
  */
-function discardWorkspaceDir(dir: string, cwd: string, mode: Workspace['mode']): void {
-  if (mode === 'worktree') {
+function discardWorkspaceDir(
+  dir: string,
+  cwd: string,
+  runDir: string,
+  mode: Workspace['mode'],
+  nested: readonly { readonly dir: string; readonly repo: string }[] = [],
+): void {
+  if (mode !== 'worktree') {
     try {
-      git(cwd, ['worktree', 'remove', '--force', dir]);
+      rmSync(dir, { recursive: true, force: true });
     } catch {
-      // Ниже каталог снимается напрямую, а учёт git приводит в порядок prune.
+      // Каталог останется в директории прогона: сказать об этом уже нечем.
+    }
+    return;
+  }
+
+  for (const part of [...nested].reverse()) {
+    try {
+      removeWorktree({ repoDir: part.repo, path: join(dir, part.dir), runDir });
+    } catch {
+      // Наружу должна уйти причина отказа подготовки, а не жалоба уборки.
     }
   }
-
   try {
-    rmSync(dir, { recursive: true, force: true });
+    removeWorktree({ repoDir: cwd, path: dir, runDir });
   } catch {
-    // Каталог останется в директории прогона: сказать об этом уже нечем.
-  }
-
-  if (mode !== 'worktree') return;
-  try {
-    // Безопасно для соседних работ: `worktree add` держит свою запись
-    // помеченной как заводимую, и prune такую запись не трогает.
-    git(cwd, ['worktree', 'prune']);
-  } catch {
-    // Запись останется указывать на снесённый каталог — её снимет любой
-    // следующий prune, свой или чужой.
+    // См. выше.
   }
 }
 
@@ -306,22 +403,15 @@ export function checkWorkspaceAvailability(options: {
 
   if (nestedRepos === undefined || nestedRepos.length === 0) return;
 
-  // Изолированные режимы дают дерево без объявленных частей (см.
-  // design.md, решение 7): `worktree` — чистая выкладка `HEAD` корня,
-  // `copy` — видимые корню файлы, а объявленный вложенный репозиторий в
-  // обоих случаях либо отсутствует вовсе, либо представлен одной записью
-  // без содержимого. Составной якорь там снимать нечем, а снять одиночный —
-  // молча вернуть дыру в границах, ради которой всё затевается.
-  const isolated = pipeline.jobs.find((job) => job.workspace.mode !== 'cwd');
-  if (isolated !== undefined) {
-    throw new StepcastError(
-      `Работа ${isolated.id} объявляет режим ${isolated.workspace.mode}, а вложенные репозитории объявлены составом дерева (project.nested_repos)`,
-      {
-        file: isolated.source,
-        at: `jobs.${isolated.id}.workspace.mode`,
-        hint: 'Изолированное дерево объявленных частей не содержит, и якорь там снова стал бы однорепозиторным. Уберите nested_repos или переведите работу в режим cwd',
-      },
-    );
+  // Копия `.git` не содержит, и объявленная часть в ней была бы каталогом
+  // без репозитория — снимать с неё составное состояние нечем (design.md,
+  // Non-Goals «Поддержка режима copy»). `worktree` при пригодном составе
+  // ниже уже не отказывает: часть материализуется собственным рабочим
+  // деревом, и якорь остаётся составным.
+  const copyJob = pipeline.jobs.find((job) => job.workspace.mode === 'copy');
+  if (copyJob !== undefined) {
+    const { message, hint } = describeCopyRejection(copyJob.id);
+    throw new StepcastError(message, { file: copyJob.source, at: `jobs.${copyJob.id}.workspace.mode`, hint });
   }
 
   if (!isGitWorktree(cwd)) {
@@ -330,6 +420,10 @@ export function checkWorkspaceAvailability(options: {
       { file: pipeline.file, at: 'project.nested_repos' },
     );
   }
+
+  // Обе следующие проверки — только для работ в режиме worktree: в cwd (и
+  // при отклонённом выше copy) до `git worktree add` части дело не доходит.
+  const usesWorktree = pipeline.jobs.some((job) => job.workspace.mode === 'worktree');
 
   for (const relDir of nestedRepos) {
     const full = join(cwd, relDir);
@@ -379,6 +473,22 @@ export function checkWorkspaceAvailability(options: {
           hint: 'project.nested_repos называет каталог собственного репозитория, а не подкаталог корневого',
         },
       );
+    }
+
+    if (!usesWorktree) continue;
+
+    // `git worktree add … HEAD` в репозитории без коммитов невозможен —
+    // сегодняшнее послабление `!ignoredByRoot` выше относится к корневому
+    // `add -A` и части, которую корень игнорирует, а не к выкладке части
+    // собственным `worktree add` (design.md, решение 11).
+    if (!hasCommit(full)) {
+      const { message, hint } = describeNoCommitForWorktree(relDir);
+      throw new StepcastError(message, { file: pipeline.file, at: 'project.nested_repos', hint });
+    }
+
+    if (rootTracksPart(cwd, relDir)) {
+      const { message, hint } = describeTrackedByRoot(relDir);
+      throw new StepcastError(message, { file: pipeline.file, at: 'project.nested_repos', hint });
     }
   }
 }

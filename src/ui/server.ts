@@ -189,11 +189,14 @@ function handleDelete(runsRoot: string, url: URL, watcher: Watcher, res: ServerR
     return;
   }
 
-  removeRun(runsRoot, parsed.key, parsed.runId);
+  const result = removeRun(runsRoot, parsed.key, parsed.runId);
   // Обзор пересобирается сразу: иначе удалённый прогон повисит на экране до
   // следующего опроса, и пользователь решит, что удаление не сработало.
   watcher.poll();
-  sendJson(res, 200, { removed: `${parsed.key}/${parsed.runId}` });
+  sendJson(res, 200, {
+    removed: `${parsed.key}/${parsed.runId}`,
+    ...(result.unresolvedWorktrees.length === 0 ? {} : { unresolvedWorktrees: result.unresolvedWorktrees }),
+  });
 }
 
 /**
