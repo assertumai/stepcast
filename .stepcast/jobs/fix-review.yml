@@ -28,6 +28,10 @@ until:
   max_iterations: 2
   check:
     - cmd: ${project.check}
+    # Инструмент практики спецификации — по той же причине, что в
+    # implement.yml: устранение находки правит документы изменения наравне с
+    # кодом, и ломает их так же незаметно.
+    - cmd: ${project.spec.tool} validate "${params.change}" --strict
 
 steps:
   # Модель того же класса, что и у ревью: находки сформулировал opus, и модель

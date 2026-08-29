@@ -18,8 +18,23 @@ kind: job
 name: verify
 description: Объявленная команда проверки на итоговом дереве
 
+params:
+  change: { type: string, required: true }
+
 steps:
   - id: check
     run: ${project.check}
     timeout: 30m
+    expect: [{ exit_code: 0 }]
+
+  # Второй шаг — не разбор объявленной команды на части (против которого
+  # написано выше), а другой гейт: код проверяет ${project.check}, документы
+  # изменения — инструмент практики спецификации, и ни один из них не
+  # проверяет то, что проверяет другой. Здесь он повторно после until обеих
+  # правящих работ по той же причине, по которой повторяется сама проверка:
+  # цикл until гоняет её ради обратной связи агенту, а исход улучшения решает
+  # чистый прогон снаружи.
+  - id: validate-spec
+    run: ${project.spec.tool} validate "${params.change}" --strict
+    timeout: 2m
     expect: [{ exit_code: 0 }]
