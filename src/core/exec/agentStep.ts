@@ -53,6 +53,14 @@ export interface AgentStepOptions {
   readonly scratchDir?: string;
   readonly sessions: SessionRegistry;
   /**
+   * Псевдоним сессии в её пространстве имён. Отдельно от `step.session`:
+   * пространство задаёт не шаг, а работа и объявленная ей группа (см.
+   * `sessionKey` в runner), и шаг о нём знать не обязан. Без значения —
+   * псевдоним шага как есть: так зовут исполнение шага тесты, которым
+   * пространства имён не нужны.
+   */
+  readonly sessionAlias?: string;
+  /**
    * Место бэкенда: вызов ждёт его перед запуском процесса и освобождает по
    * завершении. Отсутствие — прогон без предела одновременности бэкенда,
    * как в тестах, что вызывают исполнение шага напрямую.
@@ -130,7 +138,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
       // и здесь: попытка, до процесса не дошедшая, обязана остаться с началом.
       let startedAt = new Date().toISOString();
 
-      const session = options.sessions.acquire(step.session);
+      const session = options.sessions.acquire(options.sessionAlias ?? step.session);
       sessionId = session.id;
 
       const resolvedModel = plan.model ?? step.model;

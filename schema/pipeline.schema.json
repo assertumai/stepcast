@@ -396,6 +396,9 @@
                   "type": "string"
                 }
               },
+              "session_group": {
+                "type": "string"
+              },
               "description": {
                 "type": "string"
               },
@@ -596,6 +599,9 @@
                 "additionalProperties": {
                   "type": "string"
                 }
+              },
+              "session_group": {
+                "type": "string"
               },
               "name": {
                 "type": "string"

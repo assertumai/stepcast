@@ -165,6 +165,14 @@ export interface Job {
    */
   readonly display?: Readonly<Record<string, string>>;
   readonly session: 'shared' | 'per_step';
+  /**
+   * Имя сессии, общей нескольким работам, объявленное обвязкой. Работы с
+   * одинаковым именем продолжают один диалог агента, и псевдонимы их шагов
+   * живут в общем пространстве имён. Без имени пространство псевдонимов
+   * замкнуто на работу и на итерацию её цикла `until` — сегодняшнее
+   * поведение.
+   */
+  readonly sessionGroup?: string;
   readonly workspace: Workspace;
   readonly env: Readonly<Record<string, string>>;
   readonly context: readonly ContextEntry[];
