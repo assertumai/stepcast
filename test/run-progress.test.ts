@@ -12,7 +12,8 @@ import { formatElapsed, renderProgressLine } from '../src/cli/progress.js';
 import { runRunCommand } from '../src/cli/commands/run.js';
 import { runLogsCommand } from '../src/cli/commands/logs.js';
 import type { ParsedArgs } from '../src/cli/args.js';
-import type { Event } from '../src/core/journal/schema.js';
+import { readStatus, resolveRun } from '../src/core/journal/reader.js';
+import type { Event, RunStatus } from '../src/core/journal/schema.js';
 import type { UsageSnapshot } from '../src/core/budget/accumulator.js';
 import { ExitCode } from '../src/core/errors.js';
 import { makeProject, withHome } from './helpers.js';
@@ -386,6 +387,57 @@ describe('run-progress: расход в снимке растёт от шага 
       0,
     );
     assert.match(firstLine ?? '', /\$0\.25/);
+  });
+});
+
+/**
+ * Работа с одним долгим шагом: пока шаг идёт, о ходе работы говорит только
+ * запись самой работы — записи шага на диске ещё нет, она пишется по его
+ * завершении целиком.
+ */
+const SLOW_STEP = `
+version: 1
+kind: pipeline
+name: долгий-шаг
+jobs:
+  build:
+    steps:
+      - id: slow
+        run: [${JSON.stringify(process.execPath)}, '-e', 'setTimeout(() => {}, 300)']
+        expect: [{ exit_code: 0 }]
+`;
+
+// Сценарий спеки «Идущая работа видна снаружи»: витрина и планировщик читают
+// состояние с диска, и у работы с одним долгим агентским шагом между её
+// началом и первой записью проходят десятки минут.
+describe('run-progress: состояние на диске знает об идущей работе', () => {
+  it('показывает работу running со started_at, пока её шаг ещё идёт', async () => {
+    const project = makeProject({ 'stepcast.yml': SLOW_STEP });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    let onStepStart: RunStatus | undefined;
+
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      onEvent: (event) => {
+        // Момент запуска шага: он ещё не завершился и записи о себе не
+        // оставил, а состояние работы обязано быть на диске уже сейчас.
+        if (event.kind === 'step.started') onStepStart = readStatus(resolveRun(runsRoot, project.root));
+      },
+    });
+
+    const job = onStepStart?.jobs.find((item) => item.id === 'build');
+    assert.ok(job !== undefined, 'состояние на диске должно знать о работе');
+    assert.equal(job.status, 'running');
+    assert.ok(job.started_at !== undefined, 'у идущей работы должно быть начало');
+    assert.deepEqual(job.steps, [], 'запись шага появляется по его завершении, а не в начале');
+
+    // И тот же прогон доходит до конца: сброс состояния в начале работы не
+    // подменяет собой исход.
+    assert.equal(result.status, 'success');
+    assert.equal(readStatus(result.journal.paths).jobs[0]?.status, 'success');
   });
 });
 

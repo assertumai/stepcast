@@ -56,6 +56,8 @@ const JOBS: RunStatus['jobs'] = [
   {
     id: 'producer',
     status: 'success',
+    started_at: '2026-08-01T00:00:00.000Z',
+    finished_at: '2026-08-01T00:01:30.000Z',
     steps: [
       {
         id: 'think',
@@ -77,6 +79,8 @@ const JOBS: RunStatus['jobs'] = [
   {
     id: 'consumer',
     status: 'success',
+    started_at: '2026-08-01T00:01:30.000Z',
+    finished_at: '2026-08-01T00:02:00.000Z',
     steps: [
       {
         id: 'check',
@@ -198,6 +202,41 @@ describe('ui-dashboard: детальный снимок прогона', () => {
       step: 40,
     });
     assert.equal(think?.contextBreakdown?.total, 100);
+  });
+
+  // Сценарий: «Длительность работы и шага видна на идущем прогоне». Времена
+  // берутся из состояния, а не из сводки расхода: сводка пишется по концу
+  // прогона, и на идущем её просто нет.
+  it('несёт времена работы и её шага', () => {
+    const { journal, key } = seed();
+    const producer = buildSnapshot(journal.paths, key).jobs.find((job) => job.id === 'producer');
+
+    assert.equal(producer?.startedAt, '2026-08-01T00:00:00.000Z');
+    assert.equal(producer?.finishedAt, '2026-08-01T00:01:30.000Z');
+    // У шага собственных времён нет — отрезок собирается по его попыткам.
+    assert.equal(producer?.steps[0]?.startedAt, '2026-08-01T00:00:00.000Z');
+    assert.equal(producer?.steps[0]?.finishedAt, '2026-08-01T00:01:00.000Z');
+  });
+
+  it('у идущей работы есть начало и нет конца', () => {
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-live',
+      status: 'running',
+      jobs: [
+        { id: 'producer', status: 'running', started_at: '2026-08-01T00:00:00.000Z', steps: [] },
+      ],
+      lock: lockText(),
+      skipUsage: true,
+    });
+
+    const producer = buildSnapshot(journal.paths, projectKey(bed.projectRoot)).jobs.find(
+      (job) => job.id === 'producer',
+    );
+
+    assert.equal(producer?.status, 'running');
+    assert.equal(producer?.startedAt, '2026-08-01T00:00:00.000Z');
+    assert.equal(producer?.finishedAt, undefined, 'конца у идущей работы быть не должно');
   });
 
   it('перечисляет файлы шага относительными путями', () => {
