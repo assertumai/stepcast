@@ -5,7 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createAnchorer, detectAnchorKind, sameAnchor } from '../src/core/anchor/index.js';
+import {
+  checkCompositeComposition,
+  createAnchorer,
+  detectAnchorKind,
+  sameAnchor,
+  splitCompositeAnchorId,
+} from '../src/core/anchor/index.js';
 import { loadIgnoreRules } from '../src/core/anchor/ignore.js';
 import { StepcastError } from '../src/core/errors.js';
 
@@ -721,6 +727,45 @@ describe('workspace-anchor: составной способ фиксации', (
     anchorer.restorePaths(saved, ['a/b/file.txt']);
 
     assert.equal(b.read('a/b/file.txt'), 'исходное');
+  });
+
+  // Задача 1.1/1.2 (merge-lanes-per-repo): разбор идентификатора наружу —
+  // наложение по репозиториям (`run/apply.ts`) зовёт этот же разбор, второго
+  // в движке нет.
+  it('splitCompositeAnchorId возвращает корень и части в порядке канонического состава', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+    b.initPart('vendor-sdk');
+    const anchor = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['vendor-sdk', 'public-site'] }).capture();
+
+    const parsed = splitCompositeAnchorId(anchor.id);
+    assert.ok(parsed !== undefined);
+    assert.match(parsed.fingerprint, /^[0-9a-f]{12}$/);
+    assert.equal(parsed.root, anchor.id.split('+')[1]);
+    assert.equal(parsed.parts.length, 2);
+  });
+
+  it('идентификатор не той формы и идентификатор чужого состава отличимы друг от друга по причине', () => {
+    const b = compositeBed();
+    b.initPart('public-site');
+
+    const malformed = splitCompositeAnchorId('не-составной-идентификатор');
+    assert.equal(malformed, undefined);
+
+    const foreignCheck = checkCompositeComposition('не-составной-идентификатор', ['public-site']);
+    assert.equal(foreignCheck.ok, false);
+    assert.match((foreignCheck as { reason: string }).reason, /не в форме составного якоря/);
+
+    const anchor = createAnchorer({ dir: b.dir, stateDir: b.stateDir, nested: ['public-site'] }).capture();
+    const mismatchedCheck = checkCompositeComposition(anchor.id, ['public-site', 'vendor-sdk']);
+    assert.equal(mismatchedCheck.ok, false);
+    assert.match((mismatchedCheck as { reason: string }).reason, /не совпадает с действующим/);
+    assert.match((mismatchedCheck as { reason: string }).reason, /public-site/);
+    assert.match((mismatchedCheck as { reason: string }).reason, /vendor-sdk/);
+
+    // Разные причины на форме и на составе — читателю не приходится гадать,
+    // что именно не сошлось.
+    assert.notEqual((foreignCheck as { reason: string }).reason, (mismatchedCheck as { reason: string }).reason);
   });
 });
 

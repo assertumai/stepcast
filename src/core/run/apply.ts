@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { createAnchorer } from '../anchor/index.js';
+import { checkCompositeComposition, createAnchorer, type AnchorKind } from '../anchor/index.js';
 import { StepcastError } from '../errors.js';
 import { readManifest, readStatus } from '../journal/reader.js';
 import type { RunPaths } from '../journal/paths.js';
@@ -27,6 +27,12 @@ export interface ApplyOptions {
   readonly job?: string;
   /** Ограничить наложение одной дорожкой — взаимоисключимо с `job`. */
   readonly lane?: string;
+  /**
+   * Объявленный состав вложенных репозиториев дерева (`project.nested_repos`)
+   * — только для прогонов составного способа фиксации. Читает конфигурацию
+   * вызывающая команда, а не это ядро (design.md, решение 3).
+   */
+  readonly nestedRepos?: readonly string[];
 }
 
 export type ApplyOutcome =
@@ -75,6 +81,131 @@ function conflictingPaths(output: string): string[] {
   return [...paths].sort();
 }
 
+/** Наложить готовый патч в каталоге `dir`, разбирая конфликт тем же путём, что и раньше. */
+function applyPatch(dir: string, patch: string, patchFile: string, conflictMessage: string): void {
+  writeFileSync(patchFile, patch);
+  try {
+    git(dir, ['apply', '--3way', patchFile]);
+  } catch (error) {
+    const output = String((error as { stderr?: string }).stderr ?? '');
+    const paths_ = conflictingPaths(output);
+    throw new StepcastError(conflictMessage, {
+      hint:
+        paths_.length === 0
+          ? 'Текущее дерево изменилось несовместимо с результатом прогона'
+          : `Конфликтующие пути:\n${paths_.map((path) => `  ${path}`).join('\n')}\nЗакоммитьте или отложите свои правки в этих файлах и повторите`,
+      cause: error,
+    });
+  }
+}
+
+/**
+ * Пути корневого патча, совпадающие с записью gitlink объявленного вложенного
+ * репозитория (путь равен самому объявленному каталогу — design.md, решение
+ * 5). Такую запись двигает коммит внутри части, которого дорожка не делает:
+ * патч, задевающий её, пришёл из состояния, которого движок не порождает.
+ * Проверяется до сборки полного `--binary`-патча и до первого `git apply`.
+ */
+function gitlinkPathsTouched(cwd: string, from: string, to: string, nestedRepos: readonly string[]): string[] {
+  if (nestedRepos.length === 0) return [];
+  const declared = new Set(nestedRepos);
+  return git(cwd, ['diff', '--name-only', from, to])
+    .split('\n')
+    .filter((name) => name !== '' && declared.has(name));
+}
+
+interface DiffByRepoOptions {
+  readonly cwd: string;
+  readonly kind: AnchorKind;
+  /** Объявленный состав. Игнорируется на `kind !== 'composite'`. */
+  readonly nestedRepos: readonly string[];
+  readonly from: string;
+  readonly to: string;
+  readonly stateDir: string;
+  /** Различает файлы патчей разных вызовов в пределах одного `stateDir`. */
+  readonly patchLabel: string;
+  /** Название вклада для сообщений об отказе — «дорожка a» / «работа job1». */
+  readonly subject: string;
+}
+
+/**
+ * Наложить дифф между двумя состояниями по репозиториям — один помощник на
+ * все три входа `apply` (`applyLane`, наложение прогона целиком, `--job`).
+ *
+ * На `git`-якоре — прежние один `git diff --binary` и один `git apply --3way`
+ * в `cwd`. На составном — по вызову на корень и на каждую часть, чьи oid до и
+ * после различаются: каждый `git -C <каталог части>`, путями от корня самой
+ * части и без приставки каталога (design.md, решения 3–4). Отпечатки обоих
+ * состояний сверяются с действующим составом (`checkCompositeComposition`) до
+ * первой правки дерева — расхождение отказывает названной причиной, а не
+ * накладывает oid чужой части в сегодняшнюю.
+ *
+ * Возвращает, лёг ли дифф хоть в один репозиторий.
+ */
+function applyDiffByRepo(options: DiffByRepoOptions): boolean {
+  const { cwd, kind, nestedRepos, from, to, stateDir, patchLabel, subject } = options;
+
+  if (from === to) return false;
+
+  if (kind !== 'composite') {
+    const patch = git(cwd, ['diff', '--binary', from, to]);
+    if (patch === '') return false;
+    applyPatch(cwd, patch, join(stateDir, `${patchLabel}.patch`), `Наложение ${subject} не сошлось с текущим деревом`);
+    return true;
+  }
+
+  const fromCheck = checkCompositeComposition(from, nestedRepos);
+  if (!fromCheck.ok) throw new StepcastError(fromCheck.reason);
+  const toCheck = checkCompositeComposition(to, nestedRepos);
+  if (!toCheck.ok) throw new StepcastError(toCheck.reason);
+
+  const canonical = [...nestedRepos].sort();
+  let applied = false;
+
+  if (fromCheck.parsed.root !== toCheck.parsed.root) {
+    const gitlinkPaths = gitlinkPathsTouched(cwd, fromCheck.parsed.root, toCheck.parsed.root, canonical);
+    if (gitlinkPaths.length > 0) {
+      throw new StepcastError(
+        `Вклад ${subject} двигает запись gitlink объявленного каталога ${gitlinkPaths.join(', ')}`,
+        {
+          hint: 'Запись gitlink меняет коммит внутри части, которого дорожка не делает — наложить такой патч в корень значило бы записать ссылку на несуществующий в базе корня коммит',
+        },
+      );
+    }
+    const rootPatch = git(cwd, ['diff', '--binary', fromCheck.parsed.root, toCheck.parsed.root]);
+    if (rootPatch !== '') {
+      applyPatch(
+        cwd,
+        rootPatch,
+        join(stateDir, `${patchLabel}.root.patch`),
+        `Наложение ${subject} не сошлось с текущим деревом (репозиторий: .)`,
+      );
+      applied = true;
+    }
+  }
+
+  for (let index = 0; index < canonical.length; index += 1) {
+    const relDir = canonical[index]!;
+    const partFrom = fromCheck.parsed.parts[index]!;
+    const partTo = toCheck.parsed.parts[index]!;
+    if (partFrom === partTo) continue;
+
+    const partDir = join(cwd, relDir);
+    const partPatch = git(partDir, ['diff', '--binary', partFrom, partTo]);
+    if (partPatch === '') continue;
+
+    applyPatch(
+      partDir,
+      partPatch,
+      join(stateDir, `${patchLabel}.${index}.patch`),
+      `Наложение ${subject} не сошлось с текущим деревом (репозиторий: ${relDir})`,
+    );
+    applied = true;
+  }
+
+  return applied;
+}
+
 function isolatedJobs(paths: RunPaths, only: string | undefined): JobRecord[] {
   const status = readStatus(paths);
   const jobs = status.jobs.filter((job) => job.workspace !== undefined && job.workspace.mode !== 'cwd');
@@ -106,36 +237,52 @@ function laneIsolatedJobs(paths: RunPaths, lane: string): JobRecord[] {
   );
 }
 
+export interface LaneAnchorRange {
+  readonly from: string;
+  readonly to: string;
+}
+
 /**
- * Наложить дорожку одним диффом: от `tree_before` первого шага дорожки до
- * последнего непустого `tree_id` — в отличие от `--job`, который накладывает
- * каждую работу отдельным диффом, здесь диффов ровно один, и по нему проходит
- * ровно одно `git apply --3way`.
+ * Пара состояний, между которыми наложится вклад дорожки: `tree_before`
+ * первого шага дорожки и последний непустой `tree_id`. Та же пара, которую
+ * вычисляет `applyLane` — сведение (`lanes/merge.ts`) берёт её тем же
+ * способом, чтобы затронутые репозитории (`merge-lanes-per-repo`) считались
+ * из тех же состояний, которые затем действительно накладываются.
  */
-function applyLane(paths: RunPaths, cwd: string, manifest: RunManifest, lane: string): ApplyOutcome {
+export function laneAnchorRange(paths: RunPaths, lane: string): LaneAnchorRange | undefined {
   const jobs = laneIsolatedJobs(paths, lane);
-  if (jobs.length === 0) return { kind: 'nothing-to-apply' };
+  if (jobs.length === 0) return undefined;
 
   const steps = jobs.flatMap((job) => job.steps);
   const from = steps[0]?.tree_before;
   const to = [...steps].reverse().find((step) => step.tree_id !== undefined)?.tree_id;
+  if (from === undefined || to === undefined) return undefined;
 
-  if (from === undefined || to === undefined) return { kind: 'nothing-to-apply' };
+  return { from, to };
+}
 
-  // Составной прогон снят в git, но `diff.patch` дорожки склеен из патчей
-  // разных баз объектов (по одному на репозиторий) — накладывать его надо по
-  // репозиторию, а не одним `git apply` в корне. Отказ «прогон снят вне git»
-  // ниже — про другую причину и притворяться объяснением для составного не
-  // должен (design.md, решение 10).
-  if (manifest.anchor_kind === 'composite') {
-    throw new StepcastError(
-      `Дорожка ${lane} снята составным способом фиксации: патч склеен из патчей разных баз объектов`,
-      {
-        hint: 'Наложение составного результата по репозиториям не реализовано — см. merge-lanes-per-repo. Пути рабочих деревьев — в выводе stepcast run',
-      },
-    );
-  }
-  if (manifest.anchor_kind !== 'git') {
+/**
+ * Наложить дорожку одним диффом: от `tree_before` первого шага дорожки до
+ * последнего непустого `tree_id` — в отличие от `--job`, который накладывает
+ * каждую работу отдельным диффом, здесь диффов ровно один. На составном
+ * якоре «одним диффом» значит по одному вызову на каждый затронутый
+ * репозиторий (`applyDiffByRepo`), но так же ровно один проход дорожки.
+ */
+function applyLane(
+  paths: RunPaths,
+  cwd: string,
+  manifest: RunManifest,
+  lane: string,
+  nestedRepos: readonly string[],
+): ApplyOutcome {
+  const jobs = laneIsolatedJobs(paths, lane);
+  if (jobs.length === 0) return { kind: 'nothing-to-apply' };
+
+  const range = laneAnchorRange(paths, lane);
+  if (range === undefined) return { kind: 'nothing-to-apply' };
+  const { from, to } = range;
+
+  if (manifest.anchor_kind !== 'git' && manifest.anchor_kind !== 'composite') {
     throw new StepcastError(`Дорожка ${lane} снята вне git: накладывать нечего`, {
       hint: 'Объектов деревьев нет, поэтому дифф не вычислить.',
     });
@@ -144,29 +291,27 @@ function applyLane(paths: RunPaths, cwd: string, manifest: RunManifest, lane: st
   if (from === to) return { kind: 'nothing-to-apply' };
 
   const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-apply-'));
-  const anchorer = createAnchorer({ dir: cwd, stateDir, kind: 'git', scope: 'apply' });
+  const anchorer = createAnchorer({
+    dir: cwd,
+    stateDir,
+    kind: manifest.anchor_kind,
+    scope: 'apply',
+    ...(manifest.anchor_kind === 'composite' ? { nested: nestedRepos } : {}),
+  });
   const before = anchorer.capture();
 
+  let applied: boolean;
   try {
-    const patch = git(cwd, ['diff', '--binary', from, to]);
-    if (patch === '') return { kind: 'nothing-to-apply' };
-
-    const patchFile = join(stateDir, `lane-${lane}.patch`);
-    writeFileSync(patchFile, patch);
-
-    try {
-      git(cwd, ['apply', '--3way', patchFile]);
-    } catch (error) {
-      const output = String((error as { stderr?: string }).stderr ?? '');
-      const paths_ = conflictingPaths(output);
-      throw new StepcastError(`Наложение дорожки ${lane} не сошлось с текущим деревом`, {
-        hint:
-          paths_.length === 0
-            ? 'Текущее дерево изменилось несовместимо с результатом прогона'
-            : `Конфликтующие пути:\n${paths_.map((path) => `  ${path}`).join('\n')}\nЗакоммитьте или отложите свои правки в этих файлах и повторите`,
-        cause: error,
-      });
-    }
+    applied = applyDiffByRepo({
+      cwd,
+      kind: manifest.anchor_kind,
+      nestedRepos,
+      from,
+      to,
+      stateDir,
+      patchLabel: `lane-${lane}`,
+      subject: `дорожки ${lane}`,
+    });
   } catch (error) {
     anchorer.restore(before);
     throw error;
@@ -174,29 +319,22 @@ function applyLane(paths: RunPaths, cwd: string, manifest: RunManifest, lane: st
     anchorer.dispose();
   }
 
+  if (!applied) return { kind: 'nothing-to-apply' };
   return { kind: 'applied', jobs: jobs.map((job) => job.id) };
 }
 
 export function applyRun(options: ApplyOptions): ApplyOutcome {
   const { paths, cwd } = options;
   const manifest = readManifest(paths);
+  const nestedRepos = options.nestedRepos ?? [];
 
-  if (options.lane !== undefined) return applyLane(paths, cwd, manifest, options.lane);
+  if (options.lane !== undefined) return applyLane(paths, cwd, manifest, options.lane, nestedRepos);
 
   const jobs = isolatedJobs(paths, options.job);
 
   if (jobs.length === 0) return { kind: 'already-in-place' };
 
-  if (manifest.anchor_kind === 'composite') {
-    const where = jobs.map((job) => `  ${job.id}: ${job.workspace?.path}`).join('\n');
-    throw new StepcastError(
-      'Прогон снят составным способом фиксации: патч склеен из патчей разных баз объектов, и накладывать его нужно по репозиторию',
-      {
-        hint: `Наложение составного результата по репозиториям не реализовано — см. merge-lanes-per-repo. Результат лежит здесь:\n${where}`,
-      },
-    );
-  }
-  if (manifest.anchor_kind !== 'git') {
+  if (manifest.anchor_kind !== 'git' && manifest.anchor_kind !== 'composite') {
     const where = jobs.map((job) => `  ${job.id}: ${job.workspace?.path}`).join('\n');
     throw new StepcastError('Прогон снят вне git: накладывать нечего', {
       hint: `Объектов деревьев нет, поэтому дифф не вычислить. Результат лежит здесь:\n${where}`,
@@ -206,7 +344,13 @@ export function applyRun(options: ApplyOptions): ApplyOutcome {
   // Состояние текущего дерева до наложения: если наложение не сойдётся, дерево
   // возвращается ровно в него. Частично наложенный результат недопустим.
   const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-apply-'));
-  const anchorer = createAnchorer({ dir: cwd, stateDir, kind: 'git', scope: 'apply' });
+  const anchorer = createAnchorer({
+    dir: cwd,
+    stateDir,
+    kind: manifest.anchor_kind,
+    scope: 'apply',
+    ...(manifest.anchor_kind === 'composite' ? { nested: nestedRepos } : {}),
+  });
   const before = anchorer.capture();
 
   const applied: string[] = [];
@@ -222,31 +366,18 @@ export function applyRun(options: ApplyOptions): ApplyOutcome {
           hint: 'Прогон снят до введения якоря либо фиксация не удалась — см. events.ndjson',
         });
       }
-      if (from === to) continue;
 
-      const patch = git(cwd, ['diff', '--binary', from, to]);
-      if (patch === '') continue;
-
-      const patchFile = join(stateDir, `${job.id}.patch`);
-      writeFileSync(patchFile, patch);
-
-      try {
-        git(cwd, ['apply', '--3way', patchFile]);
-      } catch (error) {
-        const output = String((error as { stderr?: string }).stderr ?? '');
-        const paths_ = conflictingPaths(output);
-        throw new StepcastError(
-          `Наложение работы ${job.id} не сошлось с текущим деревом`,
-          {
-            hint:
-              paths_.length === 0
-                ? 'Текущее дерево изменилось несовместимо с результатом прогона'
-                : `Конфликтующие пути:\n${paths_.map((path) => `  ${path}`).join('\n')}\nЗакоммитьте или отложите свои правки в этих файлах и повторите`,
-            cause: error,
-          },
-        );
-      }
-      applied.push(job.id);
+      const jobApplied = applyDiffByRepo({
+        cwd,
+        kind: manifest.anchor_kind,
+        nestedRepos,
+        from,
+        to,
+        stateDir,
+        patchLabel: job.id,
+        subject: `работы ${job.id}`,
+      });
+      if (jobApplied) applied.push(job.id);
     }
   } catch (error) {
     // Возврат к исходному состоянию: пользователь получает вопрос, а не

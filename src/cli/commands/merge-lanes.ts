@@ -1,6 +1,6 @@
 import { resolve as resolvePath } from 'node:path';
 
-import { resolveConfig } from '../../core/config/resolve.js';
+import { resolveConfig, type Config } from '../../core/config/resolve.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { resolveRun } from '../../core/journal/reader.js';
@@ -32,7 +32,7 @@ function parseLaneList(raw: string): readonly string[] {
 function describe(result: LaneMergeResult): string {
   switch (result.kind) {
     case 'merged':
-      return `сведена, пункт «${result.slug}» помечен done`;
+      return `сведена, пункт «${result.slug}» помечен done (репозитории: ${result.repos.join(', ')})`;
     case 'empty':
       return 'пропущена — слот не заполнен, все работы дорожки skipped';
     case 'no_item':
@@ -40,6 +40,17 @@ function describe(result: LaneMergeResult): string {
     default:
       return `не сведена — ${result.reason}`;
   }
+}
+
+/** Объявленные команды проверки вложенных репозиториев, по объявленному каталогу — то же чтение, что и состав. */
+function repoChecksFrom(config: Config): ReadonlyMap<string, string> | undefined {
+  const declarations = config.project.nestedRepoDeclarations;
+  if (declarations === undefined) return undefined;
+  const checks = new Map<string, string>();
+  for (const [dir, declaration] of declarations) {
+    if (declaration.check !== undefined) checks.set(dir, declaration.check);
+  }
+  return checks;
 }
 
 export async function runMergeLanesCommand(
@@ -71,6 +82,8 @@ export async function runMergeLanesCommand(
   const projectRoot = findProjectRoot(cwd);
   const paths = resolveRun(config.runs.root, projectRoot, runId);
 
+  const repoChecks = repoChecksFrom(config);
+
   const results = await mergeLanes({
     paths,
     cwd,
@@ -78,6 +91,7 @@ export async function runMergeLanesCommand(
     check,
     file,
     ...(config.project.nestedRepos === undefined ? {} : { nestedRepos: config.project.nestedRepos }),
+    ...(repoChecks === undefined ? {} : { repoChecks }),
   });
 
   let merged = 0;

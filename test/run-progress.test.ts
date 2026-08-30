@@ -588,9 +588,10 @@ jobs:
     assert.ok(lines.some((line) => /^наложить результат на текущее дерево: stepcast apply /.test(line)));
   });
 
-  // Задача 6 (nested-repo-isolation): составной прогон печатает пути
-  // рабочих деревьев, но вместо команды apply — причину её недоступности.
-  it('составной прогон печатает пути рабочих деревьев без команды apply', async () => {
+  // Задача 4.3 / 10 (merge-lanes-per-repo): наложение по репозиториям снимает
+  // отказ — составной прогон снова предлагает `stepcast apply`, как и
+  // однорепозиторный.
+  it('составной прогон предлагает stepcast apply наравне с однорепозиторным', async () => {
     const project = makeProject({
       'stepcast.yml': `
 version: 1
@@ -616,13 +617,6 @@ jobs:
 
     assert.equal(exitCode, ExitCode.ok);
     assert.ok(lines.some((line) => line.startsWith('рабочие деревья:')));
-    assert.equal(
-      lines.some((line) => line.includes('stepcast apply')),
-      false,
-      'составной прогон не должен предлагать apply',
-    );
-    assert.ok(
-      lines.some((line) => line.startsWith('наложение недоступно:') && line.includes('merge-lanes-per-repo')),
-    );
+    assert.ok(lines.some((line) => /^наложить результат на текущее дерево: stepcast apply /.test(line)));
   });
 });

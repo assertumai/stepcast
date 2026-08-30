@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { run as runCli, type CliIo } from '../src/cli/main.js';
+import type { Config } from '../src/core/config/resolve.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPaths } from '../src/core/journal/paths.js';
@@ -35,10 +36,12 @@ function commit(project: Project, message: string): void {
   gitCommit(project.root, message);
 }
 
+function commitCountAt(dir: string): number {
+  return Number(execFileSync('git', ['-C', dir, 'rev-list', '--count', 'HEAD'], { encoding: 'utf8' }).trim());
+}
+
 function commitCount(project: Project): number {
-  return Number(
-    execFileSync('git', ['-C', project.root, 'rev-list', '--count', 'HEAD'], { encoding: 'utf8' }).trim(),
-  );
+  return commitCountAt(project.root);
 }
 
 function commitMessages(project: Project, count: number): string[] {
@@ -46,6 +49,140 @@ function commitMessages(project: Project, count: number): string[] {
     .trim()
     .split('\n');
 }
+
+function headMessageAt(dir: string): string {
+  return execFileSync('git', ['-C', dir, 'log', '-1', '--format=%s'], { encoding: 'utf8' }).trim();
+}
+
+/** Незакоммиченное и неотслеживаемое дерева — то, на чём упрётся головное предусловие следующего захода. */
+function porcelainAt(dir: string): string {
+  return execFileSync('git', ['-C', dir, 'status', '--porcelain'], { encoding: 'utf8' }).trim();
+}
+
+/** Тот же проект, но с объявленным составом `project.nested_repos`. */
+function withNestedRepos(project: Project, nestedRepos: readonly string[]): Config {
+  return { ...project.config, project: { ...project.config.project, nestedRepos } };
+}
+
+/** То же, что `runLanes`, но с переданной конфигурацией — для составного прогона. */
+async function runLanesWithConfig(project: Project, runsRoot: string, config: Config): Promise<RunResult> {
+  const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config });
+  return runPipeline({
+    expanded,
+    config: { ...config, runs: { ...config.runs, root: runsRoot } },
+    projectRoot: project.root,
+    cwd: project.root,
+  });
+}
+
+/**
+ * Корень плюс объявленные вложенные репозитории (`backend` и, по запросу,
+ * ещё названные), у каждого — начальный коммит. Backend отслеживается корнем
+ * гитлинком (тот же приём, что и в фикстурах составного якоря): `.gitkeep`
+ * заведён файлом до `git init` части, а начальный корневой коммит подхватывает
+ * получившийся гитлинк.
+ */
+function makeCompositeProject(pipeline: string, extraRepos: readonly string[] = []): Project {
+  const files: Record<string, string> = { 'stepcast.yml': pipeline, 'backend/.gitkeep': '' };
+  for (const repo of extraRepos) files[`${repo}/.gitkeep`] = '';
+
+  const project = makeProject(files);
+  gitInit(project);
+  gitInitDir(project.path('backend'));
+  gitCommit(project.path('backend'), 'начало backend');
+  for (const repo of extraRepos) {
+    gitInitDir(project.path(repo));
+    gitCommit(project.path(repo), `начало ${repo}`);
+  }
+  commit(project, 'начальный');
+  return project;
+}
+
+/** Дорожка `a`: один шаг пишет и в корень, и в объявленный вложенный репозиторий `backend`. */
+const COMPOSITE_LANE_PIPELINE = `
+version: 1
+kind: pipeline
+name: составная-дорожка
+workspace: { mode: worktree }
+jobs:
+  work-a:
+    lane: a
+    steps:
+      - id: шаг
+        run: [sh, -c, 'printf "root от a\\n" > root-a.txt; printf "backend от a\\n" > backend/backend-a.txt']
+        expect: [{ exit_code: 0 }]
+`;
+
+/** Дорожка `a`: правит только объявленный вложенный репозиторий `backend`, корень не трогает. */
+const BACKEND_ONLY_LANE_PIPELINE = `
+version: 1
+kind: pipeline
+name: дорожка-только-backend
+workspace: { mode: worktree }
+jobs:
+  work-a:
+    lane: a
+    steps:
+      - id: шаг
+        run: [sh, -c, 'printf "backend от a\\n" > backend/backend-a.txt']
+        expect: [{ exit_code: 0 }]
+`;
+
+/**
+ * Три дорожки: `a` правит только корень и сводится; `b` правит `backend` и
+ * заканчивается неуспешной работой; `c` правит `backend` успешно, но пункта
+ * очереди ей не достаётся. Ни `b`, ни `c` не сведутся ни при какой
+ * конфигурации — недостающая команда проверки `backend` не вправе ронять
+ * из-за них обход целиком.
+ */
+const MIXED_LANES_PIPELINE = `
+version: 1
+kind: pipeline
+name: годная-и-негодные-дорожки
+workspace: { mode: worktree }
+concurrency: 1
+fail_fast: false
+jobs:
+  work-a:
+    lane: a
+    steps:
+      - id: шаг
+        run: [sh, -c, 'printf "root от a\\n" > root-a.txt']
+        expect: [{ exit_code: 0 }]
+  work-b:
+    lane: b
+    steps:
+      - id: шаг
+        run: [sh, -c, 'printf "backend от b\\n" > backend/backend-b.txt; exit 1']
+        expect: [{ exit_code: 0 }]
+  work-c:
+    lane: c
+    steps:
+      - id: шаг
+        run: [sh, -c, 'printf "backend от c\\n" > backend/backend-c.txt']
+        expect: [{ exit_code: 0 }]
+`;
+
+/**
+ * Дорожка `a`: коммитит внутри `backend` — сама изоляция дорожки не мешает
+ * этому (это её собственный worktree её же репозитория), а движок такого
+ * коммита никогда не делает сам. Двигает запись gitlink `backend` в корне,
+ * не меняя содержимого части, — состояние, которого движок не порождает
+ * (design.md, решение 5).
+ */
+const GITLINK_LANE_PIPELINE = `
+version: 1
+kind: pipeline
+name: дорожка-двигает-gitlink
+workspace: { mode: worktree }
+jobs:
+  work-a:
+    lane: a
+    steps:
+      - id: шаг
+        run: [sh, -c, 'cd backend && git commit --allow-empty -m "коммит части (тест)"']
+        expect: [{ exit_code: 0 }]
+`;
 
 async function runLanes(project: Project, runsRoot: string): Promise<RunResult> {
   const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
@@ -613,39 +750,168 @@ jobs:
 });
 
 describe('core: mergeLanes — составной прогон', () => {
-  // Наложения через границу репозиториев в движке нет, и сведение обязано
-  // сказать именно это. Отказ `applyRun`, пойманный обходом дорожек, попал бы
-  // в очередь под чужим заголовком — «наложение не сошлось с текущим
-  // деревом», то есть записью о несуществующем конфликте.
-  it('отказывает названной причиной, не тронув ни дерева, ни очереди', async () => {
-    const project = makeProject({
-      'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B),
-      'public-site/.gitkeep': '',
-    });
-    gitInit(project);
-    gitInitDir(project.path('public-site'));
-    gitCommit(project.path('public-site'), 'начало части');
-    commit(project, 'начальный');
+  const repoChecks = new Map([['backend', 'exit 0']]);
 
+  it('дорожка правит корень и часть: по коммиту в каждом, одно сообщение, очередь коммитится последней', async () => {
+    const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE);
     const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
-    const config = {
-      ...project.config,
-      project: { ...project.config.project, nestedRepos: ['public-site'] },
-    };
-    const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config });
-    const result = await runPipeline({
-      expanded,
-      config: { ...config, runs: { ...config.runs, root: runsRoot } },
-      projectRoot: project.root,
-      cwd: project.root,
-    });
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
     assert.equal(result.status, 'success');
 
     const backlogFile = project.path('backlog.md');
     writeFileSync(backlogFile, backlogItem('a-item'));
     commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'Заголовок A');
+
+    const rootBefore = commitCount(project);
+    const backendBefore = commitCountAt(project.path('backend'));
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+      nestedRepos: ['backend'],
+      repoChecks,
+    });
+
+    assert.equal(outcomes[0]?.kind, 'merged');
+    if (outcomes[0]?.kind === 'merged') assert.deepEqual([...outcomes[0].repos].sort(), ['.', 'backend']);
+
+    // Корень (держит очередь) и backend — каждый ровно на один коммит вперёд.
+    assert.equal(commitCount(project), rootBefore + 1);
+    assert.equal(commitCountAt(project.path('backend')), backendBefore + 1);
+
+    const message = 'a-item: Заголовок A';
+    assert.equal(headMessageAt(project.root), message);
+    assert.equal(headMessageAt(project.path('backend')), message);
+
+    assert.equal(readFileSync(project.path('root-a.txt'), 'utf8'), 'root от a\n');
+    assert.equal(readFileSync(join(project.path('backend'), 'backend-a.txt'), 'utf8'), 'backend от a\n');
+    // Отметка `done` лежит в корневом коммите — том же, что несёт вклад корня.
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'done');
+    // Корень ведёт `backend` гитлинком и коммитится после него — сдвинутая
+    // запись подхвачена, дерево чисто: иначе головное предусловие следующего
+    // захода упёрлось бы в неё.
+    assert.equal(porcelainAt(project.root), '', 'корень чист после сведения');
+  });
+
+  it('дорожка правит только часть, очередь в корне: только backend получает коммит вклада', async () => {
+    const project = makeCompositeProject(BACKEND_ONLY_LANE_PIPELINE);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
     writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
-    const before = commitCount(project);
+    const rootBefore = commitCount(project);
+    const backendBefore = commitCountAt(project.path('backend'));
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+      nestedRepos: ['backend'],
+      repoChecks,
+    });
+
+    assert.equal(outcomes[0]?.kind, 'merged');
+    assert.equal(commitCountAt(project.path('backend')), backendBefore + 1, 'backend несёт вклад дорожки');
+    assert.equal(commitCount(project), rootBefore + 1, 'корень несёт только коммит очереди');
+    assert.equal(headMessageAt(project.root), 'a-item: A');
+    assert.equal(porcelainAt(project.root), '', 'корень чист после сведения');
+  });
+
+  it('проверка вложенного репозитория исполняется в его каталоге, а не в корне', async () => {
+    const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    // Каждая команда зелена только в своём каталоге: вклад дорожки в корень
+    // лежит по `root-a.txt`, вклад в часть — по `backend-a.txt` от корня
+    // самой части. Исполни любую не там — она покраснеет.
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'test -f root-a.txt && test ! -f backend-a.txt',
+      file: backlogFile,
+      nestedRepos: ['backend'],
+      repoChecks: new Map([['backend', 'test -f backend-a.txt && test ! -f root-a.txt']]),
+    });
+
+    assert.equal(outcomes[0]?.kind, 'merged', JSON.stringify(outcomes[0]));
+  });
+
+  it('красная проверка второго затронутого репозитория откатывает оба, третий объявленный не тронут, игнорируемое переживает откат', async () => {
+    const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE, ['other']);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend', 'other']));
+    assert.equal(result.status, 'success');
+
+    // Игнорируемый путь внутри backend: откат не имеет права его стереть.
+    writeFileSync(join(project.path('backend'), '.gitignore'), 'игнорируемое/\n');
+    gitCommit(project.path('backend'), 'добавлен .gitignore backend');
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    const rootBefore = commitCount(project);
+    const backendBefore = commitCountAt(project.path('backend'));
+    const otherBefore = commitCountAt(project.path('other'));
+
+    mkdirSync(join(project.path('backend'), 'игнорируемое'));
+    writeFileSync(join(project.path('backend'), 'игнорируемое', 'кеш.txt'), 'сборочный кеш\n');
+
+    // Проверка корня зелёная, backend — красная: корень проверяется первым
+    // (детерминированный порядок), и его откат обязан снять и его коммит.
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+      nestedRepos: ['backend', 'other'],
+      repoChecks: new Map([['backend', 'exit 1']]),
+    });
+
+    assert.equal(outcomes[0]?.kind, 'check_failed');
+    assert.match((outcomes[0] as { reason: string }).reason, /backend/);
+
+    assert.equal(commitCount(project), rootBefore, 'корень откатан к коммиту до наложения');
+    assert.equal(commitCountAt(project.path('backend')), backendBefore, 'backend откатан к коммиту до наложения');
+    assert.equal(commitCountAt(project.path('other')), otherBefore, 'необъявленный вклад other не тронут откатом');
+
+    assert.equal(existsSync(project.path('root-a.txt')), false);
+    assert.equal(existsSync(join(project.path('backend'), 'backend-a.txt')), false);
+    assert.ok(
+      existsSync(join(project.path('backend'), 'игнорируемое', 'кеш.txt')),
+      'игнорируемый путь должен пережить откат',
+    );
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'failed');
+  });
+
+  it('затронутый репозиторий без объявленной команды проверки отказывает до первого наложения', async () => {
+    const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    const rootBefore = commitCount(project);
 
     await assert.rejects(
       () =>
@@ -655,23 +921,255 @@ describe('core: mergeLanes — составной прогон', () => {
           lanes: ['a'],
           check: 'exit 0',
           file: backlogFile,
-          nestedRepos: ['public-site'],
+          nestedRepos: ['backend'],
+          // repoChecks не объявлен вовсе — у backend нет команды проверки.
         }),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
-        assert.match(error.message, /составным способом фиксации/);
-        assert.match(error.hint ?? '', /merge-lanes-per-repo/);
+        assert.equal(error.exitCode, ExitCode.configError);
+        assert.match(error.message, /backend/);
+        assert.match(error.message, /a/);
         return true;
       },
     );
 
-    assert.equal(existsSync(project.path('a.txt')), false, 'дерево не тронуто отказом');
-    assert.equal(commitCount(project), before);
-    assert.equal(
-      statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'),
-      'in_progress',
-      'пункт очереди не помечен провалившимся по несуществующему конфликту',
+    assert.equal(commitCount(project), rootBefore, 'дерево не тронуто');
+    assert.equal(existsSync(project.path('root-a.txt')), false, 'дорожка не накладывалась');
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'in_progress', 'очередь не правлена');
+  });
+
+  it('расхождение состава между прогоном и сведением отказывает, называя расхождение', async () => {
+    const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE, ['other']);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    // Прогон снят на составе из одного backend.
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    await assert.rejects(
+      () =>
+        mergeLanes({
+          paths: result.journal.paths,
+          cwd: project.root,
+          lanes: ['a'],
+          check: 'exit 0',
+          file: backlogFile,
+          // Сведение идёт при другом составе — backend и other.
+          nestedRepos: ['backend', 'other'],
+          repoChecks: new Map([
+            ['backend', 'exit 0'],
+            ['other', 'exit 0'],
+          ]),
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /не совпадает с действующим/);
+        return true;
+      },
     );
+  });
+
+  it('патч дорожки, двигающий gitlink объявленного каталога, отказывает названной причиной', async () => {
+    const project = makeCompositeProject(GITLINK_LANE_PIPELINE);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
+    assert.equal(result.status, 'success');
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    const rootBefore = commitCount(project);
+    const backendBefore = commitCountAt(project.path('backend'));
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+      nestedRepos: ['backend'],
+      repoChecks,
+    });
+
+    assert.equal(outcomes[0]?.kind, 'conflict');
+    assert.match((outcomes[0] as { reason: string }).reason, /gitlink/);
+    assert.match((outcomes[0] as { reason: string }).reason, /backend/);
+
+    assert.equal(commitCount(project), rootBefore, 'дерево не тронуто');
+    assert.equal(commitCountAt(project.path('backend')), backendBefore, 'часть не тронута');
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'failed');
+  });
+
+  it('обрыв между коммитами отказывает, называя репозитории с коммитом и без', async () => {
+    const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE, ['other']);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend', 'other']));
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    // Симулирует прошлое сведение, оборвавшееся между коммитами: код уже
+    // закоммичен в backend сообщением дорожки, а очередь исхода не несёт.
+    writeFileSync(join(project.path('backend'), 'partial.txt'), 'частично\n');
+    gitCommit(project.path('backend'), 'a-item: A');
+
+    await assert.rejects(
+      () =>
+        mergeLanes({
+          paths: result.journal.paths,
+          cwd: project.root,
+          lanes: ['a'],
+          check: 'exit 0',
+          file: backlogFile,
+          nestedRepos: ['backend', 'other'],
+          repoChecks: new Map([
+            ['backend', 'exit 0'],
+            ['other', 'exit 0'],
+          ]),
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.exitCode, ExitCode.configError);
+        assert.match(error.message, /backend/);
+        assert.match(error.message, /a-item/);
+        // «Без коммита» называет только тех, кому коммит полагался: дорожка
+        // `other` не касалась вовсе, и звать читателя искать недостающий
+        // коммит там отказ не вправе.
+        assert.doesNotMatch(error.message, /other/);
+        return true;
+      },
+    );
+
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'in_progress', 'очередь не тронута отказом');
+  });
+
+  it('пункт со статусом done не даёт ложного срабатывания диагностики обрыва', async () => {
+    const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'Заголовок A');
+
+    // Настоящее успешное сведение оставляет ровно то же сочетание — коммит
+    // `a-item: …` в backend, — но с проставленным в очереди исходом.
+    const first = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+      nestedRepos: ['backend'],
+      repoChecks,
+    });
+    assert.equal(first[0]?.kind, 'merged');
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'done');
+
+    // Повторный заход по той же дорожке не имеет права упасть на диагностике
+    // обрыва — пункт уже done, ложного срабатывания здесь нет по определению.
+    let brokenMergeDetected = false;
+    try {
+      await mergeLanes({
+        paths: result.journal.paths,
+        cwd: project.root,
+        lanes: ['a'],
+        check: 'exit 0',
+        file: backlogFile,
+        nestedRepos: ['backend'],
+        repoChecks,
+      });
+    } catch (error) {
+      if (error instanceof StepcastError && /оборвал/.test(error.message)) brokenMergeDetected = true;
+      else throw error;
+    }
+    assert.equal(brokenMergeDetected, false);
+  });
+
+  it('очередь игнорируется репозиторием очереди: его коммит пропускается без отказа', async () => {
+    // Гитлинки асимметричны: коммит в `backend` неизбежно двигает запись
+    // корня о нём, поэтому «нечего коммитить» честно проверяется на
+    // репозитории, который дорожка не затрагивает и который не является
+    // корнем, — только там нет никакого чужого повода стать «грязным».
+    const project = makeCompositeProject(BACKEND_ONLY_LANE_PIPELINE, ['queue-repo']);
+    writeFileSync(join(project.path('queue-repo'), '.gitignore'), 'backlog.md\n');
+    gitCommit(project.path('queue-repo'), 'добавлен .gitignore');
+    // Гитлинк корня на `queue-repo` сдвинулся вместе с этим коммитом — синхронизировать
+    // его коммитом в корне, иначе дерево запуска само окажется нечистым.
+    commit(project, 'подхвачен новый коммит queue-repo');
+
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend', 'queue-repo']));
+
+    const backlogFile = join(project.path('queue-repo'), 'backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    const backendBefore = commitCountAt(project.path('backend'));
+    const queueRepoBefore = commitCountAt(project.path('queue-repo'));
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+      nestedRepos: ['backend', 'queue-repo'],
+      repoChecks,
+    });
+
+    assert.equal(outcomes[0]?.kind, 'merged');
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'done');
+    assert.equal(commitCountAt(project.path('backend')), backendBefore + 1, 'backend несёт вклад дорожки');
+    assert.equal(
+      commitCountAt(project.path('queue-repo')),
+      queueRepoBefore,
+      'коммитить в репозитории очереди было нечего — файл игнорируется',
+    );
+    // Корень ведёт `backend` гитлинком: коммит в части сдвинул его запись, и
+    // корневой коммит обязан её подхватить — иначе дерево запуска остаётся
+    // грязным, и головное предусловие следующего захода упирается в него.
+    assert.equal(porcelainAt(project.root), '', 'корень чист после сведения');
+    assert.equal(headMessageAt(project.root), 'a-item: A');
+    // Перечень исхода называет только те репозитории, где коммит возник:
+    // репозиторий очереди, где коммитить было нечего, в него не попадает.
+    if (outcomes[0]?.kind === 'merged') assert.deepEqual([...outcomes[0].repos], ['backend', '.']);
+  });
+
+  it('негодная дорожка и дорожка без пункта не роняют обход из-за неназванной проверки', async () => {
+    const project = makeCompositeProject(MIXED_LANES_PIPELINE);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+    // Дорожке `c` пункт не доставался — файла `item-c.json` нет вовсе.
+
+    // Команда проверки объявлена только у корня: `backend` затрагивают лишь
+    // дорожки, которые до наложения не дойдут ни при какой конфигурации.
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a', 'b', 'c'],
+      check: 'exit 0',
+      file: backlogFile,
+      nestedRepos: ['backend'],
+    });
+
+    assert.equal(outcomes[0]?.kind, 'merged', JSON.stringify(outcomes[0]));
+    assert.equal(outcomes[1]?.kind, 'unfit');
+    assert.equal(outcomes[2]?.kind, 'no_item');
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'done');
   });
 });
 
@@ -853,15 +1351,11 @@ describe('core: mergeLanes — предусловие чистого дерев�
     assert.equal(readFileSync(backlogFile, 'utf8'), backlogItem('a-item'), 'очередь не правлена');
   });
 
-  /**
-   * Отметку `done` пишет `finishItem`, а коммитит `commitAll` в корне —
-   * корневой `git add -A` во вложенный репозиторий не заглядывает. Свести
-   * такую очередь значило бы оставить её отметку незакоммиченной в дереве,
-   * чистоты которого требует головное предусловие следующего захода: петля
-   * встала бы, а не починилась. Коммит по вложенным репозиториям —
-   * `merge-lanes-per-repo`; до него это отказ, а не половина возможности.
-   */
-  it('очередь внутри вложенного репозитория — отказ до первого наложения', async () => {
+  // Задача 5.5 / t9 (merge-lanes-per-repo): отказ «очередь внутри вложенного
+  // репозитория» снят — репозиторий, в чьём дереве лежит файл очереди,
+  // коммитится последним, неся отметку `done`; корневой вклад дорожки ложится
+  // отдельным, более ранним коммитом.
+  it('очередь внутри вложенного репозитория коммитится последней, неся отметку done', async () => {
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     writeFileSync(project.path('.gitignore'), 'backend/\n');
@@ -879,28 +1373,24 @@ describe('core: mergeLanes — предусловие чистого дерев�
     const backlogFile = join(nestedDir, 'backlog.md');
     writeFileSync(backlogFile, backlogItem('a-item'));
     writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
-    const before = commitCount(project);
+    const rootBefore = commitCount(project);
+    const backendBefore = commitCountAt(nestedDir);
 
-    await assert.rejects(
-      () =>
-        mergeLanes({
-          paths: result.journal.paths,
-          cwd: project.root,
-          lanes: ['a'],
-          check: 'exit 0',
-          file: backlogFile,
-          nestedRepos: ['backend'],
-        }),
-      (error: unknown) => {
-        assert.ok(error instanceof StepcastError);
-        assert.match(error.message, /очеред[иь].*backend/i);
-        return true;
-      },
-    );
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+      nestedRepos: ['backend'],
+    });
 
-    assert.equal(commitCount(project), before, 'дерево не тронуто');
-    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'in_progress', 'очередь не правлена');
-    assert.equal(existsSync(project.path('a.txt')), false, 'дорожка не накладывалась');
+    assert.equal(outcomes[0]?.kind, 'merged');
+    assert.equal(commitCount(project), rootBefore + 1, 'корень несёт вклад дорожки — файл a.txt');
+    assert.equal(commitCountAt(nestedDir), backendBefore + 1, 'вложенный репозиторий коммитит отметку done');
+    assert.equal(headMessageAt(nestedDir), 'a-item: A');
+    assert.equal(existsSync(project.path('a.txt')), true, 'дорожка наложена в корень');
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'done');
   });
 
   it('очередь в корне многорепного дерева сведению не мешает', async () => {

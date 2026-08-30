@@ -29,7 +29,7 @@ function fingerprintOf(nested: readonly string[]): string {
   return createHash('sha256').update(nested.join('\n')).digest('hex').slice(0, 12);
 }
 
-interface ParsedId {
+export interface CompositeAnchorId {
   readonly fingerprint: string;
   readonly root: string;
   /** Части в порядке канонического состава этого якоря. */
@@ -38,11 +38,13 @@ interface ParsedId {
 
 /**
  * Разобрать идентификатор составного якоря обратно на отпечаток и части.
- * Разбор отвечает только за форму записи; принадлежность разобранного
- * идентификатора действующему составу проверяет `parseOwn` — сверкой с
- * отпечатком самого якоря (см. design.md, решение 4).
+ * Единственное место движка, знающее форму записи (design.md, решение 2):
+ * внутренний `parseOwn` и наложение по репозиториям (`run/apply.ts`) зовут
+ * этот же разбор, второго в движке нет. Разбор отвечает только за форму
+ * записи; принадлежность идентификатора действующему составу проверяет
+ * `checkCompositeComposition` — сверкой с отпечатком самого якоря.
  */
-function parseId(id: string): ParsedId | undefined {
+export function splitCompositeAnchorId(id: string): CompositeAnchorId | undefined {
   const segments = id.split('+');
   if (segments.length < 2) return undefined;
   const [fingerprint, root, ...parts] = segments;
@@ -50,6 +52,43 @@ function parseId(id: string): ParsedId | undefined {
   if (root === undefined || root === '') return undefined;
   if (parts.some((part) => part === '')) return undefined;
   return { fingerprint, root, parts };
+}
+
+export type CompositeCompositionCheck =
+  | { readonly ok: true; readonly parsed: CompositeAnchorId }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Разобрать идентификатор **в действующий состав**, а не просто в форму
+ * записи.
+ *
+ * Сверка ведётся с отпечатком, которым состав склеен в id (`fingerprintOf`),
+ * а не между двумя чужими идентификаторами: два состояния другого состава
+ * равны по отпечатку друг другу и разошлись бы только с сегодняшним. Без этой
+ * сверки oid части чужого состава ушёл бы в `diff-tree`/`checkout`/`git
+ * apply` сегодняшней части — то есть исключением из git или, при общей базе
+ * объектов, молча неверным результатом. Действующий состав приводится к
+ * каноническому порядку здесь же, вызывающему коду сортировать не нужно.
+ */
+export function checkCompositeComposition(
+  id: string,
+  nested: readonly string[],
+): CompositeCompositionCheck {
+  const parsed = splitCompositeAnchorId(id);
+  if (parsed === undefined) {
+    return { ok: false, reason: `идентификатор ${id} не в форме составного якоря` };
+  }
+  const canonical = [...nested].sort();
+  const fingerprint = fingerprintOf(canonical);
+  if (parsed.fingerprint !== fingerprint || parsed.parts.length !== canonical.length) {
+    return {
+      ok: false,
+      reason: `состав вложенных репозиториев состояния ${id} не совпадает с действующим (${
+        canonical.length === 0 ? '(нет)' : canonical.join(', ')
+      })`,
+    };
+  }
+  return { ok: true, parsed };
 }
 
 export function createCompositeAnchorer(options: CompositeAnchorerOptions): TreeAnchorer {
@@ -87,31 +126,8 @@ export function createCompositeAnchorer(options: CompositeAnchorerOptions): Tree
   // так объявленные друг в друге части (`a`, `a/b`) не путаются.
   const byLengthDesc = [...nested].sort((a, b) => b.length - a.length);
 
-  const describeComposition = (): string => (nested.length === 0 ? '(нет)' : nested.join(', '));
-
-  /**
-   * Разобрать идентификатор **в действующий состав**.
-   *
-   * Сверка ведётся с отпечатком самого якоря, а не между двумя чужими
-   * идентификаторами: два состояния другого состава равны по отпечатку друг
-   * другу и разошлись бы только с сегодняшним. Без этой сверки oid части
-   * чужого состава ушёл бы в `diff-tree`/`checkout` сегодняшней части — то
-   * есть исключением из git или, при общей базе объектов, молча неверным
-   * перечнем путей с неверным префиксом.
-   */
-  const parseOwn = (id: string): { ok: true; parsed: ParsedId } | { ok: false; reason: string } => {
-    const parsed = parseId(id);
-    if (parsed === undefined) {
-      return { ok: false, reason: `идентификатор ${id} не в форме составного якоря` };
-    }
-    if (parsed.fingerprint !== fingerprint || parsed.parts.length !== nested.length) {
-      return {
-        ok: false,
-        reason: `состав вложенных репозиториев состояния ${id} не совпадает с действующим (${describeComposition()})`,
-      };
-    }
-    return { ok: true, parsed };
-  };
+  /** Разобрать идентификатор в действующий состав этого якоря — тонкая обёртка над экспортом. */
+  const parseOwn = (id: string): CompositeCompositionCheck => checkCompositeComposition(id, nested);
 
   const foreignKindReason = (kind: string): string =>
     `состояния сняты способом ${kind}, а действующий якорь — составной`;

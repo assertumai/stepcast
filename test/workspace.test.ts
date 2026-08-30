@@ -1418,12 +1418,22 @@ jobs:
     );
   });
 
-  // Задача 6 (nested-repo-isolation): составной прогон снят в git, но патч
-  // склеен из разных баз объектов — отказ называет составной способ, а не
-  // притворяется «прогон снят вне git».
-  it('отклоняет наложение составного прогона, называя составной способ, и не трогает дерево', async () => {
+  // Задача 2.5 (merge-lanes-per-repo): составной прогон накладывается по
+  // репозиториям — правки корня и части ложатся каждая в свой репозиторий.
+  it('переносит вклад составного прогона в корень и в объявленный вложенный репозиторий', async () => {
     const project = makeProject({
-      'stepcast.yml': pipelineWriting('worktree'),
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: составной-возврат
+workspace: { mode: worktree }
+jobs:
+  build:
+    steps:
+      - id: touch
+        run: [sh, -c, 'printf "root\\n" > root.txt; printf "site\\n" > public-site/site.txt']
+        expect: [{ exit_code: 0 }]
+`,
       'public-site/.gitkeep': '',
     });
     gitInit(project);
@@ -1434,16 +1444,152 @@ jobs:
     const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
     assert.equal(result.status, 'success');
 
-    const rootHeadBefore = execFileSync('git', ['-C', project.root, 'rev-parse', 'HEAD'], {
+    const outcome = applyRun({ paths: result.journal.paths, cwd: project.root, nestedRepos: ['public-site'] });
+
+    assert.equal(outcome.kind, 'applied');
+    assert.equal(readFileSync(project.path('root.txt'), 'utf8'), 'root\n');
+    assert.equal(readFileSync(project.path('public-site/site.txt'), 'utf8'), 'site\n');
+  });
+
+  it('конфликт в части откатывает и её, и уже наложенный корень, называя конфликтующие пути', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: составной-конфликт
+workspace: { mode: worktree }
+jobs:
+  build:
+    steps:
+      - id: touch
+        run: [sh, -c, 'printf "root\\n" > root.txt; printf "строка один\\nправка прогона\\nстрока три\\n" > public-site/спорный.txt']
+        expect: [{ exit_code: 0 }]
+`,
+      'public-site/спорный.txt': 'строка один\nстрока два\nстрока три\n',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    commit(project, 'первый');
+
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+
+    // Пользователь правит ту же строку части по-своему, до наложения.
+    project.write('public-site/спорный.txt', 'строка один\nправка пользователя\nстрока три\n');
+    const rootHeadBefore = execFileSync('git', ['-C', project.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+    const partHeadBefore = execFileSync('git', ['-C', project.path('public-site'), 'rev-parse', 'HEAD'], {
       encoding: 'utf8',
     });
 
     assert.throws(
-      () => applyRun({ paths: result.journal.paths, cwd: project.root }),
+      () => applyRun({ paths: result.journal.paths, cwd: project.root, nestedRepos: ['public-site'] }),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
-        assert.match(error.message, /составным способом/);
-        assert.match(error.hint ?? '', /merge-lanes-per-repo/);
+        assert.match(error.message, /не сошлось/);
+        assert.match(error.hint ?? '', /спорный\.txt/);
+        return true;
+      },
+    );
+
+    assert.equal(existsSync(project.path('root.txt')), false, 'уже наложенный корень откатан');
+    assert.equal(
+      readFileSync(project.path('public-site/спорный.txt'), 'utf8'),
+      'строка один\nправка пользователя\nстрока три\n',
+      'правка пользователя в части сохранена, а не затёрта попыткой',
+    );
+    assert.equal(
+      execFileSync('git', ['-C', project.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }),
+      rootHeadBefore,
+    );
+    assert.equal(
+      execFileSync('git', ['-C', project.path('public-site'), 'rev-parse', 'HEAD'], { encoding: 'utf8' }),
+      partHeadBefore,
+    );
+  });
+
+  it('состояние чужого состава отказывает, называя расхождение, и не трогает дерева', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: составной-чужой-состав
+workspace: { mode: worktree }
+jobs:
+  build:
+    steps: [{ id: touch, run: [sh, -c, 'printf "root\\n" > root.txt'], expect: [{ exit_code: 0 }] }]
+`,
+      'public-site/.gitkeep': '',
+      'vendor-sdk/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    gitInitDir(project.path('vendor-sdk'));
+    gitCommit(project.path('vendor-sdk'), 'начало другой части');
+    commit(project, 'первый');
+
+    // Прогон снят на составе из одного public-site.
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+
+    const rootHeadBefore = execFileSync('git', ['-C', project.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+
+    assert.throws(
+      // Наложение вызвано при другом составе — public-site и vendor-sdk.
+      () => applyRun({ paths: result.journal.paths, cwd: project.root, nestedRepos: ['public-site', 'vendor-sdk'] }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /не совпадает с действующим/);
+        return true;
+      },
+    );
+
+    assert.equal(existsSync(project.path('root.txt')), false, 'дерево не тронуто');
+    assert.equal(
+      execFileSync('git', ['-C', project.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }),
+      rootHeadBefore,
+    );
+  });
+
+  // Задача 2.2 (merge-lanes-per-repo): запись gitlink объявленного каталога
+  // двигает коммит внутри части, которого прогон никогда не делает сам, —
+  // такое состояние движок не порождает, и наложение обязано его назвать.
+  it('патч, двигающий gitlink объявленного каталога, отказывает названной причиной', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: составной-gitlink
+workspace: { mode: worktree }
+jobs:
+  build:
+    steps:
+      - id: touch
+        run: [sh, -c, 'cd public-site && git commit --allow-empty -m "коммит части (тест)"']
+        expect: [{ exit_code: 0 }]
+`,
+      'public-site/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('public-site'));
+    gitCommit(project.path('public-site'), 'начало части');
+    commit(project, 'первый');
+
+    const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
+    assert.equal(result.status, 'success');
+
+    const rootHeadBefore = execFileSync('git', ['-C', project.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+    const partHeadBefore = execFileSync('git', ['-C', project.path('public-site'), 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+    });
+
+    assert.throws(
+      () => applyRun({ paths: result.journal.paths, cwd: project.root, nestedRepos: ['public-site'] }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /gitlink/);
+        assert.match(error.message, /public-site/);
         return true;
       },
     );
@@ -1451,7 +1597,12 @@ jobs:
     assert.equal(
       execFileSync('git', ['-C', project.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }),
       rootHeadBefore,
-      'дерево проекта не должно быть тронуто отказавшим наложением',
+      'корень не тронут',
+    );
+    assert.equal(
+      execFileSync('git', ['-C', project.path('public-site'), 'rev-parse', 'HEAD'], { encoding: 'utf8' }),
+      partHeadBefore,
+      'часть не тронута',
     );
   });
 });
@@ -1549,7 +1700,9 @@ jobs:
     assert.equal(readFileSync(project.path('спорный.txt'), 'utf8'), beforeApply);
   });
 
-  it('отклоняет наложение составной дорожки, называя составной способ', async () => {
+  // Задача 2.4/2.5 (merge-lanes-per-repo): `apply --lane` зовёт тот же
+  // помощник наложения по репозиториям, что и наложение прогона целиком.
+  it('накладывает составную дорожку по репозиториям — правки корня и части ложатся каждая в свой', async () => {
     const project = makeProject({
       'stepcast.yml': `
 version: 1
@@ -1559,7 +1712,10 @@ workspace: { mode: worktree }
 jobs:
   build:
     lane: a
-    steps: [{ id: s, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+    steps:
+      - id: s
+        run: [sh, -c, 'printf "root\\n" > root.txt; printf "site\\n" > public-site/site.txt']
+        expect: [{ exit_code: 0 }]
 `,
       'public-site/.gitkeep': '',
     });
@@ -1571,15 +1727,16 @@ jobs:
     const result = await runWithConfig(project, withNestedRepos(project, ['public-site']));
     assert.equal(result.status, 'success');
 
-    assert.throws(
-      () => applyRun({ paths: result.journal.paths, cwd: project.root, lane: 'a' }),
-      (error: unknown) => {
-        assert.ok(error instanceof StepcastError);
-        assert.match(error.message, /составным способом/);
-        assert.match(error.hint ?? '', /merge-lanes-per-repo/);
-        return true;
-      },
-    );
+    const outcome = applyRun({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lane: 'a',
+      nestedRepos: ['public-site'],
+    });
+
+    assert.equal(outcome.kind, 'applied');
+    assert.equal(readFileSync(project.path('root.txt'), 'utf8'), 'root\n');
+    assert.equal(readFileSync(project.path('public-site/site.txt'), 'utf8'), 'site\n');
   });
 });
 

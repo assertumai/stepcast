@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { evaluateLane, knownLanes } from '../src/core/lanes/lanes.js';
-import { assertCleanTree, commitAll, currentCommit, resetToCommit } from '../src/core/lanes/tree.js';
+import { assertCleanTree, commitAll, currentCommit, headMessage, resetToCommit } from '../src/core/lanes/tree.js';
 import { runCheck } from '../src/core/lanes/check.js';
 import { hasLaneItem, readLaneItem, takenLanes } from '../src/core/lanes/item.js';
 import { StepcastError } from '../src/core/errors.js';
@@ -400,6 +400,39 @@ describe('lanes: tree', () => {
     assert.equal(after, before + 1);
     const message = execFileSync('git', ['-C', dir, 'log', '-1', '--format=%s'], { encoding: 'utf8' }).trim();
     assert.equal(message, 'a-item: заголовок');
+  });
+
+  // Задача 3.1 (merge-lanes-per-repo): репозиторий очереди коммитится, даже
+  // когда дорожка его дифом не задела, — а когда коммитить нечего вовсе
+  // (файл очереди не отслеживается этим репозиторием), это не отказ.
+  it('commitAll пропускает коммит на пустом индексе и сообщает об этом вызывающему', () => {
+    const dir = makeRepo();
+    const before = currentCommit(dir);
+
+    const committed = commitAll(dir, 'a-item: заголовок');
+
+    assert.equal(committed, false);
+    assert.equal(currentCommit(dir), before, 'HEAD не сдвинулся');
+  });
+
+  it('commitAll возвращает true, когда коммит сделан', () => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, 'a.txt'), 'от a\n');
+
+    assert.equal(commitAll(dir, 'a-item: заголовок'), true);
+  });
+
+  it('headMessage читает сообщение последнего коммита и undefined на репозитории без коммитов', () => {
+    const dir = makeRepo();
+    assert.equal(headMessage(dir), 'первый');
+
+    writeFileSync(join(dir, 'a.txt'), 'от a\n');
+    commitAll(dir, 'a-item: заголовок');
+    assert.equal(headMessage(dir), 'a-item: заголовок');
+
+    const empty = mkdtempSync(join(tmpdir(), 'stepcast-lanes-tree-empty-'));
+    gitInit(empty);
+    assert.equal(headMessage(empty), undefined);
   });
 });
 

@@ -9,6 +9,8 @@ export type { Anchor, AnchorComparison, AnchorKind, TreeAnchorer } from './types
 export { restorable, sameAnchor } from './types.js';
 export { isGitWorktree } from './git.js';
 export { loadIgnoreRules } from './ignore.js';
+export type { CompositeAnchorId, CompositeCompositionCheck } from './composite.js';
+export { checkCompositeComposition, splitCompositeAnchorId } from './composite.js';
 
 /**
  * Способ фиксации выбирается один раз на прогон по факту наличия репозитория и

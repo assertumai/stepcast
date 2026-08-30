@@ -3,7 +3,7 @@ import { resolve as resolvePath } from 'node:path';
 import { resolveConfig, type Config } from '../../core/config/resolve.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { findProjectRoot, projectKey, runPaths, shortRunId } from '../../core/journal/paths.js';
-import { readManifest, readStatus } from '../../core/journal/reader.js';
+import { readStatus } from '../../core/journal/reader.js';
 import type { Event } from '../../core/journal/schema.js';
 import { hasErrors, lintPipeline } from '../../core/lint.js';
 import { expandPipeline } from '../../core/pipeline/expand.js';
@@ -77,14 +77,7 @@ export async function runRunCommand(
       for (const job of isolated) {
         write(`  ${job.id} (${job.workspace?.mode}): ${job.workspace?.path}`);
       }
-      // Составной прогон не предлагает apply: патч склеен из патчей разных
-      // баз объектов, и накладывать его нужно по репозиторию — этого движок
-      // пока не умеет (design.md, решение 10).
-      if (readManifest(result.journal.paths).anchor_kind === 'composite') {
-        write('наложение недоступно: прогон снят составным способом фиксации — накладывать нужно по репозиторию (см. merge-lanes-per-repo)');
-      } else {
-        write(`наложить результат на текущее дерево: stepcast apply ${runId}`);
-      }
+      write(`наложить результат на текущее дерево: stepcast apply ${runId}`);
     }
 
     return result.exitCode;
