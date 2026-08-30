@@ -341,9 +341,53 @@
           "minItems": 1,
           "type": "array",
           "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "\\S"
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "dir": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "check": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "spec": {
+                    "type": "object",
+                    "properties": {
+                      "dir": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S"
+                      },
+                      "rules": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S"
+                      },
+                      "tool": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "\\S"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "dir"
+                ],
+                "additionalProperties": false
+              }
+            ]
           }
         }
       },

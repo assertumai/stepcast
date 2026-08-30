@@ -10,6 +10,15 @@ description: Устранить находки ревью до зелёной о
 
 params:
   change: { type: string, required: true }
+  # Каталог, команда проверки и практика спецификации выбранного репозитория
+  # — та же причина, что в implement.yml: пункт очереди мог назвать вложенный
+  # репозиторий, и правка находки обязана гнать проверку и инструмент именно
+  # его.
+  repo_dir: { type: string, required: true }
+  check: { type: string, required: true }
+  spec_dir: { type: string, required: true }
+  spec_rules: { type: string, required: true }
+  spec_tool: { type: string, required: true }
 
 session: shared
 
@@ -17,7 +26,7 @@ session: shared
 # находки правит код и обязано соблюдать ту же практику репозитория, включая
 # то, что она требует обновить по итогам правки.
 context:
-  - path: ${project.spec.rules}
+  - path: ${params.spec_rules}
     mode: inline
 
 output:
@@ -27,11 +36,12 @@ output:
 until:
   max_iterations: 2
   check:
-    - cmd: ${project.check}
-    # Инструмент практики спецификации — по той же причине, что в
-    # implement.yml: устранение находки правит документы изменения наравне с
-    # кодом, и ломает их так же незаметно.
-    - cmd: ${project.spec.tool} validate "${params.change}" --strict
+    # cd, а не поле cwd шага: см. verify.yml.
+    - cmd: cd "${params.repo_dir}" && ${params.check}
+    # Инструмент практики спецификации выбранного репозитория — по той же
+    # причине, что в implement.yml: устранение находки правит документы
+    # изменения наравне с кодом, и ломает их так же незаметно.
+    - cmd: cd "${params.repo_dir}" && ${params.spec_tool} validate "${params.change}" --strict
 
 steps:
   # Модель того же класса, что и у ревью: находки сформулировал opus, и модель
@@ -61,12 +71,12 @@ steps:
       - schema: ../schemas/implement.json
       - changed_only:
           # Раскладка репозитория — объявлена project.edit_paths, а не здесь:
-          # см. implement.yml.
+          # см. implement.yml. Остаётся корневой.
           - ${project.edit_paths}
-          # Каталог документов изменения объявлен project.spec, отдельным
-          # ключом: см. implement.yml.
-          - ${project.spec.dir}/**
-          - ${project.spec.rules}
+          # Каталог документов изменения — параметром выбранного репозитория:
+          # см. implement.yml.
+          - ${params.spec_dir}/**
+          - ${params.spec_rules}
           # Устройство петли: каталог .stepcast/ задаёт движок, а не
           # репозиторий — тот же критерий, по которому литералом осталось
           # Bash(git status*).

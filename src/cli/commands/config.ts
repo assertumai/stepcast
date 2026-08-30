@@ -20,6 +20,26 @@ const DURATION_KEYS = new Set([
 ]);
 const MONEY_KEYS = new Set(['limits.cost']);
 
+/**
+ * Элемент `project.nested_repos` в отчёте: строковая форма печатается как
+ * есть, объектная — каталогом с объявлениями в скобках, потому что счётчик
+ * скрыл бы ровно то, ради чего вложенный репозиторий их объявил.
+ */
+function describeNestedRepoEntry(item: unknown): string {
+  if (typeof item !== 'object' || item === null) return String(item);
+
+  const raw = item as Record<string, unknown>;
+  const dir = typeof raw.dir === 'string' ? raw.dir : '?';
+  const parts: string[] = [];
+  if (typeof raw.check === 'string') parts.push(`check: ${raw.check}`);
+  const spec = raw.spec as Record<string, unknown> | undefined;
+  if (typeof spec?.dir === 'string') parts.push(`spec.dir: ${spec.dir}`);
+  if (typeof spec?.rules === 'string') parts.push(`spec.rules: ${spec.rules}`);
+  if (typeof spec?.tool === 'string') parts.push(`spec.tool: ${spec.tool}`);
+
+  return parts.length === 0 ? dir : `${dir} (${parts.join(', ')})`;
+}
+
 function renderValue(path: string, value: unknown): string {
   if (typeof value === 'number') {
     if (TOKEN_KEYS.has(path)) return formatTokens(value);
@@ -32,12 +52,8 @@ function renderValue(path: string, value: unknown): string {
   // а состав, и счётчик скрыл бы единственное, что в отчёте имеет смысл, —
   // сами значения.
   if (Array.isArray(value)) {
-    if (
-      path === 'project.tools' ||
-      path === 'project.edit_paths' ||
-      path === 'project.nested_repos'
-    )
-      return value.join(', ');
+    if (path === 'project.tools' || path === 'project.edit_paths') return value.join(', ');
+    if (path === 'project.nested_repos') return value.map(describeNestedRepoEntry).join(', ');
     return `${value.length} шаблонов`;
   }
   return String(value);

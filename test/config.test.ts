@@ -631,13 +631,29 @@ describe('stepcast-configuration', () => {
     assert.equal(describeSource(provenance.get('project.nested_repos')!), box.projectPath);
   });
 
-  // Задача 1.3 / Сценарий: «Хвостовой разделитель, повторы и порядок нормализуются»
-  it('нормализует project.nested_repos: хвостовой разделитель, повторы, порядок', () => {
+  // Задача 1.3 / Сценарий: «Хвостовой разделитель нормализуется, порядок канонический»
+  it('нормализует project.nested_repos: хвостовой разделитель и порядок', () => {
     const box = sandbox({
-      project: 'project:\n  nested_repos: ["public-site/", "public-site", "vendor/sdk"]\n',
+      project: 'project:\n  nested_repos: ["public-site/", "vendor/sdk"]\n',
     });
     const { config } = resolveIn(box);
     assert.deepEqual(config.project.nestedRepos, ['public-site', 'vendor/sdk']);
+  });
+
+  // Задача 2.1 / Сценарий: «Повтор каталога в составе» — теперь отказ, а не тихий дубликат
+  it('отклоняет повтор каталога в project.nested_repos, называя каталог', () => {
+    const box = sandbox({
+      project: 'project:\n  nested_repos: ["public-site/", "public-site", "vendor/sdk"]\n',
+    });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /public-site/);
+        assert.equal(error.at, 'project.nested_repos');
+        return true;
+      },
+    );
   });
 
   // Задача 1.7 / Сценарий: «Ключ не объявлен»
@@ -752,6 +768,120 @@ describe('stepcast-configuration', () => {
     assert.match(line, /public-site, vendor\/sdk/);
     assert.doesNotMatch(line, /шаблон/);
     assert.match(line, new RegExp(box.projectPath.replace(/[/\\]/g, '\\$&')));
+  });
+});
+
+describe('stepcast-configuration: объектная форма project.nested_repos', () => {
+  const OBJECT_ITEM =
+    'project:\n  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n';
+
+  it('разбирается, а состав дерева содержит каталог наравне со строковой формой', () => {
+    const box = sandbox({ project: OBJECT_ITEM });
+    const { config } = resolveIn(box);
+    assert.deepEqual(config.project.nestedRepos, ['backend']);
+  });
+
+  it('объявления доступны картой по каталогу', () => {
+    const box = sandbox({ project: OBJECT_ITEM });
+    const { config } = resolveIn(box);
+    const declaration = config.project.nestedRepoDeclarations?.get('backend');
+    assert.ok(declaration !== undefined);
+    assert.equal(declaration.check, './gradlew check');
+    assert.deepEqual(declaration.spec, { dir: 'docs/changes', rules: 'docs/spec-rules.md', tool: 'openspec' });
+  });
+
+  it('строковая форма не несёт объявлений: карта не содержит записи для неё', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos: [public-site]\n' });
+    const { config } = resolveIn(box);
+    assert.equal(config.project.nestedRepoDeclarations?.has('public-site'), false);
+  });
+
+  it('обе формы в одном составе — каждый читает своё', () => {
+    const box = sandbox({
+      project:
+        'project:\n  nested_repos:\n    - public-site\n    - dir: backend\n      check: "./gradlew check"\n',
+    });
+    const { config } = resolveIn(box);
+    assert.deepEqual(config.project.nestedRepos, ['backend', 'public-site']);
+    assert.equal(config.project.nestedRepoDeclarations?.has('public-site'), false);
+    assert.equal(config.project.nestedRepoDeclarations?.get('backend')?.check, './gradlew check');
+  });
+
+  // Сценарий: «Элемент без каталога»
+  it('отклоняет объект без dir', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos:\n    - check: npm run check\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.at ?? '', /dir/);
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет объект с пустым dir', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos:\n    - dir: ""\n' });
+    assert.throws(() => resolveIn(box), StepcastError);
+  });
+
+  // Сценарий: «Недопустимые значения объявлений» — та же диагностика, что у project.check/project.spec
+  it('отклоняет пустой check той же диагностикой, что project.check', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos:\n    - dir: backend\n      check: "   "\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.at ?? '', /check/);
+        assert.match(error.message, /Too small/);
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет абсолютный путь practice.spec.dir той же диагностикой, что project.spec.dir', () => {
+    const box = sandbox({
+      project: 'project:\n  nested_repos:\n    - dir: backend\n      spec:\n        dir: /abs/path\n',
+    });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.at ?? '', /spec\.dir/);
+        assert.match(error.message, /относительный путь/);
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет символ шаблона глоба в dir объектной формы', () => {
+    const box = sandbox({ project: 'project:\n  nested_repos:\n    - dir: "backend/*"\n' });
+    assert.throws(() => resolveIn(box), StepcastError);
+  });
+
+  // Сценарий: «Повтор каталога в составе» — в любых формах
+  it('отклоняет повтор каталога между строковой и объектной формами', () => {
+    const box = sandbox({
+      project: 'project:\n  nested_repos:\n    - backend\n    - dir: backend\n      check: npm run check\n',
+    });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /backend/);
+        return true;
+      },
+    );
+  });
+
+  it('печатает объявление вложенного репозитория в отчёте stepcast config', () => {
+    const box = sandbox({ project: OBJECT_ITEM });
+    const lines = renderConfigReport(resolveIn(box));
+    const line = lines.find((item) => item.startsWith('project.nested_repos'));
+    assert.ok(line !== undefined);
+    assert.match(line, /backend/);
+    assert.match(line, /gradlew check/);
+    assert.match(line, /docs\/changes/);
   });
 });
 

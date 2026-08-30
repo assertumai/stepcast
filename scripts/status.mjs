@@ -348,12 +348,25 @@ function mergeLimitations(base, fragments) {
   return blocks.filter((block) => !revoked.has(block.lead));
 }
 
+/**
+ * Разделитель ячейки внутри текста строки таблицы. GFM не защищает `|` ничем —
+ * ни инлайн-кодом, ни кавычками: единственная запись литерального разделителя
+ * — экранирование обратной косой. Без него клауза, называющая конвейер
+ * (`a | b`), рвётся на четыре ячейки, и хвост при отрисовке отбрасывается —
+ * молча, потому что документ остаётся валидным Markdown и `--check` расхождения
+ * не видит. Уже экранированный разделитель повторно не трогается: иначе
+ * фрагмент, написанный с `\|` руками, получил бы в документе видимую косую.
+ */
+function cell(text) {
+  return text.replace(/(?<!\\)\|/g, '\\|');
+}
+
 function render(intro, works, missing, limitations, notes) {
   const lines = ['# Что реализовано', '', intro, '', '## Работает', '', '| | |', '|---|---|'];
-  for (const row of works) lines.push(`| ${row.key} | ${row.text} |`);
+  for (const row of works) lines.push(`| ${cell(row.key)} | ${cell(row.text)} |`);
 
   lines.push('', '## Пока нет', '', '| Возможность | Что происходит при попытке |', '|---|---|');
-  for (const row of missing) lines.push(`| ${row.key} | ${row.text} |`);
+  for (const row of missing) lines.push(`| ${cell(row.key)} | ${cell(row.text)} |`);
 
   if (limitations.length > 0) {
     lines.push(

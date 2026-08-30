@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative as relativePath, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import { parse as parseYaml } from 'yaml';
 
 import { createFakeBackend, initLine, resultLine } from '../src/core/backend/fake.js';
+import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { readStatus } from '../src/core/journal/reader.js';
 import { runPipeline } from '../src/core/run/runner.js';
@@ -118,19 +119,69 @@ describe('self-improvement-loop: переносимость файлов пет�
 
   /**
    * Файл, названный объявлением, обязан существовать. Линт этого не увидит:
-   * `${project.spec.rules}` в `implement.yml` и `propose.yml` — путь с
-   * подстановкой, но раскрывается он при разборе, и проверка существования
-   * его теперь ловит (`checkDeclaredPath`). Здесь — та же проверка на самом
-   * объявлении, чтобы промах был виден и без прогона линта на петле.
+   * путь с подстановкой чистого пространства `${project.*}` раскрывается при
+   * разборе, и проверка существования его ловит (`checkDeclaredPath`) — но
+   * `project.spec.rules` этого репозитория объявлен в `.stepcast/config.yml`
+   * (backlog-item-names-repo, «Объявления этого репозитория живут в его
+   * конфигурации»), а не в документе пайплайна, который секции `project`
+   * больше не несёт. Здесь — та же проверка на самом объявлении, чтобы промах
+   * был виден и без прогона линта на петле.
    */
   it('файл, названный project.spec.rules, лежит на диске', () => {
-    const document = parseYaml(
-      readFileSync(join(ROOT, '.stepcast', 'pipelines', 'self-improve.yml'), 'utf8'),
-    ) as { project?: { spec?: { rules?: string } } };
+    const document = parseYaml(readFileSync(join(ROOT, '.stepcast', 'config.yml'), 'utf8')) as {
+      project?: { spec?: { rules?: string } };
+    };
     const rules = document.project?.spec?.rules;
 
     assert.equal(typeof rules, 'string');
     assert.ok(existsSync(join(ROOT, rules as string)), `файла ${rules} нет в дереве`);
+  });
+
+  /**
+   * Обратная сторона переноса: документ пайплайна больше не объявляет секцию
+   * `project` вовсе (self-improvement-loop, «Единственный слой объявления») —
+   * два слоя объявления одного и того же значения разошлись бы молча, если
+   * бы этот факт не проверялся отдельно от того, что подстановка раскрывается
+   * в прежнее значение (см. describe ниже).
+   */
+  it('документ пайплайна секции project не содержит', () => {
+    const document = parseYaml(
+      readFileSync(join(ROOT, '.stepcast', 'pipelines', 'self-improve.yml'), 'utf8'),
+    ) as { project?: unknown };
+    assert.equal(document.project, undefined);
+  });
+
+  /**
+   * backlog-item-names-repo: контекст уровня пайплайна наследует каждая работа
+   * обеих дорожек, а проверка и практика спецификации у дорожки свои — те, что
+   * объявил репозиторий её пункта. Текст, называющий здесь `${project.check}`
+   * (команду корня), доезжал бы до дорожки, взявшей вложенный репозиторий, и
+   * противоречил бы её собственному гейту: параметров на этом уровне нет, и
+   * назвать команду правильно текст не может — её называет работа.
+   */
+  it('текст контекста пайплайна не называет ${project.check} и ${project.spec.*}', () => {
+    const document = parseYaml(
+      readFileSync(join(ROOT, '.stepcast', 'pipelines', 'self-improve.yml'), 'utf8'),
+    ) as { context?: readonly { text?: string }[] };
+
+    for (const entry of document.context ?? []) {
+      if (typeof entry.text !== 'string') continue;
+      assert.doesNotMatch(entry.text, /\$\{project\.check\}/);
+      assert.doesNotMatch(entry.text, /\$\{project\.spec/);
+    }
+  });
+
+  /**
+   * Обратная сторона: команду проверки агент всё же обязан узнать — из промпта
+   * той работы, которая гоняет ею гейт, где параметр дорожки доступен. Иначе
+   * запрет выше просто оставил бы агента без указания, чем проверять.
+   */
+  it('промпты implement и fix-review называют ${params.check} и каталог репозитория', () => {
+    for (const name of ['implement.md', 'fix-review.md']) {
+      const text = readFileSync(join(PROMPTS_DIR, name), 'utf8');
+      assert.match(text, /\$\{params\.check\}/, name);
+      assert.match(text, /\$\{params\.repo_dir\}/, name);
+    }
   });
 
   /**
@@ -146,6 +197,21 @@ describe('self-improvement-loop: переносимость файлов пет�
     assert.doesNotMatch(text, /git status/);
   });
 });
+
+/**
+ * Конфигурация настоящего репозитория, читаемая так же, как её читала бы
+ * команда движка: домашний каталог фальшивый (иначе гоняющая машина подмешала
+ * бы свой `~/.stepcast/config.yml`), проектный — настоящий `.stepcast/config.yml`
+ * этого репозитория, куда переехала секция `project`. `makeProject()` для
+ * этих тестов не годится: с тех пор как пайплайн секцию `project` не несёт,
+ * пустая конфигурация оставила бы `project.check`/`tools`/`spec` неопределёнными
+ * — expandPipeline отказал бы раньше самих проверок.
+ */
+function realProjectConfig(): Config {
+  const home = mkdtempSync(join(tmpdir(), 'stepcast-loop-portability-home-'));
+  mkdirSync(join(home, '.stepcast'), { recursive: true });
+  return resolveConfig({ cwd: ROOT, home }).config;
+}
 
 /**
  * job-tools-declaration: настоящий пайплайн петли, раскрытый целиком, обязан
@@ -177,38 +243,47 @@ describe('self-improvement-loop: настоящий пайплайн петли 
   /**
    * changed-only-boundaries-declaration: тот же набор шаблонов, что нёс
    * предикат до переноса раскладки в `project.edit_paths`, — сравнивается как
-   * множество, а не по порядку: `edit_paths` идёт в предикате одной записью
-   * подстановки, и порядок соседей (`${project.spec.dir}/**`, записи
-   * `.stepcast/**`) внутри списка сегодня другой, но сам набор границ обязан
-   * остаться тождественным.
+   * множество, а не по порядку.
+   *
+   * Каталог документов изменения и файл правил здесь — не разрешённые пути
+   * (`openspec/changes/**`, `.stepcast/prompts/spec-rules.md`), а буквальный
+   * текст отложенной подстановки `${jobs.slots.output.lanes.<lane>.repo.spec.*}`
+   * (backlog-item-names-repo, риск «Путь, объявленный через params, выпадает
+   * из статической проверки линта»): значение приходит параметром с места
+   * подключения работы, ссылающимся на выход work slots, а он раскрывается не
+   * при разборе документа, а перед исполнением работы (`resolveLate`) — на
+   * структурном разборе, которым здесь проверяется набор границ, работа slots
+   * ещё не запускалась. Дорожки a и b поэтому несут разный текст (свой lane в
+   * пути), хотя раскроются в одно и то же значение у пункта без repos.
    */
-  const EXPECTED_CHANGED_ONLY = new Set([
-    'src/**',
-    'test/**',
-    'docs/**',
-    'openspec/changes/**',
-    'schema/**',
-    'scripts/**',
-    'package.json',
-    'package-lock.json',
-    '.gitattributes',
-    '.stepcast/config.yml',
-    '.stepcast/prompts/**',
-    '.stepcast/prompts/spec-rules.md',
-    '.stepcast/jobs/**',
-    '.stepcast/pipelines/**',
-    '.stepcast/schemas/**',
-    'ui/**',
-    'vite.config.ts',
-    'README.md',
-    'eslint.config.js',
-  ]);
+  function expectedChangedOnly(lane: 'a' | 'b'): ReadonlySet<string> {
+    return new Set([
+      'src/**',
+      'test/**',
+      'docs/**',
+      `\${jobs.slots.output.lanes.${lane}.repo.spec.dir}/**`,
+      'schema/**',
+      'scripts/**',
+      'package.json',
+      'package-lock.json',
+      '.gitattributes',
+      '.stepcast/config.yml',
+      '.stepcast/prompts/**',
+      `\${jobs.slots.output.lanes.${lane}.repo.spec.rules}`,
+      '.stepcast/jobs/**',
+      '.stepcast/pipelines/**',
+      '.stepcast/schemas/**',
+      'ui/**',
+      'vite.config.ts',
+      'README.md',
+      'eslint.config.js',
+    ]);
+  }
 
   it('implement и fix-review обеих дорожек несут прежние права в прежнем порядке', () => {
-    const project = makeProject();
     const { pipeline } = expandPipeline({
       pipelinePath: join(ROOT, '.stepcast', 'pipelines', 'self-improve.yml'),
-      config: project.config,
+      config: realProjectConfig(),
     });
 
     for (const id of ['implement-a', 'implement-b', 'fix-review-a', 'fix-review-b']) {
@@ -218,21 +293,54 @@ describe('self-improvement-loop: настоящий пайплайн петли 
     }
   });
 
-  it('implement и fix-review обеих дорожек несут прежний набор границ changed_only', () => {
-    const project = makeProject();
+  it('implement и fix-review обеих дорожек несут прежний набор границ changed_only (для своей дорожки)', () => {
     const { pipeline } = expandPipeline({
       pipelinePath: join(ROOT, '.stepcast', 'pipelines', 'self-improve.yml'),
-      config: project.config,
+      config: realProjectConfig(),
     });
 
-    for (const id of ['implement-a', 'implement-b', 'fix-review-a', 'fix-review-b']) {
+    for (const id of ['implement-a', 'fix-review-a', 'implement-b', 'fix-review-b']) {
+      const lane = id.endsWith('-a') ? 'a' : 'b';
       const job = pipeline.jobs.find((item) => item.id === id);
       assert.ok(job !== undefined, `работы ${id} нет в пайплайне петли`);
       const predicate = job.steps[0]!.expect.find((item) => item.kind === 'changed_only') as
         | { readonly globs: readonly string[] }
         | undefined;
       assert.ok(predicate !== undefined, `${id}: нет предиката changed_only`);
-      assert.deepEqual(new Set(predicate.globs), EXPECTED_CHANGED_ONLY, id);
+      assert.deepEqual(new Set(predicate.globs), expectedChangedOnly(lane), id);
+    }
+  });
+
+  /**
+   * backlog-item-names-repo: проверка того, что path объявления практики
+   * действительно переехал с `${project.spec.*}` на параметр дорожки —
+   * обратное этому регрессировало бы в старое поведение (гейт всегда корня)
+   * молча, потому что структурная проверка выше сравнивает текст, а не
+   * пространство подстановки, из которого он взят.
+   */
+  it('границы implement/fix-review не содержат ${project.spec.*} и ${project.check}', () => {
+    const { pipeline } = expandPipeline({
+      pipelinePath: join(ROOT, '.stepcast', 'pipelines', 'self-improve.yml'),
+      config: realProjectConfig(),
+    });
+
+    for (const id of ['implement-a', 'implement-b', 'fix-review-a', 'fix-review-b']) {
+      const job = pipeline.jobs.find((item) => item.id === id)!;
+      const predicate = job.steps[0]!.expect.find((item) => item.kind === 'changed_only') as
+        | { readonly globs: readonly string[] }
+        | undefined;
+      const globs = predicate?.globs ?? [];
+      assert.ok(
+        globs.every((glob) => !glob.includes('${project.spec')),
+        `${id}: changed_only несёт ${'${project.spec'}...`,
+      );
+
+      for (const entry of job.until?.check ?? []) {
+        const cmd = entry.kind === 'cmd' ? entry.command : undefined;
+        if (cmd === undefined) continue;
+        assert.doesNotMatch(cmd, /\$\{project\.check\}/, `${id}: until.check несёт \${project.check}`);
+        assert.doesNotMatch(cmd, /\$\{project\.spec/, `${id}: until.check несёт \${project.spec...}`);
+      }
     }
   });
 });
@@ -262,22 +370,39 @@ project:
 jobs:
   propose-a:
     uses: ${JOBS_DIR}/propose.yml
-    with: { lane: a }
+    with:
+      lane: a
+      spec_dir: "\${project.spec.dir}"
+      spec_rules: "\${project.spec.rules}"
+      spec_tool: "\${project.spec.tool}"
   plan-a:
     uses: ${JOBS_DIR}/plan.yml
-    with: { change: demo-change }
+    with: { change: demo-change, spec_dir: "\${project.spec.dir}" }
     needs: [propose-a]
   implement-a:
     uses: ${JOBS_DIR}/implement.yml
-    with: { change: demo-change, lane: a }
+    with:
+      change: demo-change
+      lane: a
+      repo_dir: "."
+      check: "\${project.check}"
+      spec_dir: "\${project.spec.dir}"
+      spec_rules: "\${project.spec.rules}"
+      spec_tool: "\${project.spec.tool}"
     needs: [plan-a]
   review-a:
     uses: ${JOBS_DIR}/review.yml
-    with: { change: demo-change }
+    with: { change: demo-change, spec_dir: "\${project.spec.dir}" }
     needs: [implement-a]
   fix-review-a:
     uses: ${JOBS_DIR}/fix-review.yml
-    with: { change: demo-change }
+    with:
+      change: demo-change
+      repo_dir: "."
+      check: "\${project.check}"
+      spec_dir: "\${project.spec.dir}"
+      spec_rules: "\${project.spec.rules}"
+      spec_tool: "\${project.spec.tool}"
     needs: [review-a]
 `;
   }
@@ -485,18 +610,31 @@ project:
 jobs:
   plan-a:
     uses: ${JOBS_DIR}/plan.yml
-    with: { change: demo-change }
+    with: { change: demo-change, spec_dir: "\${project.spec.dir}" }
   implement-a:
     uses: ${JOBS_DIR}/implement.yml
-    with: { change: demo-change, lane: a }
+    with:
+      change: demo-change
+      lane: a
+      repo_dir: "."
+      check: "\${project.check}"
+      spec_dir: "\${project.spec.dir}"
+      spec_rules: "\${project.spec.rules}"
+      spec_tool: "\${project.spec.tool}"
     needs: [plan-a]
   review-a:
     uses: ${JOBS_DIR}/review.yml
-    with: { change: demo-change }
+    with: { change: demo-change, spec_dir: "\${project.spec.dir}" }
     needs: [implement-a]
   fix-review-a:
     uses: ${JOBS_DIR}/fix-review.yml
-    with: { change: demo-change }
+    with:
+      change: demo-change
+      repo_dir: "."
+      check: "\${project.check}"
+      spec_dir: "\${project.spec.dir}"
+      spec_rules: "\${project.spec.rules}"
+      spec_tool: "\${project.spec.tool}"
     needs: [review-a]
 `;
 
@@ -618,6 +756,89 @@ jobs:
         return true;
       },
     );
+  });
+});
+
+/**
+ * Задача 5.6: прогон настоящего `verify.yml` на подставном бэкенде — а точнее
+ * вовсе без него, поскольку у работы нет агентских шагов, — доказывает, что
+ * `cd "${params.repo_dir}" && ${params.check}` действительно меняет рабочий
+ * каталог исполнения, а не только текст команды. Структурные проверки выше
+ * (`expandPipeline`) доказывают форму предиката; здесь — что она отрабатывает
+ * при настоящем исполнении шага оболочкой.
+ *
+ * Пункт без `repos` (repo_dir: ".") и пункт, назвавший вложенный репозиторий
+ * (repo_dir: "backend"), различаются ровно тем маркерным файлом, который
+ * видит `test -f` из своего рабочего каталога — так дублируется не два
+ * похожих сценария, а два взаимно исключающих: `repo_dir` из другого сценария
+ * не прошёл бы проверку этого.
+ */
+describe('self-improvement-loop: гейт исполняется в каталоге выбранного репозитория', () => {
+  function verifyPipeline(repoDir: string, check: string): string {
+    return `
+kind: pipeline
+name: verify-repo-dir
+jobs:
+  verify-a:
+    uses: ${JOBS_DIR}/verify.yml
+    with:
+      change: demo-change
+      repo_dir: ${JSON.stringify(repoDir)}
+      check: ${JSON.stringify(check)}
+      spec_tool: "true"
+`;
+  }
+
+  async function runVerify(project: Project) {
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    return runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+    });
+  }
+
+  it('пункт без repos: проверка идёт в корне, как и до изменения', async () => {
+    const project = makeProject({
+      'stepcast.yml': verifyPipeline('.', 'test -f marker-root.txt'),
+      'marker-root.txt': 'корень\n',
+    });
+
+    const result = await runVerify(project);
+    assert.equal(result.status, 'success');
+    const status = readStatus(result.journal.paths);
+    assert.equal(status.jobs.find((job) => job.id === 'verify-a')?.status, 'success');
+  });
+
+  it('пункт с объявленным вложенным репозиторием: проверка идёт в его каталоге, не в корне', async () => {
+    const project = makeProject({
+      'stepcast.yml': verifyPipeline('backend', 'test -f marker-backend.txt && test ! -f marker-root.txt'),
+      'marker-root.txt': 'корень\n',
+      'backend/marker-backend.txt': 'бэкенд\n',
+    });
+
+    const result = await runVerify(project);
+    assert.equal(result.status, 'success');
+    const status = readStatus(result.journal.paths);
+    assert.equal(status.jobs.find((job) => job.id === 'verify-a')?.status, 'success');
+  });
+
+  it('репозиторий другой дорожки не проходит проверку чужого repo_dir', async () => {
+    // Обратная сторона предыдущего теста: команда корневого сценария,
+    // исполненная в backend/, обязана провалиться — иначе assert выше
+    // доказывал бы только то, что check вообще что-то пропускает, а не то,
+    // что cd ведёт именно туда, куда назвал params.repo_dir.
+    const project = makeProject({
+      'stepcast.yml': verifyPipeline('backend', 'test -f marker-root.txt'),
+      'marker-root.txt': 'корень\n',
+      'backend/marker-backend.txt': 'бэкенд\n',
+    });
+
+    const result = await runVerify(project);
+    assert.notEqual(result.status, 'success');
+    const status = readStatus(result.journal.paths);
+    assert.equal(status.jobs.find((job) => job.id === 'verify-a')?.status, 'failed');
   });
 });
 

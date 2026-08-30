@@ -20,5 +20,6 @@ export {
   BacklogSlotsResponseSchema,
   type BacklogItem,
   type BacklogRecord,
+  type BacklogRepoBlock,
   type BacklogSlotsResponse,
 } from './schema.js';

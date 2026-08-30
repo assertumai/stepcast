@@ -172,5 +172,8 @@ export function toRecord(entry: BacklogEntry): BacklogRecord {
     why: entry.data.why,
     done_when: entry.data.done_when,
     group: effectiveGroup(entry),
+    // Поле repos уже разобрано схемой (RepoListSchema) в перечень имён;
+    // отсутствие поля — пустой перечень, то есть корень дерева.
+    repos: entry.data.repos ?? [],
   };
 }

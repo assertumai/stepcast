@@ -2,7 +2,7 @@
 
 В контексте — план предыдущей работы и слаг изменения
 `${params.change}`. Смотри `git diff` и артефакты изменения в
-`${project.spec.dir}/${params.change}/`.
+`${params.spec_dir}/${params.change}/`.
 
 Что искать:
 

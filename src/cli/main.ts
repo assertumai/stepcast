@@ -14,6 +14,7 @@ import { runInitCommand } from './commands/init.js';
 import { runLintCommand } from './commands/lint.js';
 import { runLogsCommand } from './commands/logs.js';
 import { runMergeLanesCommand } from './commands/merge-lanes.js';
+import { runProjectCommand } from './commands/project.js';
 import { runResumeCommand } from './commands/resume.js';
 import { runRunCommand } from './commands/run.js';
 import { runStatusCommand } from './commands/status.js';
@@ -172,12 +173,31 @@ export const COMMANDS: Record<string, CommandSpec> = {
       },
     },
   },
+  project: {
+    description:
+      'repos: дополнить документ дорожек (backlog pick --lanes) объявлениями репозиториев конфигурации',
+    positional: ['action'],
+    flags: {
+      file: {
+        kind: 'string',
+        description: 'repos: файл с документом дорожек вместо стандартного ввода',
+      },
+    },
+  },
 };
 
 export interface CliIo {
   readonly out: (line: string) => void;
   readonly err: (line: string) => void;
   readonly cwd: string;
+  /**
+   * Чтение стандартного ввода целиком. Единственный потребитель сегодня —
+   * `project repos`, которая читает конвейером `backlog pick --lanes | …`;
+   * необязательное поле, а не обязанность каждого `CliIo`, — большинству
+   * команд стандартный ввод не нужен вовсе, и заставлять их фиктивную
+   * реализацию тестов притворяться читателем нечем оправдать.
+   */
+  readonly readStdin?: () => Promise<string>;
 }
 
 export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeValue> {
@@ -220,6 +240,8 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
         return await runMergeLanesCommand(args, io.out, io.cwd);
       case 'assert-clean':
         return runAssertCleanCommand(args, io.cwd);
+      case 'project':
+        return await runProjectCommand(args, io.out, io.cwd, io.readStdin);
       default:
         return ExitCode.configError;
     }

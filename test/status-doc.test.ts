@@ -485,6 +485,43 @@ describe('ключ и лид с непростой разметкой', () => {
     assert.match(doc, /\*\*Лид один\.\*\* Абзац первый\./);
   });
 
+  /**
+   * Разделитель ячейки внутри текста клаузы: строка «Работает», называющая
+   * конвейер (`a | b`), без экранирования разъезжается на четыре ячейки, и
+   * хвост отбрасывается при отрисовке — молча, потому что документ остаётся
+   * валидным Markdown и `--check` расхождения не видит. Инлайн-код от этого не
+   * спасает: GFM разбирает таблицу до инлайн-разметки.
+   */
+  it('символ | в тексте клаузы экранируется и остаётся в своей ячейке', () => {
+    const root = makeRoot();
+    writeBase(root, MIN_BASE);
+    writeFragment(root, 'pipe-change', '## Работает\n\n- **Конвейер**: шаг стал `pick | repos` целиком\n');
+
+    const result = build(root);
+    assert.equal(result.code, 0, result.stderr);
+
+    const doc = readDoc(root);
+    const row = doc.split('\n').find((line) => line.startsWith('| Конвейер |'));
+    assert.ok(row !== undefined, 'строки клаузы нет в документе');
+    assert.match(row, /`pick \\\| repos`/);
+    // Ячеек ровно две: ключ и текст, — а не четыре, как без экранирования.
+    assert.equal(row.split(/(?<!\\)\|/).length - 2, 2);
+  });
+
+  it('уже экранированный разделитель повторно не экранируется', () => {
+    const root = makeRoot();
+    writeBase(root, MIN_BASE);
+    writeFragment(root, 'escaped-change', '## Работает\n\n- **Экранировано**: текст с `a \\| b` внутри\n');
+
+    const result = build(root);
+    assert.equal(result.code, 0, result.stderr);
+
+    const row = readDoc(root).split('\n').find((line) => line.startsWith('| Экранировано |'));
+    assert.ok(row !== undefined);
+    assert.match(row, /`a \\\| b`/);
+    assert.doesNotMatch(row, /\\\\\|/);
+  });
+
   it('пустой раздел «Известные ограничения» в документ не попадает', () => {
     const root = makeRoot();
     writeBase(root, 'Вводная проза.\n\n## Работает\n\n- **Ключ1**: текст1\n');

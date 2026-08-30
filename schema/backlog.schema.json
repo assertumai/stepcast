@@ -34,6 +34,9 @@
     },
     "reason": {
       "type": "string"
+    },
+    "repos": {
+      "type": "string"
     }
   },
   "required": [

@@ -12,13 +12,16 @@ description: Отревьюить изменения рабочего дерев
 
 params:
   change: { type: string, required: true }
+  # Та же причина, что в plan.yml: каталог документов изменения — параметром
+  # выбранного репозитория, а не ${project.spec.dir}.
+  spec_dir: { type: string, required: true }
 
 session: shared
 
 # required: true — по той же причине, что в plan.yml: глоб без совпадений
 # оставил бы ревьюера без документов изменения, не сказав об этом.
 context:
-  - path: "${project.spec.dir}/${params.change}/**/*.md"
+  - path: "${params.spec_dir}/${params.change}/**/*.md"
     required: true
 
 output:

@@ -1705,6 +1705,77 @@ steps:
   });
 });
 
+/**
+ * backlog-item-names-repo, «Выбранный репозиторий доезжает выходом работы, а
+ * не определением шага»: ключ шага считается по нераскрытому определению
+ * работы — `${jobs.slots.output.lanes.a.repo.dir}` в нём текст, одинаковый
+ * для любого репозитория, — и спасает не он, а то, что выход `slots` входит в
+ * ключ каждого шага ниже по графу. Смена выбранного пункта (а с ним и
+ * репозитория) обязана обесценить их той же причиной, что и всякий пересчёт
+ * выхода работы выше по графу (см. describe выше), — здесь источник смены не
+ * абстрактный `slug`, а именно блок `repo`, который проставляет `project
+ * repos`.
+ */
+describe('run-resume: смена репозитория дорожки обесценивает работы ниже по графу', () => {
+  const SLOTS_PIPELINE = `
+version: 1
+kind: pipeline
+name: смена-репозитория-дорожки
+jobs:
+  slots:
+    output:
+      from: раздаёт
+    session: per_step
+    steps:
+      - id: раздаёт
+        agent: fake
+        prompt: раздай слоты
+        expect: [{ exit_code: 0 }]
+  verify:
+    needs: [slots]
+    session: per_step
+    steps:
+      - id: проверяет
+        run: [sh, -c, 'echo "\${jobs.slots.output.lanes.a.repo.dir}" > repo-dir.txt']
+        expect: [{ exit_code: 0 }]
+`;
+
+  function slotsAdapter(dir: string): (name: string) => BackendAdapter {
+    const backend = createFakeBackend({
+      lines: [
+        resultLine({
+          text: 'ок',
+          structured: { lanes: { a: { filled: true, repo: { dir } } } },
+        }),
+      ],
+    });
+    return () => backend.adapter;
+  }
+
+  it('другой пункт с другим репозиторием обесценивает шаги дорожки, а не работу slots', async () => {
+    const b = bed({ 'stepcast.yml': SLOTS_PIPELINE }, { git: true });
+    const first = await firstRun(b, slotsAdapter('.'));
+    assert.equal(first.status, 'success');
+    assert.ok(planFor(b, first).steps.every((item) => item.decision.kind === 'reuse'));
+
+    // Дерево и определение пайплайна не менялись — меняем только то, что
+    // work slots *вернула бы*, будь выбран другой пункт с другим
+    // репозиторием: подменяем сохранённый артефакт напрямую, тем же приёмом,
+    // что и у соседнего describe («чувствительность ключа сохранена»).
+    const artifactPath = join(first.journal.paths.artifacts, 'slots.json');
+    writeFileSync(artifactPath, JSON.stringify({ lanes: { a: { filled: true, repo: { dir: 'backend' } } } }));
+
+    const plan = planFor(b, first);
+    assert.equal(plan.steps.find((item) => item.job === 'slots')?.decision.kind, 'reuse');
+    const verifyStep = plan.steps.find((item) => item.job === 'verify');
+    assert.equal(verifyStep?.decision.kind, 'rerun');
+    assert.match(
+      (verifyStep?.decision as { reason: string }).reason,
+      /изменилось определение шага/,
+    );
+  });
+});
+
 describe('run-resume: составной якорь — вложенные репозитории и смена состава', () => {
   const NESTED_INPUT_PIPELINE = `
 version: 1

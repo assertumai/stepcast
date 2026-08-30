@@ -6,8 +6,11 @@
 # пункт из файла своей дорожки.
 #
 # Место документов, правила их написания и имя инструмента — объявление
-# репозитория (${project.spec.*}), а не эта работа: она получает файл правил
+# выбранного репозитория, а не эта работа: она получает файл правил
 # контекстом и право на объявленный инструмент, не зная его имени заранее.
+# Приходят параметрами дорожки (self-improvement-loop, «Документы изменения
+# пишутся по практике выбранного репозитория»), а не ${project.spec.*}: пункт
+# очереди мог назвать вложенный репозиторий.
 
 version: 1
 kind: job
@@ -16,6 +19,9 @@ description: Завести описание изменения под пунк�
 
 params:
   lane: { type: string, required: true }
+  spec_dir: { type: string, required: true }
+  spec_rules: { type: string, required: true }
+  spec_tool: { type: string, required: true }
 
 session: shared
 
@@ -31,7 +37,7 @@ steps:
     context:
       - path: ${run.dir}/item-${params.lane}.json
         mode: inline
-      - path: ${project.spec.rules}
+      - path: ${params.spec_rules}
         mode: inline
     output_schema: ../schemas/propose.json
     permissions:
@@ -42,7 +48,7 @@ steps:
         - Glob
         - Edit
         - Write
-        - Bash(${project.spec.tool} *)
+        - Bash(${params.spec_tool} *)
         - Bash(git status*)
         - Bash(git diff*)
         - Bash(git log*)
@@ -54,7 +60,7 @@ steps:
     expect:
       - schema: ../schemas/propose.json
       - changed_only:
-          - ${project.spec.dir}/**
+          - ${params.spec_dir}/**
     attempts:
       max: 2
       escalation:

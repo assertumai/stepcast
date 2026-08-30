@@ -24,6 +24,16 @@ import {
   type Source,
 } from './merge.js';
 
+/** Объявление вложенного репозитория объектной формой — то, что не несёт строковая форма. */
+export interface NestedRepoDeclaration {
+  readonly check: string | undefined;
+  readonly spec: {
+    readonly dir: string | undefined;
+    readonly rules: string | undefined;
+    readonly tool: string | undefined;
+  };
+}
+
 export interface BackendConfig {
   readonly command: string;
   readonly enabled: boolean;
@@ -85,11 +95,21 @@ export interface Config {
     readonly editPaths: readonly string[] | undefined;
     /**
      * Вложенные репозитории дерева, в каноническом порядке (без хвостового
-     * разделителя, без повторов, отсортирован) независимо от того, как они
-     * объявлены — форма состояния дерева не зависит от порядка объявления.
-     * Нет встроенного умолчания — та же причина, что у `check`.
+     * разделителя, отсортирован) независимо от того, как они объявлены —
+     * форма состояния дерева не зависит от порядка объявления. Повтор
+     * каталога — отказ разбора (`canonicalizeNestedRepos`), а не молчаливый
+     * дубликат. Нет встроенного умолчания — та же причина, что у `check`.
      */
     readonly nestedRepos: readonly string[] | undefined;
+    /**
+     * Объявления вложенных репозиториев объектной формой, по каталогу.
+     * Каталог, названный строкой (без объекта), в карте отсутствует —
+     * `project/repos.ts` обязан увидеть отсутствующую запись как неполное
+     * объявление, а не подставить за него пустую. Определена ровно тогда,
+     * когда определён `nestedRepos` (обе — проекции одного и того же
+     * значения `project.nested_repos`).
+     */
+    readonly nestedRepoDeclarations: ReadonlyMap<string, NestedRepoDeclaration> | undefined;
     /**
      * Практика спецификации репозитория: место документов изменения, файл
      * правил их написания, имя инструмента. Умолчаний нет по той же причине,
@@ -212,17 +232,66 @@ function rejectProjectOnlyKeys(config: RawConfig, path: string): void {
   }
 }
 
+interface CanonicalNestedRepos {
+  readonly dirs: readonly string[];
+  readonly declarations: ReadonlyMap<string, NestedRepoDeclaration>;
+}
+
 /**
- * Приводит объявленный состав вложенных репозиториев к каноническому виду:
- * хвостовой разделитель отброшен, повторы отброшены, порядок один и тот же
- * независимо от объявления. Составной якорь строит отпечаток состава из
- * этого списка (`anchor/composite.ts`) — несортированный порядок дал бы
- * разный отпечаток для одного и того же дерева.
+ * Приводит объявленный состав вложенных репозиториев (строки и объекты
+ * вперемешку) к каноническому виду: хвостовой разделитель отброшен, порядок
+ * один и тот же независимо от объявления. Составной якорь строит отпечаток
+ * состава из списка каталогов (`anchor/composite.ts`) — несортированный
+ * порядок дал бы разный отпечаток для одного и того же дерева.
+ *
+ * Повтор каталога — отказ, а не молчаливый дубликат (в отличие от прежнего
+ * поведения): два объявления одного каталога, из которых объектная форма
+ * несёт `check`/`spec`, несравнимы по приоритету между собой, и решать за
+ * автора конфигурации, какое из них главнее, движку не с руки.
  */
-function canonicalizeNestedRepos(value: unknown): readonly string[] | undefined {
-  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) return undefined;
-  const unique = new Set((value as string[]).map((item) => item.replace(/\/+$/, '')));
-  return [...unique].sort();
+function canonicalizeNestedRepos(value: unknown): CanonicalNestedRepos | undefined {
+  if (!Array.isArray(value)) return undefined;
+
+  const dirs: string[] = [];
+  const declarations = new Map<string, NestedRepoDeclaration>();
+
+  for (const item of value) {
+    let rawDir: string;
+    let declaration: NestedRepoDeclaration | undefined;
+
+    if (typeof item === 'string') {
+      rawDir = item;
+    } else if (
+      item !== null &&
+      typeof item === 'object' &&
+      typeof (item as Record<string, unknown>).dir === 'string'
+    ) {
+      const raw = item as Record<string, unknown>;
+      rawDir = raw.dir as string;
+      const spec = (raw.spec ?? {}) as Record<string, unknown>;
+      declaration = {
+        check: typeof raw.check === 'string' ? raw.check : undefined,
+        spec: {
+          dir: typeof spec.dir === 'string' ? spec.dir : undefined,
+          rules: typeof spec.rules === 'string' ? spec.rules : undefined,
+          tool: typeof spec.tool === 'string' ? spec.tool : undefined,
+        },
+      };
+    } else {
+      return undefined;
+    }
+
+    const dir = rawDir.replace(/\/+$/, '');
+    if (dirs.includes(dir)) {
+      throw new StepcastError(`Каталог ${dir} назван в project.nested_repos дважды`, {
+        at: 'project.nested_repos',
+      });
+    }
+    dirs.push(dir);
+    if (declaration !== undefined) declarations.set(dir, declaration);
+  }
+
+  return { dirs: [...dirs].sort(), declarations };
 }
 
 function requireNumber(values: ReadonlyMap<string, unknown>, path: string): number {
@@ -368,7 +437,8 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
         Array.isArray(projectEditPaths) && projectEditPaths.every((item) => typeof item === 'string')
           ? (projectEditPaths as readonly string[])
           : undefined,
-      nestedRepos: projectNestedRepos,
+      nestedRepos: projectNestedRepos?.dirs,
+      nestedRepoDeclarations: projectNestedRepos?.declarations,
       spec: {
         dir: typeof projectSpecDir === 'string' ? projectSpecDir : undefined,
         rules: typeof projectSpecRules === 'string' ? projectSpecRules : undefined,

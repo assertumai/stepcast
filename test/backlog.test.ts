@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 
 import { StepcastError } from '../src/core/errors.js';
 import { parse, effectiveGroup, toRecord, isFree, selectItems, withFields } from '../src/core/backlog/index.js';
+import { BacklogSlotsResponseSchema } from '../src/core/backlog/schema.js';
 import type { BacklogEntry } from '../src/core/backlog/index.js';
 
 /**
@@ -158,7 +159,134 @@ describe('backlog: разбор', () => {
       why: 'з',
       done_when: 'к',
       group: 'queue',
+      repos: [],
     });
+  });
+});
+
+describe('backlog: поле repos', () => {
+  it('одно имя — публикуемая запись несёт перечень из одного элемента', () => {
+    const entries = parse(backlogText(item('an-item', { ...COMPLETE, repos: 'backend' })));
+    assert.deepEqual(toRecord(entryOf(entries, 'an-item')).repos, ['backend']);
+  });
+
+  it('несколько имён через запятую — порядок объявления сохраняется', () => {
+    const entries = parse(backlogText(item('an-item', { ...COMPLETE, repos: '., backend' })));
+    assert.deepEqual(toRecord(entryOf(entries, 'an-item')).repos, ['.', 'backend']);
+  });
+
+  it('поля repos нет — публикуемая запись несёт пустой перечень', () => {
+    const entries = parse(backlogText(item('an-item', COMPLETE)));
+    assert.deepEqual(toRecord(entryOf(entries, 'an-item')).repos, []);
+  });
+
+  it('отказывает на абсолютном имени, называя пункт и имя', () => {
+    const text = backlogText(item('broken-item', { ...COMPLETE, repos: '/srv/site' }));
+    assert.throws(() => parse(text), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /broken-item/);
+      assert.match(error.message, /\/srv\/site/);
+      return true;
+    });
+  });
+
+  it('отказывает на имени с сегментом .., называя пункт и имя', () => {
+    const text = backlogText(item('broken-item', { ...COMPLETE, repos: '../site' }));
+    assert.throws(() => parse(text), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /broken-item/);
+      assert.match(error.message, /\.\.\/site/);
+      return true;
+    });
+  });
+
+  it('отказывает на символе шаблона глоба, называя пункт и имя', () => {
+    const text = backlogText(item('broken-item', { ...COMPLETE, repos: 'site/*' }));
+    assert.throws(() => parse(text), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /broken-item/);
+      assert.match(error.message, /site\/\*/);
+      return true;
+    });
+  });
+
+  it('отказывает на пустом значении поля, называя пункт', () => {
+    const text = backlogText(item('broken-item', { ...COMPLETE, repos: '' }));
+    assert.throws(() => parse(text), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /broken-item/);
+      return true;
+    });
+  });
+
+  it('отказывает на пустом элементе перечня, называя пункт', () => {
+    const text = backlogText(item('broken-item', { ...COMPLETE, repos: 'backend,' }));
+    assert.throws(() => parse(text), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /broken-item/);
+      return true;
+    });
+  });
+
+  it('отказывает на повторе имени, называя пункт и имя', () => {
+    const text = backlogText(item('broken-item', { ...COMPLETE, repos: 'backend, backend' }));
+    assert.throws(() => parse(text), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /broken-item/);
+      assert.match(error.message, /backend/);
+      return true;
+    });
+  });
+
+  it('разбор не проверяет, что названный каталог объявлен: неизвестное имя проходит', () => {
+    const entries = parse(backlogText(item('an-item', { ...COMPLETE, repos: 'no-such-repo' })));
+    assert.deepEqual(toRecord(entryOf(entries, 'an-item')).repos, ['no-such-repo']);
+  });
+});
+
+describe('backlog: блок repo у дорожки в ответе pick --lanes', () => {
+  const RECORD = { slug: 's', title: 'т', why: 'з', done_when: 'к', group: 'g', repos: [] };
+
+  it('ответ pick без блока repo принимается схемой', () => {
+    const response = { lanes: { a: { filled: true, slug: 's', title: 'т', group: 'g', item: RECORD } } };
+    assert.doesNotThrow(() => BacklogSlotsResponseSchema.parse(response));
+  });
+
+  it('дополненный ответ с блоком repo принимается схемой', () => {
+    const response = {
+      lanes: {
+        a: {
+          filled: true,
+          slug: 's',
+          title: 'т',
+          group: 'g',
+          item: RECORD,
+          repo: { dir: 'backend', check: './gradlew check', spec: { dir: 'backend/docs/changes', rules: 'backend/docs/spec-rules.md', tool: 'openspec' } },
+        },
+      },
+    };
+    assert.doesNotThrow(() => BacklogSlotsResponseSchema.parse(response));
+  });
+
+  it('посторонний ключ дорожки отклоняется', () => {
+    const response = { lanes: { a: { filled: true, slug: 's', title: 'т', group: 'g', item: RECORD, extra: true } } };
+    assert.throws(() => BacklogSlotsResponseSchema.parse(response));
+  });
+
+  it('посторонний ключ внутри блока repo отклоняется', () => {
+    const response = {
+      lanes: {
+        a: {
+          filled: true,
+          slug: 's',
+          title: 'т',
+          group: 'g',
+          item: RECORD,
+          repo: { dir: '.', check: 'npm run check', spec: { dir: 'a', rules: 'b', tool: 'c' }, extra: true },
+        },
+      },
+    };
+    assert.throws(() => BacklogSlotsResponseSchema.parse(response));
   });
 });
 
