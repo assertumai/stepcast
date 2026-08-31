@@ -13,6 +13,13 @@ export interface ResolvedRepo {
   /** Рабочий каталог исполнения команды проверки и инструмента спецификации; корень — `.`. */
   readonly dir: string;
   readonly check: string;
+  /**
+   * Инструменты репозитория: корневой перечень плюс объявленные им самим, в
+   * этом порядке и без повторов. Ключа нет вовсе, когда не объявлен ни один
+   * перечень, — пустой список отсюда доехал бы до `allow` нулём записей, а
+   * ключ, которого нет, отказывает по существу («проверьте состав выхода»).
+   */
+  readonly tools?: readonly string[];
   readonly spec: {
     /** Путь от корня рабочего дерева, например `backend/docs/changes`. */
     readonly dir: string;
@@ -34,6 +41,23 @@ export interface RepoOwner {
  */
 function joinFromRoot(dir: string, sub: string): string {
   return dir === '.' ? sub : `${dir}/${sub}`;
+}
+
+/**
+ * Инструменты репозитория — объединение, а не замена, в отличие от `check` и
+ * `spec`: те описывают репозиторий целиком и корневым значением подменяются
+ * молча неверно, а инструменты складываются — корневые (`git`, `npm`) верны в
+ * любом дереве, репозиторий добавляет к ним своё (`./gradlew`). Порядок
+ * объявленный, корневые впереди; повтор схлопывается здесь, потому что две
+ * одинаковые записи `allow` — шум в политике, о котором бэкенду сказать
+ * нечего.
+ */
+function mergeTools(
+  root: readonly string[] | undefined,
+  own: readonly string[] | undefined,
+): readonly string[] | undefined {
+  if (root === undefined && own === undefined) return undefined;
+  return [...new Set([...(root ?? []), ...(own ?? [])])];
 }
 
 interface SpecFields {
@@ -105,7 +129,8 @@ export function resolveItemRepo(config: Config, item: RepoOwner): ResolvedRepo {
       config.project.check,
       config.project.spec,
     );
-    return { dir: '.', check, spec };
+    const tools = mergeTools(config.project.tools, undefined);
+    return { dir: '.', check, ...(tools === undefined ? {} : { tools }), spec };
   }
 
   const declaredDirs = config.project.nestedRepos ?? [];
@@ -126,9 +151,12 @@ export function resolveItemRepo(config: Config, item: RepoOwner): ResolvedRepo {
     declaration?.spec ?? { dir: undefined, rules: undefined, tool: undefined },
   );
 
+  const tools = mergeTools(config.project.tools, declaration?.tools);
+
   return {
     dir: name,
     check,
+    ...(tools === undefined ? {} : { tools }),
     spec: {
       dir: joinFromRoot(name, spec.dir),
       rules: joinFromRoot(name, spec.rules),

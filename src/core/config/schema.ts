@@ -182,6 +182,13 @@ export const NestedRepoDeclarationSchema = z
   .object({
     dir: NestedRepoDirSchema,
     check: CheckCommandSchema.optional(),
+    // Инструменты этого репозитория — той же моделью, что `project.tools`, и
+    // тем же смыслом: имена, а не записи прав. В отличие от `check` и `spec`,
+    // ключ не замещает корневой, а дополняет его (`resolveItemRepo`): `git`,
+    // `npm` и прочее из корневого перечня верны в любом дереве, а `./gradlew`
+    // — только там, где лежит обёртка. Репозиторий, объявивший своё, получает
+    // корневое плюс своё; не объявивший — ровно корневое, как до этого ключа.
+    tools: z.array(CheckCommandSchema).min(1).optional(),
     spec: RawSpecSchema.optional(),
   })
   .strict();

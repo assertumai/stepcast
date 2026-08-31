@@ -112,6 +112,13 @@ const BacklogRepoBlockSchema = z
   .object({
     dir: z.string(),
     check: z.string(),
+    /**
+     * Инструменты репозитория — корневой перечень плюс его собственный
+     * (`resolveItemRepo`). Ключ необязателен: дерево, не объявившее
+     * `project.tools` нигде, отвечает без него, а не пустым списком, который
+     * в элементе `allow` дал бы ноль записей.
+     */
+    tools: z.array(z.string()).min(1).optional(),
     spec: z
       .object({
         dir: z.string(),

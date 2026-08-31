@@ -167,6 +167,39 @@ describe('project/repos: resolveItemRepo', () => {
     );
   });
 
+  /**
+   * nested-repo-tools: `check` и `spec` вложенный репозиторий объявляет
+   * вместо корневых, а `tools` — вдобавок к ним. Проверяется именно порядок и
+   * состав: из перечня собирается список прав `allow`, и корневой инструмент,
+   * потерянный объявлением своего, отнял бы у дорожки `git`.
+   */
+  it('инструменты вложенного репозитория складываются с корневыми, корневые впереди', () => {
+    const withTools =
+      'project:\n  check: npm run check\n  tools: [npm, git]\n  spec:\n    dir: openspec/changes\n    rules: openspec/rules.md\n    tool: openspec\n' +
+      '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      tools: ["./gradlew", npm]\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n';
+    const resolved = resolveItemRepo(config(withTools), { slug: 'an-item', repos: ['backend'] });
+    assert.deepEqual(resolved.tools, ['npm', 'git', './gradlew']);
+  });
+
+  it('вложенный репозиторий без своих инструментов получает ровно корневые', () => {
+    const rootTools = ROOT_ONLY.replace('  check: npm run check\n', '  check: npm run check\n  tools: [npm, git]\n');
+    const withBackend =
+      rootTools +
+      '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n';
+    const resolved = resolveItemRepo(config(withBackend), { slug: 'an-item', repos: ['backend'] });
+    assert.deepEqual(resolved.tools, ['npm', 'git']);
+  });
+
+  /**
+   * Дерево, не объявившее инструментов нигде, отвечает без ключа, а не пустым
+   * списком: пустой в элементе `allow` дал бы ноль записей, то есть молча
+   * снятое право.
+   */
+  it('без объявленных инструментов ключа в ответе нет вовсе', () => {
+    const resolved = resolveItemRepo(config(WITH_BACKEND), { slug: 'an-item', repos: ['backend'] });
+    assert.equal('tools' in resolved, false);
+  });
+
   it('check остаётся строкой и не разбирается на части', () => {
     const resolved = resolveItemRepo(config(WITH_BACKEND), { slug: 'an-item', repos: ['backend'] });
     assert.equal(typeof resolved.check, 'string');

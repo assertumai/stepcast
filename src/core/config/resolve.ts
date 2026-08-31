@@ -27,6 +27,8 @@ import {
 /** Объявление вложенного репозитория объектной формой — то, что не несёт строковая форма. */
 export interface NestedRepoDeclaration {
   readonly check: string | undefined;
+  /** Инструменты сверх корневого перечня, а не вместо него (см. `project/repos.ts`). */
+  readonly tools: readonly string[] | undefined;
   readonly spec: {
     readonly dir: string | undefined;
     readonly rules: string | undefined;
@@ -271,6 +273,10 @@ function canonicalizeNestedRepos(value: unknown): CanonicalNestedRepos | undefin
       const spec = (raw.spec ?? {}) as Record<string, unknown>;
       declaration = {
         check: typeof raw.check === 'string' ? raw.check : undefined,
+        tools:
+          Array.isArray(raw.tools) && raw.tools.every((tool) => typeof tool === 'string')
+            ? (raw.tools as readonly string[])
+            : undefined,
         spec: {
           dir: typeof spec.dir === 'string' ? spec.dir : undefined,
           rules: typeof spec.rules === 'string' ? spec.rules : undefined,

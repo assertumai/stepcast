@@ -246,27 +246,34 @@ jobs:
   });
 
   /**
-   * job-tools-declaration: размножение элемента списка — правило разбора
-   * документа, где значение приходит из объявления, прошедшего схему. Выход
-   * работы схемы не проходит и списком строк бывает сплошь и рядом; молча
-   * размножить по нему элемент значило бы поменять состав прав или границ
-   * правок уже после того, как раскрытый пайплайн зафиксирован снимком.
+   * nested-repo-tools: размножение элемента списка действует и на позднем
+   * раскрытии — иначе перечень, посчитанный работой (инструменты репозитория,
+   * который выбрал пункт очереди), в элемент `allow` не попадает ничем.
    */
-  it('строковый массив из выхода работы элемент списка не размножает, а роняет раскрытие', () => {
+  it('строковый массив из выхода работы размножает элемент списка', () => {
     const job = expandJob(
       pipelineWith(`    steps:
       - id: show
         run: [echo, "\${jobs.plan.output.files}"]`),
     );
 
+    const resolved = resolveLate(job, SCOPE);
+    const step = resolved.steps[0] as { readonly command: readonly string[] };
+    assert.deepEqual(step.command, ['echo', 'src/a.ts', 'src/b.ts']);
+  });
+
+  it('строковый массив из выхода работы вне списка остаётся непредставимым строкой', () => {
+    const job = expandJob(
+      pipelineWith(`    steps:
+      - id: show
+        run: echo "\${jobs.plan.output.files}"`),
+    );
+
     assert.throws(
       () => resolveLate(job, SCOPE),
       (error: Error & { hint?: string }) => {
         assert.match(error.message, /непредставимое строкой/);
-        // Подсказка о раскрытии в элементе списка здесь была бы неправдой:
-        // на позднем этапе правило не действует ни в списке, ни вне его.
-        assert.doesNotMatch(error.hint ?? '', /элементе списка/);
-        assert.match(error.hint ?? '', /состав выхода работы plan/);
+        assert.match(error.hint ?? '', /элементе списка/);
         return true;
       },
     );
@@ -281,7 +288,7 @@ jobs:
 
     assert.throws(
       () => resolveLate(job, SCOPE),
-      (error: Error & { hint?: string }) => /непредставимое строкой/.test(error.message),
+      (error: Error & { hint?: string }) => /даёт пустой список/.test(error.message),
     );
   });
 
