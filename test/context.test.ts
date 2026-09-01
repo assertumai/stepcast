@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { runContextCommand } from '../src/cli/commands/context.js';
-import { assembleContext, type AssembleOptions } from '../src/core/context/assemble.js';
+import {
+  assembleContext,
+  type AssembleOptions,
+  type KnowledgeResolver,
+} from '../src/core/context/assemble.js';
 import type { ParsedArgs } from '../src/cli/args.js';
 import { ExitCode, StepcastError } from '../src/core/errors.js';
 import { RunJournal } from '../src/core/journal/writer.js';
@@ -737,6 +741,233 @@ describe('assembleContext: required у записи контекста', () => {
     assert.deepEqual(
       assembled.report.entries.filter((entry) => entry.kind === 'path').map((entry) => entry.path),
       ['changes/demo/proposal.md'],
+    );
+  });
+});
+
+describe('step-context: запись знания', () => {
+  /** Источник-заглушка: отбор без репозитория, каталога и подпроцессов. */
+  function stubKnowledge(
+    entries: readonly { id: string; title: string; path?: string; text?: string; tokens: number }[],
+  ): KnowledgeResolver {
+    return (selector, budget) =>
+      selector.kind === 'index'
+        ? [{ id: 'index', title: 'Оглавление', text: 'a — Первая', tokens: 4 }]
+        : entries.filter((_, index) => budget === undefined || index === 0);
+  }
+
+  // Задача 3.7 / Сценарий: «Оглавление»
+  it('оглавление приходит записью знания с идентификатором в отчёте', () => {
+    const assembled = assembleContext({
+      ...assembleBase(),
+      pipeline: [{ kind: 'knowledge', selector: { kind: 'index' } }],
+      step: [],
+      knowledge: stubKnowledge([]),
+    });
+
+    const entry = assembled.report.entries.find((item) => item.kind === 'knowledge');
+    assert.equal(entry?.id, 'index');
+    assert.equal(entry?.origin, 'pipeline');
+    assert.match(assembled.text, /a — Первая/);
+  });
+
+  // Задача 3.7 / Сценарий: «Отбор по области»
+  it('тела приходят путём и проходят порог вставки как файловые', () => {
+    const project = makeProject({ 'knowledge/a.md': 'тело единицы' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      job: [{ kind: 'knowledge', selector: { kind: 'scope', scope: ['src/**'] } }],
+      step: [],
+      knowledge: stubKnowledge([
+        { id: 'a', title: 'Первая', path: 'knowledge/a.md', tokens: 3 },
+      ]),
+    });
+
+    const entry = assembled.report.entries.find((item) => item.kind === 'knowledge');
+    assert.equal(entry?.id, 'a');
+    assert.equal(entry?.path, 'knowledge/a.md');
+    assert.equal(entry?.mode, 'inline');
+    assert.match(assembled.text, /тело единицы/);
+  });
+
+  // Задача 3.3: запрет действует и на то, что вернул источник, — иначе запись
+  // знания стала бы законным обходом политики.
+  it('путь под context.deny не проходит, даже когда его вернул источник', () => {
+    const project = makeProject({ '.env.local': 'SECRET=1' });
+    const denied: string[] = [];
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      deny: ['**/.env*'],
+      job: [{ kind: 'knowledge', selector: { kind: 'scope', scope: ['src/**'] } }],
+      step: [],
+      knowledge: stubKnowledge([{ id: 'a', title: 'Первая', path: '.env.local', tokens: 3 }]),
+      onDenied: (path) => denied.push(path),
+    });
+
+    assert.deepEqual(
+      assembled.report.entries.filter((entry) => entry.kind === 'knowledge'),
+      [],
+    );
+    assert.deepEqual(denied, ['.env.local']);
+  });
+
+  // Задача 3.3: крупная единица уезжает ссылкой тем же порогом, что файл.
+  it('крупная единица передаётся путём, а не вставкой', () => {
+    const project = makeProject({ 'knowledge/a.md': 'очень длинное тело '.repeat(500) });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      inlineThreshold: 10,
+      job: [{ kind: 'knowledge', selector: { kind: 'scope', scope: ['src/**'] } }],
+      step: [],
+      knowledge: stubKnowledge([
+        { id: 'a', title: 'Первая', path: 'knowledge/a.md', tokens: 3 },
+      ]),
+    });
+
+    assert.equal(
+      assembled.report.entries.find((item) => item.kind === 'knowledge')?.mode,
+      'reference',
+    );
+  });
+
+  // Задача 3.2: место записи в порядке сборки задаёт уровень объявления.
+  it('стоит на месте своего объявления, между записями соседних уровней', () => {
+    const assembled = assembleContext({
+      ...assembleBase(),
+      pipeline: [{ kind: 'text', text: 'перед' }],
+      job: [{ kind: 'knowledge', selector: { kind: 'index' } }],
+      step: [{ kind: 'text', text: 'после' }],
+      knowledge: stubKnowledge([]),
+    });
+
+    assert.deepEqual(
+      assembled.report.entries.map((entry) => entry.origin),
+      ['pipeline', 'job', 'step'],
+    );
+  });
+
+  // Задача 3.2: одна и та же единица, названная двумя уровнями, — промах
+  // адресации, а не осознанное повторение: склеивается по идентификатору.
+  it('склеивает повтор единицы по идентификатору и отмечает уровни объявления', () => {
+    const assembled = assembleContext({
+      ...assembleBase(),
+      pipeline: [{ kind: 'knowledge', selector: { kind: 'index' } }],
+      job: [{ kind: 'knowledge', selector: { kind: 'index' } }],
+      step: [],
+      knowledge: stubKnowledge([]),
+    });
+
+    const entries = assembled.report.entries.filter((entry) => entry.kind === 'knowledge');
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0]?.origin, 'pipeline');
+    assert.deepEqual(entries[0]?.declared_in, ['pipeline', 'job']);
+    assert.equal(assembled.text.split('a — Первая').length - 1, 1);
+  });
+
+  // Задача 3.4 / Сценарий: «Отказ от наследования»
+  it('context_inherit: false отменяет запись знания наравне с прочими', () => {
+    const assembled = assembleContext({
+      ...assembleBase(),
+      pipeline: [{ kind: 'knowledge', selector: { kind: 'index' } }],
+      step: [{ kind: 'text', text: 'только шаг' }],
+      inherit: false,
+      knowledge: stubKnowledge([]),
+    });
+
+    assert.deepEqual(
+      assembled.report.entries.filter((entry) => entry.kind === 'knowledge'),
+      [],
+    );
+  });
+
+  // Задача 3.2: источника нет — отказ, а не молча пустой контекст.
+  it('отказывает, когда запись знания объявлена без источника', () => {
+    assert.throws(
+      () =>
+        assembleContext({
+          ...assembleBase(),
+          job: [{ kind: 'knowledge', selector: { kind: 'index' } }],
+          step: [],
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /без источника/);
+        return true;
+      },
+    );
+  });
+
+  // Задача 3.2 / Сценарий: «Собственный предел записи»
+  it('собственный предел записи доезжает до источника', () => {
+    const project = makeProject({ 'knowledge/a.md': 'первая', 'knowledge/b.md': 'вторая' });
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      job: [{ kind: 'knowledge', selector: { kind: 'scope', scope: ['src/**'] }, budget: 4000 }],
+      step: [],
+      knowledge: stubKnowledge([
+        { id: 'a', title: 'Первая', path: 'knowledge/a.md', tokens: 3 },
+        { id: 'b', title: 'Вторая', path: 'knowledge/b.md', tokens: 3 },
+      ]),
+    });
+
+    assert.deepEqual(
+      assembled.report.entries.filter((entry) => entry.kind === 'knowledge').map((entry) => entry.id),
+      ['a'],
+    );
+  });
+
+  // Задача 3.3: общий предел считает знание наравне с файлами — крупная
+  // единица понижается до ссылки тем же проходом, что и файл, а не остаётся
+  // вставкой сверх бюджета.
+  it('вклад знания учитывается в проверке общего предела и понижается наравне с файлом', () => {
+    const project = makeProject({ 'knowledge/a.md': 'очень длинное тело '.repeat(2000) });
+    const downgraded: string[] = [];
+
+    const assembled = assembleContext({
+      ...assembleBase(),
+      workspace: project.root,
+      // Порог вставки заведомо выше единицы, предел контекста — заведомо ниже:
+      // так проверяется именно проход бюджета, а не порог, который отправил бы
+      // её ссылкой ещё при разрешении.
+      inlineThreshold: 1_000_000,
+      maxTokens: 100,
+      job: [{ kind: 'knowledge', selector: { kind: 'scope', scope: ['src/**'] } }],
+      step: [],
+      knowledge: stubKnowledge([{ id: 'a', title: 'Первая', path: 'knowledge/a.md', tokens: 3 }]),
+      onDowngraded: (path) => downgraded.push(path),
+    });
+
+    assert.deepEqual(downgraded, ['knowledge/a.md']);
+    assert.equal(
+      assembled.report.entries.find((entry) => entry.kind === 'knowledge')?.mode,
+      'reference',
+    );
+  });
+
+  // Задача 3.3: понижать нечего — отказ, тот же, что у файловых записей.
+  it('отказывает, когда знание не влезает даже ссылками', () => {
+    assert.throws(
+      () =>
+        assembleContext({
+          ...assembleBase(),
+          maxTokens: 1,
+          job: [{ kind: 'knowledge', selector: { kind: 'index' } }],
+          step: [],
+          knowledge: stubKnowledge([]),
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /превышает предел/);
+        return true;
+      },
     );
   });
 });

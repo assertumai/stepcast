@@ -123,6 +123,22 @@ export interface Config {
       readonly rules: string | undefined;
       readonly tool: string | undefined;
     };
+    /**
+     * Практика памяти репозитория. `provider` неопределён — практики нет:
+     * записи контекста `knowledge:` и предикат `knowledge_valid` в таком
+     * репозитории отклоняет линт, а не молча отдаёт пустоту. Величины
+     * определены всегда (встроенный слой), потому что описывают поведение
+     * движка, а не устройство чужого дерева.
+     */
+    readonly knowledge: {
+      readonly provider: 'fs' | 'cmd' | undefined;
+      readonly command: string | undefined;
+      readonly dir: string | undefined;
+      readonly rules: string | undefined;
+      readonly indexMaxTokens: number;
+      readonly staleAfterMs: number;
+      readonly timeoutMs: number;
+    };
   };
 }
 
@@ -395,7 +411,30 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   const projectSpecDir = values.get('project.spec.dir');
   const projectSpecRules = values.get('project.spec.rules');
   const projectSpecTool = values.get('project.spec.tool');
+  const knowledgeProvider = values.get('project.knowledge.provider');
+  const knowledgeCommand = values.get('project.knowledge.command');
+  const knowledgeDir = values.get('project.knowledge.dir');
+  const knowledgeRules = values.get('project.knowledge.rules');
   const runsRoot = expandHome(requireString(values, 'runs.root'), home);
+
+  // Согласованность объявления проверяется здесь, а не схемой: схема видит
+  // один файл, а `provider` и `command` могут прийти из разных слоёв —
+  // источник, объявленный пайплайном, и команда, объявленная конфигурацией,
+  // законны вместе. Отказ на несогласованном объявлении, а не молчаливое
+  // «источника нет»: репозиторий, назвавший провайдера, память включить
+  // намеревался, и тихий отказ выглядел бы как пустая память.
+  if (knowledgeProvider === 'cmd' && typeof knowledgeCommand !== 'string') {
+    throw new StepcastError('Источник знания cmd объявлен без команды', {
+      at: 'project.knowledge.command',
+      hint: 'Назовите команду источника или объявите provider: fs',
+    });
+  }
+  if (knowledgeProvider === 'fs' && typeof knowledgeDir !== 'string') {
+    throw new StepcastError('Встроенный источник знания объявлен без каталога', {
+      at: 'project.knowledge.dir',
+      hint: 'Назовите каталог знания — например, dir: knowledge',
+    });
+  }
 
   const config: Config = {
     runs: {
@@ -449,6 +488,16 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
         dir: typeof projectSpecDir === 'string' ? projectSpecDir : undefined,
         rules: typeof projectSpecRules === 'string' ? projectSpecRules : undefined,
         tool: typeof projectSpecTool === 'string' ? projectSpecTool : undefined,
+      },
+      knowledge: {
+        provider:
+          knowledgeProvider === 'fs' || knowledgeProvider === 'cmd' ? knowledgeProvider : undefined,
+        command: typeof knowledgeCommand === 'string' ? knowledgeCommand : undefined,
+        dir: typeof knowledgeDir === 'string' ? knowledgeDir : undefined,
+        rules: typeof knowledgeRules === 'string' ? knowledgeRules : undefined,
+        indexMaxTokens: requireNumber(values, 'project.knowledge.index_max_tokens'),
+        staleAfterMs: requireNumber(values, 'project.knowledge.stale_after'),
+        timeoutMs: requireNumber(values, 'project.knowledge.timeout'),
       },
     },
   };

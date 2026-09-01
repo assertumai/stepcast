@@ -261,6 +261,9 @@ describe('self-improvement-loop: настоящий пайплайн петли 
       'src/**',
       'test/**',
       'docs/**',
+      // Память репозитория: работа remember правит только её, и без границы
+      // её правка выглядела бы выходом за объявленное.
+      'knowledge/**',
       `\${jobs.slots.output.lanes.${lane}.repo.spec.dir}/**`,
       'schema/**',
       'scripts/**',

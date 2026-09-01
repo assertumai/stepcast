@@ -26,6 +26,7 @@ import type {
   ContextUpstream,
   ExpandedPipeline,
   Job,
+  KnowledgeDeclaration,
   Pipeline,
   Predicate,
   Step,
@@ -43,7 +44,22 @@ const DEFERRED_NAMESPACES = new Set(['jobs', 'run', 'env']);
  * Состав пространства `project`: имя команды проверки, инструменты
  * репозитория, границы правок и группа практики спецификации.
  */
-const PROJECT_NAMES = ['check', 'tools', 'edit_paths', 'spec.dir', 'spec.rules', 'spec.tool'];
+const PROJECT_NAMES = [
+  'check',
+  'tools',
+  'edit_paths',
+  'spec.dir',
+  'spec.rules',
+  'spec.tool',
+  // Практика памяти публикуется тремя именами из семи объявляемых: `dir` и
+  // `rules` вставляются документами (границей правок работы записи, записью
+  // контекста с правилами письма), `provider` — тем, что о нём иногда надо
+  // сказать промпту. Величины (`index_max_tokens`, `stale_after`, `timeout`)
+  // не публикуются: их читает движок и источник, и вставлять их некуда.
+  'knowledge.dir',
+  'knowledge.rules',
+  'knowledge.provider',
+];
 
 /**
  * Разное объяснение для двух разных ошибок пространства `project`:
@@ -81,6 +97,68 @@ function resolveProjectValues(
       rules: document.project?.spec?.rules ?? config.project.spec.rules,
       tool: document.project?.spec?.tool ?? config.project.spec.tool,
     },
+    knowledge: {
+      dir: document.project?.knowledge?.dir ?? config.project.knowledge.dir,
+      rules: document.project?.knowledge?.rules ?? config.project.knowledge.rules,
+      provider: document.project?.knowledge?.provider ?? config.project.knowledge.provider,
+    },
+  };
+}
+
+/**
+ * Действующая практика памяти: пайплайн поверх конфигурации, полистово — тем
+ * же правилом, что `resolveProjectValues`. Величины разбираются здесь, а не
+ * слоем конфигурации, потому что пайплайновый слой приходит строкой (`2k`,
+ * `14d`) и до этого места числом не становился.
+ *
+ * Согласованность объявления (`cmd` без команды, `fs` без каталога)
+ * проверяется на слитом значении, а не в каждом слое: провайдер, объявленный
+ * пайплайном, и команда, объявленная конфигурацией, законны вместе.
+ */
+function resolveKnowledge(
+  document: Pick<PipelineDocument, 'project'>,
+  config: Config,
+  pipelinePath: string,
+): KnowledgeDeclaration {
+  const declared = document.project?.knowledge;
+  const base = config.project.knowledge;
+
+  const provider = declared?.provider ?? base.provider;
+  const command = declared?.command ?? base.command;
+  const dir = declared?.dir ?? base.dir;
+
+  if (provider === 'cmd' && command === undefined) {
+    throw new StepcastError('Источник знания cmd объявлен без команды', {
+      file: pipelinePath,
+      at: 'project.knowledge.command',
+      hint: 'Назовите команду источника или объявите provider: fs',
+    });
+  }
+  if (provider === 'fs' && dir === undefined) {
+    throw new StepcastError('Встроенный источник знания объявлен без каталога', {
+      file: pipelinePath,
+      at: 'project.knowledge.dir',
+      hint: 'Назовите каталог знания — например, dir: knowledge',
+    });
+  }
+
+  return {
+    provider,
+    command,
+    dir,
+    rules: declared?.rules ?? base.rules,
+    indexMaxTokens:
+      declared?.index_max_tokens === undefined
+        ? base.indexMaxTokens
+        : parseTokens(declared.index_max_tokens, 'project.knowledge.index_max_tokens'),
+    staleAfterMs:
+      declared?.stale_after === undefined
+        ? base.staleAfterMs
+        : parseDuration(declared.stale_after, 'project.knowledge.stale_after'),
+    timeoutMs:
+      declared?.timeout === undefined
+        ? base.timeoutMs
+        : parseDuration(declared.timeout, 'project.knowledge.timeout'),
   };
 }
 
@@ -178,10 +256,56 @@ function toTriggers(
   };
 }
 
-function toContext(raw: readonly RawContextEntry[] | undefined): ContextEntry[] {
-  return (raw ?? []).map((entry) => {
+/**
+ * Селектор записи знания из объявленной формы. Ровно одно из `scope` и `id`:
+ * запись без селектора почти наверняка забытая правка, а запись с обоими
+ * несёт два разных вопроса под одним ответом.
+ */
+function toKnowledgeSelector(raw: RawContextEntry & object, at: string): ContextEntry {
+  const declared = (raw as { knowledge: unknown }).knowledge;
+
+  if (declared === 'index') {
+    return { kind: 'knowledge', selector: { kind: 'index' } };
+  }
+
+  const body = declared as { scope?: string | string[]; id?: string | string[]; budget?: unknown };
+  const hasScope = body.scope !== undefined;
+  const hasId = body.id !== undefined;
+
+  if (hasScope === hasId) {
+    throw new StepcastError(
+      hasScope
+        ? 'Запись контекста knowledge объявляет и scope, и id'
+        : 'Запись контекста knowledge не объявляет ни scope, ни id',
+      {
+        at,
+        hint: 'Допустимы три формы: knowledge: index, { scope: … }, { id: … }',
+      },
+    );
+  }
+
+  const budget =
+    body.budget === undefined
+      ? undefined
+      : parseTokens(body.budget as string | number, `${at}.budget`);
+
+  const list = (value: string | string[]): readonly string[] =>
+    typeof value === 'string' ? [value] : value;
+
+  return {
+    kind: 'knowledge',
+    selector: hasScope
+      ? { kind: 'scope', scope: list(body.scope as string | string[]) }
+      : { kind: 'id', id: list(body.id as string | string[]) },
+    ...(budget === undefined ? {} : { budget }),
+  };
+}
+
+function toContext(raw: readonly RawContextEntry[] | undefined, at = 'context'): ContextEntry[] {
+  return (raw ?? []).map((entry, index) => {
     if (typeof entry === 'string') return { kind: 'path', path: entry, mode: 'auto' };
     if ('text' in entry) return { kind: 'text', text: entry.text };
+    if ('knowledge' in entry) return toKnowledgeSelector(entry, `${at}[${index}]`);
     return {
       kind: 'path',
       path: entry.path,
@@ -218,6 +342,18 @@ function toPredicate(
   if ('matches' in raw) return { kind: 'matches', pattern: raw.matches };
   if ('not_matches' in raw) return { kind: 'not_matches', pattern: raw.not_matches };
   if ('changed_only' in raw) return { kind: 'changed_only', globs: raw.changed_only };
+  if ('knowledge_valid' in raw) {
+    // `knowledge_valid: false` не значит «проверять на несоответствие»: у
+    // предиката нет отрицания, и молча читать его как «не проверять» значило
+    // бы отличать выключенную проверку от отсутствующей ничем.
+    if (raw.knowledge_valid !== true) {
+      throw new StepcastError('Предикат knowledge_valid принимает только true', {
+        at: `${at}.knowledge_valid`,
+        hint: 'Уберите предикат, если проверять память не нужно',
+      });
+    }
+    return { kind: 'knowledge_valid' };
+  }
   if ('cmd' in raw) return { kind: 'cmd', command: raw.cmd };
   return {
     kind: 'judge',
@@ -720,6 +856,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   const pipeline: Pipeline = {
     name: doc.name ?? 'pipeline',
     file: pipelinePath,
+    knowledge: resolveKnowledge(document, config, pipelinePath),
     inputs,
     workspace: pipelineWorkspace,
     env: doc.env ?? {},

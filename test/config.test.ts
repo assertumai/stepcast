@@ -981,3 +981,82 @@ describe('stepcast-configuration: запрет глобального слоя �
     assert.doesNotThrow(() => resolveIn(box));
   });
 });
+
+describe('stepcast-configuration: практика памяти', () => {
+  // Задача 1.5 / Сценарий: «Объявлен встроенный источник»
+  it('разрешает provider, dir и rules из проектного конфига', () => {
+    const box = sandbox({
+      project:
+        'project:\n  knowledge:\n    provider: fs\n    dir: knowledge\n    rules: .stepcast/prompts/knowledge-rules.md\n',
+    });
+    const { config } = resolveIn(box);
+    assert.equal(config.project.knowledge.provider, 'fs');
+    assert.equal(config.project.knowledge.dir, 'knowledge');
+    assert.equal(config.project.knowledge.rules, '.stepcast/prompts/knowledge-rules.md');
+  });
+
+  // Задача 1.5: величины несут встроенные умолчания, в отличие от provider и dir.
+  it('даёт величинам встроенные умолчания, а провайдеру и каталогу — нет', () => {
+    const { config } = resolveIn(sandbox({}));
+    assert.equal(config.project.knowledge.provider, undefined);
+    assert.equal(config.project.knowledge.dir, undefined);
+    assert.equal(config.project.knowledge.indexMaxTokens, 2000);
+    assert.equal(config.project.knowledge.staleAfterMs, 14 * 24 * 60 * 60 * 1000);
+    assert.equal(config.project.knowledge.timeoutMs, 10_000);
+  });
+
+  // Задача 1.5 / Сценарий: «Провайдер cmd без команды»
+  it('отклоняет provider: cmd без команды', () => {
+    const box = sandbox({ project: 'project:\n  knowledge:\n    provider: cmd\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /без команды/);
+        assert.equal(error.at, 'project.knowledge.command');
+        return true;
+      },
+    );
+  });
+
+  it('отклоняет provider: fs без каталога', () => {
+    const box = sandbox({ project: 'project:\n  knowledge:\n    provider: fs\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.knowledge.dir');
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.5 / Сценарий: «Объявление в глобальном конфиге»
+  it('отклоняет project.knowledge в глобальном конфиге', () => {
+    const box = sandbox({
+      global: 'project:\n  knowledge:\n    provider: fs\n    dir: knowledge\n',
+    });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /project\.knowledge/);
+        assert.equal(error.file, box.globalPath);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.5 / Сценарий: «Абсолютный путь отклонён»
+  it('отклоняет абсолютный dir той же моделью, что project.spec.dir', () => {
+    const box = sandbox({
+      project: 'project:\n  knowledge:\n    provider: fs\n    dir: /var/knowledge\n',
+    });
+    assert.throws(() => resolveIn(box), StepcastError);
+  });
+
+  it('отклоняет неизвестный ключ секции', () => {
+    const box = sandbox({ project: 'project:\n  knowledge:\n    source: fs\n' });
+    assert.throws(() => resolveIn(box), StepcastError);
+  });
+});

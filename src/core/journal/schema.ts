@@ -73,7 +73,15 @@ export const ExpectReportSchema = z
 export const ContextEntryReportSchema = z
   .object({
     origin: z.enum(['upstream', 'pipeline', 'job', 'step']),
-    kind: z.enum(['path', 'text']),
+    /**
+     * `knowledge` — запись, пришедшая от источника знания. Отдельный вид, а
+     * не `path`/`text` с признаком: разбирающий состав контекста постфактум
+     * обязан отличать то, что назвал автор пайплайна, от того, что подобрал
+     * источник, — иначе непонятно, чьё решение разбирать.
+     */
+    kind: z.enum(['path', 'text', 'knowledge']),
+    /** Идентификатор единицы знания. Есть только у записей вида `knowledge`. */
+    id: z.string().optional(),
     path: z.string().optional(),
     mode: z.enum(['inline', 'reference']),
     tokens: z.number(),

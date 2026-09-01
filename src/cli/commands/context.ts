@@ -5,6 +5,7 @@ import { resolveConfig } from '../../core/config/resolve.js';
 import { expandPipeline } from '../../core/pipeline/expand.js';
 import type { Job } from '../../core/pipeline/model.js';
 import { assembleContext, type Origin, type UpstreamOutput } from '../../core/context/assemble.js';
+import { createKnowledgeSource } from '../../core/knowledge/source.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { resolveRun } from '../../core/journal/reader.js';
 import { formatTokens } from '../../core/units.js';
@@ -62,6 +63,12 @@ export function runContextCommand(
 
   const { outputs, known } = readUpstreamOutputs(config.runs.root, findProjectRoot(cwd), pipeline.jobs, job);
 
+  const knowledgeSource = createKnowledgeSource({
+    knowledge: pipeline.knowledge,
+    root: cwd,
+    specDir: config.project.spec.dir,
+  });
+
   const assembled = assembleContext({
     workspace: cwd,
     pipeline: pipeline.context,
@@ -76,6 +83,16 @@ export function runContextCommand(
     // Выдержки о прошлой итерации в предпросмотре нет — её собирает прогон,
     // так что и предел выдержки здесь ничего не ограничивает.
     maxTokens: step.contextMaxTokens ?? config.context.maxTokens,
+    // Источник тот же, что в прогоне: предпросмотр, не зовущий его, врал бы
+    // о составе ровно на тех записях, ради которых память и заводили.
+    ...(knowledgeSource === undefined
+      ? {}
+      : {
+          knowledge: (selector, budget) =>
+            knowledgeSource.select(
+              budget === undefined || selector.kind === 'index' ? selector : { ...selector, budget },
+            ),
+        }),
   });
 
   const totals = new Map<Origin, number>();
@@ -104,7 +121,9 @@ export function runContextCommand(
     write('');
     write('склеенные записи (объявлены на нескольких уровнях):');
     const mergedRows = merged.map((entry) => [
-      `  ${entry.path ?? ''}`,
+      // У записи знания пути может не быть вовсе (оглавление), и называть её
+      // пустой строкой значило бы показать склейку, не сказав, чего именно.
+      `  ${entry.path ?? entry.id ?? ''}`,
       (entry.declared_in ?? []).map((level) => LEVEL_LABEL[level]).join(', '),
     ]);
     for (const line of formatColumns(mergedRows)) write(line);

@@ -115,8 +115,24 @@ function checkContext(
   prefix: string,
   substitutions: ExpandedPipeline['substitutions'],
   push: (diagnostic: Diagnostic) => void,
+  knowledgeDeclared = false,
 ): void {
   for (const [index, entry] of entries.entries()) {
+    if (entry.kind === 'knowledge') {
+      // Запись знания без объявленной практики памяти отклоняется здесь, а не
+      // в прогоне: молчаливо пустой контекст выглядел бы работающим шагом с
+      // беднее объявленного контекстом, и разбирать это пришлось бы по
+      // результату агента, а не по диагностике.
+      if (knowledgeDeclared) continue;
+      push({
+        severity: 'error',
+        message: 'Запись контекста knowledge объявлена, но практика памяти не объявлена',
+        file,
+        at: `${prefix}.${index}`,
+        hint: 'Объявите project.knowledge в .stepcast/config.yml или уберите запись',
+      });
+      continue;
+    }
     if (entry.kind !== 'path') continue;
     checkDeclaredPath(
       {
@@ -276,13 +292,19 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
   // `worktree` и `copy` копируют дерево из него же.
   const base = options.cwd ?? dirname(pipeline.file);
 
-  checkContext(pipeline.context, base, pipeline.file, 'context', substitutions, push);
+  // Практика памяти объявлена — значит записи `knowledge:` и предикат
+  // `knowledge_valid` имеют кем разрешаться. Значение уже слито (пайплайн
+  // поверх конфигурации) в `expandPipeline`, поэтому линт читает одно поле, а
+  // не сравнивает два слоя заново.
+  const knowledgeDeclared = pipeline.knowledge.provider !== undefined;
+
+  checkContext(pipeline.context, base, pipeline.file, 'context', substitutions, push, knowledgeDeclared);
   checkPipelineSubstitutions(substitutions, graph.byId, pipeline.file, push);
   checkSessionGroups(pipeline, graph, push);
 
   for (const job of pipeline.jobs) {
     const at = `jobs.${job.id}`;
-    checkContext(job.context, base, job.source, `${at}.context`, substitutions, push);
+    checkContext(job.context, base, job.source, `${at}.context`, substitutions, push, knowledgeDeclared);
 
     for (const [index, predicate] of job.until?.check.entries() ?? []) {
       if (predicate.kind !== 'schema') continue;
@@ -326,7 +348,17 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
     }
 
     for (const step of job.steps) {
-      checkStep(job, step, base, options, substitutions, envDenyMatchers, pipeline.envDeny, push);
+      checkStep(
+        job,
+        step,
+        base,
+        options,
+        substitutions,
+        envDenyMatchers,
+        pipeline.envDeny,
+        push,
+        knowledgeDeclared,
+      );
     }
   }
 
@@ -772,6 +804,7 @@ function checkStep(
   envDenyMatchers: readonly RegExp[],
   envDenyPatterns: readonly string[],
   push: (diagnostic: Diagnostic) => void,
+  knowledgeDeclared = false,
 ): void {
   const at = `jobs.${job.id}.steps.${step.index - 1}`;
 
@@ -828,9 +861,18 @@ function checkStep(
     );
   }
 
-  checkContext(step.context, base, job.source, `${at}.context`, substitutions, push);
+  checkContext(step.context, base, job.source, `${at}.context`, substitutions, push, knowledgeDeclared);
 
   for (const [index, predicate] of step.expect.entries()) {
+    if (predicate.kind === 'knowledge_valid' && !knowledgeDeclared) {
+      push({
+        severity: 'error',
+        message: 'Предикат knowledge_valid объявлен, но практика памяти не объявлена',
+        file: job.source,
+        at: `${at}.expect.${index}.knowledge_valid`,
+        hint: 'Объявите project.knowledge в .stepcast/config.yml или уберите предикат',
+      });
+    }
     if (predicate.kind === 'schema') {
       checkDeclaredPath(
         {

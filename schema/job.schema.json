@@ -133,6 +133,65 @@
               "text"
             ],
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "knowledge": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "const": "index"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "scope": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        ]
+                      },
+                      "id": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        ]
+                      },
+                      "budget": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "number"
+                          }
+                        ]
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "required": [
+              "knowledge"
+            ],
+            "additionalProperties": false
           }
         ]
       }
@@ -328,6 +387,18 @@
               {
                 "type": "object",
                 "properties": {
+                  "knowledge_valid": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "knowledge_valid"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
                   "cmd": {
                     "type": "string"
                   }
@@ -455,6 +526,65 @@
                       },
                       "required": [
                         "text"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "knowledge": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "index"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "scope": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  ]
+                                },
+                                "id": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  ]
+                                },
+                                "budget": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "number"
+                                    }
+                                  ]
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "knowledge"
                       ],
                       "additionalProperties": false
                     }
@@ -626,6 +756,18 @@
                       },
                       "required": [
                         "changed_only"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "knowledge_valid": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "knowledge_valid"
                       ],
                       "additionalProperties": false
                     },
@@ -806,6 +948,65 @@
                         "text"
                       ],
                       "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "knowledge": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "index"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "scope": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  ]
+                                },
+                                "id": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  ]
+                                },
+                                "budget": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "number"
+                                    }
+                                  ]
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "knowledge"
+                      ],
+                      "additionalProperties": false
                     }
                   ]
                 }
@@ -975,6 +1176,18 @@
                       },
                       "required": [
                         "changed_only"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "knowledge_valid": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "knowledge_valid"
                       ],
                       "additionalProperties": false
                     },

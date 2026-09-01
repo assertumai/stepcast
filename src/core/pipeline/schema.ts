@@ -1,6 +1,11 @@
 import { z } from 'zod';
 
-import { CheckCommandSchema, RawSpecSchema, RelativeRepoPathSchema } from '../config/schema.js';
+import {
+  CheckCommandSchema,
+  RawKnowledgeSchema,
+  RawSpecSchema,
+  RelativeRepoPathSchema,
+} from '../config/schema.js';
 
 /**
  * Схемы документов пайплайна и работы в исходном виде — до подстановок и
@@ -28,6 +33,28 @@ const ContextEntrySchema = z.union([
     })
     .strict(),
   z.object({ text: z.string() }).strict(),
+  // Запись, разрешаемая источником знания. Три формы селектора и ни одной
+  // сверх них: свободный запрос (`query`) потребовал бы от источника
+  // недетерминированного отбора, а воспроизводимость прогона в движке стоит
+  // выше удобства формулировки.
+  //
+  // `scope` и `id` принимают строку и список: список нужен подстановке
+  // `${project.edit_paths}`, которая раскрывается по элементу на значение и
+  // в скалярном поле не раскрывается вовсе.
+  z
+    .object({
+      knowledge: z.union([
+        z.literal('index'),
+        z
+          .object({
+            scope: z.union([z.string(), z.array(z.string())]).optional(),
+            id: z.union([z.string(), z.array(z.string())]).optional(),
+            budget: amount.optional(),
+          })
+          .strict(),
+      ]),
+    })
+    .strict(),
 ]);
 
 const ContextUpstreamSchema = z.union([
@@ -43,6 +70,7 @@ const PredicateSchema = z.union([
   z.object({ matches: z.string() }).strict(),
   z.object({ not_matches: z.string() }).strict(),
   z.object({ changed_only: z.array(z.string()) }).strict(),
+  z.object({ knowledge_valid: z.boolean() }).strict(),
   z.object({ cmd: z.string() }).strict(),
   z
     .object({
@@ -263,6 +291,7 @@ const ProjectSchema = z
     check: CheckCommandSchema.optional(),
     tools: z.array(CheckCommandSchema).min(1).optional(),
     spec: RawSpecSchema.optional(),
+    knowledge: RawKnowledgeSchema.optional(),
     edit_paths: z.array(RelativeRepoPathSchema).min(1).optional(),
   })
   .strict();
