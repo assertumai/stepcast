@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { run as runCli, type CliIo } from '../src/cli/main.js';
+import { REASON_LIMIT } from '../src/core/backlog/index.js';
 import type { Config } from '../src/core/config/resolve.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
@@ -52,6 +53,18 @@ function commitMessages(project: Project, count: number): string[] {
 
 function headMessageAt(dir: string): string {
   return execFileSync('git', ['-C', dir, 'log', '-1', '--format=%s'], { encoding: 'utf8' }).trim();
+}
+
+function headShaAt(dir: string): string {
+  return execFileSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+}
+
+/** Пути, которые несёт коммит `ref` — проверить, что отметка отката уехала именно в него. */
+function committedPaths(dir: string, ref = 'HEAD'): string[] {
+  return execFileSync('git', ['-C', dir, 'show', '--name-only', '--format=', ref], { encoding: 'utf8' })
+    .trim()
+    .split('\n')
+    .filter((line) => line !== '');
 }
 
 /** Незакоммиченное и неотслеживаемое дерева — то, на чём упрётся головное предусловие следующего захода. */
@@ -110,6 +123,33 @@ jobs:
     steps:
       - id: шаг
         run: [sh, -c, 'printf "root от a\\n" > root-a.txt; printf "backend от a\\n" > backend/backend-a.txt']
+        expect: [{ exit_code: 0 }]
+`;
+
+/**
+ * Дорожки `a` и `b`: `a` правит корень и `backend` (как `COMPOSITE_LANE_PIPELINE`),
+ * `b` правит только корень своим файлом — не задевая `backend` вовсе, чтобы её
+ * собственный `affectedRepos` не включал часть, откаченную дорожкой `a`.
+ */
+const TWO_LANE_COMPOSITE_PIPELINE = `
+version: 1
+kind: pipeline
+name: две-составные-дорожки
+workspace: { mode: worktree }
+concurrency: 2
+fail_fast: false
+jobs:
+  work-a:
+    lane: a
+    steps:
+      - id: шаг
+        run: [sh, -c, 'printf "root от a\\n" > root-a.txt; printf "backend от a\\n" > backend/backend-a.txt']
+        expect: [{ exit_code: 0 }]
+  work-b:
+    lane: b
+    steps:
+      - id: шаг
+        run: [sh, -c, 'printf "root от b\\n" > root-b.txt']
         expect: [{ exit_code: 0 }]
 `;
 
@@ -231,8 +271,31 @@ jobs:
 `;
 }
 
+/** Пайплайн с тремя однорабочими дорожками — по умолчанию все завершаются успешно. */
+function threeLanePipeline(aCommand: string, bCommand: string, cCommand: string): string {
+  return `
+version: 1
+kind: pipeline
+name: три-дорожки
+workspace: { mode: worktree }
+concurrency: 3
+fail_fast: false
+jobs:
+  work-a:
+    lane: a
+    steps: [{ id: шаг, run: [sh, -c, '${aCommand}'], expect: [{ exit_code: 0 }] }]
+  work-b:
+    lane: b
+    steps: [{ id: шаг, run: [sh, -c, '${bCommand}'], expect: [{ exit_code: 0 }] }]
+  work-c:
+    lane: c
+    steps: [{ id: шаг, run: [sh, -c, '${cCommand}'], expect: [{ exit_code: 0 }] }]
+`;
+}
+
 const SUCCESS_A = 'printf "от a\\n" > a.txt';
 const SUCCESS_B = 'printf "от b\\n" > b.txt';
+const SUCCESS_C = 'printf "от c\\n" > c.txt';
 
 describe('core: mergeLanes — наложение и порядок', () => {
   it('обе годные дорожки сводятся в порядке перечня, каждая своим коммитом', async () => {
@@ -492,7 +555,7 @@ jobs:
 });
 
 describe('core: mergeLanes — красная проверка', () => {
-  it('откатывает дерево к коммиту до наложения, останавливает обход, код 1 на уровне CLI', async () => {
+  it('откатывает дерево к коммиту до наложения, дорожка получает failed, код 1 на уровне CLI', async () => {
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
@@ -526,6 +589,43 @@ describe('core: mergeLanes — красная проверка', () => {
     assert.equal(statusOf(text, 'a-item'), 'done');
     assert.equal(statusOf(text, 'b-item'), 'failed');
     assert.match(fieldOf(text, 'b-item', 'reason') ?? '', /красная/);
+  });
+
+  it('красная проверка первой дорожки не мешает второй свестись', async () => {
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    const beforeCount = commitCount(project);
+    // Проверка красная ровно тогда, когда в дереве лежит a.txt — то есть
+    // сразу после наложения первой дорожки. Обе работы дорожек зелёные:
+    // красной оказывается только объединённое дерево, а не сама дорожка a.
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a', 'b'],
+      check: 'test ! -f a.txt',
+      file: backlogFile,
+    });
+
+    assert.equal(outcomes[0]?.kind, 'check_failed');
+    assert.equal(outcomes[1]?.kind, 'merged');
+    assert.equal(existsSync(project.path('a.txt')), false, 'откат снял файлы дорожки a');
+    assert.equal(existsSync(project.path('b.txt')), true, 'дорожка b сведена и остаётся на месте');
+    assert.equal(commitCount(project), beforeCount + 1, 'коммит получила только дорожка b');
+
+    const text = readFileSync(backlogFile, 'utf8');
+    assert.equal(statusOf(text, 'a-item'), 'failed');
+    assert.match(fieldOf(text, 'a-item', 'reason') ?? '', /красная/);
+    assert.equal(statusOf(text, 'b-item'), 'done');
   });
 
   it('игнорируемый путь переживает откат красной проверки', async () => {
@@ -595,6 +695,66 @@ describe('core: mergeLanes — красная проверка', () => {
     assert.match(fieldOf(text, 'a-item', 'reason') ?? '', /work-a=failed/);
     assert.equal(statusOf(text, 'b-item'), 'failed');
     assert.match(fieldOf(text, 'b-item', 'reason') ?? '', /красная/);
+  });
+
+  it('обход продолжается после отката: игнорируемое цело, HEAD не сдвинут лишним коммитом, исход дорожки без вклада уцелел, отметка отката уехала в коммит следующей', async () => {
+    const project = makeProject({
+      'stepcast.yml': threeLanePipeline('exit 1', SUCCESS_B, SUCCESS_C),
+      '.gitignore': 'сборка/\n',
+    });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}\n${backlogItem('c-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+    writeItem(result.journal.paths.dir, 'c', 'c-item', 'C');
+
+    const beforeCount = commitCount(project);
+    const baseSha = headShaAt(project.root);
+    // Побочный файл проверки — в игнорируемом каталоге, как кеш сборки; сама
+    // проверка красная ровно при наличии b.txt, то есть после наложения b.
+    const check = 'mkdir -p сборка && printf "кеш\\n" > сборка/кеш.txt && test ! -f b.txt';
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a', 'b', 'c'],
+      check,
+      file: backlogFile,
+    });
+
+    assert.equal(outcomes[0]?.kind, 'unfit');
+    assert.equal(outcomes[1]?.kind, 'check_failed');
+    assert.equal(outcomes[2]?.kind, 'merged');
+
+    assert.ok(existsSync(project.path('сборка/кеш.txt')), 'игнорируемый путь должен пережить откат');
+    assert.equal(existsSync(project.path('b.txt')), false, 'откат снял файлы дорожки b');
+    assert.equal(existsSync(project.path('c.txt')), true, 'дорожка c сведена и остаётся на месте');
+
+    // Единственный новый коммит — коммит c, лёгший прямо на состояние до
+    // захода: ни негодность a, ни откат b лишнего коммита не оставили.
+    assert.equal(commitCount(project), beforeCount + 1);
+    assert.equal(headShaAt(project.root).length, 40);
+    assert.equal(
+      execFileSync('git', ['-C', project.root, 'rev-parse', 'HEAD~1'], { encoding: 'utf8' }).trim(),
+      baseSha,
+    );
+
+    const text = readFileSync(backlogFile, 'utf8');
+    assert.equal(statusOf(text, 'a-item'), 'failed', 'исход дорожки без вклада пережил откат b');
+    assert.match(fieldOf(text, 'a-item', 'reason') ?? '', /work-a=failed/);
+    assert.equal(statusOf(text, 'b-item'), 'failed');
+    assert.match(fieldOf(text, 'b-item', 'reason') ?? '', /красная/);
+    assert.equal(statusOf(text, 'c-item'), 'done');
+
+    // Отметка `failed` откачённой b уезжает в тот же коммит, что и вклад c:
+    // `git add -A` коммита c забирает весь файл очереди целиком.
+    assert.ok(committedPaths(project.root).includes('backlog.md'));
   });
 });
 
@@ -742,6 +902,9 @@ jobs:
     assert.match((outcomes[0] as { reason: string }).reason, /a/);
     assert.match((outcomes[0] as { reason: string }).reason, /worktree|workspace|work-a/);
     assert.equal(outcomes[1]?.kind, 'not_reached');
+    // Причина недостигнутой дорожки называет конфликт как основание остановки —
+    // второе основание (неподтверждённый откат) здесь ни при чём.
+    assert.match((outcomes[1] as { reason: string }).reason, /конфликт наложения/);
 
     assert.equal(readFileSync(project.path('спорный.txt'), 'utf8'), beforeConflict);
     assert.equal(commitCount(project), beforeCount);
@@ -900,6 +1063,50 @@ describe('core: mergeLanes — составной прогон', () => {
       'игнорируемый путь должен пережить откат',
     );
     assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'failed');
+  });
+
+  it('дорожка, откачённая красной проверкой во вложенном репозитории, не мешает следующей свестись по своим репозиториям', async () => {
+    const project = makeCompositeProject(TWO_LANE_COMPOSITE_PIPELINE);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
+    assert.equal(result.status, 'success');
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    const rootBefore = commitCount(project);
+    const backendBefore = commitCountAt(project.path('backend'));
+
+    // backend красная ровно при наличии вклада a — после её отката вторая
+    // дорожка (правит только корень) ложится на дерево, от которого
+    // отпочковывалась, и её собственная проверка backend не касается вовсе.
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a', 'b'],
+      check: 'exit 0',
+      file: backlogFile,
+      nestedRepos: ['backend'],
+      repoChecks: new Map([['backend', 'test ! -f backend-a.txt']]),
+    });
+
+    assert.equal(outcomes[0]?.kind, 'check_failed');
+    assert.match((outcomes[0] as { reason: string }).reason, /backend/);
+    assert.equal(outcomes[1]?.kind, 'merged');
+
+    assert.equal(existsSync(project.path('root-a.txt')), false, 'откат снял вклад a в корень');
+    assert.equal(existsSync(join(project.path('backend'), 'backend-a.txt')), false, 'откат снял вклад a в backend');
+    assert.equal(existsSync(project.path('root-b.txt')), true, 'дорожка b сведена и остаётся на месте');
+
+    assert.equal(commitCountAt(project.path('backend')), backendBefore, 'backend не тронут: b его не затрагивает');
+    assert.equal(commitCount(project), rootBefore + 1, 'единственный новый коммит — вклад b в корень');
+
+    const text = readFileSync(backlogFile, 'utf8');
+    assert.equal(statusOf(text, 'a-item'), 'failed');
+    assert.equal(statusOf(text, 'b-item'), 'done');
   });
 
   it('затронутый репозиторий без объявленной команды проверки отказывает до первого наложения', async () => {
@@ -1170,6 +1377,136 @@ describe('core: mergeLanes — составной прогон', () => {
     assert.equal(outcomes[1]?.kind, 'unfit');
     assert.equal(outcomes[2]?.kind, 'no_item');
     assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'done');
+  });
+});
+
+describe('core: mergeLanes — откат не подтверждён', () => {
+  it('проверка оставляет неотслеживаемый файл в необъявленном к затрагиванию репозитории — обход прекращается', async () => {
+    const project = makeCompositeProject(TWO_LANE_COMPOSITE_PIPELINE, ['other']);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend', 'other']));
+    assert.equal(result.status, 'success');
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    // Команда проверки backend — произвольная строка проекта: здесь она
+    // роняет проверку и заодно оставляет неотслеживаемый файл в `other`,
+    // объявленном, но дорожкой `a` не затронутом, — адресный откат по
+    // затронутым репозиториям (корень, backend) до `other` не достаёт.
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a', 'b'],
+      check: 'exit 0',
+      file: backlogFile,
+      nestedRepos: ['backend', 'other'],
+      repoChecks: new Map([['backend', 'printf "утечка\\n" > ../other/утечка.txt && exit 1']]),
+    });
+
+    assert.equal(outcomes[0]?.kind, 'check_failed');
+    assert.equal(outcomes[1]?.kind, 'not_reached');
+    assert.match((outcomes[1] as { reason: string }).reason, /неподтверждённый откат/);
+    assert.match((outcomes[1] as { reason: string }).reason, /a/);
+
+    assert.ok(existsSync(project.path('other/утечка.txt')), 'утечка проверки остаётся — откат её не снимает');
+
+    const text = readFileSync(backlogFile, 'utf8');
+    assert.equal(statusOf(text, 'a-item'), 'failed');
+    assert.equal(statusOf(text, 'b-item'), 'failed');
+    assert.match(fieldOf(text, 'b-item', 'reason') ?? '', /неподтверждённый откат/);
+  });
+
+  it('красная последней дорожки перечня: неподтверждённый откат назван в её же причине', async () => {
+    const project = makeCompositeProject(TWO_LANE_COMPOSITE_PIPELINE, ['other']);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend', 'other']));
+    assert.equal(result.status, 'success');
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    // Красной проверка становится только при вкладе последней дорожки перечня
+    // (`root-b.txt` кладёт `b`), и та же строка проекта оставляет по себе файл
+    // в объявленном, но дорожкой `b` не затронутом `other` — адресный откат до
+    // него не достаёт. Недостигнутых дорожек за `b` нет вовсе: если бы
+    // остановку несли только их причины, запись о грязном дереве пропала бы.
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a', 'b'],
+      check: 'test ! -f root-b.txt || { printf "утечка\\n" > other/утечка.txt; exit 1; }',
+      file: backlogFile,
+      nestedRepos: ['backend', 'other'],
+      repoChecks: new Map([['backend', 'exit 0']]),
+    });
+
+    assert.equal(outcomes.length, 2);
+    assert.equal(outcomes[0]?.kind, 'merged');
+    assert.equal(outcomes[1]?.kind, 'check_failed');
+    const rolled = (outcomes[1] as { reason: string }).reason;
+    assert.match(rolled, /проверка после наложения красная/);
+    assert.match(rolled, /откат дорожки «b» не подтверждён/);
+    assert.ok(rolled.length <= REASON_LIMIT, `причина не умещается в предел поля: ${rolled.length}`);
+
+    assert.ok(existsSync(project.path('other/утечка.txt')), 'утечка проверки остаётся — откат её не снимает');
+
+    const text = readFileSync(backlogFile, 'utf8');
+    assert.equal(statusOf(text, 'a-item'), 'done');
+    assert.equal(statusOf(text, 'b-item'), 'failed');
+    const stored = fieldOf(text, 'b-item', 'reason') ?? '';
+    assert.match(stored, /красная/);
+    assert.match(stored, /не подтверждён/, 'грязное дерево названо в очереди, а не только в отчёте');
+  });
+
+  it('причина недостигнутой дорожки укладывается в предел поля, не срезаясь записью в очередь', async () => {
+    // Имя объявленного репозитория растягивает сообщение о грязном дереве до
+    // предела поля причины: сложить готовую причину остановки с приставкой
+    // недостигнутой дорожки, не ужимая, значило бы выйти за него.
+    const long = `${'x'.repeat(200)}/${'y'.repeat(200)}`;
+    const project = makeCompositeProject(TWO_LANE_COMPOSITE_PIPELINE, [long]);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend', long]));
+    assert.equal(result.status, 'success');
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a', 'b'],
+      check: `printf "утечка\\n" > ${long}/утечка.txt && exit 1`,
+      file: backlogFile,
+      nestedRepos: ['backend', long],
+      repoChecks: new Map([['backend', 'exit 0']]),
+    });
+
+    assert.equal(outcomes[0]?.kind, 'check_failed');
+    // Причина откачённой дорожки сама упирается в предел — значит и причина
+    // остановки, из которой собирается причина недостигнутой, полна.
+    assert.equal((outcomes[0] as { reason: string }).reason.length, REASON_LIMIT);
+
+    assert.equal(outcomes[1]?.kind, 'not_reached');
+    const notReached = (outcomes[1] as { reason: string }).reason;
+    assert.match(notReached, /неподтверждённый откат/);
+    assert.ok(notReached.length <= REASON_LIMIT, `причина не умещается в предел поля: ${notReached.length}`);
+
+    const text = readFileSync(backlogFile, 'utf8');
+    assert.equal(
+      fieldOf(text, 'b-item', 'reason'),
+      notReached,
+      'причина доехала в очередь целиком — записи её урезать не пришлось',
+    );
   });
 });
 
@@ -1516,7 +1853,7 @@ describe('CLI: stepcast merge-lanes', () => {
     assert.match(out.stdout, /итог: сведено 2, не сведено 0/);
   });
 
-  it('красная проверка останавливает обход: код 1', async () => {
+  it('красная проверка одной дорожки не мешает следующей: код 1, отчёт различает сведённую и откачённую', async () => {
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
@@ -1533,12 +1870,86 @@ describe('CLI: stepcast merge-lanes', () => {
       '--lanes',
       'a,b',
       '--check',
-      'test ! -f b.txt',
+      'test ! -f a.txt',
       '--file',
       backlogFile,
     ]);
 
     assert.equal(out.code, ExitCode.jobFailed);
+    assert.match(out.stdout, /дорожка a:.*откачена/);
+    assert.match(out.stdout, /дорожка b:.*сведена/);
+    assert.match(out.stdout, /итог: сведено 1, не сведено 1/);
+  });
+
+  it('перечень из одних негодных дорожек по-прежнему даёт код 0', async () => {
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline('exit 1', 'exit 1') });
+    gitInit(project);
+    commit(project, 'начальный');
+    const { result } = await preparedRun(project);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    const out = await cli(project.root, project.home, [
+      result.journal.paths.runId,
+      '--lanes',
+      'a,b',
+      '--check',
+      'exit 0',
+      '--file',
+      backlogFile,
+    ]);
+
+    assert.equal(out.code, ExitCode.ok, out.stderr);
+    assert.match(out.stdout, /итог: сведено 0, не сведено 2/);
+  });
+
+  it('отчёт различает откачённую, непробованную и несведённую строки', async () => {
+    // a откачена красной проверкой (продолжение обхода), b конфликтует
+    // (обход прекращается), c до наложения не доходит вовсе.
+    const project = makeProject({
+      'спорный.txt': 'строка один\nстрока два\nстрока три\n',
+      'stepcast.yml': threeLanePipeline(
+        SUCCESS_A,
+        'printf "строка один\\nправка прогона\\nстрока три\\n" > спорный.txt',
+        SUCCESS_C,
+      ),
+    });
+    gitInit(project);
+    commit(project, 'начальный');
+    const { result } = await preparedRun(project);
+
+    // Дерево остаётся чистым (предусловие сведения): расхождение вносится
+    // отдельным коммитом поверх того же файла, как и в тесте конфликта.
+    writeFileSync(project.path('спорный.txt'), 'строка один\nправка человека\nстрока три\n');
+    commit(project, 'человек поправил спорный.txt пока шёл прогон');
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}\n${backlogItem('c-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+    writeItem(result.journal.paths.dir, 'c', 'c-item', 'C');
+
+    const out = await cli(project.root, project.home, [
+      result.journal.paths.runId,
+      '--lanes',
+      'a,b,c',
+      '--check',
+      'test ! -f a.txt',
+      '--file',
+      backlogFile,
+    ]);
+
+    assert.equal(out.code, ExitCode.jobFailed);
+    assert.match(out.stdout, /дорожка a:.*откачена/);
+    assert.match(out.stdout, /дорожка b:.*не сведена/);
+    assert.doesNotMatch(out.stdout.split('\n').find((line) => line.startsWith('дорожка b:')) ?? '', /откачена|не пробована/);
+    assert.match(out.stdout, /дорожка c:.*не пробована/);
+    assert.match(out.stdout, /итог: сведено 0, не сведено 3/);
   });
 
   it('неизвестная дорожка: код 2, дерево и очередь не тронуты', async () => {

@@ -69,6 +69,14 @@ function reasonWithOutput(prefix: string, output: string): string {
   return `${prefix}${tailLine(output, REASON_LIMIT - prefix.length)}`;
 }
 
+/**
+ * Сколько вывода красной проверки остаётся в причине дорожки, откат которой
+ * не подтверждён: причина несёт тогда оба отказа сразу, и делить предел поля
+ * поровну незачем — читать её будут ради грязного дерева, а хвост упавшей
+ * команды в ней остаётся приметой, по которой узнаётся сама проверка.
+ */
+const RED_OUTPUT_ON_UNCONFIRMED = 120;
+
 /** Путь рабочего дерева дорожки — последняя её работа, несущая `workspace`. */
 function workspaceOf(status: RunStatus, lane: string): string | undefined {
   const records = status.jobs.filter((job) => job.lane === lane);
@@ -256,6 +264,17 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
     }
   };
 
+  /**
+   * Предусловие чистоты дерева запуска и объявленных вложенных репозиториев —
+   * с тем же исключением для файла очереди. Заход зовёт его дважды: до
+   * первого наложения (богус-путь прогона обязан отказывать о дереве, а не о
+   * ненайденном `run.json`) и сразу после отката красной проверки — второй
+   * раз отказ ловится вызывающим кодом как признак неподтверждённого отката
+   * (design.md, решение 2), а не пробрасывается наружу.
+   */
+  const assertRunTreeClean = (): void =>
+    assertCleanTree(cwd, { allow: [file], ...(nestedRepos.length === 0 ? {} : { nested: nestedRepos }) });
+
   // Диагностика обрыва — первым делом, раньше даже проверки чистоты: сведение,
   // оборвавшееся между коммитами репозиториев, оставляет корень «грязным» —
   // его гитлинк на затронутую часть указывает на её новый коммит, которого
@@ -269,11 +288,7 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
   // коммита посреди прогона — правки же агента дерево по-прежнему обязано
   // не содержать. Исключение относится к тому дереву, где очередь лежит —
   // маршрутизируется тем же правилом, что и остальные пути allow.
-  //
-  // Проверка чистоты — следом, до чтения журнала прогона: она не зависит от
-  // него вовсе, а богус-путь прогона (`paths`) обязан отказывать о дереве, а
-  // не о ненайденном `run.json`.
-  assertCleanTree(cwd, { allow: [file], ...(nestedRepos.length === 0 ? {} : { nested: nestedRepos }) });
+  assertRunTreeClean();
 
   const kind: AnchorKind = readManifest(paths).anchor_kind ?? 'git';
 
@@ -296,7 +311,32 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
   assertRepoChecksDeclared(paths, mergeable, kind, nestedRepos, check, repoChecks);
 
   const results: LaneMergeResult[] = [];
-  let stoppedAt: string | undefined;
+
+  /**
+   * «Дерево в неизвестном состоянии» — единственное основание прекратить
+   * обход целиком. Красная проверка сюда не относится: адресный откат уже
+   * вернул каждый затронутый репозиторий к записанному коммиту, и как только
+   * чистота деревьев после отката подтверждена, дальше лежит ровно то дерево,
+   * на которое легла бы следующая дорожка, не будь упавшей в перечне вовсе.
+   * Оснований остановки ровно два: конфликт наложения (`applyRun`
+   * восстанавливает дерево своим якорем, и отказ самого восстановления
+   * приходит тем же типом ошибки, что и чистый конфликт, — отличить их
+   * нечем) и неподтверждённый откат (команда проверки — произвольная строка
+   * проекта и могла тронуть то, чего адресный откат не покрывает).
+   *
+   * Причина остановки хранится разложенной на приставку и чужой вывод: из тех
+   * же частей собирается причина недостигнутой дорожки — своей приставкой
+   * поверх этой. Сложить две готовые причины нельзя: каждая уже занимает
+   * `REASON_LIMIT` целиком, и хвост срезала бы запись в очередь.
+   */
+  let stoppedAt:
+    | {
+        readonly lane: string;
+        readonly basis: 'conflict' | 'unconfirmed_rollback';
+        readonly prefix: string;
+        readonly output: string;
+      }
+    | undefined;
 
   /** Проставить дорожке `failed`, только если ей вообще достался пункт очереди. */
   const markFailed = (lane: string, reason: string): void => {
@@ -332,7 +372,14 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
 
   for (const lane of lanes) {
     if (stoppedAt !== undefined) {
-      const reason = `сведение остановилось на более ранней дорожке ${stoppedAt}`;
+      const basisLabel = stoppedAt.basis === 'conflict' ? 'конфликт наложения' : 'неподтверждённый откат';
+      // Приставка недостигнутой дорожки складывается с приставкой причины
+      // остановки, а чужой вывод берёт остаток предела: приставки здесь и
+      // называют основание, ради которого причину читают, — ужимается вывод.
+      const reason = reasonWithOutput(
+        `сведение остановилось на дорожке «${stoppedAt.lane}» (${basisLabel}): ${stoppedAt.prefix}`,
+        stoppedAt.output,
+      );
       markFailed(lane, reason);
       results.push({ lane, kind: 'not_reached', reason });
       continue;
@@ -384,13 +431,11 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
     } catch (error) {
       if (!isStepcastError(error)) throw error;
       const workspace = workspaceOf(status, lane);
-      const reason = reasonWithOutput(
-        `наложение дорожки не сошлось с текущим деревом (рабочее дерево: ${workspace ?? 'неизвестно'}): `,
-        error.message,
-      );
+      const prefix = `наложение дорожки не сошлось с текущим деревом (рабочее дерево: ${workspace ?? 'неизвестно'}): `;
+      const reason = reasonWithOutput(prefix, error.message);
       markFailed(lane, reason);
       results.push({ lane, kind: 'conflict', reason });
-      stoppedAt = lane;
+      stoppedAt = { lane, basis: 'conflict', prefix, output: error.message };
       continue;
     }
 
@@ -404,7 +449,7 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
     // Проверки идут в детерминированном порядке (корень, затем части в
     // каноническом порядке состава — тот же порядок, что вернул
     // `affectedRepos`) и прекращаются на первой красной.
-    let redReason: string | undefined;
+    let red: { readonly prefix: string; readonly output: string } | undefined;
     for (const repo of affected) {
       const command = checkCommandFor(repo, check, repoChecks);
       // Проверено до первого наложения (`assertRepoChecksDeclared`) — сюда
@@ -423,15 +468,43 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
         nestedRepos.length === 0
           ? `проверка после наложения красная (рабочее дерево: ${workspace ?? 'неизвестно'}): `
           : `проверка после наложения красная (репозиторий: ${repo}, рабочее дерево: ${workspace ?? 'неизвестно'}): `;
-      redReason = reasonWithOutput(prefix, output);
+      red = { prefix, output };
       break;
     }
 
-    if (redReason !== undefined) {
+    if (red !== undefined) {
       rollback(commitsBefore, backlogBefore);
-      markFailed(lane, redReason);
-      results.push({ lane, kind: 'check_failed', reason: redReason });
-      stoppedAt = lane;
+
+      // Откат адресован затронутым репозиториям (`commitsBefore`) — то, чего
+      // он не покрывает (репозиторий, которого дорожка не затрагивала; файл,
+      // созданный заново самой командой проверки после `reset`), проверка
+      // чистоты ловит здесь и превращает в остановку, а не в отказ команды:
+      // оставшиеся дорожки перечня обязаны получить исход, как при любой
+      // другой остановке.
+      let unconfirmed: { readonly prefix: string; readonly output: string } | undefined;
+      try {
+        assertRunTreeClean();
+      } catch (error) {
+        if (!isStepcastError(error)) throw error;
+        unconfirmed = { prefix: `откат дорожки «${lane}» не подтверждён: `, output: error.message };
+      }
+
+      // Неподтверждённый откат называется в причине самой откачённой дорожки,
+      // а не только в причинах недостигнутых: перечень мог кончиться на ней —
+      // тогда остановка не досталась бы ни одной записи, и грязное дерево
+      // дожило бы до головного предусловия следующего захода без объяснения,
+      // кто его таким оставил.
+      const reason =
+        unconfirmed === undefined
+          ? reasonWithOutput(red.prefix, red.output)
+          : reasonWithOutput(
+              `${red.prefix}${tailLine(red.output, RED_OUTPUT_ON_UNCONFIRMED)}; ${unconfirmed.prefix}`,
+              unconfirmed.output,
+            );
+      markFailed(lane, reason);
+      results.push({ lane, kind: 'check_failed', reason });
+
+      if (unconfirmed !== undefined) stoppedAt = { lane, basis: 'unconfirmed_rollback', ...unconfirmed };
       continue;
     }
 

@@ -37,6 +37,10 @@ function describe(result: LaneMergeResult): string {
       return 'пропущена — слот не заполнен, все работы дорожки skipped';
     case 'no_item':
       return 'пропущена — пункт очереди ей не доставался, отмечать в очереди нечего';
+    case 'check_failed':
+      return `не сведена, откачена — ${result.reason}`;
+    case 'not_reached':
+      return `не сведена, не пробована — ${result.reason}`;
     default:
       return `не сведена — ${result.reason}`;
   }
@@ -101,6 +105,10 @@ export async function runMergeLanesCommand(
   }
   write(`итог: сведено ${merged}, не сведено ${results.length - merged}`);
 
-  const stopped = results.some((result) => result.kind === 'conflict' || result.kind === 'check_failed');
-  return stopped ? ExitCode.jobFailed : ExitCode.ok;
+  // Была остановка (конфликт наложения) либо был откат (красная проверка):
+  // у откачённой дорожки все работы зелёные, и сведение — единственное
+  // место, где вообще виден её отказ, поэтому код требует внимания даже
+  // тогда, когда обход дошёл до конца перечня.
+  const stoppedOrRolledBack = results.some((result) => result.kind === 'conflict' || result.kind === 'check_failed');
+  return stoppedOrRolledBack ? ExitCode.jobFailed : ExitCode.ok;
 }
