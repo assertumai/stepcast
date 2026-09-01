@@ -328,6 +328,64 @@
           },
           "additionalProperties": false
         },
+        "knowledge": {
+          "type": "object",
+          "properties": {
+            "provider": {
+              "type": "string",
+              "enum": [
+                "fs",
+                "cmd"
+              ]
+            },
+            "command": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "dir": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "rules": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "index_max_tokens": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
+            "stale_after": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
+            "timeout": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
         "edit_paths": {
           "minItems": 1,
           "type": "array",

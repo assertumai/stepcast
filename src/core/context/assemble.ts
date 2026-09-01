@@ -4,6 +4,7 @@ import { isAbsolute, relative, resolve as resolvePath } from 'node:path';
 import { StepcastError } from '../errors.js';
 import { formatTokens } from '../units.js';
 import type { ContextEntry, ContextMode, ContextUpstream } from '../pipeline/model.js';
+import type { KnowledgeEntry, KnowledgeSelector } from '../knowledge/types.js';
 import type { ContextEntryReport, ContextReport } from './report.js';
 import { matchesAnyGlob } from './glob.js';
 
@@ -24,6 +25,19 @@ export interface UpstreamOutput {
   readonly value: unknown;
 }
 
+/**
+ * Разрешение записи знания. Передаётся сборке колбэком, а не источником:
+ * сборка не должна знать ни про конфигурацию, ни про запуск подпроцессов, а
+ * тест должен уметь подставить сюда заглушку и не заводить репозиторий.
+ *
+ * Отсутствие колбэка при объявленной записи — внутренняя ошибка: линт
+ * отклоняет такой документ раньше, и досюда он доехать не может.
+ */
+export type KnowledgeResolver = (
+  selector: KnowledgeSelector,
+  budget: number | undefined,
+) => readonly KnowledgeEntry[];
+
 export interface AssembleOptions {
   readonly workspace: string;
   readonly pipeline: readonly ContextEntry[];
@@ -42,6 +56,8 @@ export interface AssembleOptions {
    * противоречие между двумя пределами не касается.
    */
   readonly noteMaxTokens?: number;
+  /** Источник знания. Объявляется только тем, у кого записи `knowledge:` возможны. */
+  readonly knowledge?: KnowledgeResolver;
   readonly onDenied?: (path: string, pattern: string) => void;
   readonly onDowngraded?: (path: string, tokens: number) => void;
 }
@@ -58,6 +74,12 @@ interface Resolved {
   readonly origins: Origin[];
   readonly kind: 'path' | 'text';
   readonly path?: string;
+  /**
+   * Идентификатор единицы знания, если запись пришла от источника. Отчёт
+   * называет им запись вместо пути: путь у знания есть не всегда, а разобрать
+   * состав контекста постфактум надо в любом случае.
+   */
+  readonly knowledgeId?: string;
   readonly content: string;
   readonly tokens: number;
   /** Явное указание не понижается: иначе оно перестаёт что-либо значить. */
@@ -131,7 +153,8 @@ export function assembleContext(options: AssembleOptions): AssembledContext {
     report: {
       entries: resolved.map((item) => ({
         origin: item.origin,
-        kind: item.kind,
+        kind: item.knowledgeId === undefined ? item.kind : ('knowledge' as const),
+        ...(item.knowledgeId === undefined ? {} : { id: item.knowledgeId }),
         ...(item.path === undefined ? {} : { path: item.path }),
         mode: item.mode,
         tokens: item.mode === 'inline' ? item.tokens : referenceTokens(item),
@@ -209,6 +232,11 @@ function resolveEntry(
   registry: Map<string, Resolved>,
   denied: Set<string>,
 ): void {
+  if (entry.kind === 'knowledge') {
+    resolveKnowledge(entry, origin, options, resolved, registry, denied);
+    return;
+  }
+
   if (entry.kind === 'text') {
     // `text` не участвует в склейке: у записи нет пути, а совпадение
     // содержимого на двух уровнях — осознанное повторение, а не промах
@@ -281,6 +309,107 @@ function resolveEntry(
     };
     resolved.push(item);
     registry.set(key, item);
+  }
+}
+
+/**
+ * Разрешение записи знания. Отобранное источником проходит ровно тот же путь,
+ * что файловая запись: `context.deny`, порог вставки, общий предел, склейку
+ * повторов по пути. Иначе объявление `knowledge:` стало бы законным обходом
+ * запрета — источник вернул бы `.env`, и запрет, действующий на глоб автора
+ * пайплайна, на него бы не подействовал.
+ *
+ * `context_exclude` к записям знания не применяется: он исключает **пути**,
+ * а знание объявляется селектором, и отбор его по путям означал бы, что
+ * автор исключает то, о чём не знает.
+ */
+function resolveKnowledge(
+  entry: Extract<ContextEntry, { kind: 'knowledge' }>,
+  origin: Origin,
+  options: AssembleOptions,
+  resolved: Resolved[],
+  registry: Map<string, Resolved>,
+  denied: Set<string>,
+): void {
+  if (options.knowledge === undefined) {
+    throw new StepcastError('Запись контекста knowledge объявлена без источника знания', {
+      hint: 'Объявите project.knowledge в .stepcast/config.yml',
+    });
+  }
+
+  for (const item of options.knowledge(entry.selector, entry.budget)) {
+    if (item.path === undefined) {
+      // Знание без файла склеивается по идентификатору — тем же правилом,
+      // каким файловая запись склеивается по пути. Тождество здесь есть, в
+      // отличие от записи `text`: одна и та же единица, названная пайплайном
+      // и работой, — это промах адресации, а не осознанное повторение. Без
+      // склейки оглавление, объявленное на двух уровнях, уезжало бы агенту
+      // дважды и стоило бы вдвое.
+      const key = `knowledge:${item.id}`;
+      const existing = registry.get(key);
+      if (existing !== undefined) {
+        mergeDeclaration(existing, origin, 'auto', options.inlineThreshold);
+        continue;
+      }
+
+      const entry: Resolved = {
+        origin,
+        origins: [origin],
+        kind: 'text',
+        knowledgeId: item.id,
+        content: item.text ?? '',
+        tokens: item.tokens,
+        pinned: true,
+        mode: 'inline',
+      };
+      resolved.push(entry);
+      registry.set(key, entry);
+      continue;
+    }
+
+    const absolute = resolvePath(options.workspace, item.path);
+    const relativePath = toRelative(absolute, options.workspace);
+    const key = registryKey(absolute, options.workspace);
+
+    const denialPattern = matchesAnyGlob(relativePath, options.deny);
+    if (denialPattern !== undefined) {
+      if (!denied.has(key)) {
+        denied.add(key);
+        options.onDenied?.(relativePath, denialPattern);
+      }
+      continue;
+    }
+
+    const existing = registry.get(key);
+    if (existing !== undefined) {
+      mergeDeclaration(existing, origin, 'auto', options.inlineThreshold);
+      continue;
+    }
+
+    let content: string;
+    try {
+      content = readFileSync(absolute, 'utf8');
+    } catch (error) {
+      throw new StepcastError(`Источник знания назвал нечитаемый файл: ${relativePath}`, {
+        file: absolute,
+        cause: error,
+      });
+    }
+
+    const tokens = estimateTokens(content);
+    const item_: Resolved = {
+      origin,
+      origins: [origin],
+      kind: 'path',
+      path: relativePath,
+      knowledgeId: item.id,
+      content,
+      tokens,
+      pinned: false,
+      mode: tokens <= options.inlineThreshold ? 'inline' : 'reference',
+    };
+    resolved.push(item_);
+    registry.set(key, item_);
   }
 }
 

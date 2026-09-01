@@ -4,6 +4,7 @@ import { reportError } from './output.js';
 import { runApplyCommand } from './commands/apply.js';
 import { runAssertCleanCommand } from './commands/assert-clean.js';
 import { runBacklogCommand } from './commands/backlog.js';
+import { runKnowledgeCommand } from './commands/knowledge.js';
 import { runConfigCommand } from './commands/config.js';
 import { runDataCommand } from './commands/data.js';
 import { runContextCommand } from './commands/context.js';
@@ -96,6 +97,10 @@ export const COMMANDS: Record<string, CommandSpec> = {
     description: 'создать stepcast.yml и пример работы в текущем каталоге',
     flags: {
       force: { kind: 'boolean', description: 'перезаписать существующий stepcast.yml' },
+      knowledge: {
+        kind: 'string',
+        description: 'развернуть практику памяти вместо пайплайна: fs — встроенный источник',
+      },
     },
   },
   up: {
@@ -122,6 +127,18 @@ export const COMMANDS: Record<string, CommandSpec> = {
   usage: {
     description: 'показать расход прогона по работам, шагам и попыткам',
     positional: ['run'],
+  },
+  knowledge: {
+    description:
+      'читать и проверять память репозитория: index|select|check|write, см. docs/knowledge.md',
+    positional: ['action'],
+    flags: {
+      scope: { kind: 'string', description: 'select: области через запятую — src/**,test/**' },
+      id: { kind: 'string', description: 'select: идентификаторы через запятую' },
+      file: { kind: 'string', description: 'write: файл с описанием единицы знания' },
+      stdin: { kind: 'boolean', description: 'write: читать описание со стандартного ввода' },
+      json: { kind: 'boolean', description: 'вывести ответ источника как есть, машинным JSON' },
+    },
   },
   backlog: {
     description: 'вести очередь улучшений backlog.md: list|pick|finish|settle, см. docs/backlog.md',
@@ -234,6 +251,8 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
         return runUsageCommand(args, io.out, io.cwd);
       case 'backlog':
         return runBacklogCommand(args, io.out, io.cwd);
+      case 'knowledge':
+        return runKnowledgeCommand(args, io.out, io.cwd);
       case 'data':
         return runDataCommand(args, io.out);
       case 'merge-lanes':

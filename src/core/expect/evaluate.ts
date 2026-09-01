@@ -9,6 +9,7 @@ import type { ErrorObject, ValidateFunction } from 'ajv';
 import { StepcastError } from '../errors.js';
 import type { Predicate } from '../pipeline/model.js';
 import type { PredicateResult } from '../journal/schema.js';
+import type { KnowledgeSource } from '../knowledge/types.js';
 
 /**
  * Вычисление предикатов.
@@ -32,6 +33,12 @@ export interface EvaluationInput {
    * это превратило бы неудачу внутреннего учёта в отказ пользователю.
    */
   readonly changedPaths?: readonly string[] | undefined;
+  /**
+   * Источник знания для предиката `knowledge_valid`. Как и `changedPaths`,
+   * необязателен: шаг без предиката о нём не знает, а линт отклоняет предикат
+   * при необъявленной практике памяти раньше, чем дело доходит сюда.
+   */
+  readonly knowledge?: KnowledgeSource | undefined;
 }
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
@@ -133,6 +140,9 @@ function evaluateOne(predicate: Predicate, input: EvaluationInput): PredicateRes
 
     case 'changed_only':
       return evaluateChangedOnly(predicate.globs, input);
+
+    case 'knowledge_valid':
+      return evaluateKnowledgeValid(input);
     case 'judge':
       // Вычисление судьи — второй, асинхронный проход попытки (см.
       // exec/judgePass.ts): он требует агентского вызова, сессий и журнала, а
@@ -147,6 +157,53 @@ function evaluateOne(predicate: Predicate, input: EvaluationInput): PredicateRes
         detail: 'не вычислен: судья вызывается вторым проходом',
       };
   }
+}
+
+/**
+ * Целостность памяти репозитория. Проваливает шаг только красное нарушение;
+ * жёлтое попадает в отчёт и проверку проходит.
+ *
+ * Разделение уровней здесь не мягкотелость, а условие выживания гейта.
+ * Проверка, краснеющая от любой правки задетого файла, красна всегда, и
+ * первое, что с ней сделают, — обойдут; красным становится просроченное, то
+ * есть то, на что никто не взглянул за объявленный срок.
+ */
+function evaluateKnowledgeValid(input: EvaluationInput): PredicateResult {
+  if (input.knowledge === undefined) {
+    // Тем же порядком, что `changed_only` без якоря: невычисленным, а не
+    // непройденным. Отсутствие источника — не провал шага, а недостача
+    // сведений, и объявлять её отказом автору значит наказывать не за то.
+    return {
+      predicate: 'knowledge_valid',
+      passed: true,
+      hard: false,
+      detail: 'не вычислен: практика памяти не объявлена',
+    };
+  }
+
+  const verdict = input.knowledge.check();
+  const red = verdict.problems.filter((problem) => problem.level === 'red');
+  const yellow = verdict.problems.filter((problem) => problem.level === 'yellow');
+
+  const describe = (problem: (typeof verdict.problems)[number]): string =>
+    `${problem.id === undefined ? problem.kind : `${problem.id} (${problem.kind})`}: ${problem.detail}`;
+
+  return {
+    predicate: 'knowledge_valid',
+    passed: red.length === 0,
+    hard: true,
+    expected: 'память без красных нарушений',
+    ...(red.length === 0
+      ? // Жёлтое видно и на пройденном предикате: иначе устаревание копилось
+        // бы молча до того дня, когда станет красным разом.
+        yellow.length === 0
+        ? {}
+        : { detail: `устаревает: ${yellow.map(describe).join('; ')}` }
+      : {
+          actual: red.length,
+          detail: red.map(describe).join('; '),
+        }),
+  };
 }
 
 /**

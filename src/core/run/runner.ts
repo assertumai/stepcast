@@ -40,6 +40,8 @@ import { buildStepEnv, injectedVariables } from '../exec/env.js';
 import { executeRunStep } from '../exec/runStep.js';
 import { runJudgePass } from '../exec/judgePass.js';
 import { evaluatePredicates } from '../expect/evaluate.js';
+import { createKnowledgeSource } from '../knowledge/source.js';
+import type { KnowledgeSource } from '../knowledge/types.js';
 import { buildGraph, upstreamOutputs, type Graph } from '../graph.js';
 import { bookkeep } from './bookkeeping.js';
 import { buildIterationNote, type IterationNoteTruncation } from './iterationNote.js';
@@ -421,6 +423,14 @@ interface RunContext extends RunOptions {
    * диалог, а не заново на каждой его работе.
    */
   readonly pipelineContextSent: Set<string>;
+  /**
+   * Источник знания **работы**, если практика памяти объявлена. Заводится по
+   * её рабочей директории (`runJob`), а не по каталогу запуска: иначе в режиме
+   * `worktree` и отбор, и предикат `knowledge_valid` смотрели бы мимо дерева,
+   * которое шаг правит. На контексте прогона поля нет вовсе — значение,
+   * верное только для режима `cwd`, хуже отсутствующего.
+   */
+  readonly knowledgeSource?: KnowledgeSource | undefined;
   readonly lockHash: string;
   /** Способ фиксации состояния: определён один раз на прогон. */
   readonly anchorKind: AnchorKind;
@@ -673,7 +683,23 @@ async function runJob(
   transferJobData(context, job.id);
 
   // Ниже по коду `context` — контекст работы: у него своя рабочая директория.
-  const jobContext: RunContext = { ...context, cwd: prepared.dir };
+  //
+  // Источник знания заводится здесь же, по этой самой директории, а не один
+  // раз на прогон по каталогу запуска. Причина в предикате `knowledge_valid`:
+  // в режиме `worktree` шаг правит копию дерева, и источник, привязанный к
+  // каталогу запуска, проверял бы не то, что шаг только что написал, —
+  // предикат зеленел бы на сломанной памяти дорожки и краснел бы на чужой,
+  // ещё не сведённой. По той же причине и отбор идёт по дереву работы: знание
+  // дорожки — это знание её копии, а не главного дерева.
+  const jobContext: RunContext = {
+    ...context,
+    cwd: prepared.dir,
+    knowledgeSource: createKnowledgeSource({
+      knowledge: context.expanded.pipeline.knowledge,
+      root: prepared.dir,
+      specDir: context.config.project.spec.dir,
+    }),
+  };
   const anchorState: { anchorer: TreeAnchorer | undefined; lastAnchor: Anchor | undefined } = {
     anchorer: undefined,
     lastAnchor: undefined,
@@ -786,6 +812,7 @@ async function evaluateCheck(job: Job, context: RunContext): Promise<PredicateRe
     // `extendEnv: false`, поэтому пустой набор означает буквально пустой —
     // ни PATH, ни HOME.
     env: jobEnv(job, context),
+    knowledge: context.knowledgeSource,
   });
 }
 
@@ -1598,6 +1625,7 @@ async function runCommandStep(
           cwd: context.cwd,
           env: stepEnv(step, job, 1, context, stepDirPath),
           changedPaths: changedPaths(),
+          knowledge: context.knowledgeSource,
         });
 
         if (!target.expect.some((predicate) => predicate.kind === 'judge')) return firstPass;
@@ -1794,6 +1822,16 @@ async function runAgentStep(
         // контексте есть: иначе шаг с узким пределом контекста отказывал бы
         // из-за настройки, которая его не касается.
         ...(stepEntries.hasNote ? { noteMaxTokens: config.context.noteMaxTokens } : {}),
+        ...(context.knowledgeSource === undefined
+          ? {}
+          : {
+              knowledge: (selector, budget) =>
+                (context.knowledgeSource as KnowledgeSource).select(
+                  budget === undefined || selector.kind === 'index'
+                    ? selector
+                    : { ...selector, budget },
+                ),
+            }),
         onDenied: (path, pattern) =>
           journal.event({ kind: 'context.denied', job: job.id, step: step.id, path, pattern }),
         onDowngraded: (path, tokens) =>
@@ -1863,6 +1901,7 @@ async function runAgentStep(
         cwd: context.cwd,
         env: stepEnv(step, job, 1, context, stepDirPath),
         changedPaths: changedPaths(),
+        knowledge: context.knowledgeSource,
       });
 
       if (!target.expect.some((predicate) => predicate.kind === 'judge')) {

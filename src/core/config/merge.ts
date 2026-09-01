@@ -42,6 +42,9 @@ const TOKEN_VALUED = new Set([
   'context.inline_threshold',
   'context.max_tokens',
   'context.note_max_tokens',
+  // Предел на оглавление памяти. Он и есть механизм против её разрастания:
+  // стоимость новой единицы знания для читателя перестаёт быть нулевой.
+  'project.knowledge.index_max_tokens',
 ]);
 
 /** Путь ключа, в котором величина задаётся длительностью. */
@@ -51,6 +54,10 @@ const DURATION_VALUED = new Set([
   'defaults.stall_timeout',
   'defaults.max_wait',
   'limits.wallclock',
+  // Срок, после которого устаревшая единица знания перестаёт быть жёлтой и
+  // становится красной, и предел на один вызов источника.
+  'project.knowledge.stale_after',
+  'project.knowledge.timeout',
 ]);
 
 /** Путь ключа, в котором величина задаётся деньгами. */

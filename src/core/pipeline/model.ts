@@ -48,7 +48,25 @@ export type ContextEntry =
        */
       readonly required?: boolean;
     }
-  | { readonly kind: 'text'; readonly text: string };
+  | { readonly kind: 'text'; readonly text: string }
+  /**
+   * Запись, разрешаемая объявленным источником знания. Селектор трёх форм:
+   * `index` — оглавление без тел, `scope` — тела по пересечению областей,
+   * `id` — тела поимённо.
+   *
+   * Собственный `budget` необязателен: он ограничивает объём, отобранный
+   * этой записью, тогда как `context.max_tokens` ограничивает контекст шага
+   * целиком. Одного второго мало — запись знания способна выбрать бюджет
+   * шага целиком и вытеснить файлы, ради которых шаг и заводили.
+   */
+  | {
+      readonly kind: 'knowledge';
+      readonly selector:
+        | { readonly kind: 'index' }
+        | { readonly kind: 'scope'; readonly scope: readonly string[] }
+        | { readonly kind: 'id'; readonly id: readonly string[] };
+      readonly budget?: number;
+    };
 
 export type ContextUpstream = 'all' | 'none' | readonly string[];
 
@@ -59,6 +77,12 @@ export type Predicate =
   | { readonly kind: 'matches'; readonly pattern: string }
   | { readonly kind: 'not_matches'; readonly pattern: string }
   | { readonly kind: 'changed_only'; readonly globs: readonly string[] }
+  /**
+   * Целостность памяти репозитория: вызов глагола `check` объявленного
+   * источника. Проваливает шаг только красное нарушение — жёлтое попадает в
+   * отчёт и проверку проходит.
+   */
+  | { readonly kind: 'knowledge_valid' }
   | { readonly kind: 'cmd'; readonly command: string }
   | {
       readonly kind: 'judge';
@@ -210,9 +234,32 @@ export interface Triggers {
   readonly schedule: readonly ScheduleTrigger[];
 }
 
+/**
+ * Действующая практика памяти: пайплайн поверх конфигурации, по каждому ключу
+ * отдельно. Лежит на модели пайплайна, а не берётся из конфигурации напрямую,
+ * по той же причине, по которой на ней лежит всё остальное раскрытое:
+ * документ вправе объявить свою практику верхним ключом `project`, и
+ * потребитель обязан видеть уже слитое значение, а не два слоя.
+ *
+ * `provider` неопределён — практики нет. Величины определены всегда: у них
+ * есть встроенные умолчания, потому что описывают поведение движка, а не
+ * устройство репозитория.
+ */
+export interface KnowledgeDeclaration {
+  readonly provider: 'fs' | 'cmd' | undefined;
+  readonly command: string | undefined;
+  readonly dir: string | undefined;
+  readonly rules: string | undefined;
+  readonly indexMaxTokens: number;
+  readonly staleAfterMs: number;
+  readonly timeoutMs: number;
+}
+
 export interface Pipeline {
   readonly name: string;
   readonly file: string;
+  /** Действующая практика памяти — пайплайн поверх конфигурации. */
+  readonly knowledge: KnowledgeDeclaration;
   readonly inputs: Readonly<Record<string, string | number | boolean>>;
   readonly workspace: Workspace;
   readonly env: Readonly<Record<string, string>>;

@@ -1933,3 +1933,182 @@ jobs:
     assert.equal(existsSync(join(project.home, '.stepcast', 'runs')), false);
   });
 });
+
+describe('lint: практика памяти', () => {
+  const WITH_KNOWLEDGE = `
+kind: pipeline
+name: knowledge
+budget: { tokens: 100k }
+context:
+  - knowledge: index
+jobs:
+  work:
+    steps:
+      - id: write
+        agent: claude
+        prompt: пиши
+        expect: [{ knowledge_valid: true }]
+`;
+
+  /** Практика памяти, объявленная так, будто она в `.stepcast/config.yml`. */
+  function withKnowledge(project: Project): Config {
+    return {
+      ...project.config,
+      project: {
+        ...project.config.project,
+        knowledge: { ...project.config.project.knowledge, provider: 'fs', dir: 'knowledge' },
+      },
+    };
+  }
+
+  // Задача 3.7 / Сценарий: «Запись знания без источника»
+  it('отклоняет запись knowledge, когда практика памяти не объявлена', () => {
+    const project = makeProject({ 'stepcast.yml': WITH_KNOWLEDGE });
+    const messages = errors(lint(project));
+
+    assert.ok(messages.some((message) => /Запись контекста knowledge/.test(message)));
+  });
+
+  // Задача 6.2 / Сценарий: «Предикат без источника»
+  it('отклоняет предикат knowledge_valid, когда практика памяти не объявлена', () => {
+    const project = makeProject({ 'stepcast.yml': WITH_KNOWLEDGE });
+    const messages = errors(lint(project));
+
+    assert.ok(messages.some((message) => /Предикат knowledge_valid/.test(message)));
+  });
+
+  it('принимает и запись, и предикат, когда практика объявлена', () => {
+    const project = makeProject({ 'stepcast.yml': WITH_KNOWLEDGE });
+    const messages = errors(lintWithConfig(project, withKnowledge(project)));
+
+    assert.deepEqual(
+      messages.filter((message) => /knowledge/i.test(message)),
+      [],
+    );
+  });
+
+  // Задача 3.6 / Сценарий: «Неизвестная форма отклоняется»
+  it('раскрытие отклоняет неизвестную форму селектора', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: bad
+context:
+  - knowledge: { query: "судья" }
+jobs:
+  work:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+    });
+
+    assert.throws(() => lint(project), StepcastError);
+  });
+
+  // Задача 3.6: ни одной формы селектора — та же природа промаха.
+  it('раскрытие отклоняет запись knowledge без scope и без id', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: bad
+context:
+  - knowledge: {}
+jobs:
+  work:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+    });
+
+    assert.throws(
+      () => lint(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /ни scope, ни id/);
+        return true;
+      },
+    );
+  });
+
+  it('раскрытие отклоняет запись knowledge и со scope, и с id', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: bad
+context:
+  - knowledge: { scope: "src/**", id: "a" }
+jobs:
+  work:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+    });
+
+    assert.throws(
+      () => lint(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /и scope, и id/);
+        return true;
+      },
+    );
+  });
+
+  // Задача 6.1: отрицания у предиката нет, и молчаливое чтение false как
+  // «не проверять» отличало бы выключенную проверку от отсутствующей ничем.
+  it('раскрытие отклоняет knowledge_valid: false', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: bad
+jobs:
+  work:
+    steps:
+      - id: c
+        run: [echo, ok]
+        expect: [{ knowledge_valid: false }]
+`,
+    });
+
+    assert.throws(
+      () => lint(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /только true/);
+        return true;
+      },
+    );
+  });
+
+  // Задача 3.1 / Сценарий: «Область списком раскрывает подстановку границ»
+  it('область списком раскрывает ${project.edit_paths} по элементу на путь', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: scoped
+budget: { tokens: 100k }
+jobs:
+  work:
+    context:
+      - knowledge:
+          scope:
+            - \${project.edit_paths}
+    steps:
+      - id: write
+        agent: claude
+        prompt: пиши
+        expect: [{ exit_code: 0 }]
+`,
+    });
+
+    const config: Config = {
+      ...withKnowledge(project),
+      project: {
+        ...withKnowledge(project).project,
+        editPaths: ['src/**', 'test/**'],
+      },
+    };
+
+    const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config });
+    const entry = expanded.pipeline.jobs[0]?.context[0];
+    assert.equal(entry?.kind, 'knowledge');
+    assert.deepEqual(entry.selector, { kind: 'scope', scope: ['src/**', 'test/**'] });
+  });
+});

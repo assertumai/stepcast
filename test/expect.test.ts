@@ -26,6 +26,55 @@ function run(predicates: readonly Predicate[], overrides: Partial<Parameters<typ
   });
 }
 
+describe('result-contract: предикат knowledge_valid', () => {
+  function source(problems: readonly { level: 'red' | 'yellow'; kind: string; id?: string }[]) {
+    return {
+      index: () => [],
+      select: () => [],
+      write: () => ({ ok: true, problems: [] }),
+      check: () => ({
+        ok: !problems.some((problem) => problem.level === 'red'),
+        problems: problems.map((problem) => ({ ...problem, detail: 'подробность' })),
+      }),
+    };
+  }
+
+  // Задача 6.3 / Сценарий: «Знание целостно»
+  it('проходит, когда красных нарушений нет', () => {
+    const [result] = run([{ kind: 'knowledge_valid' }], { knowledge: source([]) });
+    assert.equal(result?.predicate, 'knowledge_valid');
+    assert.equal(result?.passed, true);
+    assert.equal(result?.hard, true);
+  });
+
+  // Задача 6.3 / Сценарий: «Записанное знание нарушает форму»
+  it('проваливает шаг на красном нарушении, называя единицу и вид', () => {
+    const [result] = run([{ kind: 'knowledge_valid' }], {
+      knowledge: source([{ level: 'red', kind: 'missing-anchor', id: 'a' }]),
+    });
+    assert.equal(result?.passed, false);
+    assert.match(result?.detail ?? '', /a \(missing-anchor\)/);
+  });
+
+  // Задача 6.3 / Сценарий: «Жёлтое нарушение шаг не проваливает»
+  it('проходит при жёлтом нарушении, но называет его в отчёте', () => {
+    const [result] = run([{ kind: 'knowledge_valid' }], {
+      knowledge: source([{ level: 'yellow', kind: 'stale-anchor', id: 'a' }]),
+    });
+    assert.equal(result?.passed, true);
+    assert.match(result?.detail ?? '', /устаревает/);
+  });
+
+  // Задача 6.1: источника нет — невычислен, а не провален. Та же природа, что
+  // у changed_only без якоря: недостача сведений не вина автора.
+  it('помечается невычисленным, когда практика памяти не объявлена', () => {
+    const [result] = run([{ kind: 'knowledge_valid' }]);
+    assert.equal(result?.passed, true);
+    assert.equal(result?.hard, false);
+    assert.match(result?.detail ?? '', /не вычислен/);
+  });
+});
+
 const PLAN_SCHEMA = JSON.stringify({
   type: 'object',
   required: ['tasks'],
