@@ -1,0 +1,65 @@
+# Работа: завести описание изменения под облегчённый пункт очереди.
+#
+# Отличий от propose.yml ровно два, и оба — следствие разметки пункта
+# (`track: express`), а не другой задачи. Первое: модель младшая. Работа
+# описывает механическую правку по облегчённой схеме из трёх документов, а
+# её итог проверяется строгим разбором инструмента практики — ошибка видна
+# шагом позже, а не проносится в коммит. Второе: промпт называет облегчённый
+# ход и обязанность сказать вслух, если пункт размечен неверно.
+#
+# Файлом, а не параметром propose.yml: модель объявляется шагом, и
+# подстановки в это поле формат не знает — параметризовать пришлось бы весь
+# файл ради одной строки.
+
+version: 1
+kind: job
+name: propose-express
+description: Завести описание изменения по облегчённой схеме под облегчённый пункт
+
+params:
+  lane: { type: string, required: true }
+  spec_dir: { type: string, required: true }
+  spec_rules: { type: string, required: true }
+  spec_tool: { type: string, required: true }
+
+session: shared
+
+output:
+  from: create-change
+  schema: ../schemas/propose.json
+
+steps:
+  - id: create-change
+    agent: claude
+    model: sonnet
+    prompt: file:../prompts/propose-express.md
+    context:
+      - path: ${run.dir}/item-${params.lane}.json
+        mode: inline
+      - path: ${params.spec_rules}
+        mode: inline
+    output_schema: ../schemas/propose.json
+    permissions:
+      enforce: strict
+      allow:
+        - Read
+        - Grep
+        - Glob
+        - Edit
+        - Write
+        - Bash(${params.spec_tool} *)
+        - Bash(git status*)
+        - Bash(git diff*)
+        - Bash(git log*)
+    # 20m, а не 40: облегчённая схема — три документа по механической правке.
+    # Пункт, которому этого мало, размечен неверно, и упереться в потолок
+    # здесь дешевле, чем провести неверную разметку до коммита.
+    timeout: 20m
+    expect:
+      - schema: ../schemas/propose.json
+      - changed_only:
+          - ${params.spec_dir}/**
+    attempts:
+      max: 2
+      escalation:
+        - include_failure: true

@@ -159,8 +159,41 @@ describe('backlog: разбор', () => {
       why: 'з',
       done_when: 'к',
       group: 'queue',
+      track: '',
       repos: [],
     });
+  });
+});
+
+describe('backlog: поле track', () => {
+  it('пункт без поля — пустая метка, а не слово по умолчанию', () => {
+    const entries = parse(backlogText(item('an-item', COMPLETE)));
+    assert.equal(toRecord(entryOf(entries, 'an-item')).track, '');
+  });
+
+  it('объявленная метка доезжает до публикуемой записи как есть', () => {
+    const entries = parse(backlogText(item('an-item', { ...COMPLETE, track: 'express' })));
+    assert.equal(toRecord(entryOf(entries, 'an-item')).track, 'express');
+  });
+
+  it('словаря весов у очереди нет: чужое слово принимается наравне', () => {
+    // Слова — соглашение репозитория и его пайплайна: перечень допустимых в
+    // ядре запретил бы репозиторию назвать свои веса своими словами.
+    const entries = parse(backlogText(item('an-item', { ...COMPLETE, track: 'nightly-deep' })));
+    assert.equal(toRecord(entryOf(entries, 'an-item')).track, 'nightly-deep');
+  });
+
+  it('отказывает на значении, не являющемся слагом: проверяется форма', () => {
+    assert.throws(
+      () => parse(backlogText(item('an-item', { ...COMPLETE, track: 'Express Lane' }))),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /an-item/);
+        assert.match(error.message, /Express Lane/);
+        assert.match(error.message, /kebab-case/);
+        return true;
+      },
+    );
   });
 });
 
@@ -245,10 +278,10 @@ describe('backlog: поле repos', () => {
 });
 
 describe('backlog: блок repo у дорожки в ответе pick --lanes', () => {
-  const RECORD = { slug: 's', title: 'т', why: 'з', done_when: 'к', group: 'g', repos: [] };
+  const RECORD = { slug: 's', title: 'т', why: 'з', done_when: 'к', group: 'g', track: 'express', repos: [] };
 
   it('ответ pick без блока repo принимается схемой', () => {
-    const response = { lanes: { a: { filled: true, slug: 's', title: 'т', group: 'g', item: RECORD } } };
+    const response = { lanes: { a: { filled: true, slug: 's', title: 'т', group: 'g', track: 'express', item: RECORD } } };
     assert.doesNotThrow(() => BacklogSlotsResponseSchema.parse(response));
   });
 
@@ -260,6 +293,7 @@ describe('backlog: блок repo у дорожки в ответе pick --lanes'
           slug: 's',
           title: 'т',
           group: 'g',
+          track: 'express',
           item: RECORD,
           repo: { dir: 'backend', check: './gradlew check', spec: { dir: 'backend/docs/changes', rules: 'backend/docs/spec-rules.md', tool: 'openspec' } },
         },
@@ -268,8 +302,13 @@ describe('backlog: блок repo у дорожки в ответе pick --lanes'
     assert.doesNotThrow(() => BacklogSlotsResponseSchema.parse(response));
   });
 
+  it('незаполненная дорожка несёт пустой track наравне с пустым слагом', () => {
+    const response = { lanes: { a: { filled: false, slug: '', title: '', group: '', track: '', item: null } } };
+    assert.doesNotThrow(() => BacklogSlotsResponseSchema.parse(response));
+  });
+
   it('посторонний ключ дорожки отклоняется', () => {
-    const response = { lanes: { a: { filled: true, slug: 's', title: 'т', group: 'g', item: RECORD, extra: true } } };
+    const response = { lanes: { a: { filled: true, slug: 's', title: 'т', group: 'g', track: 'express', item: RECORD, extra: true } } };
     assert.throws(() => BacklogSlotsResponseSchema.parse(response));
   });
 
@@ -281,6 +320,7 @@ describe('backlog: блок repo у дорожки в ответе pick --lanes'
           slug: 's',
           title: 'т',
           group: 'g',
+          track: 'express',
           item: RECORD,
           repo: { dir: '.', check: 'npm run check', spec: { dir: 'a', rules: 'b', tool: 'c' }, extra: true },
         },

@@ -15,6 +15,7 @@ export {
   BacklogSlugSchema,
   BacklogStatusSchema,
   BACKLOG_STATUSES,
+  BacklogTrackSchema,
   BacklogItemSchema,
   BacklogRecordSchema,
   BacklogSlotsResponseSchema,

@@ -70,18 +70,19 @@ interface LaneRecord {
   readonly why: string;
   readonly done_when: string;
   readonly group: string;
+  readonly track: string;
   readonly repos: readonly string[];
 }
 
 function record(slug: string, repos: readonly string[] = []): LaneRecord {
-  return { slug, title: 'т', why: 'з', done_when: 'к', group: slug, repos };
+  return { slug, title: 'т', why: 'з', done_when: 'к', group: slug, track: '', repos };
 }
 
 function filledLane(slug: string, repos: readonly string[] = []): unknown {
-  return { filled: true, slug, title: 'т', group: slug, item: record(slug, repos) };
+  return { filled: true, slug, title: 'т', group: slug, track: '', item: record(slug, repos) };
 }
 
-const EMPTY_LANE = { filled: false, slug: '', title: '', group: '', item: null };
+const EMPTY_LANE = { filled: false, slug: '', title: '', group: '', track: '', item: null };
 
 describe('CLI: stepcast project repos', () => {
   it('дорожка с вложенным репозиторием получает его объявления', async () => {

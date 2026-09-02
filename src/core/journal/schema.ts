@@ -17,6 +17,20 @@ export const StatusValueSchema = z.enum([
 
 export type StatusValue = z.infer<typeof StatusValueSchema>;
 
+/**
+ * Почему работа пропущена. `condition` — решение графа: слот не заполнен,
+ * условие `if` ложно, зависимость пропущена; такой пропуск нормален и
+ * годности дорожки не отменяет. `halted` — прогон до работы не дошёл:
+ * остановка после отказа либо неразрешённые зависимости; такой пропуск
+ * означает недоделанную дорожку, и различать их обязан журнал, а не
+ * догадка читателя по тексту причины.
+ */
+export const SKIP_KINDS = ['condition', 'halted'] as const;
+
+export const SkipKindSchema = z.enum(SKIP_KINDS);
+
+export type SkipKind = (typeof SKIP_KINDS)[number];
+
 /** Исход, который для условий считается отказом. */
 export function isFailure(status: StatusValue): boolean {
   return status === 'failed' || status === 'budget_exceeded' || status === 'canceled';
@@ -183,6 +197,8 @@ export const JobRecordSchema = z
     reason: z.string().optional(),
     /** Причина неуспеха из закрытого перечня. */
     cause: HaltCauseSchema.optional(),
+    /** Происхождение пропуска. Есть только у `status: skipped`. */
+    skip: SkipKindSchema.optional(),
     /** Метка обвязки, объявленная на месте подключения работы. У работы без lane отсутствует. */
     lane: z.string().optional(),
     /**

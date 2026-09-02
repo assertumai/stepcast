@@ -147,6 +147,13 @@ function describeFailure(
     );
   }
 
+  if (field === 'track') {
+    return new StepcastError(
+      `пункт «${raw.slug}»: вес «${String(candidate.track)}» не является слагом в kebab-case${suffix}`,
+      { at: raw.slug },
+    );
+  }
+
   if (field === 'group') {
     return new StepcastError(
       `пункт «${raw.slug}»: группа «${String(candidate.group)}» не является слагом в kebab-case${suffix}`,
@@ -172,6 +179,9 @@ export function toRecord(entry: BacklogEntry): BacklogRecord {
     why: entry.data.why,
     done_when: entry.data.done_when,
     group: effectiveGroup(entry),
+    // Пункт без поля — пустая метка: словаря весов у очереди нет, см.
+    // BacklogTrackSchema.
+    track: entry.data.track ?? '',
     // Поле repos уже разобрано схемой (RepoListSchema) в перечень имён;
     // отсутствие поля — пустой перечень, то есть корень дерева.
     repos: entry.data.repos ?? [],

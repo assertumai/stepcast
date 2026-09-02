@@ -133,6 +133,36 @@ describe('CLI: stepcast backlog pick', () => {
     assert.equal(existsSync(join(runDir, 'item-b-lane.json')), false);
   });
 
+  it('вес пункта доезжает до дорожки плоским полем и до файла дорожки', async () => {
+    // Плоским полем — потому что условие `if` пайплайна читает его прямо у
+    // дорожки, не заходя внутрь item; у незаполненной — пусто, как слаг.
+    const dir = bed(item('a', { ...COMPLETE, track: 'express' }));
+    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+
+    const result = await backlog(dir, ['pick', '--lanes', 'a-lane,b-lane', '--run-dir', runDir]);
+
+    assert.equal(result.code, ExitCode.ok);
+    const parsed = JSON.parse(result.stdout) as {
+      lanes: Record<string, { track: string; item: { track?: string } | null }>;
+    };
+    assert.equal(parsed.lanes['a-lane']?.track, 'express');
+    assert.equal(parsed.lanes['a-lane']?.item?.track, 'express');
+    assert.equal(parsed.lanes['b-lane']?.track, '');
+
+    const written = JSON.parse(readFileSync(join(runDir, 'item-a-lane.json'), 'utf8')) as { track: string };
+    assert.equal(written.track, 'express');
+  });
+
+  it('пункт без поля track доезжает до дорожки с пустой меткой', async () => {
+    const dir = bed(item('a', COMPLETE));
+
+    const result = await backlog(dir, ['pick', '--lanes', 'a-lane']);
+
+    assert.equal(result.code, ExitCode.ok);
+    const parsed = JSON.parse(result.stdout) as { lanes: Record<string, { track: string }> };
+    assert.equal(parsed.lanes['a-lane']?.track, '');
+  });
+
   it('пустая очередь: код 0, пустая выдача, файл не изменён', async () => {
     const dir = bed(item('done-item', { ...COMPLETE, status: 'done' }));
     const before = readFileSync(join(dir, 'backlog.md'), 'utf8');

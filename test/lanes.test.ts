@@ -24,6 +24,11 @@ function job(id: string, lane: string, status: JobRecord['status']): JobRecord {
   return { id, lane, status, steps: [] };
 }
 
+/** Пропуск с объявленным происхождением: решение графа либо остановка прогона. */
+function skipped(id: string, lane: string, skip: JobRecord['skip']): JobRecord {
+  return { id, lane, status: 'skipped', ...(skip === undefined ? {} : { skip }), steps: [] };
+}
+
 describe('lanes: evaluateLane', () => {
   it('годна, когда все работы дорожки success — независимо от их имён', () => {
     const jobs = [job('шаг-раз', 'a', 'success'), job('произвольное-имя', 'a', 'success')];
@@ -39,7 +44,29 @@ describe('lanes: evaluateLane', () => {
     }
   });
 
-  it('смешанные success и skipped — негодна, а не незаполненный слот', () => {
+  it('работа, пропущенная условием графа, годности не отменяет', () => {
+    // Облегчённая ветка дорожки: полная пропущена условием `if`, пройденная
+    // прошла целиком. Требование «все до одной success» отменяло бы дорожку
+    // ровно за то, ради чего ветки разведены.
+    const jobs = [
+      job('propose-express', 'a', 'success'),
+      job('verify-express', 'a', 'success'),
+      skipped('propose', 'a', 'condition'),
+      skipped('review', 'a', 'condition'),
+    ];
+    assert.deepEqual(evaluateLane(jobs, 'a'), { kind: 'ready' });
+  });
+
+  it('работа, пропущенная остановкой прогона, делает дорожку негодной', () => {
+    const jobs = [job('propose', 'a', 'success'), skipped('verify', 'a', 'halted')];
+    const outcome = evaluateLane(jobs, 'a');
+    assert.equal(outcome.kind, 'unfit');
+    if (outcome.kind === 'unfit') {
+      assert.deepEqual(outcome.jobs, [{ id: 'verify', status: 'skipped' }]);
+    }
+  });
+
+  it('пропуск без объявленного происхождения (запись старого прогона) — негодна', () => {
     const jobs = [job('propose', 'a', 'success'), job('verify', 'a', 'skipped')];
     const outcome = evaluateLane(jobs, 'a');
     assert.equal(outcome.kind, 'unfit');

@@ -383,6 +383,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
           status: outcome.status,
           ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
           ...(outcome.cause === undefined ? {} : { cause: outcome.cause }),
+          ...(outcome.skip === undefined ? {} : { skip: outcome.skip }),
           ...(outcome.lastCheck === undefined ? {} : { last_check: [...outcome.lastCheck] }),
           finished_at: new Date().toISOString(),
         });

@@ -1,6 +1,6 @@
 import { evaluate, parseExpression } from '../expr/parse.js';
 import { buildGraph, type Graph } from '../graph.js';
-import { isFailure, type PredicateResult, type StatusValue } from '../journal/schema.js';
+import { isFailure, type PredicateResult, type SkipKind, type StatusValue } from '../journal/schema.js';
 import type { Job, Pipeline } from '../pipeline/model.js';
 import { HaltCause, type HaltCauseValue } from './halt.js';
 
@@ -22,6 +22,8 @@ export interface JobOutcome {
   readonly reason?: string;
   /** Причина неуспеха из закрытого перечня `halt.ts`. */
   readonly cause?: HaltCauseValue;
+  /** Происхождение пропуска: решение графа либо остановка прогона. */
+  readonly skip?: SkipKind;
   /** Результаты check последней итерации, когда причина — until_not_met. */
   readonly lastCheck?: readonly PredicateResult[];
   /** Опубликованный структурированный выход, если работа его произвела. */
@@ -100,18 +102,18 @@ export async function schedule(options: ScheduleOptions): Promise<ScheduleResult
     const skipped = outcomes.filter((outcome) => outcome.status === 'skipped');
 
     if (dependencies.length > 0 && skipped.length === outcomes.length && outcomes.length > 0) {
-      return { status: 'skipped', reason: 'все зависимости пропущены' };
+      return { status: 'skipped', reason: 'все зависимости пропущены', skip: 'condition' };
     }
 
     if (job.on === 'success' && failed.length > 0) {
-      return { status: 'skipped', reason: `on: success, зависимость завершилась отказом` };
+      return { status: 'skipped', reason: `on: success, зависимость завершилась отказом`, skip: 'condition' };
     }
     if (job.on === 'failure' && failed.length === 0) {
-      return { status: 'skipped', reason: 'on: failure, отказов не было' };
+      return { status: 'skipped', reason: 'on: failure, отказов не было', skip: 'condition' };
     }
 
     if (job.if !== undefined && !evaluate(parseExpression(job.if), conditionScope())) {
-      return { status: 'skipped', reason: `if: ${job.if}` };
+      return { status: 'skipped', reason: `if: ${job.if}`, skip: 'condition' };
     }
 
     return undefined;
@@ -179,7 +181,7 @@ export async function schedule(options: ScheduleOptions): Promise<ScheduleResult
         }
 
         if (stopping && phase === 'main' && job.on === 'success') {
-          await settle(job, { status: 'skipped', reason: 'остановлено после отказа (fail_fast)' });
+          await settle(job, { status: 'skipped', reason: 'остановлено после отказа (fail_fast)', skip: 'halted' });
           continue;
         }
 
@@ -217,7 +219,7 @@ export async function schedule(options: ScheduleOptions): Promise<ScheduleResult
     // сообщил, здесь это страховка от бесконечного ожидания.
     for (const job of jobs) {
       if (!settled.has(job.id)) {
-        await settle(job, { status: 'skipped', reason: 'зависимости не разрешились' });
+        await settle(job, { status: 'skipped', reason: 'зависимости не разрешились', skip: 'halted' });
       }
     }
   };

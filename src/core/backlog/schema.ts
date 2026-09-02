@@ -21,6 +21,20 @@ export const BACKLOG_STATUSES = ['pending', 'in_progress', 'done', 'failed'] as 
 export const BacklogStatusSchema = z.enum(BACKLOG_STATUSES);
 
 /**
+ * Вес пункта — метка, по которой пайплайн выбирает цепочку работ. Проверяется
+ * форма, а не словарь: слова — соглашение репозитория и его пайплайна, и
+ * перечень допустимых в ядре запретил бы репозиторию назвать свои веса
+ * своими словами. Очередь не знает устройства проекта — знать его словарь ей
+ * тем более неоткуда.
+ *
+ * Пункт без поля даёт пустую метку, а не слово по умолчанию: слово было бы
+ * тем же навязанным словарём. Условие пайплайна сравнивает метку со своей —
+ * несовпадение (в том числе пустая метка и опечатка) ведёт пункт цепочкой по
+ * умолчанию, а какая она, решает пайплайн.
+ */
+export const BacklogTrackSchema = BacklogSlugSchema;
+
+/**
  * Имя каталога в перечне `repos`: относительный путь без сегмента `..`, без
  * абсолютной формы и без символов шаблона глоба — тот же смысл, что у
  * `RelativeRepoPathSchema` конфигурации, но отдельная модель: очередь не
@@ -79,6 +93,7 @@ export const BacklogItemSchema = z.looseObject({
   why: z.string(),
   done_when: z.string(),
   group: BacklogSlugSchema.optional(),
+  track: BacklogTrackSchema.optional(),
   started_at: z.string().optional(),
   reason: z.string().optional(),
   repos: RepoListSchema.optional(),
@@ -94,6 +109,8 @@ export const BacklogRecordSchema = z
     why: z.string(),
     done_when: z.string(),
     group: z.string(),
+    /** Объявленный вес пункта; пусто, когда пункт поле не заполнил. */
+    track: z.string(),
     /** Названные репозитории в объявленном порядке; пусто, когда пункт поле не заполнил. */
     repos: z.array(z.string()),
   })
@@ -137,6 +154,14 @@ const BacklogLaneSchema = z
     slug: z.string(),
     title: z.string(),
     group: z.string(),
+    /**
+     * Вес пункта дорожки — плоским полем рядом со слагом и заголовком, чтобы
+     * условие `if` пайплайна читало его без захода внутрь `item`. Пусто и у
+     * незаполненной дорожки, и у пункта без поля: сравнение с меткой,
+     * которую ищет ветка пайплайна, даёт ложь, и ветка не запускается ни на
+     * пустоте, ни на неразмеченном пункте.
+     */
+    track: z.string(),
     item: BacklogRecordSchema.nullable(),
     repo: BacklogRepoBlockSchema.optional(),
   })

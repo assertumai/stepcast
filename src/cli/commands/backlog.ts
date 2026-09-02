@@ -178,11 +178,18 @@ function runPickLanes(
   lanes.forEach((lane, index) => {
     const entry = chosen[index];
     if (entry === undefined) {
-      result[lane] = { filled: false, slug: '', title: '', group: '', item: null };
+      result[lane] = { filled: false, slug: '', title: '', group: '', track: '', item: null };
       return;
     }
     const record: BacklogRecord = toRecord(entry);
-    result[lane] = { filled: true, slug: record.slug, title: record.title, group: record.group, item: record };
+    result[lane] = {
+      filled: true,
+      slug: record.slug,
+      title: record.title,
+      group: record.group,
+      track: record.track,
+      item: record,
+    };
     if (runDir !== undefined) {
       atomicWrite(join(runDir, `item-${lane}.json`), `${JSON.stringify(record, null, 2)}\n`);
     }

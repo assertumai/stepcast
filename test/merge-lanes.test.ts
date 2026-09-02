@@ -405,7 +405,7 @@ describe('core: mergeLanes — отбор годности', () => {
     assert.equal(statusOf(text, 'b-item'), 'done');
   });
 
-  it('смешанные success и skipped не сводятся', async () => {
+  it('работа, пропущенная условием, сведению не мешает', async () => {
     const project = makeProject({
       'stepcast.yml': `
 version: 1
@@ -441,9 +441,13 @@ jobs:
       file: backlogFile,
     });
 
-    assert.equal(outcomes[0]?.kind, 'unfit');
-    assert.equal(existsSync(project.path('a.txt')), false);
-    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'failed');
+    // Пропуск по решению графа — норма разведённых веток дорожки
+    // (`track: express` в очереди петли), а не недоделанная работа: сведение
+    // судит по тем работам, которые дорожка обязана была пройти.
+    assert.equal(outcomes[0]?.kind, 'merged');
+    assert.equal(existsSync(project.path('a.txt')), true);
+    assert.equal(existsSync(project.path('confirm-a.txt')), false);
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'done');
   });
 
   it('дорожка, все работы которой skipped, пропускается без отказа и без правки очереди', async () => {

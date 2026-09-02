@@ -5,6 +5,19 @@
 # fix-review → verify на каждой. Дорожка без свободного пункта пропускает всю
 # свою цепочку.
 #
+# У дорожки две ветки, и выбирает между ними разметка пункта. Слово express
+# знает этот пайплайн, а не движок: очередь несёт метку веса и проверяет
+# только её форму, а какая цепочка ей соответствует, решается здесь. Пункт с
+# track: express идёт облегчённой: propose-express → implement-express →
+# verify, без plan, review и fix-review. Размечает человек, ведущий очередь,
+# и только он: цена полной цепочки не зависит от объёма правки — описание и
+# план берут $7-11 на opus прежде первой строки кода, ревью с починкой ещё
+# $8-15, — а механической правке ни того, ни другого не нужно. Разметка и
+# есть весь критерий: снятое ревью ничем другим не заменено, и пункт,
+# названный простым по ошибке, доедет до коммита без второго мнения. Гейты
+# при этом общие: объявленная проверка, строгий разбор документов изменения,
+# границы правок и повторная проверка при сведении — у обеих веток.
+#
 # Общей сессии у работ дорожки нет, и это результат замера, а не умолчание по
 # недосмотру. Движок умеет сводить работы в один диалог ключом обвязки
 # session_group; заход 245605 прошёл с двумя группами (propose+plan+implement
@@ -144,8 +157,14 @@ jobs:
     workspace: { inherit: none }
     # Неопределённое значение (слот не заполнен, а то и вовсе work slots не
     # дошла до успеха) сравнением с true даёт false — работа пропускается,
-    # а не запускается на пустоте.
-    if: "jobs.slots.output.lanes.a.filled == true"
+    # а не запускается на пустоте. Второе условие разводит ветки: пункт с
+    # меткой express ведёт облегчённую цепочку ниже, а эта — полная —
+    # пропускается целиком. Полная и есть умолчание: пункт без метки, с
+    # чужой меткой и с опечаткой в ней идёт сюда, и это направление выбрано
+    # сознательно — лишние деньги дешевле пропущенного ревью. Работы, пропущенные условием, годности
+    # дорожки не отменяют (см. lane-merge): дорожка остаётся одна, ветки в
+    # ней две, и пройдена всегда ровно одна.
+    if: "jobs.slots.output.lanes.a.filled == true and jobs.slots.output.lanes.a.track != 'express'"
 
   plan-a:
     uses: ../jobs/plan.yml
@@ -198,6 +217,51 @@ jobs:
     lane: a
     needs: [fix-review-a]
 
+  # --- Облегчённая ветка дорожки a: пункт с track: express ---
+  #
+  # Три работы вместо шести: описание изменения по облегчённой схеме,
+  # реализация по его чек-листу и та же объявленная проверка. Сняты plan
+  # (чек-лист изменения и есть план), review и fix-review. Снятие ревью —
+  # осознанный размен: он держится на разметке очереди, и пункт, размеченный
+  # облегчённым по ошибке, доедет до коммита без второго мнения. Поэтому обе
+  # работы ветки обязаны сказать вслух, если пункт оказался не механическим
+  # (см. промпты), а гейты — объявленная проверка, строгий разбор документов,
+  # границы правок и повторная проверка при сведении — остаются нетронутыми.
+
+  propose-express-a:
+    uses: ../jobs/propose-express.yml
+    with:
+      lane: a
+      spec_dir: "${jobs.slots.output.lanes.a.repo.spec.dir}"
+      spec_rules: "${jobs.slots.output.lanes.a.repo.spec.rules}"
+      spec_tool: "${jobs.slots.output.lanes.a.repo.spec.tool}"
+    lane: a
+    needs: [slots]
+    workspace: { inherit: none }
+    if: "jobs.slots.output.lanes.a.track == 'express'"
+
+  implement-express-a:
+    uses: ../jobs/implement-express.yml
+    with:
+      change: "${jobs.propose-express-a.output.slug}"
+      repo_dir: "${jobs.slots.output.lanes.a.repo.dir}"
+      check: "${jobs.slots.output.lanes.a.repo.check}"
+      spec_dir: "${jobs.slots.output.lanes.a.repo.spec.dir}"
+      spec_rules: "${jobs.slots.output.lanes.a.repo.spec.rules}"
+      spec_tool: "${jobs.slots.output.lanes.a.repo.spec.tool}"
+    lane: a
+    needs: [propose-express-a]
+
+  verify-express-a:
+    uses: ../jobs/verify.yml
+    with:
+      change: "${jobs.propose-express-a.output.slug}"
+      repo_dir: "${jobs.slots.output.lanes.a.repo.dir}"
+      check: "${jobs.slots.output.lanes.a.repo.check}"
+      spec_tool: "${jobs.slots.output.lanes.a.repo.spec.tool}"
+    lane: a
+    needs: [implement-express-a]
+
   # --- Дорожка b: та же цепочка, те же файлы работ, те же параметры ---
 
   propose-b:
@@ -210,7 +274,7 @@ jobs:
     lane: b
     needs: [slots]
     workspace: { inherit: none }
-    if: "jobs.slots.output.lanes.b.filled == true"
+    if: "jobs.slots.output.lanes.b.filled == true and jobs.slots.output.lanes.b.track != 'express'"
 
   plan-b:
     uses: ../jobs/plan.yml
@@ -263,6 +327,41 @@ jobs:
     lane: b
     needs: [fix-review-b]
 
+  # --- Облегчённая ветка дорожки b: та же цепочка, те же файлы работ ---
+  propose-express-b:
+    uses: ../jobs/propose-express.yml
+    with:
+      lane: b
+      spec_dir: "${jobs.slots.output.lanes.b.repo.spec.dir}"
+      spec_rules: "${jobs.slots.output.lanes.b.repo.spec.rules}"
+      spec_tool: "${jobs.slots.output.lanes.b.repo.spec.tool}"
+    lane: b
+    needs: [slots]
+    workspace: { inherit: none }
+    if: "jobs.slots.output.lanes.b.track == 'express'"
+
+  implement-express-b:
+    uses: ../jobs/implement-express.yml
+    with:
+      change: "${jobs.propose-express-b.output.slug}"
+      repo_dir: "${jobs.slots.output.lanes.b.repo.dir}"
+      check: "${jobs.slots.output.lanes.b.repo.check}"
+      spec_dir: "${jobs.slots.output.lanes.b.repo.spec.dir}"
+      spec_rules: "${jobs.slots.output.lanes.b.repo.spec.rules}"
+      spec_tool: "${jobs.slots.output.lanes.b.repo.spec.tool}"
+    lane: b
+    needs: [propose-express-b]
+
+  verify-express-b:
+    uses: ../jobs/verify.yml
+    with:
+      change: "${jobs.propose-express-b.output.slug}"
+      repo_dir: "${jobs.slots.output.lanes.b.repo.dir}"
+      check: "${jobs.slots.output.lanes.b.repo.check}"
+      spec_tool: "${jobs.slots.output.lanes.b.repo.spec.tool}"
+    lane: b
+    needs: [implement-express-b]
+
   # --- Сведение и завершение ---
 
   # on: always — дорожка с пустым слотом даёт verify статусом skipped, а не
@@ -270,7 +369,7 @@ jobs:
   merge:
     uses: ../jobs/merge.yml
     workspace: { mode: cwd }
-    needs: [verify-a, verify-b]
+    needs: [verify-a, verify-b, verify-express-a, verify-express-b]
     on: always
 
   # needs: all и on: always — единственная конструкция формата, отрабатывающая
