@@ -10,6 +10,7 @@ import { StepcastError } from '../errors.js';
 import type { Predicate } from '../pipeline/model.js';
 import type { PredicateResult } from '../journal/schema.js';
 import type { KnowledgeSource } from '../knowledge/types.js';
+import type { Registry } from '../plugins/registry.js';
 
 /**
  * Вычисление предикатов.
@@ -43,10 +44,11 @@ export interface EvaluationInput {
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 
-export function evaluatePredicates(
+export async function evaluatePredicates(
   predicates: readonly Predicate[],
   input: EvaluationInput,
-): PredicateResult[] {
+  registry?: Registry,
+): Promise<PredicateResult[]> {
   if (predicates.length === 0) {
     const passed = input.exitCode === 0;
     return [
@@ -61,10 +63,21 @@ export function evaluatePredicates(
     ];
   }
 
-  return predicates.map((predicate) => evaluateOne(predicate, input));
+  // Последовательно, в объявленном порядке: параллельность предикатов не
+  // обещана и обещана не будет — предикат вправе трогать рабочее дерево, и
+  // одновременность превратила бы отчёт в лотерею.
+  const results: PredicateResult[] = [];
+  for (const predicate of predicates) {
+    results.push(await evaluateOne(predicate, input, registry));
+  }
+  return results;
 }
 
-function evaluateOne(predicate: Predicate, input: EvaluationInput): PredicateResult {
+async function evaluateOne(
+  predicate: Predicate,
+  input: EvaluationInput,
+  registry?: Registry,
+): Promise<PredicateResult> {
   switch (predicate.kind) {
     case 'exit_code': {
       const passed = input.exitCode === predicate.value;
@@ -143,6 +156,8 @@ function evaluateOne(predicate: Predicate, input: EvaluationInput): PredicateRes
 
     case 'knowledge_valid':
       return evaluateKnowledgeValid(input);
+    case 'plugin':
+      return evaluatePlugin(predicate.name, predicate.value, input, registry);
     case 'judge':
       // Вычисление судьи — второй, асинхронный проход попытки (см.
       // exec/judgePass.ts): он требует агентского вызова, сессий и журнала, а
@@ -204,6 +219,48 @@ function evaluateKnowledgeValid(input: EvaluationInput): PredicateResult {
           detail: red.map(describe).join('; '),
         }),
   };
+}
+
+/**
+ * Предикат плагина: вычисляет сам вклад. Движок здесь только зовёт его,
+ * приводит результат к общему виду и не даёт умолчаниям вклада разойтись с
+ * записью в журнале — имя предиката в результате всегда из реестра, а не из
+ * того, что вернул вклад.
+ *
+ * Отказ вычислителя — непройденный предикат с названной причиной, а не
+ * крушение шага: исключение из чужого кода не должно выглядеть дефектом
+ * движка.
+ */
+async function evaluatePlugin(
+  name: string,
+  value: unknown,
+  input: EvaluationInput,
+  registry?: Registry,
+): Promise<PredicateResult> {
+  const contribution = registry?.predicates.get(name);
+  if (contribution === undefined) {
+    return {
+      predicate: name,
+      passed: false,
+      hard: true,
+      detail: `предикат ${name} не предоставлен ни одним загруженным плагином`,
+      expected: value,
+    };
+  }
+
+  const hard = contribution.hard ?? true;
+  try {
+    const result = await contribution.evaluate(value, input);
+    return { ...result, predicate: name, hard: result.hard ?? hard };
+  } catch (error) {
+    return {
+      predicate: name,
+      passed: false,
+      hard,
+      detail: `предикат ${name} отказал: ${error instanceof Error ? error.message : String(error)}`,
+      expected: value,
+    };
+  }
 }
 
 /**

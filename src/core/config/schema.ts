@@ -293,6 +293,14 @@ export const RawConfigSchema = z
     limits: RawLimitsSchema.optional(),
     env_deny: z.array(z.string()).optional(),
     context: RawContextSchema.optional(),
+    /**
+     * Модули плагинов, расширяющих движок (`docs/plugins.md`). Ключ допустим в
+     * обоих слоях и между ними объединяется: глобальный называет машинное
+     * (адаптер бэкенда, установленный на этой машине), проектный — то, от чего
+     * зависит пайплайн репозитория. Пустой список отклоняется — объявление, не
+     * объявляющее ничего, забытая правка, а не осмысленное значение.
+     */
+    plugins: z.array(z.string().min(1).regex(/\S/, 'модуль плагина не может быть пустым')).min(1).optional(),
     backends: z.record(z.string(), RawBackendSchema).optional(),
     ui: RawUiSchema.optional(),
     project: RawProjectSchema.optional(),
@@ -322,7 +330,7 @@ export const GLOBAL_ONLY_KEYS = ['runs.root', 'backends.*.command'] as const;
 export const PROJECT_ONLY_KEYS = ['project.**'] as const;
 
 /** Списки, которые между слоями объединяются, а не заменяются. */
-export const UNION_LIST_KEYS = ['env_deny', 'context.deny'] as const;
+export const UNION_LIST_KEYS = ['env_deny', 'context.deny', 'plugins'] as const;
 
 /** Потолки: между слоями берётся строжайшее значение, поднять их снизу нельзя. */
 export const TIGHTEN_ONLY_KEYS = [

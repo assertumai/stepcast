@@ -11,6 +11,8 @@ import { resolveRun } from '../src/core/journal/reader.js';
 import { describeComparison, diffRuns, lineDiff } from '../src/core/run/diff.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { StepcastError } from '../src/core/errors.js';
+import { builtinRegistry } from '../src/core/plugins/builtin.js';
+import { addPlugin, type Registry } from '../src/core/plugins/registry.js';
 import { makeProject, type Project } from './helpers.js';
 
 interface Bed {
@@ -389,5 +391,77 @@ describe('run-diff: построчное сравнение', () => {
 
   it('на одинаковом тексте различий не даёт', () => {
     assert.deepEqual(lineDiff('одинаково', 'одинаково'), []);
+  });
+});
+
+describe('plugin-contributions: состав плагинов в сравнении прогонов', () => {
+  const SIMPLE = `
+version: 1
+kind: pipeline
+name: сравнение
+jobs:
+  работа:
+    steps:
+      - id: шаг
+        run: [echo, ок]
+        expect: [{ exit_code: 0 }]
+`;
+
+  /** Прогон с объявленным составом плагинов: реестр подставляется напрямую. */
+  async function runWith(b: Bed, registry: Registry | undefined): Promise<RunResult> {
+    return runPipeline({
+      expanded: expandPipeline({
+        pipelinePath: b.project.path('stepcast.yml'),
+        config: b.project.config,
+        ...(registry === undefined ? {} : { registry }),
+      }),
+      config: { ...b.project.config, runs: { ...b.project.config.runs, root: b.runsRoot } },
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      ...(registry === undefined ? {} : { registry }),
+    });
+  }
+
+  function withPlugin(name: string, version: string): Registry {
+    const registry = builtinRegistry();
+    addPlugin(registry, { name, version }, `/модуль/${name}.js`);
+    return registry;
+  }
+
+  it('разный состав плагинов назван заметкой', async () => {
+    const b = bed({ 'stepcast.yml': SIMPLE });
+    const first = await runWith(b, withPlugin('example', '1.0.0'));
+    const second = await runWith(b, builtinRegistry());
+
+    const comparison = compare(b, first, second);
+
+    const note = comparison.notes.find((item) => item.includes('состав плагинов'));
+    assert.ok(note !== undefined, comparison.notes.join('\n'));
+    assert.match(note, /example@1\.0\.0/);
+    assert.match(note, /без плагинов/);
+  });
+
+  it('одинаковый состав заметки не даёт', async () => {
+    const b = bed({ 'stepcast.yml': SIMPLE });
+    const first = await runWith(b, withPlugin('example', '1.0.0'));
+    const second = await runWith(b, withPlugin('example', '1.0.0'));
+
+    const comparison = compare(b, first, second);
+
+    assert.equal(
+      comparison.notes.find((item) => item.includes('состав плагинов')),
+      undefined,
+    );
+  });
+
+  it('смена версии плагина видна', async () => {
+    const b = bed({ 'stepcast.yml': SIMPLE });
+    const first = await runWith(b, withPlugin('example', '1.0.0'));
+    const second = await runWith(b, withPlugin('example', '2.0.0'));
+
+    const comparison = compare(b, first, second);
+
+    const note = comparison.notes.find((item) => item.includes('состав плагинов'));
+    assert.match(note ?? '', /example@1\.0\.0 и example@2\.0\.0/);
   });
 });

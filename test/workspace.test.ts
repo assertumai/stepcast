@@ -9,13 +9,14 @@ import { createAnchorer } from '../src/core/anchor/index.js';
 import { buildGraph } from '../src/core/graph.js';
 import type { Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { readStatus, resolveRun } from '../src/core/journal/reader.js';
+import { readEvents, readStatus, resolveRun } from '../src/core/journal/reader.js';
 import { resolveInheritSource, type CompletedJob } from '../src/core/run/inherit.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { StepcastError } from '../src/core/errors.js';
 import { applyRun } from '../src/core/run/apply.js';
 import { HaltCause } from '../src/core/run/halt.js';
 import { prepareWorkspace } from '../src/core/run/workspace.js';
+import { RunJournal } from '../src/core/journal/writer.js';
 import { gitCommit, gitInit as gitInitDir, makeProject, type Project } from './helpers.js';
 
 // Переходники к общим помощникам (`test/helpers.ts`): здесь репозиторий
@@ -578,11 +579,14 @@ describe('workspace-modes: материализация объявленных �
     const job = pipeline.jobs.find((item) => item.id === 'build')!;
     const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
 
-    assert.throws(() =>
+    const journal = RunJournal.create({ runsRoot, projectRoot: project.root });
+
+    await assert.rejects(() =>
       prepareWorkspace({
         job,
         cwd: project.root,
         runDir: runsRoot,
+        bookkeeping: { journal, job: job.id },
         nestedRepos: ['part-a', 'part-b'],
       }),
     );
@@ -620,10 +624,11 @@ describe('workspace-modes: материализация объявленных �
     const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
 
     // Перечень намеренно перевёрнут: вложенная часть названа первой.
-    const prepared = prepareWorkspace({
+    const prepared = await prepareWorkspace({
       job,
       cwd: project.root,
       runDir: runsRoot,
+      bookkeeping: { journal: RunJournal.create({ runsRoot, projectRoot: project.root }), job: job.id },
       nestedRepos: ['a/b', 'a'],
     });
 
@@ -1265,6 +1270,87 @@ describe('workspace-modes: отказ подготовки не вводит н�
     );
 
     assert.ok(HaltCause.spawnFailed === 'spawn_failed');
+  });
+});
+
+describe('runner-disposers: откат подготовки рабочей директории', () => {
+  // Отказ самой уборки за неудавшейся подготовкой раньше проглатывался: он
+  // не доходил ни до журнала, ни до пользователя. Теперь это учётная
+  // операция — событие с именем операции, — а наружу по-прежнему уходит
+  // причина отказа подготовки, а не жалоба уборки.
+  it('отказ снятия заведённого записывается в журнал, а наружу уходит причина заведения', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('worktree'),
+      '.gitignore': 'part-b/\n',
+      'part-a/.gitkeep': '',
+      'part-b/.gitkeep': '',
+    });
+    gitInit(project);
+    gitInitDir(project.path('part-a'));
+    gitCommit(project.path('part-a'), 'начало части a');
+    // part-b — репозиторий без коммита: worktree add … HEAD в нём невозможен.
+    gitInitDir(project.path('part-b'));
+    commit(project, 'первый');
+
+    const { pipeline } = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
+    const job = pipeline.jobs.find((item) => item.id === 'build')!;
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const journal = RunJournal.create({ runsRoot, projectRoot: project.root });
+    // Каталог дерева намеренно уводится за пределы директории прогона:
+    // `removeWorktree` отказывает на таком пути своим инвариантом, и обе
+    // обратные операции отката гарантированно падают.
+    const outside = mkdtempSync(join(tmpdir(), 'stepcast-outside-'));
+
+    await assert.rejects(
+      () =>
+        prepareWorkspace({
+          job: { ...job, workspace: { ...job.workspace, path: outside } },
+          cwd: project.root,
+          runDir: journal.paths.dir,
+          bookkeeping: { journal, job: job.id },
+          nestedRepos: ['part-a', 'part-b'],
+        }),
+      // Наружу — причина заведения части b, а не отказ уборки за ней.
+      (error: unknown) => /worktree|HEAD|part-b/i.test(String((error as Error).message)),
+    );
+
+    const failures = readEvents(journal.paths).filter((event) => event.kind === 'bookkeeping.failed') as {
+      operation: string;
+      job?: string;
+    }[];
+    // Снятие идёт в обратном порядке: часть a, затем корень.
+    assert.deepEqual(
+      failures.map((event) => event.operation),
+      ['снятие части part-a рабочего дерева работы', 'снятие рабочего дерева работы'],
+    );
+    assert.deepEqual(new Set(failures.map((event) => event.job)), new Set([job.id]));
+  });
+
+  // Область подготовки при успехе отпускается, а не снимается: изолированное
+  // дерево обязано пережить прогон, включая прогон, окончившийся отказом.
+  it('успешная подготовка оставляет дерево на месте после отказа работы', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: отказ
+workspace: { mode: worktree }
+jobs:
+  build:
+    steps:
+      - id: fail
+        run: [sh, -c, 'echo след > след.txt; exit 7']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    gitInit(project);
+    commit(project, 'первый');
+
+    const result = await run(project);
+    assert.equal(result.status, 'failed');
+
+    const workspacePath = workspaceOfJob(result, 'build').path as string;
+    assert.equal(existsSync(join(workspacePath, 'след.txt')), true, 'дерево отказавшей работы остаётся на месте');
   });
 });
 

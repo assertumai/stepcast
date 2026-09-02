@@ -9,11 +9,13 @@ import { isGitWorktree } from '../anchor/git.js';
 import { StepcastError } from '../errors.js';
 import { buildGraph } from '../graph.js';
 import type { Job, Pipeline, Workspace } from '../pipeline/model.js';
+import type { BookkeepingScope } from './bookkeeping.js';
 import {
   potentialSeedSource,
   workspaceInheritanceDiagnostics,
   type InheritSource,
 } from './inherit.js';
+import { createScope } from './scope.js';
 import { addWorktree, removeWorktree } from './worktrees.js';
 
 /**
@@ -162,6 +164,12 @@ export interface PrepareOptions {
   readonly cwd: string;
   /** Директория прогона: место по умолчанию для рабочих копий. */
   readonly runDir: string;
+  /**
+   * Куда писать отказ уборки за неудавшейся подготовкой. Обязателен: откат
+   * снимает чужие рабочие деревья и учётные записи репозиториев, и отказ
+   * такого снятия обязан быть виден — раньше он проглатывался молча.
+   */
+  readonly bookkeeping: BookkeepingScope;
   /** Источник наследования, уже разрешённый (`resolveInheritSource`). */
   readonly source?: InheritSource;
   /** Способ фиксации якорей на этот прогон — нужен, чтобы засеять развилку. */
@@ -181,7 +189,7 @@ export interface PrepareOptions {
   }) => TreeAnchorer;
 }
 
-export function prepareWorkspace(options: PrepareOptions): PreparedWorkspace {
+export async function prepareWorkspace(options: PrepareOptions): Promise<PreparedWorkspace> {
   const { job, cwd, runDir, source } = options;
   // Режим у работы уже разрешён при раскрытии: она либо объявила свой, либо
   // унаследовала пайплайновый.
@@ -206,12 +214,28 @@ export function prepareWorkspace(options: PrepareOptions): PreparedWorkspace {
   const nestedRepos = [...(options.nestedRepos ?? [])].sort();
   const nested: { dir: string; repo: string }[] = [];
 
-  if (workspace.mode === 'worktree') {
-    // Отделённый worktree от текущего HEAD: незакоммиченные изменения в него
-    // не попадают, а ветка проекта остаётся свободной.
-    addWorktree({ repoDir: cwd, path: dir });
+  /**
+   * Область подготовки: каждый заведённый каталог регистрирует своё снятие
+   * сразу после заведения. Отказ на любом шаге снимает область — и обратный
+   * порядок сам даёт правило «части в обратном порядке, затем корень»
+   * (design.md, решение 4): снять корень раньше частей означало бы убирать
+   * из-под них каталог, в котором они ещё числятся рабочими деревьями.
+   *
+   * При успехе область **отпускается**, а не снимается: изолированное дерево
+   * обязано пережить прогон (`workspace-modes`), и снять его вправе только
+   * `stepcast gc`.
+   */
+  const preparation = createScope(options.bookkeeping);
 
-    try {
+  try {
+    if (workspace.mode === 'worktree') {
+      // Отделённый worktree от текущего HEAD: незакоммиченные изменения в него
+      // не попадают, а ветка проекта остаётся свободной.
+      addWorktree({ repoDir: cwd, path: dir });
+      preparation.defer('снятие рабочего дерева работы', () => {
+        removeWorktree({ repoDir: cwd, path: dir, runDir });
+      });
+
       for (const relDir of nestedRepos) {
         const repo = join(cwd, relDir);
         // Часть выкладывается из HEAD своего репозитория — не гитлинка корня
@@ -221,24 +245,29 @@ export function prepareWorkspace(options: PrepareOptions): PreparedWorkspace {
         // игнорирует) или уже существовать пустым (часть под gitlink'ом) —
         // `addWorktree` заводит его и принимает оба случая.
         addWorktree({ repoDir: repo, path: join(dir, relDir) });
+        preparation.defer(`снятие части ${relDir} рабочего дерева работы`, () => {
+          removeWorktree({ repoDir: repo, path: join(dir, relDir), runDir });
+        });
         nested.push({ dir: relDir, repo });
       }
-    } catch (error) {
-      // Атомарность: отказ на любой части снимает всё, что подготовка успела
-      // завести, — части в обратном порядке, затем корень (design.md,
-      // решение 4). Исходная причина уходит наружу как есть: работа
-      // отказывает прежним spawn_failed, новой причины остановки не заводится.
-      discardWorkspaceDir(dir, cwd, runDir, workspace.mode, nested);
-      throw error;
+    } else {
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      preparation.defer('снятие рабочей копии работы', () => {
+        rmSync(dir, { recursive: true, force: true });
+      });
+      for (const relativePath of visibleFiles(cwd)) {
+        const from = join(cwd, relativePath);
+        const to = join(dir, relativePath);
+        mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
+        cpSync(from, to, { preserveTimestamps: true });
+      }
     }
-  } else {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    for (const relativePath of visibleFiles(cwd)) {
-      const from = join(cwd, relativePath);
-      const to = join(dir, relativePath);
-      mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
-      cpSync(from, to, { preserveTimestamps: true });
-    }
+  } catch (error) {
+    // Исходная причина уходит наружу как есть: работа отказывает прежним
+    // spawn_failed, новой причины остановки не заводится. Отказ самой уборки
+    // не подменяет её, а уходит в журнал событием `bookkeeping.failed`.
+    await preparation.dispose();
+    throw error;
   }
 
   const nestedField = nested.length === 0 ? {} : { nested };
@@ -261,64 +290,29 @@ export function prepareWorkspace(options: PrepareOptions): PreparedWorkspace {
         repoDir: cwd,
         ...(nestedRepos.length === 0 ? {} : { nested: nestedRepos }),
       });
+      // Своя область, а не область подготовки: служебные файлы якоря живут
+      // ровно на время засева и снимаются при любом его исходе, а область
+      // подготовки при успехе отпускается — регистрация в ней означала бы
+      // индексный файл, переживший засев.
+      const seeding = createScope(options.bookkeeping);
+      seeding.defer('снятие служебных файлов якоря засева', () => {
+        anchorer.dispose();
+      });
       try {
         anchorer.restore(source.anchor);
       } finally {
-        anchorer.dispose();
+        await seeding.dispose();
       }
     } catch (error) {
-      discardWorkspaceDir(dir, cwd, runDir, workspace.mode, nested);
+      await preparation.dispose();
       throw error;
     }
+    preparation.release();
     return { mode: workspace.mode, dir, inheritedFrom: source.job, ...nestedField };
   }
 
+  preparation.release();
   return { mode: workspace.mode, dir, ...nestedField };
-}
-
-/**
- * Убрать каталог, заведённый под работу, которой он не достался, — в режиме
- * `worktree` вместе с каждой заведённой частью.
- *
- * Своя ошибка здесь проглатывается сознательно: наружу должна уйти причина
- * отказа подготовки, а не жалоба уборки за ней. Части снимаются в обратном
- * порядке, затем корень: тот же порядок, что и у отката атомарной подготовки
- * (design.md, решение 4) — снимать корень раньше частей означало бы убирать
- * из-под них каталог, в котором они ещё числятся рабочими деревьями.
- *
- * `removeWorktree` сама не полагается на успех одной лишь `git worktree
- * remove`: см. её собственный комментарий и `worktrees.ts`. Слепой `git
- * worktree prune` здесь не зовётся нигде — он снял бы всякую осиротевшую
- * запись репозитория, не только свою (design.md, решение 5).
- */
-function discardWorkspaceDir(
-  dir: string,
-  cwd: string,
-  runDir: string,
-  mode: Workspace['mode'],
-  nested: readonly { readonly dir: string; readonly repo: string }[] = [],
-): void {
-  if (mode !== 'worktree') {
-    try {
-      rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // Каталог останется в директории прогона: сказать об этом уже нечем.
-    }
-    return;
-  }
-
-  for (const part of [...nested].reverse()) {
-    try {
-      removeWorktree({ repoDir: part.repo, path: join(dir, part.dir), runDir });
-    } catch {
-      // Наружу должна уйти причина отказа подготовки, а не жалоба уборки.
-    }
-  }
-  try {
-    removeWorktree({ repoDir: cwd, path: dir, runDir });
-  } catch {
-    // См. выше.
-  }
 }
 
 /**

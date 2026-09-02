@@ -40,35 +40,35 @@ describe('result-contract: предикат knowledge_valid', () => {
   }
 
   // Задача 6.3 / Сценарий: «Знание целостно»
-  it('проходит, когда красных нарушений нет', () => {
-    const [result] = run([{ kind: 'knowledge_valid' }], { knowledge: source([]) });
+  it('проходит, когда красных нарушений нет', async () => {
+    const [result] = (await run([{ kind: 'knowledge_valid' }], { knowledge: source([]) }));
     assert.equal(result?.predicate, 'knowledge_valid');
     assert.equal(result?.passed, true);
     assert.equal(result?.hard, true);
   });
 
   // Задача 6.3 / Сценарий: «Записанное знание нарушает форму»
-  it('проваливает шаг на красном нарушении, называя единицу и вид', () => {
-    const [result] = run([{ kind: 'knowledge_valid' }], {
+  it('проваливает шаг на красном нарушении, называя единицу и вид', async () => {
+    const [result] = (await run([{ kind: 'knowledge_valid' }], {
       knowledge: source([{ level: 'red', kind: 'missing-anchor', id: 'a' }]),
-    });
+    }));
     assert.equal(result?.passed, false);
     assert.match(result?.detail ?? '', /a \(missing-anchor\)/);
   });
 
   // Задача 6.3 / Сценарий: «Жёлтое нарушение шаг не проваливает»
-  it('проходит при жёлтом нарушении, но называет его в отчёте', () => {
-    const [result] = run([{ kind: 'knowledge_valid' }], {
+  it('проходит при жёлтом нарушении, но называет его в отчёте', async () => {
+    const [result] = (await run([{ kind: 'knowledge_valid' }], {
       knowledge: source([{ level: 'yellow', kind: 'stale-anchor', id: 'a' }]),
-    });
+    }));
     assert.equal(result?.passed, true);
     assert.match(result?.detail ?? '', /устаревает/);
   });
 
   // Задача 6.1: источника нет — невычислен, а не провален. Та же природа, что
   // у changed_only без якоря: недостача сведений не вина автора.
-  it('помечается невычисленным, когда практика памяти не объявлена', () => {
-    const [result] = run([{ kind: 'knowledge_valid' }]);
+  it('помечается невычисленным, когда практика памяти не объявлена', async () => {
+    const [result] = (await run([{ kind: 'knowledge_valid' }]));
     assert.equal(result?.passed, true);
     assert.equal(result?.hard, false);
     assert.match(result?.detail ?? '', /не вычислен/);
@@ -83,16 +83,16 @@ const PLAN_SCHEMA = JSON.stringify({
 
 describe('result-contract: предикаты', () => {
   // Сценарий: «Все предикаты вычисляются»
-  it('вычисляет все предикаты, даже если первый не прошёл', () => {
+  it('вычисляет все предикаты, даже если первый не прошёл', async () => {
     const dir = workdir({ 'есть.txt': 'x' });
-    const results = run(
+    const results = (await run(
       [
         { kind: 'exit_code', value: 0 },
         { kind: 'file_exists', path: 'нет.txt' },
         { kind: 'file_exists', path: 'есть.txt' },
       ],
       { cwd: dir, exitCode: 2 },
-    );
+    ));
 
     assert.equal(results.length, 3);
     assert.deepEqual(
@@ -102,79 +102,79 @@ describe('result-contract: предикаты', () => {
   });
 
   // Сценарий: «Шаг без предикатов»
-  it('без предикатов проверяет нулевой код возврата', () => {
-    assert.equal(run([], { exitCode: 0 })[0]?.passed, true);
-    assert.equal(run([], { exitCode: 1 })[0]?.passed, false);
+  it('без предикатов проверяет нулевой код возврата', async () => {
+    assert.equal((await run([], { exitCode: 0 }))[0]?.passed, true);
+    assert.equal((await run([], { exitCode: 1 }))[0]?.passed, false);
   });
 
   // Сценарий: «Неожиданный код»
-  it('сообщает ожидаемое и фактическое значение кода возврата', () => {
-    const [result] = run([{ kind: 'exit_code', value: 0 }], { exitCode: 2 });
+  it('сообщает ожидаемое и фактическое значение кода возврата', async () => {
+    const [result] = (await run([{ kind: 'exit_code', value: 0 }], { exitCode: 2 }));
     assert.equal(result?.expected, 0);
     assert.equal(result?.actual, 2);
     assert.match(result?.detail ?? '', /2 вместо 0/);
   });
 
   // Сценарий: «Файл отсутствует»
-  it('указывает проверявшийся путь, когда файла нет', () => {
-    const [result] = run([{ kind: 'file_exists', path: 'reports/plan.json' }]);
+  it('указывает проверявшийся путь, когда файла нет', async () => {
+    const [result] = (await run([{ kind: 'file_exists', path: 'reports/plan.json' }]));
     assert.equal(result?.passed, false);
     assert.match(result?.detail ?? '', /reports\/plan\.json/);
   });
 
   // Сценарий: «Вывод соответствует схеме»
-  it('проверяет структурированный вывод по схеме', () => {
+  it('проверяет структурированный вывод по схеме', async () => {
     const dir = workdir({ 'plan.json': PLAN_SCHEMA });
-    const passed = run([{ kind: 'schema', path: 'plan.json' }], {
+    const passed = (await run([{ kind: 'schema', path: 'plan.json' }], {
       cwd: dir,
       structured: { tasks: ['a'] },
-    });
+    }));
     assert.equal(passed[0]?.passed, true);
   });
 
   // Сценарий: «Вывод нарушает схему»
-  it('перечисляет нарушения схемы с путями к полям', () => {
+  it('перечисляет нарушения схемы с путями к полям', async () => {
     const dir = workdir({ 'plan.json': PLAN_SCHEMA });
-    const [result] = run([{ kind: 'schema', path: 'plan.json' }], {
+    const [result] = (await run([{ kind: 'schema', path: 'plan.json' }], {
       cwd: dir,
       structured: { tasks: [42] },
-    });
+    }));
     assert.equal(result?.passed, false);
     assert.match(result?.detail ?? '', /tasks\/0/);
   });
 
   // Сценарий: «Структурированного вывода нет»
-  it('не проходит, когда структурированного вывода нет вовсе', () => {
+  it('не проходит, когда структурированного вывода нет вовсе', async () => {
     const dir = workdir({ 'plan.json': PLAN_SCHEMA });
-    const [result] = run([{ kind: 'schema', path: 'plan.json' }], { cwd: dir });
+    const [result] = (await run([{ kind: 'schema', path: 'plan.json' }], { cwd: dir }));
     assert.equal(result?.passed, false);
     assert.match(result?.detail ?? '', /не произвёл структурированного вывода/);
   });
 
   // Сценарии: «Ожидаемая подстрока» и «Запрещённая подстрока»
-  it('применяет регулярные выражения к текстовому результату', () => {
-    assert.equal(run([{ kind: 'matches', pattern: 'готово' }], { text: 'всё готово' })[0]?.passed, true);
-    assert.equal(run([{ kind: 'matches', pattern: '/^ГОТОВО$/i' }], { text: 'готово' })[0]?.passed, true);
+  it('применяет регулярные выражения к текстовому результату', async () => {
+    assert.equal((await run([{ kind: 'matches', pattern: 'готово' }], { text: 'всё готово' }))[0]?.passed, true);
+    assert.equal((await run([{ kind: 'matches', pattern: '/^ГОТОВО$/i' }], { text: 'готово' }))[0]?.passed, true);
     assert.equal(
-      run([{ kind: 'not_matches', pattern: 'ошибка' }], { text: 'была ошибка' })[0]?.passed,
+      (await run([{ kind: 'not_matches', pattern: 'ошибка' }], { text: 'была ошибка' }))[0]?.passed,
       false,
     );
   });
 
   // Сценарий: «Проверка сборкой»
-  it('исполняет внешнюю команду и сохраняет её вывод при отказе', () => {
+  it('исполняет внешнюю команду и сохраняет её вывод при отказе', async () => {
     const dir = workdir();
-    assert.equal(run([{ kind: 'cmd', command: 'true' }], { cwd: dir })[0]?.passed, true);
+    assert.equal((await run([{ kind: 'cmd', command: 'true' }], { cwd: dir }))[0]?.passed, true);
 
-    const [failed] = run([{ kind: 'cmd', command: 'echo сломалось 1>&2; exit 3' }], { cwd: dir });
+    const [failed] = (await run([{ kind: 'cmd', command: 'echo сломалось 1>&2; exit 3' }], { cwd: dir }));
     assert.equal(failed?.passed, false);
     assert.match(failed?.detail ?? '', /сломалось/);
   });
 
   // Сценарий: судья вычисляется вторым, асинхронным проходом — синхронный
   // проход оставляет для него заготовку, а не отказ.
-  it('судья помечается невычисленным до второго прохода', () => {
-    const [result] = run([{ kind: 'judge', claim: 'хорошо', hard: true }]);
+  it('судья помечается невычисленным до второго прохода', async () => {
+    const [result] = (await run([{ kind: 'judge', claim: 'хорошо', hard: true }]));
     assert.equal(result?.passed, true);
     assert.equal(result?.hard, false);
     assert.match(result?.detail ?? '', /не вычислен/);
@@ -182,8 +182,10 @@ describe('result-contract: предикаты', () => {
 
   // Предикат границ реализован и живёт в отдельном наборе тестов; здесь важно
   // лишь то, что он больше не отклоняется как нереализованный.
-  it('предикат границ изменений больше не отклоняется', () => {
-    assert.doesNotThrow(() => run([{ kind: 'changed_only', globs: ['src/**'] }]));
+  it('предикат границ изменений больше не отклоняется', async () => {
+    // Предикат вычисляется без исключения: раньше он отклонялся как нереализованный.
+    const [result] = await run([{ kind: 'changed_only', globs: ['src/**'] }]);
+    assert.equal(result?.predicate, 'changed_only');
   });
 });
 
@@ -199,7 +201,7 @@ describe('run-journal: расход и бюджет', () => {
   });
 
   // Сценарий: «Чтение кеша учитывается с весом»
-  it('засчитывает чтение кеша с весом, а исходное значение сохраняет', () => {
+  it('засчитывает чтение кеша с весом, а исходное значение сохраняет', async () => {
     const accumulator = new UsageAccumulator(() => 0.1);
     accumulator.record('build', 'compile', 1, usageOf({}));
 
@@ -209,7 +211,7 @@ describe('run-journal: расход и бюджет', () => {
   });
 
   // Сценарий: «Учёт до завершения шага»
-  it('обновляет расход нарастающим итогом, не удваивая его', () => {
+  it('обновляет расход нарастающим итогом, не удваивая его', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     accumulator.record('build', 'compile', 1, usageOf({ tokens_in: 100, cache_read: 0, cache_write: 0, tokens_out: 0 }));
     accumulator.record('build', 'compile', 1, usageOf({ tokens_in: 300, cache_read: 0, cache_write: 0, tokens_out: 0 }));
@@ -218,7 +220,7 @@ describe('run-journal: расход и бюджет', () => {
   });
 
   // Сценарий: «Неполный учёт помечен»
-  it('помечает измерения, которых бэкенд не сообщил', () => {
+  it('помечает измерения, которых бэкенд не сообщил', async () => {
     const accumulator = new UsageAccumulator(() => 0.1);
     accumulator.record('build', 'compile', 1, usageOf({ cache_write: null }));
     // Цена и пик тоже не сообщены в этой записи — попадают в тот же перечень.
@@ -226,7 +228,7 @@ describe('run-journal: расход и бюджет', () => {
   });
 
   // Сценарий: «Превышение бюджета шага»
-  it('связывает тот потолок, который упёрся первым', () => {
+  it('связывает тот потолок, который упёрся первым', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     accumulator.record('build', 'compile', 1, usageOf({ tokens_in: 900, tokens_out: 0, cache_read: 0, cache_write: 0 }));
 
@@ -245,7 +247,7 @@ describe('run-journal: расход и бюджет', () => {
     assert.match(describeExceeded(exceeded!), /900/);
   });
 
-  it('потолок шага учитывает все его попытки', () => {
+  it('потолок шага учитывает все его попытки', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     const plain = { tokens_out: 0, cache_read: 0, cache_write: 0 };
     accumulator.record('build', 'test', 1, usageOf({ tokens_in: 300, ...plain }));
@@ -264,7 +266,7 @@ describe('run-journal: расход и бюджет', () => {
   });
 
   // Сценарий: «Накопление по прогону»
-  it('накапливает расход по всему прогону', () => {
+  it('накапливает расход по всему прогону', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     const plain = { tokens_out: 0, cache_read: 0, cache_write: 0 };
     accumulator.record('a', 's', 1, usageOf({ tokens_in: 400, ...plain }));
@@ -277,7 +279,7 @@ describe('run-journal: расход и бюджет', () => {
     );
   });
 
-  it('ловит превышение окна лимитов', () => {
+  it('ловит превышение окна лимитов', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     const usage = usageOf({ rate_limits: { seven_day: { used_pct: 85 } } });
     accumulator.record('a', 's', 1, usage);
@@ -291,14 +293,14 @@ describe('run-journal: расход и бюджет', () => {
   });
 
   // Сценарий: «Бюджет не объявлен»
-  it('без бюджета ничего не ограничивает', () => {
+  it('без бюджета ничего не ограничивает', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     accumulator.record('a', 's', 1, usageOf({}));
     assert.equal(accumulator.check([{ kind: 'run', name: 'пайплайн', budget: undefined }]), undefined);
   });
 
   // Сценарий: «Агрегация»
-  it('собирает сводку по попыткам, шагам, работам и прогону', () => {
+  it('собирает сводку по попыткам, шагам, работам и прогону', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     const plain = { tokens_out: 0, cache_read: 0, cache_write: 0 };
     accumulator.record('build', 'test', 1, usageOf({ tokens_in: 100, ...plain }));
@@ -311,7 +313,7 @@ describe('run-journal: расход и бюджет', () => {
   });
 
   // Сценарий: «Разбивка шага по номерам попыток»
-  it('шаг с двумя попытками даёт в сводке две записи попыток', () => {
+  it('шаг с двумя попытками даёт в сводке две записи попыток', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     const plain = { tokens_out: 0, cache_read: 0, cache_write: 0 };
     accumulator.record('build', 'test', 1, usageOf({ tokens_in: 100, model: 'sonnet', ...plain }));
@@ -328,7 +330,7 @@ describe('run-journal: расход и бюджет', () => {
   });
 
   // Сценарий: «Переисполнение той же попытки»
-  it('переисполнение попытки схлопывается в одну запись с суммарным расходом', () => {
+  it('переисполнение попытки схлопывается в одну запись с суммарным расходом', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     const plain = { tokens_out: 0, cache_read: 0, cache_write: 0 };
     accumulator.record('build', 'test', 1, usageOf({ tokens_in: 100, ...plain }));
@@ -342,7 +344,7 @@ describe('run-journal: расход и бюджет', () => {
   });
 
   // Спека run-journal: «Пик шага — максимум по попыткам»
-  it('пик шага — максимум по попыткам, а не сумма', () => {
+  it('пик шага — максимум по попыткам, а не сумма', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     accumulator.record('build', 'test', 1, usageOf({ peak_prefix_tokens: 300 }));
     accumulator.record('build', 'test', 2, usageOf({ peak_prefix_tokens: 900 }));
@@ -355,7 +357,7 @@ describe('run-journal: расход и бюджет', () => {
 
   // Сценарий: «Пик шага — максимум по попыткам» — переисполнение не теряет
   // пика запечатанной попытки.
-  it('переисполненный шаг не теряет пика запечатанной попытки', () => {
+  it('переисполненный шаг не теряет пика запечатанной попытки', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     accumulator.record('build', 'test', 1, usageOf({ peak_prefix_tokens: 900 }));
     accumulator.sealStep('build', 'test');
@@ -372,7 +374,7 @@ describe('run-journal: расход и бюджет', () => {
   });
 
   // Сценарий: «Бэкенд не сообщает пооткликового расхода»
-  it('бэкенд без пооткликового расхода оставляет пик отсутствующим и пополняет unreported', () => {
+  it('бэкенд без пооткликового расхода оставляет пик отсутствующим и пополняет unreported', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     accumulator.record('build', 'test', 1, usageOf({}));
 
@@ -382,7 +384,7 @@ describe('run-journal: расход и бюджет', () => {
   });
 
   // Спека run-journal: «Сообщение о превышении говорит о трафике»
-  it('причина остановки по токенному потолку называет трафик и не ссылается на контекст', () => {
+  it('причина остановки по токенному потолку называет трафик и не ссылается на контекст', async () => {
     const accumulator = new UsageAccumulator(() => 0);
     accumulator.record('build', 'compile', 1, usageOf({ tokens_in: 900, tokens_out: 0, cache_read: 0, cache_write: 0 }));
 
@@ -406,7 +408,7 @@ describe('run-journal: потолок времени меряет свою об�
    * обречена в любом прогоне длиннее пяти минут — то есть ровно тогда, когда
    * она нужнее всего.
    */
-  it('работа не упирается в потолок из-за длительности прогона', () => {
+  it('работа не упирается в потолок из-за длительности прогона', async () => {
     const accumulator = new UsageAccumulator(() => 0.1);
     const startedAt = Date.now();
 
@@ -423,7 +425,7 @@ describe('run-journal: потолок времени меряет свою об�
     assert.equal(exceeded, undefined);
   });
 
-  it('работа упирается в потолок по собственной длительности', () => {
+  it('работа упирается в потолок по собственной длительности', async () => {
     const accumulator = new UsageAccumulator(() => 0.1);
 
     const exceeded = accumulator.check([
@@ -440,7 +442,7 @@ describe('run-journal: потолок времени меряет свою об�
     assert.equal(exceeded?.scope, 'работа slow');
   });
 
-  it('потолок шага меряет шаг', () => {
+  it('потолок шага меряет шаг', async () => {
     const accumulator = new UsageAccumulator(() => 0.1);
 
     assert.equal(

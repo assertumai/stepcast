@@ -1,5 +1,7 @@
 import { ExitCode, type ExitCodeValue } from '../core/errors.js';
-import { parseArgs, type CommandSpec } from './args.js';
+import { parseArgs, type CliIo, type CommandSpec } from './args.js';
+import type { CommandContribution } from '../core/plugins/contract.js';
+import { resolveWithPlugins } from '../core/plugins/resolve.js';
 import { reportError } from './output.js';
 import { runApplyCommand } from './commands/apply.js';
 import { runAssertCleanCommand } from './commands/assert-clean.js';
@@ -203,67 +205,134 @@ export const COMMANDS: Record<string, CommandSpec> = {
   },
 };
 
-export interface CliIo {
-  readonly out: (line: string) => void;
-  readonly err: (line: string) => void;
-  readonly cwd: string;
-  /**
-   * Чтение стандартного ввода целиком. Единственный потребитель сегодня —
-   * `project repos`, которая читает конвейером `backlog pick --lanes | …`;
-   * необязательное поле, а не обязанность каждого `CliIo`, — большинству
-   * команд стандартный ввод не нужен вовсе, и заставлять их фиктивную
-   * реализацию тестов притворяться читателем нечем оправдать.
-   */
-  readonly readStdin?: () => Promise<string>;
-}
+export type { CliIo } from './args.js';
+
+/**
+ * Встроенные команды как вклады: тот же контракт, что у команд плагина.
+ * Описание аргументов остаётся в `COMMANDS`, исполнение — здесь; всё вместе
+ * складывается в реестр, и диспетчеризация не знает, встроенная команда или
+ * внесённая плагином.
+ */
+export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
+  {
+    name: 'run',
+    spec: COMMANDS['run'] as CommandSpec,
+    run: (args, io, env) => runRunCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'resume',
+    spec: COMMANDS['resume'] as CommandSpec,
+    run: (args, io, env) => runResumeCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'diff',
+    spec: COMMANDS['diff'] as CommandSpec,
+    run: (args, io, env) => runDiffCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'apply',
+    spec: COMMANDS['apply'] as CommandSpec,
+    run: (args, io, env) => runApplyCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'lint',
+    spec: COMMANDS['lint'] as CommandSpec,
+    run: (args, io, env) => runLintCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'status',
+    spec: COMMANDS['status'] as CommandSpec,
+    run: (args, io, env) => runStatusCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'logs',
+    spec: COMMANDS['logs'] as CommandSpec,
+    run: (args, io, env) => runLogsCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'config',
+    spec: COMMANDS['config'] as CommandSpec,
+    run: (args, io, env) => runConfigCommand(args, io.out, env.cwd, env.registry),
+  },
+  {
+    name: 'gc',
+    spec: COMMANDS['gc'] as CommandSpec,
+    run: (args, io, env) => runGcCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'init',
+    spec: COMMANDS['init'] as CommandSpec,
+    run: (args, io, env) => runInitCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'context',
+    spec: COMMANDS['context'] as CommandSpec,
+    run: (args, io, env) => runContextCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'up',
+    spec: COMMANDS['up'] as CommandSpec,
+    run: (args, io, env) => runUpCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'down',
+    spec: COMMANDS['down'] as CommandSpec,
+    run: (args, io, env) => runDownCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'usage',
+    spec: COMMANDS['usage'] as CommandSpec,
+    run: (args, io, env) => runUsageCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'backlog',
+    spec: COMMANDS['backlog'] as CommandSpec,
+    run: (args, io, env) => runBacklogCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'knowledge',
+    spec: COMMANDS['knowledge'] as CommandSpec,
+    run: (args, io, env) => runKnowledgeCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'data',
+    spec: COMMANDS['data'] as CommandSpec,
+    run: (args, io) => runDataCommand(args, io.out),
+  },
+  {
+    name: 'merge-lanes',
+    spec: COMMANDS['merge-lanes'] as CommandSpec,
+    run: (args, io, env) => runMergeLanesCommand(args, io.out, env.cwd),
+  },
+  {
+    name: 'assert-clean',
+    spec: COMMANDS['assert-clean'] as CommandSpec,
+    run: (args, io, env) => runAssertCleanCommand(args, env.cwd),
+  },
+  {
+    name: 'project',
+    spec: COMMANDS['project'] as CommandSpec,
+    run: (args, io, env) => runProjectCommand(args, io.out, env.cwd, io.readStdin),
+  },
+];
 
 export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeValue> {
   try {
-    const args = parseArgs(argv, COMMANDS);
-    switch (args.command) {
-      case 'run':
-        return await runRunCommand(args, io.out, io.cwd);
-      case 'resume':
-        return await runResumeCommand(args, io.out, io.cwd);
-      case 'diff':
-        return runDiffCommand(args, io.out, io.cwd);
-      case 'apply':
-        return runApplyCommand(args, io.out, io.cwd);
-      case 'lint':
-        return runLintCommand(args, io.out, io.cwd);
-      case 'status':
-        return runStatusCommand(args, io.out, io.cwd);
-      case 'logs':
-        return await runLogsCommand(args, io.out, io.cwd);
-      case 'config':
-        return runConfigCommand(args, io.out, io.cwd);
-      case 'gc':
-        return runGcCommand(args, io.out, io.cwd);
-      case 'init':
-        return runInitCommand(args, io.out, io.cwd);
-      case 'context':
-        return runContextCommand(args, io.out, io.cwd);
-      case 'up':
-        return await runUpCommand(args, io.out, io.cwd);
-      case 'down':
-        return runDownCommand(args, io.out, io.cwd);
-      case 'usage':
-        return runUsageCommand(args, io.out, io.cwd);
-      case 'backlog':
-        return runBacklogCommand(args, io.out, io.cwd);
-      case 'knowledge':
-        return runKnowledgeCommand(args, io.out, io.cwd);
-      case 'data':
-        return runDataCommand(args, io.out);
-      case 'merge-lanes':
-        return await runMergeLanesCommand(args, io.out, io.cwd);
-      case 'assert-clean':
-        return runAssertCleanCommand(args, io.cwd);
-      case 'project':
-        return await runProjectCommand(args, io.out, io.cwd, io.readStdin);
-      default:
-        return ExitCode.configError;
-    }
+    // Плагины загружаются до разбора аргументов: команда плагина обязана
+    // попасть в перечень раньше, чем разбор объявит её неизвестной.
+    const { resolved, registry } = await resolveWithPlugins(
+      { cwd: io.cwd },
+      { builtinCommands: BUILTIN_COMMANDS },
+    );
+
+    const specs: Record<string, CommandSpec> = {};
+    for (const [name, contribution] of registry.commands) specs[name] = contribution.spec;
+
+    const args = parseArgs(argv, specs);
+    const contribution = registry.commands.get(args.command);
+    if (contribution === undefined) return ExitCode.configError;
+
+    return await contribution.run(args, io, { cwd: io.cwd, config: resolved.config, registry });
   } catch (error) {
     return reportError(error, io.err);
   }

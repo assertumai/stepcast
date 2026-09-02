@@ -1,6 +1,8 @@
 import { createWriteStream } from 'node:fs';
 import { execa, type Subprocess } from 'execa';
 
+import { createScope } from '../run/scope.js';
+
 /**
  * Запуск дочернего процесса под надзором.
  *
@@ -95,11 +97,30 @@ export async function runProcess(options: ProcessOptions): Promise<ProcessResult
     killTimer.unref();
   };
 
+  /**
+   * Область запуска: таймеры и слушатель снимаются одним `finally` вокруг
+   * ожидания процесса. Журнала здесь нет — и не нужно: `clearTimeout` и
+   * `removeEventListener` не отказывают, а исключение из них означало бы
+   * дефект, который обязан быть виден, а не проглочен.
+   */
+  const resources = createScope();
+
   const timeoutTimer = setTimeout(() => terminate('timeout'), options.timeoutMs);
   timeoutTimer.unref();
+  resources.defer('снятие таймера предельного времени шага', () => {
+    clearTimeout(timeoutTimer);
+  });
 
   const onAbort = (): void => terminate('canceled');
   options.signal?.addEventListener('abort', onAbort, { once: true });
+  resources.defer('снятие слушателя отмены процесса', () => {
+    options.signal?.removeEventListener('abort', onAbort);
+  });
+  // Таймер добивания заводит `terminate` уже после этой регистрации, поэтому
+  // операция читает переменную, а не её сегодняшнее значение.
+  resources.defer('снятие таймера добивания процесса', () => {
+    clearTimeout(killTimer);
+  });
 
   // Молчание — не отказ: шаг может думать. Сообщаем и продолжаем ждать
   // таймаут, чтобы «непонятно, работает ли оно» стало наблюдаемым.
@@ -115,14 +136,21 @@ export async function runProcess(options: ProcessOptions): Promise<ProcessResult
   };
   stdout.onData(armStall);
   stderr.onData(armStall);
+  // Таймер молчания перезаводится на каждом куске вывода: снимается тот, что
+  // взведён к моменту снятия области.
+  resources.defer('снятие таймера молчания шага', () => {
+    clearTimeout(stallTimer);
+  });
   armStall();
 
-  const result = await subprocess;
-
-  clearTimeout(timeoutTimer);
-  clearTimeout(stallTimer);
-  clearTimeout(killTimer);
-  options.signal?.removeEventListener('abort', onAbort);
+  let result: Awaited<Subprocess>;
+  try {
+    result = await subprocess;
+  } finally {
+    // Процесс, не сумевший стартовать, доходит сюда исключением: без снятия
+    // области его таймеры остались бы взведёнными.
+    await resources.dispose();
+  }
 
   await Promise.all([stdout.done(), stderr.done()]);
 

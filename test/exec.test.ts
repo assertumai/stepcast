@@ -349,6 +349,70 @@ describe('step-execution: процесс', () => {
   });
 });
 
+describe('runner-disposers: запуск процесса не оставляет взведённых таймеров', () => {
+  /**
+   * Считает таймеры, заведённые за время вызова, и те из них, что сняты.
+   * Взведённый таймер, переживший вызов, держит ссылку на замыкание шага —
+   * а у процесса, не сумевшего стартовать, снимать его было некому.
+   */
+  async function timersAfter(call: () => Promise<unknown>): Promise<{ created: number; leaked: number }> {
+    const realSet = globalThis.setTimeout;
+    const realClear = globalThis.clearTimeout;
+    const live = new Set<unknown>();
+    let created = 0;
+
+    globalThis.setTimeout = ((handler: never, ms: never, ...rest: never[]) => {
+      const timer = realSet(handler, ms, ...rest);
+      created += 1;
+      live.add(timer);
+      return timer;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((timer: never) => {
+      live.delete(timer);
+      return realClear(timer);
+    }) as typeof clearTimeout;
+
+    try {
+      await call();
+    } finally {
+      globalThis.setTimeout = realSet;
+      globalThis.clearTimeout = realClear;
+    }
+    return { created, leaked: live.size };
+  }
+
+  it('снимает таймеры процесса, который не удалось запустить', async () => {
+    const dir = workdir();
+    const { created, leaked } = await timersAfter(() =>
+      runProcess({
+        command: [join(dir, 'команды-нет')],
+        cwd: dir,
+        env: {},
+        timeoutMs: 60_000,
+      }),
+    );
+
+    assert.ok(created > 0, 'таймеры вообще заводились');
+    assert.equal(leaked, 0);
+  });
+
+  it('снимает таймеры после обычного завершения', async () => {
+    const dir = workdir();
+    const { leaked } = await timersAfter(() =>
+      runProcess({
+        command: ['sh', '-c', 'echo готово'],
+        cwd: dir,
+        env: {},
+        timeoutMs: 60_000,
+        stallTimeoutMs: 30_000,
+        onStall: () => undefined,
+      }),
+    );
+
+    assert.equal(leaked, 0);
+  });
+});
+
 describe('step-execution: попытки', () => {
   // Сценарий: «Умолчание числа попыток»
   it('без объявления выполняется одна попытка', async () => {

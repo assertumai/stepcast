@@ -90,7 +90,14 @@ export type Predicate =
       readonly hard: boolean;
       readonly agent?: string;
       readonly model?: string;
-    };
+    }
+  /**
+   * Предикат, внесённый плагином (`docs/plugins.md`). Движок видит его как
+   * данные: имя из реестра и значение, уже проверенное схемой вклада при
+   * разборе. Ключ шага, файл фиксации и журнал несут их как есть — знание о
+   * том, что предикат означает, живёт только в самом вкладе.
+   */
+  | { readonly kind: 'plugin'; readonly name: string; readonly value: unknown };
 
 export interface EscalationStep {
   readonly includeFailure: boolean;

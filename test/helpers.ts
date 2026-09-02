@@ -213,12 +213,26 @@ export function seedRun(
 export function withHome<T>(home: string, fn: () => T): T {
   const original = process.env.HOME;
   process.env.HOME = home;
-  try {
-    return fn();
-  } finally {
+  const restore = (): void => {
     if (original === undefined) delete process.env.HOME;
     else process.env.HOME = original;
+  };
+
+  let result: T;
+  try {
+    result = fn();
+  } catch (error) {
+    restore();
+    throw error;
   }
+
+  // Подмена обязана держаться всё время асинхронного вызова, а не до первого
+  // `await` внутри него: команда CLI читает конфигурацию не обязательно в
+  // первом тике, и снятая раньше времени переменная уводит её в настоящий
+  // домашний каталог.
+  if (result instanceof Promise) return result.finally(restore) as T;
+  restore();
+  return result;
 }
 
 /** Сузить шаг до командного, заодно проверив тип. */

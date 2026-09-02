@@ -11,6 +11,12 @@ export interface WaitState {
   begin(wakeAt: string): () => void;
   /** Ближайший момент пробуждения или `undefined`, если прогон не спит. */
   earliest(): string | undefined;
+  /**
+   * Снять все незавершённые ожидания. Зовётся при выходе из области прогона:
+   * закончившийся прогон не спит, и состояние, утверждающее обратное, врёт
+   * витрине и `stepcast status` до самой уборки.
+   */
+  clear(): void;
 }
 
 export function createWaitState(): WaitState {
@@ -27,6 +33,9 @@ export function createWaitState(): WaitState {
       return () => {
         pending.delete(token);
       };
+    },
+    clear() {
+      pending.clear();
     },
     earliest() {
       // Моменты записаны в ISO 8601 с зоной UTC: лексикографический порядок

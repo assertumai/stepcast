@@ -68,6 +68,12 @@ export function diffRuns(options: DiffOptions): RunComparison {
     );
   }
 
+  // Состав плагинов входит в заметки, а не в ключ шага: семантика вклада не
+  // отпечатывается, и два прогона с одним ключом, но разными плагинами —
+  // ровно тот случай, когда «одинаковые шаги» значат разное.
+  const pluginsNote = describePluginDifference(a.manifest.plugins, b.manifest.plugins);
+  if (pluginsNote !== undefined) notes.push(pluginsNote);
+
   // Разный способ фиксации — несравнимо по действующему правилу; тот же
   // способ, но разный состав вложенных репозиториев (`composite`) — тоже:
   // якорь другого состава несёт другой отпечаток, и складывать их пути в
@@ -187,6 +193,30 @@ interface CompareOptions {
   readonly treesIncomparableReason?: string;
   readonly anchorer?: TreeAnchorer;
   readonly anchorKind?: AnchorKind;
+}
+
+/**
+ * Различие в составе плагинов двух прогонов. Прогон прежней версии поля не
+ * несёт вовсе — молчать о нём вернее, чем объявлять «плагинов не было»:
+ * второе было бы утверждением, которого журнал не делал.
+ */
+function describePluginDifference(
+  a: RunManifest['plugins'],
+  b: RunManifest['plugins'],
+): string | undefined {
+  if (a === undefined || b === undefined) return undefined;
+
+  const describe = (plugins: NonNullable<RunManifest['plugins']>): string =>
+    plugins.length === 0
+      ? 'без плагинов'
+      : plugins
+          .map((plugin) => `${plugin.name}${plugin.version === undefined ? '' : `@${plugin.version}`}`)
+          .sort()
+          .join(', ');
+
+  const left = describe(a);
+  const right = describe(b);
+  return left === right ? undefined : `состав плагинов различается: ${left} и ${right}`;
 }
 
 function sameNestedRepos(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {

@@ -4,12 +4,16 @@ import { parseDuration, parseMoney, parseTokens } from '../units.js';
 export type Source =
   | { readonly kind: 'builtin' }
   | { readonly kind: 'file'; readonly path: string }
-  | { readonly kind: 'flag'; readonly name: string };
+  | { readonly kind: 'flag'; readonly name: string }
+  /** Умолчание, объявленное плагином для своего бэкенда (`docs/plugins.md`). */
+  | { readonly kind: 'plugin'; readonly name: string };
 
 export function describeSource(source: Source): string {
   switch (source.kind) {
     case 'builtin':
       return 'встроенное умолчание';
+    case 'plugin':
+      return `plugin:${source.name}`;
     case 'file':
       return source.path;
     case 'flag':

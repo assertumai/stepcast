@@ -2,13 +2,18 @@ import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
 import type { Config } from '../config/resolve.js';
+import { Ajv2020 } from 'ajv/dist/2020.js';
+
 import { StepcastError } from '../errors.js';
+import { builtinRegistry } from '../plugins/builtin.js';
+import { predicateNames, type Registry } from '../plugins/registry.js';
 import { packagedSchemaPath } from '../package-schema.js';
 import { parseCount, parseDuration, parseExitCode, parseMoney, parsePercent, parseTokens } from '../units.js';
 import { interpolateTree, placeholderNamespaces, type Scope } from './interpolate.js';
 import { readYamlDocument, rejectWiringKeys, validateDocument } from './load.js';
 import { resolveParams, type ParamValue } from './params.js';
 import {
+  buildDocumentSchemas,
   JobDocumentSchema,
   PipelineDocumentSchema,
   type JobEntry,
@@ -16,6 +21,7 @@ import {
   type RawBudget,
   type RawContextEntry,
   type RawAgentStep,
+  type RawBuiltinPredicate,
   type RawPredicate,
   type RawStep,
 } from './schema.js';
@@ -165,6 +171,11 @@ function resolveKnowledge(
 export interface ExpandOptions {
   readonly pipelinePath: string;
   readonly config: Config;
+  /**
+   * Реестр вкладов: от него зависит перечень допустимых ключей предикатов и
+   * проверка их значений. Без значения — только встроенные предикаты.
+   */
+  readonly registry?: Registry;
   /** Значения `--input`, как их передал пользователь. */
   readonly inputs?: Readonly<Record<string, ParamValue>>;
 }
@@ -323,30 +334,43 @@ function toContext(raw: readonly RawContextEntry[] | undefined, at = 'context'):
  * сырым: он указывает на файл, созданный шагом, а тот появляется в рабочей
  * директории.
  */
+/**
+ * Проверка значений плагинных предикатов. Тот же движок схем, что и у
+ * встроенного предиката `schema`, — второй потребовал бы от автора плагина
+ * знать, какой диалект понимает движок.
+ */
+const ajv = new Ajv2020({ allErrors: true, strict: false });
+
 function toPredicate(
   raw: RawPredicate,
   declaringFile: string,
   substitutions: SubstitutionMap,
   at: string,
+  registry: Registry,
 ): Predicate {
-  if ('exit_code' in raw) {
+  // Объединение включает и ветви плагинов, поэтому разбор встроенных ведётся
+  // по их собственному типу: проверка ключа идёт по настоящему объекту, а
+  // сужение — по размеченному объединению встроенных ветвей.
+  const builtin = raw as RawBuiltinPredicate;
+
+  if ('exit_code' in builtin) {
     return {
       kind: 'exit_code',
-      value: toCount(raw.exit_code, `${at}.exit_code`, substitutions, parseExitCode, `${at}.exit_code`),
+      value: toCount(builtin.exit_code, `${at}.exit_code`, substitutions, parseExitCode, `${at}.exit_code`),
     };
   }
-  if ('file_exists' in raw) return { kind: 'file_exists', path: raw.file_exists };
-  if ('schema' in raw) {
-    return { kind: 'schema', path: resolveSchemaPath(raw.schema, declaringFile, `${at}.schema`) };
+  if ('file_exists' in builtin) return { kind: 'file_exists', path: builtin.file_exists };
+  if ('schema' in builtin) {
+    return { kind: 'schema', path: resolveSchemaPath(builtin.schema, declaringFile, `${at}.schema`) };
   }
-  if ('matches' in raw) return { kind: 'matches', pattern: raw.matches };
-  if ('not_matches' in raw) return { kind: 'not_matches', pattern: raw.not_matches };
-  if ('changed_only' in raw) return { kind: 'changed_only', globs: raw.changed_only };
-  if ('knowledge_valid' in raw) {
+  if ('matches' in builtin) return { kind: 'matches', pattern: builtin.matches };
+  if ('not_matches' in builtin) return { kind: 'not_matches', pattern: builtin.not_matches };
+  if ('changed_only' in builtin) return { kind: 'changed_only', globs: builtin.changed_only };
+  if ('knowledge_valid' in builtin) {
     // `knowledge_valid: false` не значит «проверять на несоответствие»: у
     // предиката нет отрицания, и молча читать его как «не проверять» значило
     // бы отличать выключенную проверку от отсутствующей ничем.
-    if (raw.knowledge_valid !== true) {
+    if (builtin.knowledge_valid !== true) {
       throw new StepcastError('Предикат knowledge_valid принимает только true', {
         at: `${at}.knowledge_valid`,
         hint: 'Уберите предикат, если проверять память не нужно',
@@ -354,14 +378,51 @@ function toPredicate(
     }
     return { kind: 'knowledge_valid' };
   }
-  if ('cmd' in raw) return { kind: 'cmd', command: raw.cmd };
-  return {
-    kind: 'judge',
-    claim: raw.judge,
-    hard: raw.hard ?? false,
-    ...(raw.agent === undefined ? {} : { agent: raw.agent }),
-    ...(raw.model === undefined ? {} : { model: raw.model }),
-  };
+  if ('cmd' in builtin) return { kind: 'cmd', command: builtin.cmd };
+  if ('judge' in builtin) {
+    return {
+      kind: 'judge',
+      claim: builtin.judge,
+      hard: builtin.hard ?? false,
+      ...(builtin.agent === undefined ? {} : { agent: builtin.agent }),
+      ...(builtin.model === undefined ? {} : { model: builtin.model }),
+    };
+  }
+
+  return toPluginPredicate(raw, at, registry);
+}
+
+/**
+ * Предикат плагина: ключ уже принят схемой документа, форму значения
+ * проверяет JSON Schema вклада. Проверка здесь, а не в схеме документа,
+ * потому что zod-модель чужой версии в объединение не положить, — но она
+ * всё равно происходит при разборе, до первого токена.
+ */
+function toPluginPredicate(raw: RawPredicate, at: string, registry: Registry): Predicate {
+  const keys = Object.keys(raw as Record<string, unknown>);
+  const name = keys[0];
+  const contribution = name === undefined ? undefined : registry.predicates.get(name);
+
+  if (name === undefined || contribution === undefined) {
+    throw new StepcastError(`Неизвестный предикат ${name ?? '(без ключа)'}`, {
+      at,
+      hint: `Доступны: ${predicateNames(registry).join(', ')}`,
+    });
+  }
+
+  const value = (raw as Record<string, unknown>)[name];
+  const validate = ajv.compile(contribution.schema as object);
+  if (!validate(value)) {
+    const detail = (validate.errors ?? [])
+      .map((error) => `${error.instancePath === '' ? 'значение' : error.instancePath} ${error.message ?? ''}`.trim())
+      .join('; ');
+    throw new StepcastError(`Значение предиката ${name} не соответствует его схеме: ${detail}`, {
+      at: `${at}.${name}`,
+      hint: `Схему объявляет плагин, внёсший предикат ${name}`,
+    });
+  }
+
+  return { kind: 'plugin', name, value };
 }
 
 function toPermissions(raw: NonNullable<RawAgentStep['permissions']>): Permissions {
@@ -492,6 +553,7 @@ function toStep(
   config: Config,
   substitutions: Map<string, readonly Substitution[]>,
   at: string,
+  registry: Registry,
 ): Step {
   const common = {
     id: raw.id,
@@ -509,7 +571,7 @@ function toStep(
       ? {}
       : { budget: toBudget(raw.budget, substitutions, `${at}.budget`) }),
     expect: (raw.expect ?? []).map((entry, i) =>
-      toPredicate(entry, declaringFile, substitutions, `${at}.expect.${i}`),
+      toPredicate(entry, declaringFile, substitutions, `${at}.expect.${i}`, registry),
     ),
     attempts: toAttempts(raw.attempts, config.limits, substitutions, at),
   };
@@ -572,9 +634,17 @@ function toStep(
 export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   const { config } = options;
   const pipelinePath = resolvePath(options.pipelinePath);
+  const registry = options.registry ?? builtinRegistry();
+  // Схемы документа зависят от загруженных плагинов: ключ предиката —
+  // закрытое объединение, и без плагинных ветвей их предикат отклонялся бы
+  // как опечатка.
+  const schemas =
+    registry.predicates.size === 0
+      ? { PipelineDocumentSchema, JobDocumentSchema }
+      : buildDocumentSchemas([...registry.predicates.keys()]);
 
   const document = validateDocument(
-    PipelineDocumentSchema,
+    schemas.PipelineDocumentSchema,
     readYamlDocument(pipelinePath),
     pipelinePath,
   ) as PipelineDocument;
@@ -659,7 +729,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       );
       const rawDocument = readYamlDocument(usesPath);
       rejectWiringKeys(rawDocument, usesPath);
-      const jobDocument = validateDocument(JobDocumentSchema, rawDocument, usesPath);
+      const jobDocument = validateDocument(schemas.JobDocumentSchema, rawDocument, usesPath);
 
       const withValues = interpolateTree(entry.with ?? {}, pipelineScope, `${at}.with`);
       collect(withValues.substitutions);
@@ -812,7 +882,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
                 `${at}.until.max_iterations`,
               ),
               check: until.check.map((entry, i) =>
-                toPredicate(entry, declaringFile, substitutions, `${at}.until.check.${i}`),
+                toPredicate(entry, declaringFile, substitutions, `${at}.until.check.${i}`, registry),
               ),
             },
           }),
@@ -846,6 +916,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
           config,
           substitutions,
           `${at}.steps.${index}`,
+          registry,
         ),
       ),
     });

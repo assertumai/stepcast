@@ -248,6 +248,16 @@ export const RunManifestSchema = z
      * только сегодняшнюю половину.
      */
     nested_repos: z.array(z.string()).optional(),
+    /**
+     * Загруженные плагины прогона: имя, версия и разрешённый путь модуля, в
+     * порядке загрузки. Прогон, снятый с плагинным предикатом, без этого поля
+     * нечем воспроизвести — журнал называет предикат по имени, а чем оно
+     * предоставлено, знает только конфигурация, которой уже может не быть.
+     * Отсутствие поля — прогон прежней версии, а не прогон без плагинов.
+     */
+    plugins: z
+      .array(z.object({ name: z.string(), version: z.string().optional(), source: z.string() }).strict())
+      .optional(),
     /** Прогон, из которого этот получен возобновлением. */
     resumed_from: z.string().optional(),
     inputs: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])),

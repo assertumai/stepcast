@@ -6,6 +6,9 @@ import { describe, it } from 'node:test';
 import { run, type CliIo } from '../src/cli/main.js';
 import type { Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
+import type { BackendConfig } from '../src/core/config/resolve.js';
+import { builtinRegistry } from '../src/core/plugins/builtin.js';
+import { addPlugin } from '../src/core/plugins/registry.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../src/core/lint.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
 import { gitCommit, gitInit, makeProject, withHome, type Project } from './helpers.js';
@@ -1014,6 +1017,72 @@ jobs:
     );
     assert.ok(
       errors(diagnostics).some((message) => /не поддерживает структурированный вывод/.test(message)),
+    );
+  });
+
+  // plugin-contributions: бэкенд судьи обязан быть не только настроен, но и
+  // предоставлен — иначе прогон упрётся в это на первом вызове судьи.
+  it('отклоняет бэкенд судьи, для которого нет адаптера', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: a
+        prompt: сделай
+        expect: [{ exit_code: 0 }, { judge: "всё хорошо", agent: codex }]
+`,
+    });
+    const config = {
+      ...project.config,
+      backends: {
+        ...project.config.backends,
+        codex: { ...(project.config.backends.claude as BackendConfig), command: 'codex' },
+      },
+    };
+
+    const diagnostics = lintPipeline(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+      { config },
+    );
+
+    const message = errors(diagnostics).find((text) => /Адаптер бэкенда судьи codex/.test(text));
+    assert.ok(message !== undefined, errors(diagnostics).join('\n'));
+  });
+
+  it('принимает бэкенд судьи, предоставленный плагином', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: a
+        prompt: сделай
+        expect: [{ exit_code: 0 }, { judge: "всё хорошо", agent: codex }]
+`,
+    });
+    const config = {
+      ...project.config,
+      backends: {
+        ...project.config.backends,
+        codex: { ...(project.config.backends.claude as BackendConfig), command: 'codex' },
+      },
+    };
+    const registry = builtinRegistry();
+    addPlugin(registry, { name: 'codex-adapter', backends: { codex: { create: () => ({}) as never } } }, '/м.js');
+
+    const diagnostics = lintPipeline(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+      { config, registry },
+    );
+
+    assert.deepEqual(
+      errors(diagnostics).filter((text) => /Адаптер бэкенда судьи/.test(text)),
+      [],
     );
   });
 

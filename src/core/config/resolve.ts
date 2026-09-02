@@ -80,6 +80,14 @@ export interface Config {
     readonly iterations: number;
   };
   readonly envDeny: readonly string[];
+  /**
+   * Модули плагинов в порядке объявления, слои объединены. Файл, в котором
+   * объявлен каждый, здесь не хранится: он нужен только загрузчику для
+   * разрешения относительного пути и берётся из вклада слоёв
+   * (`ResolvedConfig.denyContributions`) — второе представление одного и того
+   * же списка разошлось бы с отчётом `stepcast config`.
+   */
+  readonly plugins: readonly string[];
   readonly context: {
     readonly inlineThreshold: number;
     readonly maxTokens: number;
@@ -170,6 +178,16 @@ export interface ResolveOptions {
    * иначе подхватил бы чужой `.stepcast/config.yml` по случайному `cwd`.
    */
   readonly projectPath?: string | null;
+  /**
+   * Умолчания, объявленные плагинами для своих бэкендов, — слой сразу после
+   * встроенного. Заполняется вторым проходом разрешения: список плагинов
+   * называет сама конфигурация, а прочитать её надо раньше, чем плагины
+   * загружены (`core/plugins/resolve.ts`).
+   */
+  readonly pluginDefaults?: readonly {
+    readonly plugin: string;
+    readonly values: Record<string, unknown>;
+  }[];
 }
 
 /** Развернуть `~` в начале пути. Пути конфигурации пишутся людьми. */
@@ -375,6 +393,13 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
 
   const layers: Layer[] = [{ source: { kind: 'builtin' }, values: BUILTIN_CONFIG as Record<string, unknown> }];
 
+  // Умолчания плагинов ложатся сразу после встроенных: пользовательские файлы
+  // обязаны их перекрывать, а сами они — быть видны в отчёте своим источником,
+  // а не притворяться встроенными.
+  for (const layer of options.pluginDefaults ?? []) {
+    layers.push({ source: { kind: 'plugin', name: layer.plugin }, values: layer.values });
+  }
+
   const globalConfig = readConfigFile(globalPath);
   if (globalConfig !== undefined) {
     rejectProjectOnlyKeys(globalConfig, globalPath);
@@ -464,6 +489,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
       iterations: requireNumber(values, 'limits.iterations'),
     },
     envDeny: (values.get('env_deny') as string[] | undefined) ?? [],
+    plugins: (values.get('plugins') as string[] | undefined) ?? [],
     context: {
       inlineThreshold: requireNumber(values, 'context.inline_threshold'),
       maxTokens: requireNumber(values, 'context.max_tokens'),

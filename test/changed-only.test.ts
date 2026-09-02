@@ -122,8 +122,8 @@ describe('result-contract: предикат границ изменений', ()
   });
 
   // Сценарий: «Якорь недоступен»
-  it('помечается невычисленным, а не непройденным, когда состояние недоступно', () => {
-    const results = evaluatePredicates(
+  it('помечается невычисленным, а не непройденным, когда состояние недоступно', async () => {
+    const results = await evaluatePredicates(
       [{ kind: 'changed_only', globs: ['src/**'] }],
       {
         exitCode: 0,
@@ -143,24 +143,26 @@ describe('result-contract: предикат границ изменений', ()
 });
 
 describe('result-contract: сопоставление путей с шаблонами', () => {
-  const check = (globs: string[], paths: string[]) =>
-    evaluatePredicates([{ kind: 'changed_only', globs }], {
-      exitCode: 0,
-      text: '',
-      structured: undefined,
-      cwd: process.cwd(),
-      env: {},
-      changedPaths: paths,
-    })[0];
+  const check = async (globs: string[], paths: string[]) =>
+    (
+      await evaluatePredicates([{ kind: 'changed_only', globs }], {
+        exitCode: 0,
+        text: '',
+        structured: undefined,
+        cwd: process.cwd(),
+        env: {},
+        changedPaths: paths,
+      })
+    )[0];
 
-  it('`**` пересекает разделители, `*` — нет', () => {
-    assert.equal(check(['src/**'], ['src/deep/nested/a.ts'])?.passed, true);
-    assert.equal(check(['src/*'], ['src/deep/nested/a.ts'])?.passed, false);
-    assert.equal(check(['src/*.ts'], ['src/a.ts'])?.passed, true);
+  it('`**` пересекает разделители, `*` — нет', async () => {
+    assert.equal((await check(['src/**'], ['src/deep/nested/a.ts']))?.passed, true);
+    assert.equal((await check(['src/*'], ['src/deep/nested/a.ts']))?.passed, false);
+    assert.equal((await check(['src/*.ts'], ['src/a.ts']))?.passed, true);
   });
 
-  it('перечисляет только вышедшие за границу пути', () => {
-    const result = check(['src/**'], ['src/a.ts', 'docs/b.md', 'package.json']);
+  it('перечисляет только вышедшие за границу пути', async () => {
+    const result = await check(['src/**'], ['src/a.ts', 'docs/b.md', 'package.json']);
     assert.deepEqual(result?.actual, ['docs/b.md', 'package.json']);
   });
 });

@@ -47,7 +47,10 @@ import { bookkeep } from './bookkeeping.js';
 import { buildIterationNote, type IterationNoteTruncation } from './iterationNote.js';
 import { HaltCause, type HaltCauseValue } from './halt.js';
 import { resolveInheritSource, type CompletedJob } from './inherit.js';
+import { builtinRegistry } from '../plugins/builtin.js';
+import type { Registry } from '../plugins/registry.js';
 import { preflight } from './preflight.js';
+import { createScope, type ResourceScope } from './scope.js';
 import { buildPreviousFailure } from './previousFailure.js';
 import type { ResumePlan, SourceRun, StepPlan } from './resumePlan.js';
 import { computeStepKey, upstreamForKey } from './stepKey.js';
@@ -87,6 +90,12 @@ export interface RunOptions {
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
   /** Подмена адаптера бэкенда: тесты подставляют поддельный. */
   readonly adapterFor?: (name: string) => BackendAdapter;
+  /**
+   * Реестр вкладов: им разрешаются адаптеры бэкендов и вычисляются предикаты
+   * плагинов. Без значения — только встроенные вклады: внешний потребитель
+   * `stepcast` как библиотеки о плагинах знать не обязан.
+   */
+  readonly registry?: Registry;
   /**
    * Подмена якоря состояния дерева. Нужна, чтобы проверить главное свойство
    * учёта: отказ фиксации не меняет исход прогона.
@@ -197,6 +206,10 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     project_root: options.projectRoot,
     workspace: pipeline.workspace,
     anchor_kind: anchorKind,
+    // Список пишется всегда, включая пустой: «плагинов не было» и «версия
+    // движка о них не знала» — разные утверждения, и различать их читателю
+    // журнала нужно.
+    plugins: (options.registry?.plugins ?? []).map((plugin) => ({ ...plugin })),
     ...(config.project.nestedRepos === undefined ? {} : { nested_repos: [...config.project.nestedRepos] }),
     ...(options.resume === undefined ? {} : { resumed_from: options.resume.source.manifest.run_id }),
     inputs: pipeline.inputs,
@@ -275,6 +288,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     refreshStatus: () => writeStatus('running'),
   };
 
+  requireAdapters(context);
   warnAboutDegradedBackends(context);
   requireStrictPermissionsSupport(context);
 
@@ -337,38 +351,53 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
 
   writeStatus('running');
 
-  const result = await schedule({
-    pipeline,
-    graph,
-    // Потолок конфигурации применяет сам прогон: линт отклоняет превышение,
-    // но прогон не обязан полагаться на то, что линт был.
-    concurrency: Math.min(pipeline.concurrency, config.limits.concurrency),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-    scopeExtras: { run: { id: journal.paths.runId, dir: journal.paths.dir }, env: {} },
-    // Данные берутся из записи работы, а не читаются с диска заново: движок
-    // складывает их туда после каждого шага, и второй путь к тому же
-    // значению разошёлся бы с первым при первой же уборке прогона.
-    jobData: (jobId) => records.get(jobId)?.data,
-    execute: async (job, scope) => executeJob(job, scope, context),
-    onSettled: async (job, outcome) => {
-      const record = records.get(job.id) as JobRecord;
-      records.set(job.id, {
-        ...record,
-        status: outcome.status,
-        ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
-        ...(outcome.cause === undefined ? {} : { cause: outcome.cause }),
-        ...(outcome.lastCheck === undefined ? {} : { last_check: [...outcome.lastCheck] }),
-        finished_at: new Date().toISOString(),
-      });
-      journal.event({
-        kind: 'job.finished',
-        job: job.id,
-        status: outcome.status,
-        ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
-      });
-      writeStatus('running');
-    },
+  /**
+   * Область прогона: ресурсы, живущие столько же, сколько сам прогон.
+   * Снимается до финального состояния и до `run.finished` — состояние
+   * закончившегося прогона не должно утверждать, что он спит.
+   */
+  const runResources = createScope({ journal });
+  runResources.defer('снятие состояния ожидания прогона', () => {
+    waitState.clear();
   });
+
+  let result: Awaited<ReturnType<typeof schedule>>;
+  try {
+    result = await schedule({
+      pipeline,
+      graph,
+      // Потолок конфигурации применяет сам прогон: линт отклоняет превышение,
+      // но прогон не обязан полагаться на то, что линт был.
+      concurrency: Math.min(pipeline.concurrency, config.limits.concurrency),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      scopeExtras: { run: { id: journal.paths.runId, dir: journal.paths.dir }, env: {} },
+      // Данные берутся из записи работы, а не читаются с диска заново: движок
+      // складывает их туда после каждого шага, и второй путь к тому же
+      // значению разошёлся бы с первым при первой же уборке прогона.
+      jobData: (jobId) => records.get(jobId)?.data,
+      execute: async (job, scope) => executeJob(job, scope, context),
+      onSettled: async (job, outcome) => {
+        const record = records.get(job.id) as JobRecord;
+        records.set(job.id, {
+          ...record,
+          status: outcome.status,
+          ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+          ...(outcome.cause === undefined ? {} : { cause: outcome.cause }),
+          ...(outcome.lastCheck === undefined ? {} : { last_check: [...outcome.lastCheck] }),
+          finished_at: new Date().toISOString(),
+        });
+        journal.event({
+          kind: 'job.finished',
+          job: job.id,
+          status: outcome.status,
+          ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
+        });
+        writeStatus('running');
+      },
+      });
+  } finally {
+    await runResources.dispose();
+  }
 
   if (context.failureNote.pending !== undefined) {
     const addressee = options.resume?.plan.failureNoteJob;
@@ -473,6 +502,31 @@ interface RunContext extends RunOptions {
 }
 
 /** Отсутствие поддержки сессий не отказ, а деградация с предупреждением. */
+/**
+ * Все бэкенды, которые понадобятся прогону, разрешаются до первой работы.
+ *
+ * Настроенный, но не предоставленный ни встроенно, ни плагином бэкенд иначе
+ * обнаружился бы на первом агентском шаге — то есть после подготовки рабочих
+ * деревьев и, возможно, после сорока минут чужой работы. Проверка стоит
+ * ничего и делается там же, где остальные предстартовые.
+ */
+function requireAdapters(context: RunContext): void {
+  const needed = new Set<string>();
+  for (const job of context.expanded.pipeline.jobs) {
+    for (const step of job.steps) {
+      if (step.kind === 'agent') needed.add(step.agent);
+      for (const predicate of step.expect) {
+        if (predicate.kind === 'judge') needed.add(predicate.agent ?? context.config.defaults.agent);
+      }
+    }
+    for (const predicate of job.until?.check ?? []) {
+      if (predicate.kind === 'judge') needed.add(predicate.agent ?? context.config.defaults.agent);
+    }
+  }
+
+  for (const name of needed) adapterOf(name, context);
+}
+
 function warnAboutDegradedBackends(context: RunContext): void {
   const { pipeline } = context.expanded;
   const needed = new Set(
@@ -524,7 +578,9 @@ function requireStrictPermissionsSupport(context: RunContext): void {
 function adapterOf(name: string, context: RunContext): BackendAdapter {
   const existing = context.adapters.get(name);
   if (existing !== undefined) return existing;
-  const created = (context.adapterFor ?? ((backend) => resolveAdapter(backend, context.config)))(name);
+  const created = (
+    context.adapterFor ?? ((backend) => resolveAdapter(backend, context.config, context.registry ?? builtinRegistry()))
+  )(name);
   context.adapters.set(name, created);
   return created;
 }
@@ -547,7 +603,25 @@ async function executeJob(
 ): Promise<JobOutcome> {
   const { journal } = context;
 
+  /**
+   * Область работы: ресурсы, живущие ровно столько, сколько сама работа, —
+   * каталог черновиков и служебные файлы её якоря. Заводится до `prepareJob`
+   * и снимается единственным `finally` ниже: работа, отказавшая на подготовке
+   * рабочей директории или на раскрытии подстановок, обязана убрать за собой
+   * так же полно, как дошедшая до конца.
+   */
+  const resources = createScope({ journal, job: declared.id });
+
   journal.prepareJob(declared.id);
+  // Регистрируется первым — снимется последним: каталог черновиков переживает
+  // всё прочее содержимое области.
+  resources.defer('снятие каталога черновиков', () => {
+    const dir = jobScratchDir(journal.paths, declared.id);
+    // Убрать каталог за собой шагу никто не запрещал, и сделанное им — не
+    // отказ учёта: жаловаться в журнал на достигнутый результат незачем.
+    if (!existsSync(dir)) return;
+    if (readdirSync(dir).length === 0) rmdirSync(dir);
+  });
   journal.event({ kind: 'job.started', job: declared.id });
   context.records.set(declared.id, {
     ...(context.records.get(declared.id) as JobRecord),
@@ -561,20 +635,14 @@ async function executeJob(
   context.refreshStatus();
 
   try {
-    return await runJob(declared, scope, context);
+    return await runJob(declared, scope, context, resources);
   } finally {
     // Пустой каталог черновиков не несёт материала для разбора и не должен
     // копиться в раскладке прогона годами; непустой остаётся — в нём мог лечь
-    // след отказа. Отказ снятия — учётная операция, не исход работы: агент,
-    // которому запрещено трогать что-либо за пределами дерева, права на
-    // уборку здесь и не давалось.
-    bookkeep({ journal, job: declared.id }, 'снятие каталога черновиков', () => {
-      const dir = jobScratchDir(journal.paths, declared.id);
-      // Убрать каталог за собой шагу никто не запрещал, и сделанное им — не
-      // отказ учёта: жаловаться в журнал на достигнутый результат незачем.
-      if (!existsSync(dir)) return;
-      if (readdirSync(dir).length === 0) rmdirSync(dir);
-    });
+    // след отказа. Отказ любой обратной операции области — учётная операция,
+    // не исход работы: агент, которому запрещено трогать что-либо за
+    // пределами дерева, права на уборку здесь и не давалось.
+    await resources.dispose();
   }
 }
 
@@ -588,6 +656,7 @@ async function runJob(
   declared: Job,
   scope: Record<string, unknown>,
   context: RunContext,
+  resources: ResourceScope,
 ): Promise<JobOutcome> {
   const { journal } = context;
 
@@ -603,10 +672,11 @@ async function runJob(
   const source = resolveInheritSource(context.graph, job, context.completedWorkspaces);
   let prepared: PreparedWorkspace;
   try {
-    prepared = prepareWorkspace({
+    prepared = await prepareWorkspace({
       job,
       cwd: context.cwd,
       runDir: journal.paths.dir,
+      bookkeeping: { journal, job: job.id },
       source,
       anchorKind: context.anchorKind,
       anchorsDir: journal.paths.anchors,
@@ -704,6 +774,13 @@ async function runJob(
     anchorer: undefined,
     lastAnchor: undefined,
   };
+  // Индексный файл живёт ровно столько, сколько работа. Регистрируется здесь,
+  // а не рядом с созданием якоря: якорь заводится заново на каждой итерации
+  // цикла `until` под одним и тем же именем файла, и снять его достаточно
+  // однажды — тот, что остался последним.
+  resources.defer('снятие служебных файлов якоря работы', () => {
+    anchorState.anchorer?.dispose();
+  });
   const jobStartedAt = Date.now();
   const maxIterations = job.until?.maxIterations ?? 1;
   let previousCheck: readonly PredicateResult[] | undefined;
@@ -788,8 +865,6 @@ async function runJob(
       dir: prepared.dir,
       ...(anchorState.lastAnchor === undefined ? {} : { anchor: anchorState.lastAnchor }),
     });
-    // Индексный файл живёт ровно столько, сколько работа.
-    anchorState.anchorer?.dispose();
   }
 }
 
@@ -802,18 +877,22 @@ async function evaluateCheck(job: Job, context: RunContext): Promise<PredicateRe
   const until = job.until;
   if (until === undefined) return [];
 
-  return evaluatePredicates(until.check, {
-    exitCode: 0,
-    text: '',
-    structured: undefined,
-    cwd: context.cwd,
-    // Проверка цикла запускает настоящую команду сборки или тестов, и без
-    // окружения она не найдёт ни одного инструмента: `execaSync` зовётся с
-    // `extendEnv: false`, поэтому пустой набор означает буквально пустой —
-    // ни PATH, ни HOME.
-    env: jobEnv(job, context),
-    knowledge: context.knowledgeSource,
-  });
+  return evaluatePredicates(
+    until.check,
+    {
+      exitCode: 0,
+      text: '',
+      structured: undefined,
+      cwd: context.cwd,
+      // Проверка цикла запускает настоящую команду сборки или тестов, и без
+      // окружения она не найдёт ни одного инструмента: `execaSync` зовётся с
+      // `extendEnv: false`, поэтому пустой набор означает буквально пустой —
+      // ни PATH, ни HOME.
+      env: jobEnv(job, context),
+      knowledge: context.knowledgeSource,
+    },
+    context.registry,
+  );
 }
 
 /**
@@ -1493,15 +1572,23 @@ interface StepOutcome {
  * исполнения отличить настоящую отмену от прерывания ради ожидания — только
  * второе ведёт в переисполнение шага, а не в статус `canceled`.
  */
-function stepAbort(context: RunContext): {
+function stepAbort(
+  context: RunContext,
+  resources: ResourceScope,
+): {
   readonly controller: AbortController;
   readonly trigger: (found: Exceeded | undefined) => void;
-  readonly dispose: () => void;
   waitTrigger: Exceeded | undefined;
 } {
   const controller = new AbortController();
   const onRunAbort = (): void => controller.abort();
   context.signal?.addEventListener('abort', onRunAbort, { once: true });
+  // Слушатель снимается вместе с областью попытки, а не вручную после
+  // исполнения: попытка, прерванная исключением, оставляла бы его висеть на
+  // сигнале прогона до конца прогона — по слушателю на попытку.
+  resources.defer('снятие слушателя отмены шага', () => {
+    context.signal?.removeEventListener('abort', onRunAbort);
+  });
 
   const state = {
     controller,
@@ -1510,9 +1597,6 @@ function stepAbort(context: RunContext): {
       if (found === undefined || controller.signal.aborted) return;
       if (found.onExceed === 'wait' && found.dimension === 'rate_limit') state.waitTrigger = found;
       controller.abort();
-    },
-    dispose() {
-      context.signal?.removeEventListener('abort', onRunAbort);
     },
   };
   return state;
@@ -1588,99 +1672,111 @@ async function runCommandStep(
     const onStall = (silentMs: number): void =>
       journal.event({ kind: 'step.stalled', job: job.id, step: step.id, silent_ms: silentMs });
 
-    const abort = stepAbort(context);
+    // Область попытки: слушатели, взятые на время исполнения шага, снимаются
+    // одним `finally` при любом его исходе — успехе, отказе, отмене и
+    // исключении посреди исполнения.
+    const attemptResources = createScope({ journal, job: job.id, step: step.id });
+    const abort = stepAbort(context, attemptResources);
 
-    const result = await executeRunStep({
-      step,
-      cwd: context.cwd,
-      stepDir: stepDirPath,
-      stallTimeoutMs: config.defaults.stallTimeoutMs,
-      signal: abort.controller.signal,
-      env: (plan) => stepEnv(step, job, plan.attempt, context, stepDirPath),
-      evaluate: async (target, process_, plan) => {
-        // Разбор строгий: только пробелы по краям снимаются, без поиска
-        // первого объекта и без склейки последней строки — вывод либо один
-        // JSON-документ целиком, либо отказ попытки.
-        let structured: unknown;
-        if (target.outputSchemaPath !== undefined) {
-          try {
-            structured = JSON.parse(process_.stdout.trim());
-          } catch (error) {
-            return [
-              {
-                predicate: 'output_schema',
-                passed: false,
-                hard: true,
-                detail: `шаг ${target.id} объявляет output_schema, но stdout не разбирается как JSON: ${(error as Error).message}`,
-              },
-            ];
+    let result: Awaited<ReturnType<typeof executeRunStep>>;
+    try {
+      result = await executeRunStep({
+        step,
+        cwd: context.cwd,
+        stepDir: stepDirPath,
+        stallTimeoutMs: config.defaults.stallTimeoutMs,
+        signal: abort.controller.signal,
+        env: (plan) => stepEnv(step, job, plan.attempt, context, stepDirPath),
+        evaluate: async (target, process_, plan) => {
+          // Разбор строгий: только пробелы по краям снимаются, без поиска
+          // первого объекта и без склейки последней строки — вывод либо один
+          // JSON-документ целиком, либо отказ попытки.
+          let structured: unknown;
+          if (target.outputSchemaPath !== undefined) {
+            try {
+              structured = JSON.parse(process_.stdout.trim());
+            } catch (error) {
+              return [
+                {
+                  predicate: 'output_schema',
+                  passed: false,
+                  hard: true,
+                  detail: `шаг ${target.id} объявляет output_schema, но stdout не разбирается как JSON: ${(error as Error).message}`,
+                },
+              ];
+            }
+            structuredOutput = structured;
           }
-          structuredOutput = structured;
-        }
 
-        const firstPass = evaluatePredicates(target.expect, {
-          exitCode: process_.exitCode,
-          text: process_.stdout,
-          structured,
-          cwd: context.cwd,
-          env: stepEnv(step, job, 1, context, stepDirPath),
-          changedPaths: changedPaths(),
-          knowledge: context.knowledgeSource,
-        });
+          const firstPass = await evaluatePredicates(
+            target.expect,
+            {
+              exitCode: process_.exitCode,
+              text: process_.stdout,
+              structured,
+              cwd: context.cwd,
+              env: stepEnv(step, job, 1, context, stepDirPath),
+              changedPaths: changedPaths(),
+              knowledge: context.knowledgeSource,
+            },
+            context.registry,
+          );
 
-        if (!target.expect.some((predicate) => predicate.kind === 'judge')) return firstPass;
+          if (!target.expect.some((predicate) => predicate.kind === 'judge')) return firstPass;
 
-        // Командный шаг сам расхода не несёт: расход попытки — это расход
-        // судей, накапливаемый по мере их вызовов, а не заменяемый последним.
-        let attemptUsage: Usage | undefined;
-        const judgeResults = await runJudgePass({
-          predicates: target.expect,
-          firstPass,
-          task: describeStepTask(target),
-          text: process_.stdout,
-          structured: structured ?? process_.stdout,
-          cwd: context.cwd,
-          stepDir: stepDirPath,
-          attempt: plan.attempt,
-          timeoutMs: target.timeoutMs,
-          stallTimeoutMs: config.defaults.stallTimeoutMs,
-          signal: abort.controller.signal,
-          onStall,
-          adapterFor: (name) => adapterOf(name, context),
-          defaultAgent: config.defaults.agent,
-          backendSlots: context.backendSlots,
-          journal,
-          nextCallIndex,
-          canCall: () => {
-            const found = context.usage.check(budgetScopes());
-            exceeded ??= found;
-            abort.trigger(found);
-            return found === undefined;
-          },
-          onUsage: (usage) => {
-            attemptUsage = attemptUsage === undefined ? usage : sumUsage(attemptUsage, usage);
-            context.usage.record(job.id, step.id, plan.attempt, attemptUsage);
-            const found = context.usage.check(budgetScopes());
-            exceeded ??= found;
-            abort.trigger(found);
-          },
-        });
-        if (attemptUsage !== undefined) checkCostUnreported(context, job, step, plan.attempt);
-        return judgeResults;
-      },
-      onStall,
-      onExpectFailed: (plan, failure) =>
-        journal.event({
-          kind: 'expect.failed',
-          job: job.id,
-          step: step.id,
-          attempt: plan.attempt,
-          predicate: failure.predicate,
-          ...(failure.detail === undefined ? {} : { detail: failure.detail }),
-        }),
-    });
+          // Командный шаг сам расхода не несёт: расход попытки — это расход
+          // судей, накапливаемый по мере их вызовов, а не заменяемый последним.
+          let attemptUsage: Usage | undefined;
+          const judgeResults = await runJudgePass({
+            predicates: target.expect,
+            firstPass,
+            task: describeStepTask(target),
+            text: process_.stdout,
+            structured: structured ?? process_.stdout,
+            cwd: context.cwd,
+            stepDir: stepDirPath,
+            attempt: plan.attempt,
+            timeoutMs: target.timeoutMs,
+            stallTimeoutMs: config.defaults.stallTimeoutMs,
+            signal: abort.controller.signal,
+            onStall,
+            adapterFor: (name) => adapterOf(name, context),
+            defaultAgent: config.defaults.agent,
+            backendSlots: context.backendSlots,
+            journal,
+            nextCallIndex,
+            canCall: () => {
+              const found = context.usage.check(budgetScopes());
+              exceeded ??= found;
+              abort.trigger(found);
+              return found === undefined;
+            },
+            onUsage: (usage) => {
+              attemptUsage = attemptUsage === undefined ? usage : sumUsage(attemptUsage, usage);
+              context.usage.record(job.id, step.id, plan.attempt, attemptUsage);
+              const found = context.usage.check(budgetScopes());
+              exceeded ??= found;
+              abort.trigger(found);
+            },
+          });
+          if (attemptUsage !== undefined) checkCostUnreported(context, job, step, plan.attempt);
+          return judgeResults;
+        },
+        onStall,
+        onExpectFailed: (plan, failure) =>
+          journal.event({
+            kind: 'expect.failed',
+            job: job.id,
+            step: step.id,
+            attempt: plan.attempt,
+            predicate: failure.predicate,
+            ...(failure.detail === undefined ? {} : { detail: failure.detail }),
+          }),
+      });
+    } finally {
+      await attemptResources.dispose();
+    }
 
-    abort.dispose();
     if (exceeded === undefined) {
       const found = context.usage.check(budgetScopes());
       exceeded = found;
@@ -1757,234 +1853,245 @@ async function runAgentStep(
   const onStall = (silentMs: number): void =>
     journal.event({ kind: 'step.stalled', job: job.id, step: step.id, silent_ms: silentMs });
 
-  const abort = stepAbort(context);
+  // Область попытки: слушатели, взятые на время исполнения шага, снимаются
+  // одним `finally` при любом его исходе — успехе, отказе, отмене и
+  // исключении посреди исполнения.
+  const attemptResources = createScope({ journal, job: job.id, step: step.id });
+  const abort = stepAbort(context, attemptResources);
 
   // Промпт собирается заново на каждой попытке шага, а выдержка на всех
   // попытках одна и та же: событие об её усечении пишется однажды, иначе
   // разбор по журналу насчитает усечений больше, чем их было.
   let noteTruncationReported = false;
 
-  const result = await executeAgentStep({
-    step,
-    adapter,
-    cwd: context.cwd,
-    stepDir: stepDirPath,
-    scratchDir: jobScratchDir(journal.paths, job.id),
-    sessions,
-    sessionAlias: sessionKey(step.session),
-    backendSlots: context.backendSlots,
-    stallTimeoutMs: config.defaults.stallTimeoutMs,
-    signal: abort.controller.signal,
-    env: (plan) => stepEnv(step, job, plan.attempt, context, stepDirPath),
-    buildPrompt: (_plan, previousFailure) => {
-      // Унаследованный контекст уходит в первое сообщение сессии: повторять
-      // агенту то, что он уже прочитал в этой же сессии, незачем.
-      const key = sessionKey(step.session);
-      // Контекст пайплайна — один раз на диалог; контекст работы и выходы
-      // предшественников — один раз на работу внутри диалога. У работы без
-      // объявленной группы оба совпадают, и поведение прежнее.
-      const first = !context.pipelineContextSent.has(key);
-      const firstInJob = !jobContextSent.has(key);
-      context.pipelineContextSent.add(key);
-      jobContextSent.add(key);
+  let result: Awaited<ReturnType<typeof executeAgentStep>>;
+  try {
+    result = await executeAgentStep({
+      step,
+      adapter,
+      cwd: context.cwd,
+      stepDir: stepDirPath,
+      scratchDir: jobScratchDir(journal.paths, job.id),
+      sessions,
+      sessionAlias: sessionKey(step.session),
+      backendSlots: context.backendSlots,
+      stallTimeoutMs: config.defaults.stallTimeoutMs,
+      signal: abort.controller.signal,
+      env: (plan) => stepEnv(step, job, plan.attempt, context, stepDirPath),
+      buildPrompt: (_plan, previousFailure) => {
+        // Унаследованный контекст уходит в первое сообщение сессии: повторять
+        // агенту то, что он уже прочитал в этой же сессии, незачем.
+        const key = sessionKey(step.session);
+        // Контекст пайплайна — один раз на диалог; контекст работы и выходы
+        // предшественников — один раз на работу внутри диалога. У работы без
+        // объявленной группы оба совпадают, и поведение прежнее.
+        const first = !context.pipelineContextSent.has(key);
+        const firstInJob = !jobContextSent.has(key);
+        context.pipelineContextSent.add(key);
+        jobContextSent.add(key);
 
-      const stepEntries = withIterationNote(
-        context,
-        job.id,
-        step.context,
-        context.iterationCheck,
-        (truncation) => {
-          if (noteTruncationReported) return;
-          noteTruncationReported = true;
-          journal.event({
-            kind: 'context.note_truncated',
-            job: job.id,
-            step: step.id,
-            original_tokens: truncation.originalTokens,
-            final_tokens: truncation.finalTokens,
-          });
-        },
-      );
+        const stepEntries = withIterationNote(
+          context,
+          job.id,
+          step.context,
+          context.iterationCheck,
+          (truncation) => {
+            if (noteTruncationReported) return;
+            noteTruncationReported = true;
+            journal.event({
+              kind: 'context.note_truncated',
+              job: job.id,
+              step: step.id,
+              original_tokens: truncation.originalTokens,
+              final_tokens: truncation.finalTokens,
+            });
+          },
+        );
 
-      const assembled = assembleContext({
-        workspace: context.cwd,
-        pipeline: first ? pipeline.context : [],
-        job: firstInJob ? job.context : [],
-        step: stepEntries.entries,
-        upstream: firstInJob ? upstreamOutputs(context.graph, job.id, context.outputs) : [],
-        contextUpstream: job.contextUpstream,
-        inherit: step.contextInherit,
-        exclude: step.contextExclude,
-        deny: config.context.deny,
-        inlineThreshold: config.context.inlineThreshold,
-        maxTokens: step.contextMaxTokens ?? config.context.maxTokens,
-        // Предел выдержки объявляется сборке только тогда, когда выдержка в
-        // контексте есть: иначе шаг с узким пределом контекста отказывал бы
-        // из-за настройки, которая его не касается.
-        ...(stepEntries.hasNote ? { noteMaxTokens: config.context.noteMaxTokens } : {}),
-        ...(context.knowledgeSource === undefined
-          ? {}
-          : {
-              knowledge: (selector, budget) =>
-                (context.knowledgeSource as KnowledgeSource).select(
-                  budget === undefined || selector.kind === 'index'
-                    ? selector
-                    : { ...selector, budget },
-                ),
+        const assembled = assembleContext({
+          workspace: context.cwd,
+          pipeline: first ? pipeline.context : [],
+          job: firstInJob ? job.context : [],
+          step: stepEntries.entries,
+          upstream: firstInJob ? upstreamOutputs(context.graph, job.id, context.outputs) : [],
+          contextUpstream: job.contextUpstream,
+          inherit: step.contextInherit,
+          exclude: step.contextExclude,
+          deny: config.context.deny,
+          inlineThreshold: config.context.inlineThreshold,
+          maxTokens: step.contextMaxTokens ?? config.context.maxTokens,
+          // Предел выдержки объявляется сборке только тогда, когда выдержка в
+          // контексте есть: иначе шаг с узким пределом контекста отказывал бы
+          // из-за настройки, которая его не касается.
+          ...(stepEntries.hasNote ? { noteMaxTokens: config.context.noteMaxTokens } : {}),
+          ...(context.knowledgeSource === undefined
+            ? {}
+            : {
+                knowledge: (selector, budget) =>
+                  (context.knowledgeSource as KnowledgeSource).select(
+                    budget === undefined || selector.kind === 'index'
+                      ? selector
+                      : { ...selector, budget },
+                  ),
+              }),
+          onDenied: (path, pattern) =>
+            journal.event({ kind: 'context.denied', job: job.id, step: step.id, path, pattern }),
+          onDowngraded: (path, tokens) =>
+            journal.event({
+              kind: 'context.downgraded',
+              job: job.id,
+              step: step.id,
+              path,
+              tokens,
             }),
-        onDenied: (path, pattern) =>
-          journal.event({ kind: 'context.denied', job: job.id, step: step.id, path, pattern }),
-        onDowngraded: (path, tokens) =>
-          journal.event({
-            kind: 'context.downgraded',
-            job: job.id,
-            step: step.id,
-            path,
-            tokens,
-          }),
-      });
+        });
 
-      journal.writeContextReport(stepDirPath, {
-        // Ключ, а не псевдоним шага: в группе один псевдоним встречается в
-        // нескольких работах, и отчёт обязан называть тот диалог, в который
-        // контекст на самом деле ушёл.
-        session: key,
-        ...assembled.report,
-      });
+        journal.writeContextReport(stepDirPath, {
+          // Ключ, а не псевдоним шага: в группе один псевдоним встречается в
+          // нескольких работах, и отчёт обязан называть тот диалог, в который
+          // контекст на самом деле ушёл.
+          session: key,
+          ...assembled.report,
+        });
 
-      return [assembled.text, step.prompt, failureBlock(previousFailure)]
-        .filter((part) => part !== undefined && part !== '')
-        .join('\n\n');
-    },
-    evaluate: async (target, outcome, plan) => {
-      // Неустранимый отказ проверяется раньше кода возврата: у обоих
-      // настоящих конвертов отказа (упор в лимит подписки, отказ
-      // аутентификации) код возврата ненулевой, и без этой проверки они
-      // ушли бы в «бэкенд завершился кодом N», не назвав действительной
-      // причины. Судья здесь не вызывается: попытка отклонена в любом случае.
-      if (outcome.refusal !== undefined) {
-        return [
+        return [assembled.text, step.prompt, failureBlock(previousFailure)]
+          .filter((part) => part !== undefined && part !== '')
+          .join('\n\n');
+      },
+      evaluate: async (target, outcome, plan) => {
+        // Неустранимый отказ проверяется раньше кода возврата: у обоих
+        // настоящих конвертов отказа (упор в лимит подписки, отказ
+        // аутентификации) код возврата ненулевой, и без этой проверки они
+        // ушли бы в «бэкенд завершился кодом N», не назвав действительной
+        // причины. Судья здесь не вызывается: попытка отклонена в любом случае.
+        if (outcome.refusal !== undefined) {
+          return [
+            {
+              predicate: BACKEND_REFUSAL_PREDICATE,
+              passed: false,
+              hard: true,
+              detail: describeRefusal(outcome.refusal),
+              actual: outcome.refusal,
+            },
+          ];
+        }
+
+        // Ненулевой код возврата означает, что бэкенд не отработал, и жалобы
+        // предикатов на отсутствующий вывод только уводят от причины. Настоящую
+        // причину бэкенд написал в stderr — её и показываем первой. Судья здесь
+        // не вызывается: попытка отклонена в любом случае.
+        if (outcome.process.exitCode !== 0) {
+          const detail = outcome.process.stderr.trim().split('\n').slice(-3).join('\n');
+          return [
+            {
+              predicate: 'backend',
+              passed: false,
+              hard: true,
+              actual: outcome.process.exitCode,
+              detail:
+                detail === ''
+                  ? `бэкенд завершился кодом ${outcome.process.exitCode ?? 'нет'}`
+                  : detail,
+            },
+          ];
+        }
+
+        const firstPass = await evaluatePredicates(
+          target.expect,
           {
-            predicate: BACKEND_REFUSAL_PREDICATE,
-            passed: false,
-            hard: true,
-            detail: describeRefusal(outcome.refusal),
-            actual: outcome.refusal,
+            exitCode: outcome.process.exitCode,
+            text: outcome.text ?? '',
+            structured: outcome.structured,
+            cwd: context.cwd,
+            env: stepEnv(step, job, 1, context, stepDirPath),
+            changedPaths: changedPaths(),
+            knowledge: context.knowledgeSource,
           },
-        ];
-      }
+          context.registry,
+        );
 
-      // Ненулевой код возврата означает, что бэкенд не отработал, и жалобы
-      // предикатов на отсутствующий вывод только уводят от причины. Настоящую
-      // причину бэкенд написал в stderr — её и показываем первой. Судья здесь
-      // не вызывается: попытка отклонена в любом случае.
-      if (outcome.process.exitCode !== 0) {
-        const detail = outcome.process.stderr.trim().split('\n').slice(-3).join('\n');
-        return [
-          {
-            predicate: 'backend',
-            passed: false,
-            hard: true,
-            actual: outcome.process.exitCode,
-            detail:
-              detail === ''
-                ? `бэкенд завершился кодом ${outcome.process.exitCode ?? 'нет'}`
-                : detail,
+        if (!target.expect.some((predicate) => predicate.kind === 'judge')) {
+          checkCostUnreported(context, job, step, plan.attempt);
+          return firstPass;
+        }
+
+        // Расход попытки уже включает расход самого шага (`outcome.usage`) —
+        // судьи добавляются к нему, а не подменяют его.
+        let attemptUsage = outcome.usage;
+        const results = await runJudgePass({
+          predicates: target.expect,
+          firstPass,
+          task: target.prompt,
+          text: outcome.text ?? '',
+          structured: outcome.structured,
+          cwd: context.cwd,
+          stepDir: stepDirPath,
+          attempt: plan.attempt,
+          timeoutMs: target.timeoutMs,
+          stallTimeoutMs: config.defaults.stallTimeoutMs,
+          signal: abort.controller.signal,
+          onStall,
+          adapterFor: (name) => adapterOf(name, context),
+          defaultAgent: config.defaults.agent,
+          backendSlots: context.backendSlots,
+          journal,
+          nextCallIndex,
+          canCall: () => {
+            const found = context.usage.check(budgetScopes());
+            exceeded ??= found;
+            abort.trigger(found);
+            return found === undefined;
           },
-        ];
-      }
-
-      const firstPass = evaluatePredicates(target.expect, {
-        exitCode: outcome.process.exitCode,
-        text: outcome.text ?? '',
-        structured: outcome.structured,
-        cwd: context.cwd,
-        env: stepEnv(step, job, 1, context, stepDirPath),
-        changedPaths: changedPaths(),
-        knowledge: context.knowledgeSource,
-      });
-
-      if (!target.expect.some((predicate) => predicate.kind === 'judge')) {
+          onUsage: (usage) => {
+            attemptUsage = sumUsage(attemptUsage, usage);
+            context.usage.record(job.id, step.id, plan.attempt, attemptUsage);
+            const found = context.usage.check(budgetScopes());
+            exceeded ??= found;
+            abort.trigger(found);
+          },
+        });
         checkCostUnreported(context, job, step, plan.attempt);
-        return firstPass;
-      }
-
-      // Расход попытки уже включает расход самого шага (`outcome.usage`) —
-      // судьи добавляются к нему, а не подменяют его.
-      let attemptUsage = outcome.usage;
-      const results = await runJudgePass({
-        predicates: target.expect,
-        firstPass,
-        task: target.prompt,
-        text: outcome.text ?? '',
-        structured: outcome.structured,
-        cwd: context.cwd,
-        stepDir: stepDirPath,
-        attempt: plan.attempt,
-        timeoutMs: target.timeoutMs,
-        stallTimeoutMs: config.defaults.stallTimeoutMs,
-        signal: abort.controller.signal,
-        onStall,
-        adapterFor: (name) => adapterOf(name, context),
-        defaultAgent: config.defaults.agent,
-        backendSlots: context.backendSlots,
-        journal,
-        nextCallIndex,
-        canCall: () => {
-          const found = context.usage.check(budgetScopes());
-          exceeded ??= found;
-          abort.trigger(found);
-          return found === undefined;
-        },
-        onUsage: (usage) => {
-          attemptUsage = sumUsage(attemptUsage, usage);
-          context.usage.record(job.id, step.id, plan.attempt, attemptUsage);
-          const found = context.usage.check(budgetScopes());
-          exceeded ??= found;
-          abort.trigger(found);
-        },
-      });
-      checkCostUnreported(context, job, step, plan.attempt);
-      return results;
-    },
-    onUsage: (current, attempt) => {
-      context.usage.record(job.id, step.id, attempt, current);
-      const found = context.usage.check(budgetScopes(), current);
-      exceeded ??= found;
-      abort.trigger(found);
-    },
-    onUnparsed: (line) =>
-      journal.event({ kind: 'backend.unparsed', job: job.id, step: step.id, line }),
-    onPermissionDenied: (plan, tool, input) => {
-      const detail = describePermissionDenialInput(input);
-      journal.event({
-        kind: 'permission.denied',
-        job: job.id,
-        step: step.id,
-        attempt: plan.attempt,
-        tool,
-        ...(detail === undefined ? {} : { detail: inline(detail) }),
-      });
-    },
-    onStall,
-    onExpectFailed: (plan, failure) =>
-      journal.event({
-        kind: 'expect.failed',
-        job: job.id,
-        step: step.id,
-        attempt: plan.attempt,
-        predicate: failure.predicate,
-        ...(failure.detail === undefined ? {} : { detail: failure.detail }),
-      }),
-    canContinue: () => {
-      const found = exceeded ?? context.usage.check(budgetScopes());
-      exceeded ??= found;
-      abort.trigger(found);
-      return exceeded === undefined;
-    },
-  });
-
-  abort.dispose();
+        return results;
+      },
+      onUsage: (current, attempt) => {
+        context.usage.record(job.id, step.id, attempt, current);
+        const found = context.usage.check(budgetScopes(), current);
+        exceeded ??= found;
+        abort.trigger(found);
+      },
+      onUnparsed: (line) =>
+        journal.event({ kind: 'backend.unparsed', job: job.id, step: step.id, line }),
+      onPermissionDenied: (plan, tool, input) => {
+        const detail = describePermissionDenialInput(input);
+        journal.event({
+          kind: 'permission.denied',
+          job: job.id,
+          step: step.id,
+          attempt: plan.attempt,
+          tool,
+          ...(detail === undefined ? {} : { detail: inline(detail) }),
+        });
+      },
+      onStall,
+      onExpectFailed: (plan, failure) =>
+        journal.event({
+          kind: 'expect.failed',
+          job: job.id,
+          step: step.id,
+          attempt: plan.attempt,
+          predicate: failure.predicate,
+          ...(failure.detail === undefined ? {} : { detail: failure.detail }),
+        }),
+      canContinue: () => {
+        const found = exceeded ?? context.usage.check(budgetScopes());
+        exceeded ??= found;
+        abort.trigger(found);
+        return exceeded === undefined;
+      },
+    });
+  } finally {
+    await attemptResources.dispose();
+  }
 
   if (exceeded !== undefined) {
     journal.event({

@@ -63,7 +63,21 @@ const ContextUpstreamSchema = z.union([
   z.array(z.string()),
 ]);
 
-const PredicateSchema = z.union([
+/**
+ * Схемы документа собираются от перечня плагинных предикатов.
+ *
+ * Ключ предиката в `expect` и `until.check` — закрытое объединение: опечатка
+ * `exit_cod` обязана быть отказом разбора, а не молча пропущенным полем.
+ * Значит перечень допустимых ключей зависит от загруженных плагинов, и схема
+ * не может быть константой. Всё, что от предикатов не зависит, остаётся вне
+ * фабрики и строится один раз.
+ */
+/**
+ * Ветви встроенных предикатов. Объявлены снаружи фабрики, чтобы тип
+ * `RawPredicate` оставался точным размеченным объединением: разбор каждой
+ * ветви в `expand.ts` опирается именно на него.
+ */
+export const BuiltinPredicateSchema = z.union([
   z.object({ exit_code: count }).strict(),
   z.object({ file_exists: z.string() }).strict(),
   z.object({ schema: z.string() }).strict(),
@@ -82,262 +96,307 @@ const PredicateSchema = z.union([
     .strict(),
 ]);
 
-const BudgetSchema = z
-  .object({
-    tokens: amount.optional(),
-    cost: amount.optional(),
-    wallclock: amount.optional(),
-    rate_limit_pct: count.optional(),
-    on_exceed: z.enum(['wait', 'stop']).optional(),
-  })
-  .strict();
+export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
+  const PredicateSchema =
+    pluginPredicates.length === 0
+      ? BuiltinPredicateSchema
+      : z.union([
+          BuiltinPredicateSchema,
+          ...pluginPredicates.map((name) =>
+            // Ветвь плагинного предиката: ключ известен, а форму значения
+            // проверяет JSON Schema вклада при раскрытии (`expand.ts`), потому
+            // что zod-модель чужой версии в это объединение не положить.
+            z.object({ [name]: z.unknown() }).strict(),
+          ),
+        ]);
 
-const WorkspaceSchema = z
-  .object({
-    mode: z.enum(['cwd', 'worktree', 'copy']).optional(),
-    path: z.string().optional(),
-  })
-  .strict();
+  const BudgetSchema = z
+    .object({
+      tokens: amount.optional(),
+      cost: amount.optional(),
+      wallclock: amount.optional(),
+      rate_limit_pct: count.optional(),
+      on_exceed: z.enum(['wait', 'stop']).optional(),
+    })
+    .strict();
 
-/**
- * `inherit` осмыслен только на работе — источник наследования выбирается для
- * конкретной зависимой работы, а не для пайплайна целиком. На уровне
- * пайплайна и в `defaults.workspace` он отклоняется `.strict()` схемы выше,
- * которая этого ключа не знает.
- */
-const JobWorkspaceSchema = WorkspaceSchema.extend({
-  inherit: z.string().optional(),
-});
+  const WorkspaceSchema = z
+    .object({
+      mode: z.enum(['cwd', 'worktree', 'copy']).optional(),
+      path: z.string().optional(),
+    })
+    .strict();
 
-const PermissionsSchema = z
-  .object({
-    mode: z.string().optional(),
-    allow: z.array(z.string()).optional(),
-    deny: z.array(z.string()).optional(),
-    enforce: z.enum(['inherit', 'strict']).optional(),
-  })
-  .strict();
-
-const AttemptsSchema = z
-  .object({
-    max: count,
-    escalation: z
-      .array(
-        z
-          .object({ include_failure: z.boolean().optional(), model: z.string().optional() })
-          .strict(),
-      )
-      .optional(),
-  })
-  .strict();
-
-const StepCommonShape = {
-  id: z.string().min(1),
-  env: z.record(z.string(), z.string()).optional(),
-  context: z.array(ContextEntrySchema).optional(),
-  context_inherit: z.boolean().optional(),
-  context_exclude: z.array(z.string()).optional(),
-  context_max_tokens: amount.optional(),
-  timeout: amount.optional(),
-  budget: BudgetSchema.optional(),
-  expect: z.array(PredicateSchema).optional(),
-  attempts: AttemptsSchema.optional(),
-};
-
-const AgentStepSchema = z
-  .object({
-    ...StepCommonShape,
-    agent: z.string().optional(),
-    model: z.string().optional(),
-    session: z.string().optional(),
-    prompt: z.string(),
-    output_schema: z.string().optional(),
-    permissions: PermissionsSchema.optional(),
-  })
-  .strict();
-
-const RunStepSchema = z
-  .object({
-    ...StepCommonShape,
-    run: z.union([z.string(), z.array(z.string())]),
-    on_fail: z.object({ analyze: z.string(), prompt: z.string() }).strict().optional(),
-    output_schema: z.string().optional(),
-  })
-  .strict();
-
-export const StepSchema = z.union([AgentStepSchema, RunStepSchema]);
-
-const ParamSchema = z
-  .object({
-    type: z.enum(['string', 'bool', 'int']),
-    required: z.boolean().optional(),
-    default: z.union([z.string(), z.number(), z.boolean()]).optional(),
-  })
-  .strict();
-
-const UntilSchema = z
-  .object({
-    max_iterations: count.optional(),
-    check: z.array(PredicateSchema),
-  })
-  .strict();
-
-const OutputSchema = z
-  .object({ from: z.string().optional(), schema: z.string().optional() })
-  .strict();
-
-/** Тело работы — общая часть для отдельного файла и описания на месте. */
-const JobBodyShape = {
-  name: z.string().optional(),
-  description: z.string().optional(),
-  session: z.enum(['shared', 'per_step']).optional(),
-  workspace: JobWorkspaceSchema.optional(),
-  env: z.record(z.string(), z.string()).optional(),
-  context: z.array(ContextEntrySchema).optional(),
-  context_upstream: ContextUpstreamSchema.optional(),
-  output: OutputSchema.optional(),
-  // Объявленные входы — опция для тех, кому нужна предсказуемость: отпечаток
-  // считается только по ним, под ответственность автора.
-  inputs: z.array(z.string()).optional(),
-  budget: BudgetSchema.optional(),
-  until: UntilSchema.optional(),
-  permissions: PermissionsSchema.optional(),
-  steps: z.array(StepSchema).min(1),
-};
-
-export const JobDocumentSchema = z
-  .object({
-    version: z.literal(1).optional(),
-    kind: z.literal('job'),
-    params: z.record(z.string(), ParamSchema).optional(),
-    ...JobBodyShape,
-  })
-  .strict();
-
-/**
- * Подпись работы в витрине: произвольные имена в шаблоны значений.
- *
- * Блок, а не плоское поле `title` прямо в обвязке: обвязка строгая, и
- * неизвестный ключ в ней отклоняется разбором — это ловит `titile`, `neds` и
- * `wokspace` на `stepcast lint`, до захода. Разрешить произвольные имена
- * прямо в обвязке значило бы потерять эту проверку для всей обвязки целиком.
- * Блок сохраняет строгость снаружи и даёт полную свободу имён внутри.
- */
-const DisplaySchema = z.record(z.string(), z.string());
-
-/** Обвязка: живёт только на месте подключения, внутри файла работы запрещена. */
-const WiringShape = {
-  needs: z.union([z.literal('all'), z.array(z.string())]).optional(),
-  on: z.enum(['success', 'failure', 'always']).optional(),
-  if: z.string().optional(),
-  lane: z.string().optional(),
-  display: DisplaySchema.optional(),
   /**
-   * Имя сессии, общей нескольким работам. Ключ обвязки, а не поля работы:
-   * работа не знает, с кем её поставят в один диалог, — это решает тот, кто
-   * собирает пайплайн. Отдельное имя, а не строка на `session`: там уже живёт
-   * перечисление `shared | per_step`, и два вида значения на одном ключе
-   * различались бы только формой.
+   * `inherit` осмыслен только на работе — источник наследования выбирается для
+   * конкретной зависимой работы, а не для пайплайна целиком. На уровне
+   * пайплайна и в `defaults.workspace` он отклоняется `.strict()` схемы выше,
+   * которая этого ключа не знает.
    */
-  session_group: z.string().optional(),
-};
+  const JobWorkspaceSchema = WorkspaceSchema.extend({
+    inherit: z.string().optional(),
+  });
 
-const JobUseSchema = z
-  .object({
-    uses: z.string(),
-    with: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
-    ...WiringShape,
+  const PermissionsSchema = z
+    .object({
+      mode: z.string().optional(),
+      allow: z.array(z.string()).optional(),
+      deny: z.array(z.string()).optional(),
+      enforce: z.enum(['inherit', 'strict']).optional(),
+    })
+    .strict();
+
+  const AttemptsSchema = z
+    .object({
+      max: count,
+      escalation: z
+        .array(
+          z
+            .object({ include_failure: z.boolean().optional(), model: z.string().optional() })
+            .strict(),
+        )
+        .optional(),
+    })
+    .strict();
+
+  const StepCommonShape = {
+    id: z.string().min(1),
+    env: z.record(z.string(), z.string()).optional(),
+    context: z.array(ContextEntrySchema).optional(),
+    context_inherit: z.boolean().optional(),
+    context_exclude: z.array(z.string()).optional(),
+    context_max_tokens: amount.optional(),
+    timeout: amount.optional(),
+    budget: BudgetSchema.optional(),
+    expect: z.array(PredicateSchema).optional(),
+    attempts: AttemptsSchema.optional(),
+  };
+
+  const AgentStepSchema = z
+    .object({
+      ...StepCommonShape,
+      agent: z.string().optional(),
+      model: z.string().optional(),
+      session: z.string().optional(),
+      prompt: z.string(),
+      output_schema: z.string().optional(),
+      permissions: PermissionsSchema.optional(),
+    })
+    .strict();
+
+  const RunStepSchema = z
+    .object({
+      ...StepCommonShape,
+      run: z.union([z.string(), z.array(z.string())]),
+      on_fail: z.object({ analyze: z.string(), prompt: z.string() }).strict().optional(),
+      output_schema: z.string().optional(),
+    })
+    .strict();
+
+  const StepSchema = z.union([AgentStepSchema, RunStepSchema]);
+
+  const ParamSchema = z
+    .object({
+      type: z.enum(['string', 'bool', 'int']),
+      required: z.boolean().optional(),
+      default: z.union([z.string(), z.number(), z.boolean()]).optional(),
+    })
+    .strict();
+
+  const UntilSchema = z
+    .object({
+      max_iterations: count.optional(),
+      check: z.array(PredicateSchema),
+    })
+    .strict();
+
+  const OutputSchema = z
+    .object({ from: z.string().optional(), schema: z.string().optional() })
+    .strict();
+
+  /** Тело работы — общая часть для отдельного файла и описания на месте. */
+  const JobBodyShape = {
+    name: z.string().optional(),
     description: z.string().optional(),
     session: z.enum(['shared', 'per_step']).optional(),
     workspace: JobWorkspaceSchema.optional(),
     env: z.record(z.string(), z.string()).optional(),
     context: z.array(ContextEntrySchema).optional(),
     context_upstream: ContextUpstreamSchema.optional(),
+    output: OutputSchema.optional(),
+    // Объявленные входы — опция для тех, кому нужна предсказуемость: отпечаток
+    // считается только по ним, под ответственность автора.
+    inputs: z.array(z.string()).optional(),
     budget: BudgetSchema.optional(),
-  })
-  .strict();
+    until: UntilSchema.optional(),
+    permissions: PermissionsSchema.optional(),
+    steps: z.array(StepSchema).min(1),
+  };
 
-const JobInlineSchema = z.object({ ...WiringShape, ...JobBodyShape }).strict();
+  const JobDocumentSchema = z
+    .object({
+      version: z.literal(1).optional(),
+      kind: z.literal('job'),
+      params: z.record(z.string(), ParamSchema).optional(),
+      ...JobBodyShape,
+    })
+    .strict();
 
-export const JobEntrySchema = z.union([JobUseSchema, JobInlineSchema]);
+  /**
+   * Подпись работы в витрине: произвольные имена в шаблоны значений.
+   *
+   * Блок, а не плоское поле `title` прямо в обвязке: обвязка строгая, и
+   * неизвестный ключ в ней отклоняется разбором — это ловит `titile`, `neds` и
+   * `wokspace` на `stepcast lint`, до захода. Разрешить произвольные имена
+   * прямо в обвязке значило бы потерять эту проверку для всей обвязки целиком.
+   * Блок сохраняет строгость снаружи и даёт полную свободу имён внутри.
+   */
+  const DisplaySchema = z.record(z.string(), z.string());
+
+  /** Обвязка: живёт только на месте подключения, внутри файла работы запрещена. */
+  const WiringShape = {
+    needs: z.union([z.literal('all'), z.array(z.string())]).optional(),
+    on: z.enum(['success', 'failure', 'always']).optional(),
+    if: z.string().optional(),
+    lane: z.string().optional(),
+    display: DisplaySchema.optional(),
+    /**
+     * Имя сессии, общей нескольким работам. Ключ обвязки, а не поля работы:
+     * работа не знает, с кем её поставят в один диалог, — это решает тот, кто
+     * собирает пайплайн. Отдельное имя, а не строка на `session`: там уже живёт
+     * перечисление `shared | per_step`, и два вида значения на одном ключе
+     * различались бы только формой.
+     */
+    session_group: z.string().optional(),
+  };
+
+  const JobUseSchema = z
+    .object({
+      uses: z.string(),
+      with: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+      ...WiringShape,
+      description: z.string().optional(),
+      session: z.enum(['shared', 'per_step']).optional(),
+      workspace: JobWorkspaceSchema.optional(),
+      env: z.record(z.string(), z.string()).optional(),
+      context: z.array(ContextEntrySchema).optional(),
+      context_upstream: ContextUpstreamSchema.optional(),
+      budget: BudgetSchema.optional(),
+    })
+    .strict();
+
+  const JobInlineSchema = z.object({ ...WiringShape, ...JobBodyShape }).strict();
+
+  const JobEntrySchema = z.union([JobUseSchema, JobInlineSchema]);
+
+  /**
+   * `cron` объявлен необязательным намеренно: отсутствие поля — это не поломка
+   * формы документа, а незаполненная запись расписания, и назвать её должен
+   * линт («запись расписания N не содержит обязательного поля cron»), а не общая
+   * ошибка схемы, в тексте которой имя поля не звучит. Линт бесплатен и
+   * безусловен перед прогоном (`src/cli/commands/run.ts`), поэтому запись без
+   * `cron` до запуска не доходит.
+   */
+  const ScheduleTriggerEntrySchema = z
+    .object({ cron: z.string().optional(), timezone: z.string().optional() })
+    .strict();
+
+  /**
+   * Ключ `triggers` заведён с запасом на вторую объявленную, но нереализованную
+   * форму запуска (GitHub, см. docs/status.md). В этом изменении внутри него
+   * признаётся только `schedule` — `.strict()` отклоняет любой другой вид сам,
+   * называя его в сообщении об ошибке (см. `validateDocument`).
+   */
+  const TriggersSchema = z.object({ schedule: z.array(ScheduleTriggerEntrySchema).optional() }).strict();
+
+  /**
+   * Тот же состав, что у секции `project` конфигурации: объявление здесь
+   * перекрывает конфигурацию, а не заводит второй формат. Модели значений —
+   * буквально те же, что в конфигурации, а не их копия: копии расходятся.
+   */
+  const ProjectSchema = z
+    .object({
+      check: CheckCommandSchema.optional(),
+      tools: z.array(CheckCommandSchema).min(1).optional(),
+      spec: RawSpecSchema.optional(),
+      knowledge: RawKnowledgeSchema.optional(),
+      edit_paths: z.array(RelativeRepoPathSchema).min(1).optional(),
+    })
+    .strict();
+
+  const PipelineDocumentSchema = z
+    .object({
+      version: z.literal(1).optional(),
+      kind: z.literal('pipeline').optional(),
+      name: z.string().optional(),
+      inputs: z.record(z.string(), ParamSchema).optional(),
+      workspace: WorkspaceSchema.optional(),
+      env: z.record(z.string(), z.string()).optional(),
+      env_files: z.array(z.string()).optional(),
+      env_deny: z.array(z.string()).optional(),
+      context: z.array(ContextEntrySchema).optional(),
+      context_upstream: ContextUpstreamSchema.optional(),
+      triggers: TriggersSchema.optional(),
+      project: ProjectSchema.optional(),
+      defaults: z
+        .object({
+          agent: z.string().optional(),
+          model: z.string().optional(),
+          session: z.enum(['shared', 'per_step']).optional(),
+          workspace: WorkspaceSchema.optional(),
+        })
+        .strict()
+        .optional(),
+      budget: BudgetSchema.optional(),
+      concurrency: count.optional(),
+      fail_fast: z.boolean().optional(),
+      jobs: z.record(z.string(), JobEntrySchema),
+    })
+    .strict();
+  return {
+    PredicateSchema,
+    AgentStepSchema,
+    StepSchema,
+    BudgetSchema,
+    ParamSchema,
+    ScheduleTriggerEntrySchema,
+    TriggersSchema,
+    ProjectSchema,
+    JobDocumentSchema,
+    JobEntrySchema,
+    PipelineDocumentSchema,
+  };
+}
 
 /**
- * `cron` объявлен необязательным намеренно: отсутствие поля — это не поломка
- * формы документа, а незаполненная запись расписания, и назвать её должен
- * линт («запись расписания N не содержит обязательного поля cron»), а не общая
- * ошибка схемы, в тексте которой имя поля не звучит. Линт бесплатен и
- * безусловен перед прогоном (`src/cli/commands/run.ts`), поэтому запись без
- * `cron` до запуска не доходит.
+ * Схемы для одних встроенных предикатов. Ими пользуются генерация публикуемых
+ * JSON Schema и все места, куда реестр не доходит; разбор документа берёт
+ * схемы от действующего реестра.
  */
-const ScheduleTriggerEntrySchema = z
-  .object({ cron: z.string().optional(), timezone: z.string().optional() })
-  .strict();
+const BUILTIN_SCHEMAS = buildDocumentSchemas();
 
-/**
- * Ключ `triggers` заведён с запасом на вторую объявленную, но нереализованную
- * форму запуска (GitHub, см. docs/status.md). В этом изменении внутри него
- * признаётся только `schedule` — `.strict()` отклоняет любой другой вид сам,
- * называя его в сообщении об ошибке (см. `validateDocument`).
- */
-const TriggersSchema = z.object({ schedule: z.array(ScheduleTriggerEntrySchema).optional() }).strict();
+export const StepSchema = BUILTIN_SCHEMAS.StepSchema;
+export const JobDocumentSchema = BUILTIN_SCHEMAS.JobDocumentSchema;
+export const JobEntrySchema = BUILTIN_SCHEMAS.JobEntrySchema;
+export const PipelineDocumentSchema = BUILTIN_SCHEMAS.PipelineDocumentSchema;
+// Типы документов выводятся из схем встроенного набора: плагинная ветвь
+// добавляет ключ, но не меняет формы остальных полей.
+type BuiltinSchemas = typeof BUILTIN_SCHEMAS;
 
-/**
- * Тот же состав, что у секции `project` конфигурации: объявление здесь
- * перекрывает конфигурацию, а не заводит второй формат. Модели значений —
- * буквально те же, что в конфигурации, а не их копия: копии расходятся.
- */
-const ProjectSchema = z
-  .object({
-    check: CheckCommandSchema.optional(),
-    tools: z.array(CheckCommandSchema).min(1).optional(),
-    spec: RawSpecSchema.optional(),
-    knowledge: RawKnowledgeSchema.optional(),
-    edit_paths: z.array(RelativeRepoPathSchema).min(1).optional(),
-  })
-  .strict();
-
-export const PipelineDocumentSchema = z
-  .object({
-    version: z.literal(1).optional(),
-    kind: z.literal('pipeline').optional(),
-    name: z.string().optional(),
-    inputs: z.record(z.string(), ParamSchema).optional(),
-    workspace: WorkspaceSchema.optional(),
-    env: z.record(z.string(), z.string()).optional(),
-    env_files: z.array(z.string()).optional(),
-    env_deny: z.array(z.string()).optional(),
-    context: z.array(ContextEntrySchema).optional(),
-    context_upstream: ContextUpstreamSchema.optional(),
-    triggers: TriggersSchema.optional(),
-    project: ProjectSchema.optional(),
-    defaults: z
-      .object({
-        agent: z.string().optional(),
-        model: z.string().optional(),
-        session: z.enum(['shared', 'per_step']).optional(),
-        workspace: WorkspaceSchema.optional(),
-      })
-      .strict()
-      .optional(),
-    budget: BudgetSchema.optional(),
-    concurrency: count.optional(),
-    fail_fast: z.boolean().optional(),
-    jobs: z.record(z.string(), JobEntrySchema),
-  })
-  .strict();
-
-export type PipelineDocument = z.infer<typeof PipelineDocumentSchema>;
-export type JobDocument = z.infer<typeof JobDocumentSchema>;
-export type JobEntry = z.infer<typeof JobEntrySchema>;
-export type RawStep = z.infer<typeof StepSchema>;
-export type RawAgentStep = z.infer<typeof AgentStepSchema>;
-export type RawPredicate = z.infer<typeof PredicateSchema>;
+export type PipelineDocument = z.infer<BuiltinSchemas['PipelineDocumentSchema']>;
+export type JobDocument = z.infer<BuiltinSchemas['JobDocumentSchema']>;
+export type JobEntry = z.infer<BuiltinSchemas['JobEntrySchema']>;
+export type RawStep = z.infer<BuiltinSchemas['StepSchema']>;
+export type RawAgentStep = z.infer<BuiltinSchemas['AgentStepSchema']>;
+/** Предикат в документе: встроенная ветвь либо ключ, внесённый плагином. */
+export type RawBuiltinPredicate = z.infer<typeof BuiltinPredicateSchema>;
+export type RawPredicate = RawBuiltinPredicate | Readonly<Record<string, unknown>>;
 export type RawContextEntry = z.infer<typeof ContextEntrySchema>;
-export type RawBudget = z.infer<typeof BudgetSchema>;
-export type RawParam = z.infer<typeof ParamSchema>;
-export type RawScheduleTrigger = z.infer<typeof ScheduleTriggerEntrySchema>;
-export type RawTriggers = z.infer<typeof TriggersSchema>;
-export type RawProject = z.infer<typeof ProjectSchema>;
+export type RawBudget = z.infer<BuiltinSchemas['BudgetSchema']>;
+export type RawParam = z.infer<BuiltinSchemas['ParamSchema']>;
+export type RawScheduleTrigger = z.infer<BuiltinSchemas['ScheduleTriggerEntrySchema']>;
+export type RawTriggers = z.infer<BuiltinSchemas['TriggersSchema']>;
+export type RawProject = z.infer<BuiltinSchemas['ProjectSchema']>;
 
 /** Ключи обвязки, недопустимые внутри документа работы. */
 export const WIRING_KEYS = [

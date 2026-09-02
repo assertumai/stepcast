@@ -3,7 +3,9 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { getEventListeners } from 'node:events';
 
+import { createAnchorer } from '../src/core/anchor/index.js';
 import { createFakeBackend, resultLine } from '../src/core/backend/fake.js';
 import type { Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
@@ -877,6 +879,179 @@ jobs:
     const status = readStatus(result.journal.paths);
     const job = status.jobs.find((entry) => entry.id === 'probe');
     assert.equal(job?.output, undefined);
+  });
+});
+
+describe('runner-disposers: области ресурсов раннера', () => {
+  const ONE_STEP = `
+version: 1
+kind: pipeline
+name: один-шаг
+jobs:
+  build:
+    steps:
+      - id: touch
+        run: [sh, -c, 'echo след > след.txt']
+        expect: [{ exit_code: 0 }]
+`;
+
+  const FAILING_STEP = `
+version: 1
+kind: pipeline
+name: отказ
+jobs:
+  build:
+    steps:
+      - id: fail
+        run: [sh, -c, 'exit 7']
+        expect: [{ exit_code: 0 }]
+`;
+
+  /** Индексный файл якоря работы: живёт ровно столько, сколько сама работа. */
+  function anchorIndex(result: RunResult, job: string): string {
+    return join(result.journal.paths.anchors, `${job}.index`);
+  }
+
+  it('снимает индексный файл якоря и после успеха, и после отказа', async () => {
+    for (const [pipeline, expected] of [
+      [ONE_STEP, 'success'],
+      [FAILING_STEP, 'failed'],
+    ] as const) {
+      const project = makeProject({ 'stepcast.yml': pipeline });
+      gitInit(project.root);
+      gitCommit(project.root, 'первый');
+
+      const result = await run(project);
+      assert.equal(result.status, expected);
+      assert.equal(existsSync(anchorIndex(result, 'build')), false, `исход ${expected}`);
+    }
+  });
+
+  it('снимает индексный файл якоря после отмены', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: отмена
+jobs:
+  build:
+    steps:
+      - id: sleep
+        run: [sh, -c, 'sleep 30']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    gitInit(project.root);
+    gitCommit(project.root, 'первый');
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200).unref();
+    const result = await run(project, { signal: controller.signal });
+
+    assert.equal(result.status, 'canceled');
+    assert.equal(result.exitCode, ExitCode.canceled);
+    assert.equal(existsSync(anchorIndex(result, 'build')), false);
+  });
+
+  it('не оставляет слушателей попытки на сигнале отмены прогона', async () => {
+    const project = makeProject({ 'stepcast.yml': THREE_STEPS });
+    const controller = new AbortController();
+
+    const result = await run(project, { signal: controller.signal });
+    assert.equal(result.status, 'success');
+
+    // По слушателю на попытку: не снятые, они копились бы до конца прогона и
+    // держали ссылки на контроллеры давно законченных шагов.
+    assert.deepEqual(getEventListeners(controller.signal, 'abort'), []);
+  });
+
+  it('отказ снятия якоря работы не меняет её статус и виден событием учёта', async () => {
+    const project = makeProject({ 'stepcast.yml': ONE_STEP });
+    gitInit(project.root);
+    gitCommit(project.root, 'первый');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
+
+    const result = await runPipeline({
+      expanded,
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      // Якорь снимается по-настоящему, а освобождение его служебных файлов
+      // отказывает — так ведёт себя занятый или уже удалённый индекс.
+      anchorerFor: (options) => {
+        const real = createAnchorer(options);
+        return {
+          ...real,
+          dispose: () => {
+            throw new Error('индексный файл занят');
+          },
+        };
+      },
+    });
+
+    assert.equal(result.status, 'success', 'отказ уборки не делает работу неуспешной');
+    assert.equal(result.exitCode, ExitCode.ok);
+
+    const failures = readEvents(result.journal.paths).filter(
+      (event) => event.kind === 'bookkeeping.failed',
+    ) as { operation: string; job?: string; detail: string }[];
+    const own = failures.find((event) => event.operation === 'снятие служебных файлов якоря работы');
+    assert.ok(own !== undefined, JSON.stringify(failures));
+    assert.equal(own.job, 'build');
+    assert.match(own.detail, /индексный файл занят/);
+  });
+
+  it('отмена с отказавшей обратной операцией даёт canceled и событие до завершения прогона', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: отмена-с-отказом
+jobs:
+  build:
+    steps:
+      - id: sleep
+        run: [sh, -c, 'sleep 30']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    gitInit(project.root);
+    gitCommit(project.root, 'первый');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200).unref();
+
+    const result = await runPipeline({
+      expanded,
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      signal: controller.signal,
+      anchorerFor: (options) => {
+        const real = createAnchorer(options);
+        return {
+          ...real,
+          dispose: () => {
+            throw new Error('индексный файл занят');
+          },
+        };
+      },
+    });
+
+    assert.equal(result.status, 'canceled');
+    assert.equal(result.exitCode, ExitCode.canceled);
+
+    const events = readEvents(result.journal.paths);
+    const failureAt = events.findIndex(
+      (event) =>
+        event.kind === 'bookkeeping.failed' &&
+        (event as { operation?: string }).operation === 'снятие служебных файлов якоря работы',
+    );
+    const finishedAt = events.findIndex((event) => event.kind === 'run.finished');
+    assert.ok(failureAt >= 0, 'отказ уборки записан');
+    assert.ok(finishedAt > failureAt, 'отказ уборки записан до завершения прогона');
   });
 });
 

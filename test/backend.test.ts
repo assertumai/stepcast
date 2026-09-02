@@ -20,8 +20,13 @@ import { createBackendSlots } from '../src/core/backend/slots.js';
 import { RunJournal } from '../src/core/journal/writer.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline } from '../src/core/run/runner.js';
+import { resolveAdapter } from '../src/core/backend/registry.js';
+import { builtinRegistry } from '../src/core/plugins/builtin.js';
+import { addPlugin } from '../src/core/plugins/registry.js';
+import { readStatus } from '../src/core/journal/reader.js';
+import { StepcastError } from '../src/core/errors.js';
 import { makeProject } from './helpers.js';
-import type { BackendConfig } from '../src/core/config/resolve.js';
+import type { BackendConfig, Config } from '../src/core/config/resolve.js';
 import type { AgentStep } from '../src/core/pipeline/model.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -118,6 +123,97 @@ jobs:
       createFakeBackend({ capabilities: { strictPermissions: false }, lines: [] }).adapter.capabilities
         .strictPermissions,
       false,
+    );
+  });
+});
+
+describe('plugin-contributions: адаптер бэкенда через реестр', () => {
+  const PIPELINE = `
+kind: pipeline
+name: p
+defaults: { agent: codex }
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+`;
+
+  /** Конфигурация с настроенным бэкендом плагина. */
+  function withCodex(config: Config): Config {
+    return {
+      ...config,
+      backends: {
+        ...config.backends,
+        codex: { ...(config.backends.claude as BackendConfig), command: 'codex' },
+      },
+    };
+  }
+
+  it('прогон идёт на бэкенде, предоставленном плагином', async () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'готово' })] });
+    const registry = builtinRegistry();
+    const created: string[] = [];
+    addPlugin(
+      registry,
+      {
+        name: 'codex-adapter',
+        backends: {
+          codex: {
+            create: (backendConfig) => {
+              created.push(backendConfig.command);
+              return backend.adapter;
+            },
+          },
+        },
+      },
+      '/м.js',
+    );
+    const config = withCodex(project.config);
+
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+      config: { ...config, runs: { ...config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      registry,
+    });
+
+    assert.equal(result.status, 'success');
+    // Фабрику вклада позвал движок, и позвал с действующей записью
+    // `backends.codex` — тем же способом, что и встроенный `claude`.
+    assert.deepEqual(created, ['codex']);
+    assert.equal(readStatus(result.journal.paths).jobs[0]?.steps[0]?.status, 'success');
+  });
+
+  it('настроенный, но не предоставленный бэкенд отказывает до первой работы', async () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const config = withCodex(project.config);
+
+    await assert.rejects(
+      runPipeline({
+        expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+        config: { ...config, runs: { ...config.runs, root: runsRoot } },
+        projectRoot: project.root,
+        cwd: project.root,
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /Адаптер бэкенда codex не предоставлен/);
+        assert.match(error.hint ?? '', /Доступны: claude/);
+        return true;
+      },
+    );
+  });
+
+  it('неизвестное имя по-прежнему отличается от непредоставленного адаптера', () => {
+    const project = makeProject({});
+    assert.throws(
+      () => resolveAdapter('gemini', project.config, builtinRegistry()),
+      (error: unknown) => error instanceof StepcastError && /Неизвестный бэкенд gemini/.test(error.message),
     );
   });
 });

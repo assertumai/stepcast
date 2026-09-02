@@ -203,6 +203,15 @@
       },
       "additionalProperties": false
     },
+    "plugins": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      }
+    },
     "backends": {
       "type": "object",
       "propertyNames": {

@@ -11,7 +11,8 @@
     "stepcast": "./dist/src/bin.js"
   },
   "exports": {
-    ".": "./dist/src/core/index.js"
+    ".": "./dist/src/core/index.js",
+    "./plugin": "./dist/src/plugin.js"
   },
   "files": [
     "dist",

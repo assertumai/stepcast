@@ -1,4 +1,5 @@
 import { StepcastError } from '../core/errors.js';
+import type { CommandSpec, ParsedArgs } from '../core/plugins/cli-types.js';
 
 /**
  * Разбор аргументов командной строки. Внешний разборщик не заводится
@@ -6,24 +7,10 @@ import { StepcastError } from '../core/errors.js';
  * который должен ставиться одной командой, стоит дороже сотни строк здесь.
  */
 
-export type FlagKind = 'string' | 'number' | 'boolean' | 'keyValue';
-
-export interface FlagSpec {
-  readonly kind: FlagKind;
-  readonly description: string;
-}
-
-export interface CommandSpec {
-  readonly description: string;
-  readonly positional?: readonly string[];
-  readonly flags?: Readonly<Record<string, FlagSpec>>;
-}
-
-export interface ParsedArgs {
-  readonly command: string;
-  readonly positional: readonly string[];
-  readonly flags: Readonly<Record<string, string | number | boolean | Record<string, string>>>;
-}
+// Типы описания команды живут в ядре: ими пользуется контракт плагина, а
+// ядру запрещено зависеть от поверхности. Здесь они реэкспортируются, чтобы
+// потребители внутри `src/cli` импортировали их привычным путём.
+export type { CliIo, CommandSpec, FlagKind, FlagSpec, ParsedArgs } from '../core/plugins/cli-types.js';
 
 function normalizeFlagName(token: string): string {
   return token.replace(/^--?/, '');

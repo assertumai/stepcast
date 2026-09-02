@@ -7,6 +7,8 @@ import { effectivePermissions } from './backend/permissions.js';
 import { parseExpression, references } from './expr/parse.js';
 import { buildGraph } from './graph.js';
 import { isStepcastError } from './errors.js';
+import { builtinRegistry } from './plugins/builtin.js';
+import { availableNames, type Registry } from './plugins/registry.js';
 import { isGitWorktree } from './anchor/git.js';
 import { workspaceInheritanceDiagnostics } from './run/inherit.js';
 import {
@@ -50,6 +52,11 @@ export interface LintOptions {
   readonly cwd?: string;
   /** Проверять ли существование путей, зависящих от рабочей директории. */
   readonly resolvePaths?: boolean;
+  /**
+   * Реестр вкладов: им проверяются бэкенд судьи и значения предикатов
+   * плагинов. Без значения — только встроенные вклады.
+   */
+  readonly registry?: Registry;
 }
 
 /** Метасимволы глоба. Глоб запрашивает совпадения, и их отсутствие не ошибка. */
@@ -886,6 +893,25 @@ function checkStep(
       );
       continue;
     }
+    if (predicate.kind === 'plugin') {
+      // Статическая проверка плагина — то же, что проверка пути у `schema`:
+      // сказать до первого токена всё, что видно без запуска.
+      const contribution = (options.registry ?? builtinRegistry()).predicates.get(predicate.name);
+      for (const diagnostic of contribution?.lint?.(predicate.value, {
+        file: job.source,
+        at: `${at}.expect.${index}.${predicate.name}`,
+        cwd: base,
+      }) ?? []) {
+        push({
+          severity: diagnostic.severity,
+          message: diagnostic.message,
+          file: job.source,
+          at: `${at}.expect.${index}.${predicate.name}`,
+          ...(diagnostic.hint === undefined ? {} : { hint: diagnostic.hint }),
+        });
+      }
+      continue;
+    }
     if (predicate.kind !== 'judge') continue;
 
     const backendName = predicate.agent ?? options.config.defaults.agent;
@@ -909,8 +935,23 @@ function checkStep(
         hint: 'Вердикт судьи принимается только структурой { pass, reason } — бэкенд обязан объявлять structured_output: true',
       });
     }
+    // Настроенный бэкенд без адаптера — отказ прогона на первом вызове судьи;
+    // линт обязан назвать это раньше, чем потрачен первый токен.
+    const registry = options.registry ?? builtinRegistry();
+    if (!registry.backends.has(backendName)) {
+      push({
+        severity: 'error',
+        message: `Адаптер бэкенда судьи ${backendName} не предоставлен ни встроенно, ни плагином`,
+        file: job.source,
+        at: `${at}.expect.${index}.agent`,
+        hint: `Доступны: ${availableNames(registry, 'backends').join(', ')}. Плагин объявляется ключом plugins (docs/plugins.md)`,
+      });
+    }
   }
 
+  // Предикат плагина структурен наравне со встроенными: он вычисляется без
+  // обращения к агенту, и предупреждать «гейт держится только на суждении»
+  // при нём было бы неправдой.
   const structural = step.expect.filter((predicate) => predicate.kind !== 'judge' || predicate.hard);
   if (step.expect.length > 0 && structural.length === 0) {
     push({
