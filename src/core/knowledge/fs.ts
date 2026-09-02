@@ -70,6 +70,12 @@ export interface FsSourceOptions {
   readonly now?: number;
 }
 
+/**
+ * Похожее на ревизию git: от минимального сокращения, которое git принимает,
+ * до полного SHA-1.
+ */
+const HASH = /^[0-9a-f]{4,40}$/i;
+
 export function createFsKnowledgeSource(options: FsSourceOptions): KnowledgeSource {
   return new FsKnowledgeSource(options);
 }
@@ -189,6 +195,23 @@ class FsKnowledgeSource implements KnowledgeSource {
         }
 
         if (anchor.rev === undefined) continue;
+
+        // Форма ревизии проверяется до чтения истории. Сравнивать с историей
+        // непригодное значение нельзя: `startsWith` на мусоре даёт либо
+        // ложное «совпало», либо «устарело» с неверной причиной, и опечатка в
+        // ревизии становится неотличима от настоящего дрейфа. Жёлтым, а не
+        // отказом разбора: похожесть на хеш — догадка, значение может быть
+        // тегом или именем ветки, а отказывать по догадке значит учить
+        // обходить проверку.
+        if (!HASH.test(anchor.rev)) {
+          problems.push({
+            id: unit.id,
+            kind: 'anchor-bad-rev',
+            level: 'yellow',
+            detail: `Ревизия не похожа на хеш git, устаревание не проверено: ${anchor.path}@${anchor.rev}`,
+          });
+          continue;
+        }
 
         const last = lastCommit(this.options.root, anchor.path);
         if (last === 'unavailable') {
@@ -448,8 +471,34 @@ export function parseUnit(text: string, file: string): Unit {
   return { file, id, title, scope, anchors, status, body: (match[2] as string).trim() };
 }
 
+/**
+ * Название типа значения для отказа разбора.
+ *
+ * Шапку типизирует YAML, и «поля нет» с «поле есть, но не строка» — разные
+ * поломки, требующие разных правок. Сообщать «шапка без id» о единице, где
+ * `id: 1234567` объявлен, значит отправить человека искать то, что на месте.
+ */
+function describeType(value: unknown): string {
+  if (value === null) return 'пусто';
+  if (Array.isArray(value)) return 'список';
+  if (typeof value === 'object') return 'отображение';
+  if (typeof value === 'number' || typeof value === 'bigint') return 'число';
+  if (typeof value === 'boolean') return 'логическое значение';
+  return typeof value;
+}
+
 function requireField(value: unknown, name: string, file: string): string {
-  if (typeof value !== 'string' || value.trim() === '') {
+  if (value === undefined) {
+    throw new StepcastError(`Шапка единицы знания без ${name}: ${file}`, { file, at: name });
+  }
+  if (typeof value !== 'string') {
+    throw new StepcastError(`Поле ${name} единицы знания — строка: ${file}`, {
+      file,
+      at: name,
+      hint: `Значение поля ${name} — ${describeType(value)}`,
+    });
+  }
+  if (value.trim() === '') {
     throw new StepcastError(`Шапка единицы знания без ${name}: ${file}`, { file, at: name });
   }
   return value;
@@ -457,10 +506,19 @@ function requireField(value: unknown, name: string, file: string): string {
 
 function toStringList(value: unknown, name: string, file: string): readonly string[] {
   if (value === undefined) return [];
-  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+  if (!Array.isArray(value)) {
     throw new StepcastError(`Поле ${name} единицы знания — список строк: ${file}`, {
       file,
       at: name,
+      hint: `Значение поля ${name} — ${describeType(value)}`,
+    });
+  }
+  const wrong = value.findIndex((item) => typeof item !== 'string');
+  if (wrong !== -1) {
+    throw new StepcastError(`Поле ${name} единицы знания — список строк: ${file}`, {
+      file,
+      at: name,
+      hint: `Элемент списка ${name} — ${describeType(value[wrong])}`,
     });
   }
   return value as string[];
@@ -483,10 +541,43 @@ function toAnchors(value: unknown, file: string): readonly Anchor[] {
     if (item !== null && typeof item === 'object') {
       const raw = item as Record<string, unknown>;
       if (typeof raw.path === 'string') {
-        return { path: raw.path, rev: typeof raw.rev === 'string' ? raw.rev : undefined };
+        return { path: raw.path, rev: toRev(raw.rev, file) };
       }
     }
     throw new StepcastError(`Якорь единицы знания без пути: ${file}`, { file, at: 'anchors' });
+  });
+}
+
+/**
+ * Ревизия якоря из шапки YAML.
+ *
+ * Тип скаляра выбирает YAML, а не автор. Короткий хеш git — семь
+ * шестнадцатеричных символов, и из одних цифр он состоит примерно в 3.7 %
+ * случаев: `d5f15e2` придёт строкой, `9517869` — числом. Разбор, бравший
+ * только строку, превращал второе в `undefined`, а `undefined` в контракте
+ * якоря значит ровно обратное — «устаревание по нему не считается». Автор
+ * объявлял ревизию, движок её выбрасывал и молчал, и примерно каждый двадцать
+ * седьмой якорь не проверялся вовсе. Приведение стоит здесь, а не в
+ * загрузчике YAML: строковая схема на всю шапку задела бы и `status`, и любое
+ * будущее числовое поле.
+ *
+ * Приводится только число, а не всё подряд через `String`: `String(true)` дал
+ * бы `'true'`, `String(['a'])` — `'a'`, и молчание сменилось бы бессмыслицей.
+ * Непригодный тип — отказ, называющий файл и поле. Отсутствие `rev` остаётся
+ * законной формой: не всякое утверждение стареет вместе с файлом, и отличать
+ * её от испорченной обязано устройство, а не удача.
+ */
+function toRev(value: unknown, file: string): string | undefined {
+  // Пустое значение (`rev:` без ничего) — отказ, а не «якоря без ревизии»:
+  // поле объявлено, и молча читать объявленное как необъявленное значит
+  // повторять ту же ошибку в мелком.
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'bigint') return String(value);
+  throw new StepcastError(`Ревизия якоря единицы знания — строка: ${file}`, {
+    file,
+    at: 'anchors.rev',
+    hint: `Значение поля rev — ${describeType(value)}`,
   });
 }
 
@@ -504,8 +595,7 @@ interface Commit {
  * ответил вовсе: не установлен, каталог не репозиторий, вызов сорвался. Второе
  * молчаливо выдавать за первое нельзя: тогда сорвавшийся вызов превращает
  * настоящее нарушение в «память цела», и проверка врёт ровно тем способом,
- * который никто не заметит. Ровно на этом ловился и собственный тест дрейфа —
- * под нагрузкой он падал через раз.
+ * который никто не заметит.
  */
 type CommitLookup = Commit | 'none' | 'unavailable';
 

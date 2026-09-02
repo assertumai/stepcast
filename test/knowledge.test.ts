@@ -122,6 +122,106 @@ describe('knowledge-fs: разбор единицы знания', () => {
     );
     assert.deepEqual(parsed.anchors, [{ path: 'src/a.ts', rev: undefined }]);
   });
+
+  // Задача 2.3 / Сценарий: «Ревизия из одних цифр проверяется»
+  it('принимает ревизию, прочитанную YAML числом, строкой', () => {
+    const parsed = parseUnit(
+      '---\nid: a\ntitle: б\nanchors:\n  - path: src/a.ts\n    rev: 9517869\n---\n\nтело\n',
+      'knowledge/a.md',
+    );
+    assert.deepEqual(parsed.anchors, [{ path: 'src/a.ts', rev: '9517869' }]);
+  });
+
+  // Задача 2.3 / Сценарий: «Якорь без ревизии остаётся законным»
+  it('якорь отображением без rev даёт ревизию undefined', () => {
+    const parsed = parseUnit(
+      '---\nid: a\ntitle: б\nanchors:\n  - path: src/a.ts\n---\n\nтело\n',
+      'knowledge/a.md',
+    );
+    assert.deepEqual(parsed.anchors, [{ path: 'src/a.ts', rev: undefined }]);
+  });
+
+  // Задача 2.3 / Сценарий: «Непригодное значение ревизии отклонено»
+  //
+  // Отказом, а не молчаливым `undefined`: у этих значений нет прочтения, при
+  // котором единица осмысленна, а `undefined` значил бы «устаревание не
+  // считается» — ровно та ложь, из-за которой заведено это изменение.
+  for (const [name, rev] of [
+    ['логическим значением', 'true'],
+    ['списком', '[a, b]'],
+    ['отображением', '{}'],
+    ['пустым', ''],
+  ] as const) {
+    it(`отклоняет ревизию, объявленную ${name}`, () => {
+      assert.throws(
+        () =>
+          parseUnit(
+            `---\nid: a\ntitle: б\nanchors:\n  - path: src/a.ts\n    rev: ${rev}\n---\n\nтело\n`,
+            'knowledge/a.md',
+          ),
+        (error: unknown) => {
+          assert.ok(error instanceof StepcastError);
+          assert.match(error.message, /knowledge\/a\.md/);
+          assert.equal(error.at, 'anchors.rev');
+          return true;
+        },
+      );
+    });
+  }
+
+  // Задача 4.3 / Сценарий: «Числовое значение поля названо своей причиной»
+  //
+  // «Шапка единицы знания без id» при объявленном `id: 1234567` — неправда:
+  // человека отправляют искать то, что на месте.
+  it('числовой id отклоняется сообщением о типе, а не об отсутствии поля', () => {
+    assert.throws(
+      () => parseUnit('---\nid: 1234567\ntitle: б\n---\n\nтело\n', 'knowledge/a.md'),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'id');
+        assert.doesNotMatch(error.message, /без id/);
+        assert.match(error.message, /строка/);
+        assert.match(error.hint ?? '', /число/);
+        return true;
+      },
+    );
+  });
+
+  it('числовой title отклоняется сообщением о типе', () => {
+    assert.throws(
+      () => parseUnit('---\nid: a\ntitle: 1234567\n---\n\nтело\n', 'knowledge/a.md'),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'title');
+        assert.doesNotMatch(error.message, /без title/);
+        return true;
+      },
+    );
+  });
+
+  it('числовой элемент scope назван элементом списка', () => {
+    assert.throws(
+      () =>
+        parseUnit('---\nid: a\ntitle: б\nscope:\n  - 1234567\n---\n\nтело\n', 'knowledge/a.md'),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'scope');
+        assert.match(error.hint ?? '', /число/);
+        return true;
+      },
+    );
+  });
+
+  it('отсутствующее поле по-прежнему названо отсутствующим', () => {
+    assert.throws(
+      () => parseUnit('---\ntitle: б\n---\n\nтело\n', 'knowledge/a.md'),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /без id/);
+        return true;
+      },
+    );
+  });
 });
 
 describe('knowledge-fs: оглавление', () => {
@@ -281,7 +381,11 @@ describe('knowledge-fs: дрейф', () => {
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: ${stale.slice(0, 7)}`,
+        // Ревизия в кавычках: этот тест про устаревание, а не про то, каким
+        // типом YAML читает скаляр. Без кавычек хеш из одних цифр приходил бы
+        // числом, и тест падал бы примерно раз в двадцать семь прогонов —
+        // случай проверяется тестом «ревизия из одних цифр».
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
       }),
     );
 
@@ -307,7 +411,11 @@ describe('knowledge-fs: дрейф', () => {
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: ${stale.slice(0, 7)}`,
+        // Ревизия в кавычках: этот тест про устаревание, а не про то, каким
+        // типом YAML читает скаляр. Без кавычек хеш из одних цифр приходил бы
+        // числом, и тест падал бы примерно раз в двадцать семь прогонов —
+        // случай проверяется тестом «ревизия из одних цифр».
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
       }),
     );
 
@@ -316,6 +424,81 @@ describe('knowledge-fs: дрейф', () => {
     const overdue = verdict.problems.find((problem) => problem.kind === 'stale-anchor');
     assert.ok(overdue !== undefined, JSON.stringify(verdict.problems));
     assert.equal(overdue.level, 'red');
+  });
+
+  // Задача 1.1 / Сценарий: «Ревизия из одних цифр проверяется»
+  //
+  // Короткий хеш git — семь шестнадцатеричных символов, и из одних цифр он
+  // состоит примерно в 3.7 % случаев. YAML типизирует такой скаляр числом, и
+  // разбор, бравший `rev` только строкой, молча превращал его в «якорь без
+  // ревизии»: устаревание по нему не проверялось никогда. Ревизия здесь
+  // задана буквально, а не срезом настоящего хеша, — иначе тест ловил бы
+  // дефект с той же вероятностью 3.7 %, то есть выглядел бы флаком.
+  it('ревизия из одних цифр проверяется на устаревание', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: 'anchors:\n  - path: src/a.ts\n    rev: 9517869',
+      }),
+    );
+
+    const verdict = box.source().check();
+    const found = verdict.problems.find((problem) => problem.kind === 'stale-anchor');
+    assert.ok(found !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(found.level, 'yellow');
+  });
+
+  // Задача 3.3 / Сценарий: «Опечатка в ревизии названа»
+  //
+  // Жёлтым, а не отказом: похожесть на хеш — догадка, и значение может
+  // оказаться тегом или именем ветки. Но молчать нельзя — иначе опечатка в
+  // ревизии неотличима от устаревшего якоря.
+  it('жёлтым на ревизии, не похожей на хеш git', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: 'anchors:\n  - path: src/a.ts\n    rev: d5f15e2-fix',
+      }),
+    );
+
+    const verdict = box.source().check();
+    assert.equal(verdict.ok, true);
+    const found = verdict.problems.find((problem) => problem.kind === 'anchor-bad-rev');
+    assert.ok(found !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(found.level, 'yellow');
+    assert.match(found.detail, /src\/a\.ts/);
+    assert.match(found.detail, /d5f15e2-fix/);
+  });
+
+  // Задача 3.3 / Сценарий: «Непохожая ревизия не выдаётся за устаревание»
+  it('непохожая ревизия не даёт нарушения об устаревании', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: 'anchors:\n  - path: src/a.ts\n    rev: релиз-осень',
+      }),
+    );
+
+    const verdict = box.source().check();
+    const kinds = verdict.problems.map((problem) => problem.kind);
+    assert.ok(kinds.includes('anchor-bad-rev'), JSON.stringify(verdict.problems));
+    assert.ok(!kinds.includes('stale-anchor'), JSON.stringify(verdict.problems));
   });
 
   it('свежий якорь не даёт нарушения', () => {
@@ -327,7 +510,8 @@ describe('knowledge-fs: дрейф', () => {
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: ${head.slice(0, 7)}`,
+        // Кавычки — по той же причине, что в тестах устаревания.
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${head.slice(0, 7)}'`,
       }),
     );
     const verdict = box.source().check();
