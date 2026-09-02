@@ -267,7 +267,8 @@ describe('CLI: stepcast backlog finish', () => {
   it('многострочная причина сводится в одну строку, очередь остаётся разбираемой', async () => {
     const dir = bed(item('an-item', { ...COMPLETE, status: 'in_progress' }));
 
-    // Ровно то, что собирает scripts/finalize.mjs из stderr красной проверки.
+    // Ровно то, что собирает reasonWithOutput (src/core/lanes/merge.ts) из
+    // stderr красной проверки.
     const result = await backlog(dir, [
       'finish',
       'an-item',

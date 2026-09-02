@@ -173,12 +173,13 @@ started_at: 2026-09-01T17:18:46.623Z
 
 ## drop-superseded-loop-scripts
 
-status: pending
+status: done
 title: Убрать скрипты петли, замещённые командами движка
 group: loop-cleanup
 track: express
 why: builtin-merge-lanes объявлен выполненным, но scripts/merge-lanes.mjs и scripts/finalize.mjs остались в дереве вопреки собственному done_when. Работы петли их больше не зовут, и рядом с командами движка они читаются как второй, расходящийся источник правды — при разборе отказа сведения это уже отправляло по ложному следу.
 done_when: scripts/merge-lanes.mjs и scripts/finalize.mjs удалены; ничто в репозитории и документации на них не ссылается; npm run check проходит
+started_at: 2026-09-02T21:12:23.660Z
 
 ## drop-status-doc-for-real
 
