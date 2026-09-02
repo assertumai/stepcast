@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 
 import { resolveConfig } from '../../core/config/resolve.js';
+import type { Registry } from '../../core/plugins/registry.js';
 import { expandPipeline } from '../../core/pipeline/expand.js';
 import type { Job } from '../../core/pipeline/model.js';
 import { assembleContext, type Origin, type UpstreamOutput } from '../../core/context/assemble.js';
@@ -29,6 +30,7 @@ export function runContextCommand(
   args: ParsedArgs,
   write: (line: string) => void,
   cwd: string,
+  registry?: Registry,
 ): ExitCodeValue {
   const jobId = args.flags.job as string | undefined;
   const stepId = args.flags.step as string | undefined;
@@ -45,7 +47,7 @@ export function runContextCommand(
 
   // Ошибка на отсутствующем обязательном входе прокидывается как есть — то же
   // сообщение, что дал бы lint.
-  const { pipeline } = expandPipeline({ pipelinePath, config, inputs });
+  const { pipeline } = expandPipeline({ pipelinePath, config, inputs, ...(registry === undefined ? {} : { registry }) });
 
   const job = pipeline.jobs.find((item) => item.id === jobId);
   if (job === undefined) {

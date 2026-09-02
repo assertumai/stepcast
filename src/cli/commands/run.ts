@@ -1,6 +1,7 @@
 import { resolve as resolvePath } from 'node:path';
 
 import { resolveConfig, type Config } from '../../core/config/resolve.js';
+import type { Registry } from '../../core/plugins/registry.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { findProjectRoot, projectKey, runPaths, shortRunId } from '../../core/journal/paths.js';
 import { readStatus } from '../../core/journal/reader.js';
@@ -17,18 +18,19 @@ export async function runRunCommand(
   args: ParsedArgs,
   write: (line: string) => void,
   cwd: string,
+  registry?: Registry,
 ): Promise<ExitCodeValue> {
   const target = args.positional[0] ?? 'stepcast.yml';
   const pipelinePath = resolvePath(cwd, target);
   const { config } = resolveConfig({ cwd });
   const inputs = (args.flags.input as Record<string, string> | undefined) ?? {};
 
-  const expanded = expandPipeline({ pipelinePath, config, inputs });
+  const expanded = expandPipeline({ pipelinePath, config, inputs, ...(registry === undefined ? {} : { registry }) });
 
   // Проверка перед запуском бесплатна по сравнению с прогоном, поэтому она
   // безусловна: ловить структурную ошибку после первого агентского шага
   // означает платить за неё токенами.
-  const diagnostics = lintPipeline(expanded, { config, cwd });
+  const diagnostics = lintPipeline(expanded, { config, cwd, ...(registry === undefined ? {} : { registry }) });
   for (const diagnostic of diagnostics) {
     for (const line of formatDiagnostic(diagnostic)) write(line);
   }
@@ -53,6 +55,7 @@ export async function runRunCommand(
       config,
       projectRoot,
       cwd,
+      ...(registry === undefined ? {} : { registry }),
       signal: controller.signal,
       ...(onEvent === undefined ? {} : { onEvent }),
     });

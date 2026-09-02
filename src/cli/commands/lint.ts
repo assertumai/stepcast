@@ -3,6 +3,7 @@ import { resolve as resolvePath } from 'node:path';
 import { expandPipeline } from '../../core/pipeline/expand.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../../core/lint.js';
 import { resolveConfig } from '../../core/config/resolve.js';
+import type { Registry } from '../../core/plugins/registry.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
 import type { ParsedArgs } from '../args.js';
 
@@ -19,6 +20,7 @@ export function runLintCommand(
   args: ParsedArgs,
   write: (line: string) => void,
   cwd: string,
+  registry?: Registry,
 ): ExitCodeValue {
   const target = args.positional[0] ?? 'stepcast.yml';
   const pipelinePath = resolvePath(cwd, target);
@@ -28,7 +30,7 @@ export function runLintCommand(
 
   let expanded;
   try {
-    expanded = expandPipeline({ pipelinePath, config, inputs });
+    expanded = expandPipeline({ pipelinePath, config, inputs, ...(registry === undefined ? {} : { registry }) });
   } catch (error) {
     // Без раскрытия проверять нечего, поэтому такая ошибка одна и фатальна.
     if (!isStepcastError(error)) throw error;
@@ -44,7 +46,7 @@ export function runLintCommand(
     return ExitCode.configError;
   }
 
-  const diagnostics = lintPipeline(expanded, { config, cwd });
+  const diagnostics = lintPipeline(expanded, { config, cwd, ...(registry === undefined ? {} : { registry }) });
 
   for (const diagnostic of diagnostics) {
     for (const line of formatDiagnostic(diagnostic)) write(line);

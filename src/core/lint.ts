@@ -243,6 +243,34 @@ function checkSessionGroups(
   }
 }
 
+/**
+ * Статическая проверка предиката плагина — то же, что проверка пути у
+ * `schema`: сказать до первого токена всё, что видно без запуска. Общая для
+ * `expect` шага и `until.check` работы: место объявления на проверку влиять
+ * не должно.
+ */
+function lintPluginPredicate(
+  predicate: Extract<Predicate, { kind: 'plugin' }>,
+  at: string,
+  file: string,
+  cwd: string,
+  options: LintOptions,
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  const contribution = (options.registry ?? builtinRegistry()).predicates.get(predicate.name);
+  const site = { file, at: `${at}.${predicate.name}`, cwd };
+
+  for (const diagnostic of contribution?.lint?.(predicate.value, site) ?? []) {
+    push({
+      severity: diagnostic.severity,
+      message: diagnostic.message,
+      file,
+      at: site.at,
+      ...(diagnostic.hint === undefined ? {} : { hint: diagnostic.hint }),
+    });
+  }
+}
+
 export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): Diagnostic[] {
   const { pipeline, substitutions } = expanded;
   const diagnostics: Diagnostic[] = [];
@@ -314,6 +342,14 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
     checkContext(job.context, base, job.source, `${at}.context`, substitutions, push, knowledgeDeclared);
 
     for (const [index, predicate] of job.until?.check.entries() ?? []) {
+      // Предикат цикла проверяется тем же хуком, что и предикат шага:
+      // объявленный в `until.check`, он вычисляется так же и обязан быть
+      // проверен так же — иначе статическая проверка зависела бы от того, в
+      // каком из двух мест предикат объявлен.
+      if (predicate.kind === 'plugin') {
+        lintPluginPredicate(predicate, `${at}.until.check.${index}`, job.source, base, options, push);
+        continue;
+      }
       if (predicate.kind !== 'schema') continue;
       checkDeclaredPath(
         {
@@ -894,22 +930,7 @@ function checkStep(
       continue;
     }
     if (predicate.kind === 'plugin') {
-      // Статическая проверка плагина — то же, что проверка пути у `schema`:
-      // сказать до первого токена всё, что видно без запуска.
-      const contribution = (options.registry ?? builtinRegistry()).predicates.get(predicate.name);
-      for (const diagnostic of contribution?.lint?.(predicate.value, {
-        file: job.source,
-        at: `${at}.expect.${index}.${predicate.name}`,
-        cwd: base,
-      }) ?? []) {
-        push({
-          severity: diagnostic.severity,
-          message: diagnostic.message,
-          file: job.source,
-          at: `${at}.expect.${index}.${predicate.name}`,
-          ...(diagnostic.hint === undefined ? {} : { hint: diagnostic.hint }),
-        });
-      }
+      lintPluginPredicate(predicate, `${at}.expect.${index}`, job.source, base, options, push);
       continue;
     }
     if (predicate.kind !== 'judge') continue;

@@ -217,12 +217,12 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
   {
     name: 'run',
     spec: COMMANDS['run'] as CommandSpec,
-    run: (args, io, env) => runRunCommand(args, io.out, env.cwd),
+    run: (args, io, env) => runRunCommand(args, io.out, env.cwd, env.registry),
   },
   {
     name: 'resume',
     spec: COMMANDS['resume'] as CommandSpec,
-    run: (args, io, env) => runResumeCommand(args, io.out, env.cwd),
+    run: (args, io, env) => runResumeCommand(args, io.out, env.cwd, env.registry),
   },
   {
     name: 'diff',
@@ -237,7 +237,7 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
   {
     name: 'lint',
     spec: COMMANDS['lint'] as CommandSpec,
-    run: (args, io, env) => runLintCommand(args, io.out, env.cwd),
+    run: (args, io, env) => runLintCommand(args, io.out, env.cwd, env.registry),
   },
   {
     name: 'status',
@@ -267,7 +267,7 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
   {
     name: 'context',
     spec: COMMANDS['context'] as CommandSpec,
-    run: (args, io, env) => runContextCommand(args, io.out, env.cwd),
+    run: (args, io, env) => runContextCommand(args, io.out, env.cwd, env.registry),
   },
   {
     name: 'up',

@@ -142,3 +142,67 @@ export default {
     assert.match(outcome.stdout, /backends\.claude\.command/);
   });
 });
+
+describe('plugin-contributions: предикат плагина через CLI', () => {
+  /**
+   * Сквозной путь: `stepcast lint` и `stepcast run` обязаны видеть предикат
+   * плагина так же, как программный вызов. Проверка именно через CLI не
+   * лишняя: реестр собирает точка входа, и команда, не передавшая его в
+   * раскрытие, отклоняла бы валидный документ как опечатку — а тест,
+   * зовущий `expandPipeline` с реестром напрямую, этого не заметил бы.
+   */
+  const PREDICATE_PLUGIN = `
+export default {
+  name: 'probe',
+  predicates: [
+    {
+      name: 'always_ok',
+      schema: { type: 'boolean' },
+      evaluate: () => ({ predicate: 'always_ok', passed: true, hard: true }),
+    },
+  ],
+};
+`;
+
+  const PIPELINE = `
+version: 1
+kind: pipeline
+name: проба
+jobs:
+  build:
+    steps:
+      - id: say
+        run: [echo, ок]
+        expect: [{ exit_code: 0 }, { always_ok: true }]
+`;
+
+  function project(): Project {
+    const box = withPlugin(PREDICATE_PLUGIN, 'plugins: ["./plugins/hello.mjs"]\n');
+    writeFileSync(join(box.root, 'stepcast.yml'), PIPELINE);
+    return box;
+  }
+
+  it('stepcast lint принимает документ с предикатом плагина', async () => {
+    const outcome = await cli(project(), ['lint', 'stepcast.yml']);
+
+    assert.equal(outcome.code, ExitCode.ok, outcome.stderr);
+    assert.match(outcome.stdout, /^ok: /m);
+  });
+
+  it('stepcast run исполняет шаг с предикатом плагина', async () => {
+    const outcome = await cli(project(), ['run', 'stepcast.yml', '--quiet']);
+
+    assert.equal(outcome.code, ExitCode.ok, outcome.stderr);
+    assert.match(outcome.stdout, /success/);
+  });
+
+  it('без объявленного плагина тот же документ отклоняется', async () => {
+    const box = makeProject({ 'stepcast.yml': PIPELINE });
+
+    const outcome = await cli(box, ['lint', 'stepcast.yml']);
+
+    assert.equal(outcome.code, ExitCode.configError);
+    // Диагностику разбора печатает сама команда, а не обработчик ошибок.
+    assert.match(outcome.stdout, /неизвестный ключ always_ok/);
+  });
+});

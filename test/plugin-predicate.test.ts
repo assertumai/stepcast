@@ -225,6 +225,56 @@ describe('plugin-contributions: предикат плагина в докуме�
     assert.notEqual(key('готово'), key('другое'));
   });
 
+  it('предикат плагина в until.check вычисляется и линтится тем же хуком', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: цикл
+jobs:
+  build:
+    until:
+      max_iterations: 2
+      check: [{ text_has: "готово" }]
+    budget: { tokens: 100k }
+    steps:
+      - id: say
+        run: [sh, -c, 'echo всё готово']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    // Проверка цикла вычисляется с пустым текстом и нулевым кодом возврата
+    // (`evaluateCheck`): она относится к состоянию работы, а не к выводу
+    // последнего шага, — поэтому предикат цикла на текст шага полагаться не
+    // может, и вклад здесь смотрит на то, что цикл ему действительно даёт.
+    const seen: { text: string; cwd: string }[] = [];
+    const registry = pluginRegistry({
+      lint: () => [{ severity: 'warning', message: 'проверка цикла осмотрена' }],
+      evaluate: (_value, input) => {
+        seen.push({ text: input.text, cwd: input.cwd });
+        return { predicate: 'text_has', passed: input.cwd.length > 0, hard: true };
+      },
+    });
+
+    // Линт зовёт хук вклада и для предиката цикла: место объявления на
+    // статическую проверку влиять не должно.
+    const diagnostics = lintPipeline(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }),
+      { config: project.config, registry },
+    );
+    const own = diagnostics.find((item) => item.message === 'проверка цикла осмотрена');
+    assert.ok(own !== undefined, JSON.stringify(diagnostics));
+    assert.match(own.at ?? '', /until\.check\.0\.text_has/);
+
+    const result = await run(project, registry);
+    assert.equal(result.status, 'success');
+    // Вклад позван один раз — после первой итерации, — и получил рабочий
+    // каталог работы при пустом тексте.
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.text, '');
+    assert.ok((seen[0]?.cwd.length ?? 0) > 0);
+  });
+
   it('статическая проверка вклада печатается линтом', () => {
     const project = makeProject({ 'stepcast.yml': pipelineWith('[{ text_has: "готово" }]') });
     const registry = pluginRegistry({

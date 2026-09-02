@@ -1,4 +1,5 @@
 import { resolveConfig } from '../../core/config/resolve.js';
+import type { Registry } from '../../core/plugins/registry.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { findProjectRoot, shortRunId } from '../../core/journal/paths.js';
 import { resolveRun } from '../../core/journal/reader.js';
@@ -11,6 +12,7 @@ export async function runResumeCommand(
   args: ParsedArgs,
   write: (line: string) => void,
   cwd: string,
+  registry?: Registry,
 ): Promise<ExitCodeValue> {
   const { config } = resolveConfig({ cwd });
   const projectRoot = findProjectRoot(cwd);
@@ -44,6 +46,7 @@ export async function runResumeCommand(
       config,
       projectRoot,
       cwd,
+      ...(registry === undefined ? {} : { registry }),
       resume: { plan, source },
     });
 
