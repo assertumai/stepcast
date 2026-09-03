@@ -207,6 +207,70 @@ export interface PipelinesOverview {
   readonly generatedAt: string;
 }
 
+/** Сверено построчно с `UsageMeasure` (`src/ui/usage.ts`). */
+export interface UsageMeasure {
+  readonly billableTokens: number;
+  readonly costUsd: number;
+}
+
+export interface UsageModelSlice extends UsageMeasure {
+  readonly model: string;
+}
+
+export interface UsageDaySlice {
+  readonly day: string;
+  readonly models: readonly UsageModelSlice[];
+}
+
+export interface UsagePipelineRun {
+  readonly runId: string;
+  readonly shortId: string;
+  readonly startedAt?: string;
+  /** Календарный день захода в поясе демона — тот же, что у записи в `days`. */
+  readonly day: string;
+  readonly status?: StatusValue;
+  readonly billableTokens: number;
+  /** `null` — цена прогона ни разу не сообщена, а не «потрачено ноль». */
+  readonly costUsd: number | null;
+  readonly costUnreportedAttempts: number;
+  readonly breakdownAvailable: boolean;
+}
+
+export interface UsagePipelineSlice extends UsageMeasure {
+  readonly projectKey: string;
+  readonly projectPath?: string;
+  readonly pipeline: string;
+  readonly pipelineFile?: string;
+  readonly costUnreportedAttempts: number;
+  readonly runs: readonly UsagePipelineRun[];
+}
+
+export interface UsageTotal extends UsageMeasure {
+  readonly costUnreportedAttempts: number;
+  readonly runs: number;
+}
+
+export interface UsageResult {
+  readonly from: string;
+  readonly to: string;
+  readonly generatedAt: string;
+  readonly total: UsageTotal;
+  readonly models: readonly UsageModelSlice[];
+  readonly days: readonly UsageDaySlice[];
+  readonly pipelines: readonly UsagePipelineSlice[];
+  readonly runsWithoutBreakdown: number;
+  readonly undated: number;
+}
+
+/**
+ * Доля расхода, чью модель назвать нечем (`src/ui/usage.ts`).
+ *
+ * Строка продублирована, а не импортирована: `usage.ts` читает диск через
+ * `reader.js` и живёт только в демоне (см. заголовок этого файла), а значение
+ * сверяется тестами сервера.
+ */
+export const UNKNOWN_MODEL = 'модель не сообщена';
+
 /** Какой конец крупного файла запрошен и показан. */
 export type FileSide = 'head' | 'tail';
 
@@ -353,6 +417,12 @@ export async function fetchStepOutput(options: {
 
 export async function fetchPipelines(): Promise<PipelinesOverview> {
   return json<PipelinesOverview>(await fetch('/api/pipelines'));
+}
+
+/** Без `days` — весь период наблюдений. */
+export async function fetchUsage(days?: number): Promise<UsageResult> {
+  const query = days === undefined ? '' : `?days=${days}`;
+  return json<UsageResult>(await fetch(`/api/usage${query}`));
 }
 
 export async function fetchSettings(): Promise<Settings> {

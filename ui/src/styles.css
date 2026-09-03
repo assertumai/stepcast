@@ -250,6 +250,74 @@ button.tokens {
 /* Отбор к уборке: свои колонки — размер и возраст вместо статуса и действий. */
 .cleanup-list .run-row { grid-template-columns: 1fr auto 6rem 12rem 9rem; }
 .outcome-list .run-row { grid-template-columns: 1fr 12rem auto 6rem; }
+/* Заходы пайплайна на экране расхода: имя, начало, статус, деньги, токены. */
+.usage-runs .run-row { grid-template-columns: 6rem 11rem auto 6rem 6rem; }
+
+/*
+ * Экран расхода.
+ *
+ * Категориальные цвета моделей — фиксированный порядок по месту в общем
+ * списке периода, а не выдумка на глаз: тот же порядок красит и столбцы дня,
+ * и легенду, и слот не меняется, пока модель числится в ответе.
+ */
+.periods { display: flex; gap: .3rem; flex-wrap: wrap; margin-bottom: 1rem; }
+.periods .period {
+  font-size: .82rem;
+  padding: .2rem .6rem;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  color: var(--dim);
+  cursor: pointer;
+}
+.periods .period.active { color: var(--text); border-color: var(--accent); font-weight: 600; }
+.periods .period:hover { color: var(--text); }
+
+.usage-totals { margin-bottom: .3rem; }
+
+.usage-measure { display: flex; gap: .3rem; margin: .8rem 0 .5rem; }
+.usage-measure button.active { color: var(--accent); border-color: var(--accent); }
+
+.usage-graph { margin-top: .3rem; }
+.usage-bar-empty { fill: var(--border); }
+
+/*
+ * Восемь категориальных слотов, по месту модели в списке периода.
+ *
+ * Цвет назван дважды: `fill` красит долю столбца (SVG), `background` — тот же
+ * класс на квадратике легенды (обычный `span`, где `fill` не действует
+ * вовсе). Иначе легенда выходит прозрачной и расшифровывать столбцы нечем.
+ */
+.usage-series-0 { fill: #2a78d6; background: #2a78d6; }
+.usage-series-1 { fill: #eb6834; background: #eb6834; }
+.usage-series-2 { fill: #1baf7a; background: #1baf7a; }
+.usage-series-3 { fill: #eda100; background: #eda100; }
+.usage-series-4 { fill: #e87ba4; background: #e87ba4; }
+.usage-series-5 { fill: #008300; background: #008300; }
+.usage-series-6 { fill: #4a3aa7; background: #4a3aa7; }
+.usage-series-7 { fill: #e34948; background: #e34948; }
+/* Доля без модели — нейтральный серый: не идентичность, а признание пробела. */
+.usage-series-unknown { fill: var(--dim); background: var(--dim); }
+/* Один сужённый на пайплайн ряд — цвет акцента, без категориальной раскраски. */
+.usage-series-selected { fill: var(--accent); background: var(--accent); }
+
+@media (prefers-color-scheme: dark) {
+  .usage-series-0 { fill: #3987e5; background: #3987e5; }
+  .usage-series-1 { fill: #d95926; background: #d95926; }
+  .usage-series-2 { fill: #199e70; background: #199e70; }
+  .usage-series-3 { fill: #c98500; background: #c98500; }
+  .usage-series-4 { fill: #d55181; background: #d55181; }
+  .usage-series-5 { fill: #008300; background: #008300; }
+  .usage-series-6 { fill: #9085e9; background: #9085e9; }
+  .usage-series-7 { fill: #e66767; background: #e66767; }
+}
+
+.usage-legend { display: flex; gap: .8rem; flex-wrap: wrap; margin-top: .5rem; font-size: .82rem; color: var(--dim); }
+.usage-legend-item { display: flex; align-items: center; gap: .35rem; }
+.usage-swatch { width: .7rem; height: .7rem; border-radius: 2px; display: inline-block; }
+
+.usage-pipeline { cursor: default; }
+.usage-pipeline.selected { border-color: var(--accent); }
+.usage-pipeline-head { cursor: pointer; }
 
 /*
  * Узкое окно: строка переносится потоком.
@@ -280,7 +348,8 @@ button.tokens {
   .content { padding: 1.2rem 1rem; }
   .run-row,
   .cleanup-list .run-row,
-  .outcome-list .run-row {
+  .outcome-list .run-row,
+  .usage-runs .run-row {
     display: flex;
     flex-wrap: wrap;
     gap: .4rem .6rem;

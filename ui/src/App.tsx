@@ -8,12 +8,13 @@ import { Pipelines } from './pages/Pipelines';
 import { RunDetail } from './pages/RunDetail';
 import { Runs } from './pages/Runs';
 import { Settings } from './pages/Settings';
+import { Usage } from './pages/Usage';
 
 /**
  * Каркас витрины: боковое меню слева, экран справа, один живой поток на
  * вкладку.
  *
- * Меню сбоку, а не полосой сверху: пунктов четыре, и колонка держит их в
+ * Меню сбоку, а не полосой сверху: пунктов пять, и колонка держит их в
  * одном столбце, не отнимая ширины у содержимого экрана и не завися от того,
  * сколько их станет. Признак живой связи стоит в подвале той же колонки —
  * он относится ко всей витрине, а не к текущему экрану.
@@ -71,6 +72,9 @@ export function App(): JSX.Element {
       <main className="content">
         {route.page === 'runs' ? <Runs overview={overview} navigate={navigate} /> : null}
         {route.page === 'pipelines' ? <Pipelines overview={overview} navigate={navigate} /> : null}
+        {route.page === 'usage' ? (
+          <Usage overview={overview} {...(route.days === undefined ? {} : { days: route.days })} navigate={navigate} />
+        ) : null}
         {route.page === 'cleanup' ? <Cleanup overview={overview} /> : null}
         {route.page === 'settings' ? <Settings /> : null}
         {route.page === 'run' ? (

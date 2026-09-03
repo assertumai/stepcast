@@ -14,9 +14,32 @@
 export type Route =
   | { readonly page: 'runs' }
   | { readonly page: 'pipelines' }
+  | { readonly page: 'usage'; readonly days?: number }
   | { readonly page: 'settings' }
   | { readonly page: 'cleanup' }
   | { readonly page: 'run'; readonly projectKey: string; readonly runId: string };
+
+/**
+ * Период экрана расхода: пресеты, а не произвольные даты (design.md,
+ * Решение 5). `days` отсутствует у `all` — весь период наблюдений, без
+ * нижней границы. Разбор адреса и переключатель периода на экране обязаны
+ * знать один и тот же набор — тем же приёмом, что и `MENU`.
+ */
+export interface UsagePeriod {
+  readonly key: string;
+  readonly days?: number;
+  readonly label: string;
+}
+
+/** Голый `/usage` без периода в пути — этот же период (design.md, Решение 5). */
+const DEFAULT_USAGE_DAYS = 30;
+
+export const USAGE_PERIODS: readonly UsagePeriod[] = [
+  { key: '7d', days: 7, label: '7 дней' },
+  { key: '30d', days: DEFAULT_USAGE_DAYS, label: '30 дней' },
+  { key: '90d', days: 90, label: '90 дней' },
+  { key: 'all', label: 'всё время' },
+];
 
 /**
  * Экраны бокового меню в порядке, в каком к ним обращаются: сначала
@@ -37,6 +60,7 @@ export const MENU: readonly {
 }[] = [
   { page: 'runs', href: '/', title: 'Прогоны', pages: ['runs', 'run'] },
   { page: 'pipelines', href: '/pipelines', title: 'Пайплайны', pages: ['pipelines'] },
+  { page: 'usage', href: '/usage', title: 'Расход', pages: ['usage'] },
   { page: 'cleanup', href: '/cleanup', title: 'Уборка', pages: ['cleanup'] },
   { page: 'settings', href: '/settings', title: 'Настройки', pages: ['settings'] },
 ];
@@ -78,6 +102,14 @@ export function parseRoute(pathname: string): Route {
     if (parts[0] === 'pipelines') return { page: 'pipelines' };
     if (parts[0] === 'settings') return { page: 'settings' };
     if (parts[0] === 'cleanup') return { page: 'cleanup' };
+    // Голый `/usage` — умолчание в 30 дней, тот же период, что и пресет `30d`.
+    if (parts[0] === 'usage') return { page: 'usage', days: DEFAULT_USAGE_DAYS };
+  }
+
+  if (parts[0] === 'usage' && parts.length === 2) {
+    const period = USAGE_PERIODS.find((candidate) => candidate.key === parts[1]);
+    if (period === undefined) return { page: 'runs' };
+    return period.days === undefined ? { page: 'usage' } : { page: 'usage', days: period.days };
   }
 
   if (parts[0] === 'runs' && parts.length === 3) {

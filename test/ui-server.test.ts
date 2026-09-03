@@ -1068,6 +1068,73 @@ jobs:
   });
 });
 
+describe('ui-dashboard: расход поперёк прогонов', () => {
+  // Сценарий: «Агрегат приходит одним ответом»
+  it('GET /api/usage без параметра отдаёт весь период наблюдений, с days=7 — неделю', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'recent', manifest: { started_at: new Date().toISOString() } });
+    seedRun(runsRoot, projectRoot, { runId: 'old', manifest: { started_at: '2020-01-01T00:00:00.000Z' } });
+    const server = await startServer(t, { runsRoot });
+
+    const all = await fetchJson(server, '/api/usage');
+    assert.equal(all.code, 200);
+    assert.equal(pick(all.json, 'total', 'runs'), 2);
+    assert.equal(typeof pick(all.json, 'from'), 'string');
+    assert.equal(typeof pick(all.json, 'to'), 'string');
+    assert.ok(Array.isArray(pick(all.json, 'models')));
+    assert.ok(Array.isArray(pick(all.json, 'days')));
+    assert.ok(Array.isArray(pick(all.json, 'pipelines')));
+    assert.equal(typeof pick(all.json, 'runsWithoutBreakdown'), 'number');
+    assert.equal(typeof pick(all.json, 'undated'), 'number');
+
+    const week = await fetchJson(server, '/api/usage?days=7');
+    assert.equal(week.code, 200);
+    // Прогон 2020 года старше недели: в неделю входит только недавний.
+    assert.equal(pick(week.json, 'total', 'runs'), 1);
+    assert.equal((pick(week.json, 'days') as unknown[]).length, 7);
+  });
+
+  // Сценарий: «Пустой период»
+  it('период без единого прогона отдаёт нулевой итог с рядом дней, а не отказ', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'old', manifest: { started_at: '2020-01-01T00:00:00.000Z' } });
+    const server = await startServer(t, { runsRoot });
+
+    const empty = await fetchJson(server, '/api/usage?days=1');
+    assert.equal(empty.code, 200);
+    assert.equal(pick(empty.json, 'total', 'runs'), 0);
+    assert.equal(pick(empty.json, 'total', 'billableTokens'), 0);
+    assert.deepEqual(pick(empty.json, 'models'), []);
+    assert.deepEqual(pick(empty.json, 'pipelines'), []);
+    assert.equal((pick(empty.json, 'days') as unknown[]).length, 1);
+  });
+
+  // Сценарии: «Негодный период», «Период сверх предела»
+  it('отклоняет негодный days кодом 400, а не подменяет умолчанием', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const server = await startServer(t, { runsRoot });
+
+    // 3651 — на день больше объявленного предела; 100000000 — период, чей ряд
+    // дней занял бы демона на минуты; 1e400 — период, не влезающий в Date.
+    for (const bad of ['0', '-1', '1.5', 'abc', '3651', '100000000', '1e400']) {
+      const refused = await fetchJson(server, `/api/usage?days=${bad}`);
+      assert.equal(refused.code, 400, `days=${bad} должен отклоняться`);
+    }
+
+    // Предел — годная величина: отклоняется то, что за ним.
+    const limit = await fetchJson(server, '/api/usage?days=3650');
+    assert.equal(limit.code, 200);
+  });
+
+  it('отклоняет метод, отличный от GET, кодом 405', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const server = await startServer(t, { runsRoot });
+
+    const result = await sendJson(server, { method: 'DELETE', path: '/api/usage' });
+    assert.equal(result.code, 405);
+  });
+});
+
 describe('ui-dashboard: вывод шага', () => {
   /**
    * Каталог шага той же раскладки, что заводит движок: `jobs/<job>/steps/01-<step>`,

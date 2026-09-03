@@ -14,6 +14,7 @@ import { isApiPath, isSafeSegment } from './routes.js';
 import { readSettings, writeSettings, type SettingsPatch } from './settings.js';
 import { buildSnapshot } from './snapshot.js';
 import { readStepOutput } from './stepOutput.js';
+import { MAX_USAGE_DAYS, buildUsage } from './usage.js';
 import { createWatcher, type Watcher } from './watcher.js';
 
 /**
@@ -171,6 +172,25 @@ function readNonNegativeInt(url: URL, param: string): number | undefined | typeo
   if (raw === null) return undefined;
   const value = Number(raw);
   return Number.isInteger(value) && value >= 0 ? value : INVALID;
+}
+
+/**
+ * Расход поперёк прогонов за период.
+ *
+ * `days` разбирается тем же правилом, что `attempt` у вывода шага: ноль или
+ * нецелое число — ошибка клиента, а не молчаливое умолчание (design.md,
+ * Решение 4). Сверху период ограничен `MAX_USAGE_DAYS`: ряд дней строится
+ * подряд по календарю, и период длиной в миллионы дней занял бы единственный
+ * поток демона на минуты — такой запрос отклоняется, а не считается. Без
+ * параметра — весь период наблюдений.
+ */
+function handleUsage(runsRoot: string, watcher: Watcher, url: URL, res: ServerResponse): void {
+  const days = readNonNegativeInt(url, 'days');
+  if (days === INVALID || days === 0 || (days !== undefined && days > MAX_USAGE_DAYS)) {
+    sendJson(res, 400, { error: `days должен быть натуральным числом не больше ${MAX_USAGE_DAYS}` });
+    return;
+  }
+  sendJson(res, 200, buildUsage(runsRoot, watcher.current(), days === undefined ? {} : { days }));
 }
 
 /**
@@ -533,6 +553,9 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
         return;
       case '/api/settings':
         sendJson(res, 200, home === undefined ? readSettings() : readSettings(home));
+        return;
+      case '/api/usage':
+        handleUsage(runsRoot, watcher, url, res);
         return;
       case '/api/events':
         handleEvents(runsRoot, watcher, url, req, res);

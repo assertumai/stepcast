@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { MENU, isApiPath, parseRoute, runHref } from '../src/ui/routes.js';
+import { MENU, USAGE_PERIODS, isApiPath, parseRoute, runHref } from '../src/ui/routes.js';
 
 describe('ui-routes: разбор адресов', () => {
   it('строит и разбирает адрес прогона кругом', () => {
@@ -55,6 +55,33 @@ describe('ui-routes: разбор адресов', () => {
       owners.map((item) => item.page),
       ['runs'],
     );
+  });
+
+  // Требование ui-dashboard: «Период — в адресе, пресетами» (design.md, Решение 5)
+  it('/usage/<период> разбирается в маршрут расхода со своим числом дней', () => {
+    assert.deepEqual(parseRoute('/usage'), { page: 'usage', days: 30 });
+    assert.deepEqual(parseRoute('/usage/7d'), { page: 'usage', days: 7 });
+    assert.deepEqual(parseRoute('/usage/30d'), { page: 'usage', days: 30 });
+    assert.deepEqual(parseRoute('/usage/90d'), { page: 'usage', days: 90 });
+    // «Всё время» не несёт нижней границы: дни отсутствуют, а не равны нулю.
+    assert.deepEqual(parseRoute('/usage/all'), { page: 'usage' });
+  });
+
+  it('неизвестный период уводит на первый экран, как и всякий неизвестный адрес', () => {
+    assert.deepEqual(parseRoute('/usage/вчера'), { page: 'runs' });
+  });
+
+  it('разбор адреса и переключатель периода на экране расхода знают один набор периодов', () => {
+    assert.deepEqual(
+      USAGE_PERIODS.map((period) => period.key),
+      ['7d', '30d', '90d', 'all'],
+    );
+    for (const period of USAGE_PERIODS) {
+      assert.deepEqual(parseRoute(`/usage/${period.key}`), {
+        page: 'usage',
+        ...(period.days === undefined ? {} : { days: period.days }),
+      });
+    }
   });
 
   it('/api/... не признаётся адресом страницы', () => {
