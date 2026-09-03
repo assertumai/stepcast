@@ -788,6 +788,137 @@ jobs:
   });
 });
 
+/**
+ * Спека pipeline-definition: пространство подстановки `job` — единственное
+ * имя `lane`, значение ключа обвязки `lane` с места подключения работы.
+ * Раскрывается при разборе документа, наравне с `params` и `project`.
+ */
+describe('pipeline-definition: пространство подстановки ${job.lane}', () => {
+  it('раскрывается в поле тела, в аргументе шага и в тексте файла промпта работы, подключённой через uses', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: ./jobs/build.yml
+    lane: a
+`,
+      'jobs/build.yml': `
+kind: job
+description: "Дорожка \${job.lane}"
+context_upstream: ["plan-\${job.lane}"]
+steps:
+  - id: c
+    run: [echo, "\${job.lane}"]
+  - id: think
+    agent: fake
+    prompt: "file:./prompt.md"
+    expect: [{ exit_code: 0 }]
+`,
+      'jobs/prompt.md': 'Дорожка: ${job.lane}\n',
+    });
+
+    const job = expand(project).pipeline.jobs.find((item) => item.id === 'build')!;
+    assert.equal(job.description, 'Дорожка a');
+    assert.deepEqual(job.contextUpstream, ['plan-a']);
+    assert.deepEqual(asRun(job.steps[0]!).command, ['echo', 'a']);
+    assert.equal(asAgent(job.steps[1]!).prompt, 'Дорожка: a\n');
+  });
+
+  it('раскрывается в теле работы, объявленной прямо в пайплайне', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    lane: b
+    description: "Дорожка \${job.lane}"
+    steps: [{ id: c, run: [echo, "\${job.lane}"] }]
+`,
+    });
+
+    const job = expand(project).pipeline.jobs[0]!;
+    assert.equal(job.description, 'Дорожка b');
+    assert.deepEqual(asRun(job.steps[0]!).command, ['echo', 'b']);
+  });
+
+  // Решено явно (expand.ts, `overrideScope`): переопределения с места
+  // подключения (description, context_upstream и прочие поля вне файла
+  // работы) видят ${job.lane} наравне с телом — буква дорожки известна уже
+  // здесь, там же, где стоит и сам ключ lane.
+  it('доступна в переопределении с места подключения (context_upstream поверх uses)', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: ./jobs/build.yml
+    lane: a
+    context_upstream: ["plan-\${job.lane}"]
+`,
+      'jobs/build.yml': `
+kind: job
+steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    const job = expand(project).pipeline.jobs[0]!;
+    assert.deepEqual(job.contextUpstream, ['plan-a']);
+  });
+
+  it('отказ разбора на ${job.lane} у работы без объявленной метки, называющий работу', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: ./jobs/build.yml
+`,
+      'jobs/build.yml': `
+kind: job
+steps: [{ id: c, run: [echo, "\${job.lane}"] }]
+`,
+    });
+
+    const error = thrown(() => expand(project));
+    assert.match(error.message + (error.hint ?? ''), /build/);
+    assert.doesNotMatch(error.message + (error.hint ?? ''), /^\s*$/);
+  });
+
+  it('отказ разбора на ${job.lane} у работы без метки, объявленной прямо в пайплайне', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    description: "\${job.lane}"
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    assert.throws(() => expand(project), StepcastError);
+  });
+
+  it('lane внутри документа kind: job по-прежнему отклоняется rejectWiringKeys, даже когда работа читает job.lane', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: ./jobs/build.yml
+    lane: a
+`,
+      'jobs/build.yml': `
+kind: job
+lane: a
+steps: [{ id: c, run: [echo, "\${job.lane}"] }]
+`,
+    });
+
+    assert.throws(() => expand(project), StepcastError);
+  });
+});
+
 // Спека pipeline-definition: «Режим применения прав принимается и проверяется статически»
 describe('pipeline-definition: permissions.enforce', () => {
   // Сценарий: «Значение принято»

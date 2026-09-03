@@ -156,7 +156,6 @@ jobs:
   propose-a:
     uses: ../jobs/propose.yml
     with:
-      lane: a
       spec_dir: "${jobs.slots.output.lanes.a.repo.spec.dir}"
       spec_rules: "${jobs.slots.output.lanes.a.repo.spec.rules}"
       spec_tool: "${jobs.slots.output.lanes.a.repo.spec.tool}"
@@ -192,7 +191,6 @@ jobs:
             - ${project.edit_paths}
     with:
       change: "${jobs.propose-a.output.slug}"
-      lane: a
       repo_dir: "${jobs.slots.output.lanes.a.repo.dir}"
       check: "${jobs.slots.output.lanes.a.repo.check}"
       spec_dir: "${jobs.slots.output.lanes.a.repo.spec.dir}"
@@ -255,7 +253,6 @@ jobs:
   propose-b:
     uses: ../jobs/propose.yml
     with:
-      lane: b
       spec_dir: "${jobs.slots.output.lanes.b.repo.spec.dir}"
       spec_rules: "${jobs.slots.output.lanes.b.repo.spec.rules}"
       spec_tool: "${jobs.slots.output.lanes.b.repo.spec.tool}"
@@ -288,7 +285,6 @@ jobs:
             - ${project.edit_paths}
     with:
       change: "${jobs.propose-b.output.slug}"
-      lane: b
       repo_dir: "${jobs.slots.output.lanes.b.repo.dir}"
       check: "${jobs.slots.output.lanes.b.repo.check}"
       spec_dir: "${jobs.slots.output.lanes.b.repo.spec.dir}"

@@ -18,13 +18,24 @@ function stringFlag(flags: ParsedArgs['flags'], name: string): string | undefine
   return typeof value === 'string' ? value : undefined;
 }
 
-function parseLaneList(raw: string): readonly string[] {
+/**
+ * `all` разбирается отдельным видом, а не строкой в перечне: ядро
+ * (`mergeLanes`) обязано отличить «свести всё известное прогону» от
+ * «свести дорожку с именем all» — второе запрещено линтом (`RESERVED_LANE`),
+ * но разбор ключа CLI от этого запрета не зависит.
+ */
+function parseLaneList(raw: string): readonly string[] | 'all' {
+  if (raw === 'all') return 'all';
+
   const lanes = raw.split(',').map((entry) => entry.trim());
   if (lanes.length === 0 || lanes.some((lane) => lane === '')) {
     throw new StepcastError('ключ --lanes требует непустого перечня имён через запятую');
   }
   if (new Set(lanes).size !== lanes.length) {
     throw new StepcastError('имена дорожек должны быть попарно различны');
+  }
+  if (lanes.includes('all')) {
+    throw new StepcastError('значение all — не имя дорожки в перечне: используйте --lanes all одним ключом, без перечня');
   }
   return lanes;
 }

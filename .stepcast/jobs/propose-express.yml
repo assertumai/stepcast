@@ -17,7 +17,6 @@ name: propose-express
 description: Завести описание изменения по облегчённой схеме под облегчённый пункт
 
 params:
-  lane: { type: string, required: true }
   spec_dir: { type: string, required: true }
   spec_rules: { type: string, required: true }
   spec_tool: { type: string, required: true }
@@ -34,7 +33,7 @@ steps:
     model: sonnet
     prompt: file:../prompts/propose-express.md
     context:
-      - path: ${run.dir}/item-${params.lane}.json
+      - path: ${run.dir}/item-${job.lane}.json
         mode: inline
       - path: ${params.spec_rules}
         mode: inline

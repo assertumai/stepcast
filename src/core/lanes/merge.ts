@@ -32,8 +32,13 @@ export interface MergeLanesOptions {
   readonly paths: RunPaths;
   /** Дерево запуска: команда коммитит и, при красной проверке, стирает его правки. */
   readonly cwd: string;
-  /** Дорожки в порядке обхода. Каждая обязана быть известна прогону. */
-  readonly lanes: readonly string[];
+  /**
+   * Дорожки в порядке обхода — каждая обязана быть известна прогону, а
+   * перечень обязан называть каждую известную (design.md, решение 3) — либо
+   * `all`: все дорожки, известные прогону, в порядке первого появления в
+   * записях работ.
+   */
+  readonly lanes: readonly string[] | 'all';
   /** Команда проверки корня, строка для оболочки. */
   readonly check: string;
   /** Файл очереди улучшений. */
@@ -237,10 +242,57 @@ function assertNoBrokenMerge(
   }
 }
 
+/**
+ * Перечень дорожек к обходу (design.md, решение 3): `all` разрешается в
+ * `knownLanes(status.jobs)` целиком, в порядке первого появления дорожки в
+ * записях работ. Явный перечень остаётся допустим, но обязан называть каждую
+ * известную прогону дорожку — недостающая иначе проходит свою цепочку и
+ * пропадает без следа (исход прогона 6995c4 из обоснования изменения):
+ * различить «решили не сводить» и «забыли букву» по самой команде нельзя.
+ */
+function resolveLanes(requested: MergeLanesOptions['lanes'], known: readonly string[]): readonly string[] {
+  if (requested === 'all') {
+    if (known.length === 0) {
+      throw new StepcastError('в прогоне нет ни одной работы с меткой lane', {
+        hint: '--lanes all требует хотя бы одной объявленной дорожки',
+      });
+    }
+    return known;
+  }
+
+  const unknown = requested.filter((lane) => !known.includes(lane));
+  if (unknown.length > 0) {
+    throw new StepcastError(`дорожка «${unknown.join(', ')}» неизвестна прогону`, {
+      hint: known.length === 0 ? 'В прогоне нет ни одной работы с меткой lane' : `Известны: ${known.join(', ')}`,
+    });
+  }
+
+  const missing = known.filter((lane) => !requested.includes(lane));
+  if (missing.length > 0) {
+    throw new StepcastError(
+      `перечень --lanes не называет дорожку «${missing.join(', ')}», известную прогону`,
+      {
+        hint: `Сведите её явно — --lanes all, — либо снимите метку lane с работ этой цепочки, если сводить её не надо`,
+      },
+    );
+  }
+
+  return requested;
+}
+
 export async function mergeLanes(options: MergeLanesOptions): Promise<readonly LaneMergeResult[]> {
-  const { paths, cwd, lanes, check, file, repoChecks } = options;
+  const { paths, cwd, check, file, repoChecks } = options;
   const nestedRepos = options.nestedRepos ?? [];
   const runDir = paths.dir;
+
+  // Перечень дорожек разрешается раньше первой диагностики дерева (design.md,
+  // решение 3): неверный --lanes — ошибка вызова, а не сведения, и не должна
+  // прятаться за проверкой git-состояния. Читает журнал раньше, чем делали
+  // это код ниже: тот же readStatus, но здесь его результат нужен и для
+  // разрешения all, и для отказа на укороченном перечне.
+  const status = readStatus(paths);
+  const known = knownLanes(status.jobs);
+  const lanes = resolveLanes(options.lanes, known);
 
   // Репозиторий, в чьём рабочем дереве лежит файл очереди, — чистая работа с
   // путями, ни git, ни журнала: поэтому известен раньше всех проверок.
@@ -291,16 +343,6 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
   assertRunTreeClean();
 
   const kind: AnchorKind = readManifest(paths).anchor_kind ?? 'git';
-
-  const status = readStatus(paths);
-  const known = knownLanes(status.jobs);
-  for (const lane of lanes) {
-    if (!known.includes(lane)) {
-      throw new StepcastError(`дорожка «${lane}» неизвестна прогону`, {
-        hint: known.length === 0 ? 'В прогоне нет ни одной работы с меткой lane' : `Известны: ${known.join(', ')}`,
-      });
-    }
-  }
 
   // Спрашивается команда проверки только с дорожек, которые до наложения
   // дойдут: негодная и не получившая пункта не сведутся ни при какой

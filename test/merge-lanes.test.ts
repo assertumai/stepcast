@@ -370,6 +370,186 @@ describe('core: mergeLanes — наложение и порядок', () => {
   });
 });
 
+/**
+ * Спека lane-merge: «Перечень дорожек сведения выводится из прогона» и
+ * «Дорожка, известная прогону и не названная перечнем, — отказ» (design.md,
+ * решение 3). `--lanes all` берёт `knownLanes(status.jobs)` целиком, а
+ * укороченный явный перечень становится отказом, наступающим до первого
+ * наложения.
+ */
+describe('core: mergeLanes — --lanes all и отказ на укороченном перечне', () => {
+  it('all сводит обе дорожки прогона', async () => {
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: 'all',
+      check: 'exit 0',
+      file: backlogFile,
+    });
+
+    assert.deepEqual(outcomes.map((o) => o.kind), ['merged', 'merged']);
+    assert.equal(readFileSync(project.path('a.txt'), 'utf8'), 'от a\n');
+    assert.equal(readFileSync(project.path('b.txt'), 'utf8'), 'от b\n');
+  });
+
+  it('all на прогоне без единой метки lane отказывает, называя это, не трогая дерева', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: без-дорожек
+workspace: { mode: worktree }
+jobs:
+  work:
+    steps: [{ id: шаг, run: [sh, -c, '${SUCCESS_A}'], expect: [{ exit_code: 0 }] }]
+`,
+    });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, '# Очередь\n');
+    commit(project, 'добавлена очередь');
+    const before = commitCount(project);
+
+    await assert.rejects(
+      () =>
+        mergeLanes({
+          paths: result.journal.paths,
+          cwd: project.root,
+          lanes: 'all',
+          check: 'exit 0',
+          file: backlogFile,
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.exitCode, ExitCode.configError);
+        assert.match(error.message, /нет ни одной работы с меткой lane/);
+        return true;
+      },
+    );
+    assert.equal(commitCount(project), before);
+    assert.equal(existsSync(project.path('a.txt')), false);
+  });
+
+  it('укороченный явный перечень отказывает, называя недостающую дорожку и оба способа выразить намерение, дерево не тронуто', async () => {
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+    const before = commitCount(project);
+
+    await assert.rejects(
+      () =>
+        mergeLanes({
+          paths: result.journal.paths,
+          cwd: project.root,
+          lanes: ['a'],
+          check: 'exit 0',
+          file: backlogFile,
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.exitCode, ExitCode.configError);
+        assert.match(error.message, /b/);
+        assert.match(error.hint ?? '', /all/);
+        assert.match(error.hint ?? '', /lane/);
+        return true;
+      },
+    );
+    assert.equal(commitCount(project), before, 'дерево не тронуто');
+    assert.equal(existsSync(project.path('a.txt')), false, 'наложения не было вовсе');
+    assert.equal(statusOf(readFileSync(backlogFile, 'utf8'), 'a-item'), 'in_progress', 'очередь не правлена');
+  });
+
+  it('полный явный перечень работает как прежде', async () => {
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a', 'b'],
+      check: 'exit 0',
+      file: backlogFile,
+    });
+
+    assert.deepEqual(outcomes.map((o) => o.kind), ['merged', 'merged']);
+  });
+
+  it('цепочка без метки lane упоминания в all не требует', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: две-дорожки-и-без-метки
+workspace: { mode: worktree }
+concurrency: 3
+fail_fast: false
+jobs:
+  work-a:
+    lane: a
+    steps: [{ id: шаг, run: [sh, -c, '${SUCCESS_A}'], expect: [{ exit_code: 0 }] }]
+  work-b:
+    lane: b
+    steps: [{ id: шаг, run: [sh, -c, '${SUCCESS_B}'], expect: [{ exit_code: 0 }] }]
+  outside:
+    steps: [{ id: шаг, run: [echo, вне-дорожек], expect: [{ exit_code: 0 }] }]
+`,
+    });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: 'all',
+      check: 'exit 0',
+      file: backlogFile,
+    });
+
+    assert.deepEqual(outcomes.map((o) => o.kind), ['merged', 'merged']);
+  });
+});
+
 describe('core: mergeLanes — отбор годности', () => {
   it('дорожка с провалившейся работой пропускается, не мешая следующей', async () => {
     const project = makeProject({
@@ -654,7 +834,10 @@ describe('core: mergeLanes — красная проверка', () => {
     await mergeLanes({
       paths: result.journal.paths,
       cwd: project.root,
-      lanes: ['a'],
+      // all, а не ['a']: пайплайн двухдорожечный, а перечень обязан называть
+      // каждую известную прогону дорожку. Дорожка b без item-файла резолвится
+      // no_item и обходу не мешает.
+      lanes: 'all',
       check,
       file: backlogFile,
     });
@@ -810,7 +993,9 @@ describe('core: mergeLanes — дорожка без взятого пункта
         mergeLanes({
           paths: result.journal.paths,
           cwd: project.root,
-          lanes: ['a'],
+          // all: b без item-файла не мешает — assertNoBrokenMerge доходит до
+          // a первой (порядок появления) и там же падает на слаге.
+          lanes: 'all',
           check: 'exit 0',
           file: backlogFile,
         }),
@@ -844,7 +1029,7 @@ describe('core: mergeLanes — режим файла очереди', () => {
     await mergeLanes({
       paths: result.journal.paths,
       cwd: project.root,
-      lanes: ['a'],
+      lanes: 'all',
       check: 'exit 0',
       file: backlogFile,
     });
@@ -1577,7 +1762,7 @@ describe('core: mergeLanes — предусловие чистого дерев�
     const outcomes = await mergeLanes({
       paths: result.journal.paths,
       cwd: project.root,
-      lanes: ['a'],
+      lanes: 'all',
       check: 'exit 0',
       file: backlogFile,
     });
@@ -1627,7 +1812,7 @@ describe('core: mergeLanes — предусловие чистого дерев�
     const outcomes = await mergeLanes({
       paths: result.journal.paths,
       cwd: project.root,
-      lanes: ['a'],
+      lanes: 'all',
       check: 'exit 1',
       file: backlogFile,
     });
@@ -1659,6 +1844,11 @@ describe('core: mergeLanes — предусловие чистого дерев�
     gitInit(project);
     writeFileSync(project.path('.gitignore'), 'backend/\n');
     commit(project, 'начальный');
+    // Настоящий прогон, а не bogusPaths: перечень дорожек разрешается по
+    // status.json раньше проверки чистоты дерева, и без него команда упала бы
+    // на «прогон не найден» вместо дорожки, которую здесь проверяют.
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
 
     const nestedDir = project.path('backend');
     mkdirSync(nestedDir);
@@ -1674,9 +1864,9 @@ describe('core: mergeLanes — предусловие чистого дерев�
     await assert.rejects(
       () =>
         mergeLanes({
-          paths: bogusPaths(project.root),
+          paths: result.journal.paths,
           cwd: project.root,
-          lanes: ['a'],
+          lanes: 'all',
           check: 'exit 0',
           file: backlogFile,
           nestedRepos: ['backend'],
@@ -1720,7 +1910,7 @@ describe('core: mergeLanes — предусловие чистого дерев�
     const outcomes = await mergeLanes({
       paths: result.journal.paths,
       cwd: project.root,
-      lanes: ['a'],
+      lanes: 'all',
       check: 'exit 0',
       file: backlogFile,
       nestedRepos: ['backend'],
@@ -1760,7 +1950,7 @@ describe('core: mergeLanes — предусловие чистого дерев�
     const outcomes = await mergeLanes({
       paths: result.journal.paths,
       cwd: project.root,
-      lanes: ['a'],
+      lanes: 'all',
       check: 'exit 0',
       file: backlogFile,
       nestedRepos: ['backend'],
@@ -2057,7 +2247,7 @@ describe('CLI: stepcast merge-lanes', () => {
     const out = await cli(project.root, project.home, [
       result.journal.paths.runId,
       '--lanes',
-      'a',
+      'all',
       '--check',
       'exit 0',
       '--file',
@@ -2115,7 +2305,7 @@ describe('CLI: stepcast merge-lanes', () => {
     const previous = process.env.STEPCAST_RUN_ID;
     process.env.STEPCAST_RUN_ID = result.journal.paths.runId;
     try {
-      const out = await cli(project.root, project.home, ['--lanes', 'a', '--check', 'exit 0', '--file', backlogFile]);
+      const out = await cli(project.root, project.home, ['--lanes', 'all', '--check', 'exit 0', '--file', backlogFile]);
       assert.equal(out.code, ExitCode.ok, out.stderr);
     } finally {
       if (previous === undefined) delete process.env.STEPCAST_RUN_ID;

@@ -9,6 +9,7 @@ import { parse as parseYaml } from 'yaml';
 import { createFakeBackend, initLine, resultLine } from '../src/core/backend/fake.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
+import { lintPipeline } from '../src/core/lint.js';
 import { readStatus } from '../src/core/journal/reader.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { asAgent } from './helpers.js';
@@ -22,6 +23,12 @@ import { makeProject, type Project } from './helpers.js';
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const JOBS_DIR = join(ROOT, '.stepcast', 'jobs');
 const PROMPTS_DIR = join(ROOT, '.stepcast', 'prompts');
+const PIPELINES_DIR = join(ROOT, '.stepcast', 'pipelines');
+
+/** Номер строки (с единицы) по смещению в тексте — для отказа, называющего файл и строку. */
+function lineAt(text: string, index: number): number {
+  return text.slice(0, index).split('\n').length;
+}
 
 /**
  * Файлы с одним из перечисленных расширений во всём поддереве каталога.
@@ -209,6 +216,60 @@ function realProjectConfig(): Config {
 }
 
 /**
+ * Изменение lane-suffixed-job-lookup, задача 6: правило «работа дорожки не
+ * адресует чужую дорожку» проверяется на действующих файлах петли — так же,
+ * как выше уже проверяются права и границы, — а не на фикстуре с выдуманными
+ * именами. Зелёный результат на уже вычищенном дереве сам по себе ничего не
+ * доказывает (design.md, «Проверка на настоящем пайплайне»), поэтому здесь же
+ * проверяется, что параметр `lane` из файлов работ петли снят и что
+ * `merge-lanes` не набирает перечень дорожек именами — оба отказа называют
+ * файл и строку.
+ */
+describe('self-improvement-loop: работа дорожки не адресует чужую дорожку', () => {
+  /** Ошибки правил задачи 3-6 (needs, context_upstream, подстановки, if) — остальные диагностики линта здесь не при чём. */
+  function laneErrors(pipelineFile: string): readonly string[] {
+    const config = realProjectConfig();
+    const expanded = expandPipeline({ pipelinePath: pipelineFile, config });
+    return lintPipeline(expanded, { config })
+      .filter((entry) => entry.severity === 'error' && /дорожк/.test(entry.message))
+      .map((entry) => `${entry.file ?? pipelineFile}:${entry.at ?? ''}: ${entry.message}`);
+  }
+
+  for (const name of ['self-improve.yml', 'self-improve-memory.yml']) {
+    it(`${name}: ни одна работа не адресует чужую дорожку`, () => {
+      assert.deepEqual(laneErrors(join(PIPELINES_DIR, name)), []);
+    });
+  }
+
+  it('ни один файл .stepcast/jobs/** не объявляет параметр lane', () => {
+    for (const file of jobFiles()) {
+      const text = readFileSync(file, 'utf8');
+      const document = parseYaml(text) as { params?: Record<string, unknown> };
+      if (document.params?.lane === undefined) continue;
+      const match = /^ {2}lane:/m.exec(text);
+      const line = match === null ? '?' : lineAt(text, match.index);
+      assert.fail(`${file}:${line}: params.lane — параметр lane должен читаться подстановкой job.lane`);
+    }
+  });
+
+  /**
+   * Цель — аргумент именно вызова `merge-lanes`, а не всякое `--lanes`:
+   * `slots.yml` зовёт `stepcast backlog pick --lanes a` для раздачи слота —
+   * это не сведение, и проверка не вправе на него сработать.
+   */
+  it('вызов merge-lanes в файлах петли не набирает перечень дорожек именами', () => {
+    for (const file of jobFiles()) {
+      const text = readFileSync(file, 'utf8');
+      const match = /merge-lanes[^\n]*?--lanes\s+([^\s"']+)/.exec(text);
+      if (match === null) continue;
+      const value = match[1];
+      if (value === 'all') continue;
+      assert.fail(`${file}:${lineAt(text, match.index)}: merge-lanes зовётся с --lanes ${value}, а не all`);
+    }
+  });
+});
+
+/**
  * job-tools-declaration: настоящий пайплайн петли, раскрытый целиком, обязан
  * давать `implement` и `fix-review` тот же набор прав, что они несли
  * литералами до изменения, — в том же порядке и с теми же соседями.
@@ -369,8 +430,8 @@ project:
 jobs:
   propose-a:
     uses: ${JOBS_DIR}/propose.yml
+    lane: a
     with:
-      lane: a
       spec_dir: "\${project.spec.dir}"
       spec_rules: "\${project.spec.rules}"
       spec_tool: "\${project.spec.tool}"
@@ -380,9 +441,9 @@ jobs:
     needs: [propose-a]
   implement-a:
     uses: ${JOBS_DIR}/implement.yml
+    lane: a
     with:
       change: demo-change
-      lane: a
       repo_dir: "."
       check: "\${project.check}"
       spec_dir: "\${project.spec.dir}"
@@ -613,9 +674,9 @@ jobs:
     with: { change: demo-change, spec_dir: "\${project.spec.dir}" }
   implement-a:
     uses: ${JOBS_DIR}/implement.yml
+    lane: a
     with:
       change: demo-change
-      lane: a
       repo_dir: "."
       check: "\${project.check}"
       spec_dir: "\${project.spec.dir}"

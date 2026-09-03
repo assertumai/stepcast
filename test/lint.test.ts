@@ -91,6 +91,244 @@ jobs:
     assert.ok(messages.some((message) => message.includes('build') && message.includes('Дорожка A')));
   });
 
+  // Спека pipeline-definition: «Метка all зарезервирована» — совпадает со
+  // значением ключа --lanes команды сведения (design.md, решение 3).
+  it('отклоняет lane: all, называя работу и причину резервирования', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    lane: all
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      }),
+    );
+    const messages = errors(diagnostics);
+    assert.ok(
+      messages.some(
+        (message) => message.includes('build') && message.includes('all') && message.includes('зарезервировано'),
+      ),
+    );
+  });
+
+  it('слаг all-lanes остаётся допустимой меткой', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    lane: all-lanes
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`,
+      }),
+    );
+    assert.equal(hasErrors(diagnostics), false);
+  });
+});
+
+/**
+ * Спека pipeline-definition: «Работа дорожки не адресует чужую дорожку».
+ * Метки `lane`, встреченные в пайплайне, образуют замкнутый словарь имён;
+ * `slots` без метки — предшественница обеих дорожек и адресует их свободно.
+ */
+describe('pipeline-definition: работа дорожки не адресует чужую дорожку', () => {
+  const LANE_PIPELINE = `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  slots:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+  work-a:
+    lane: a
+    needs: [slots]
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+  work-b:
+    lane: b
+    needs: [slots]
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`;
+
+  it('needs на работу соседней дорожки — ошибка, называющая обе работы и обе дорожки', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': LANE_PIPELINE.replace(
+          'work-b:\n    lane: b\n    needs: [slots]',
+          'work-b:\n    lane: b\n    needs: [slots, work-a]',
+        ),
+      }),
+    );
+    const messages = errors(diagnostics);
+    assert.ok(
+      messages.some(
+        (message) =>
+          message.includes('work-b') && message.includes('work-a') && message.includes('b') && message.includes('a'),
+      ),
+    );
+  });
+
+  it('context_upstream на работу соседней дорожки — ошибка про дорожку, а не про граф', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': LANE_PIPELINE.replace(
+          'work-b:\n    lane: b\n    needs: [slots]',
+          'work-b:\n    lane: b\n    needs: [slots, work-a]\n    context_upstream: [work-a]',
+        ),
+      }),
+    );
+    const messages = errors(diagnostics);
+    const laneMessage = messages.find(
+      (message) => message.includes('context_upstream') && message.includes('дорожк'),
+    );
+    assert.ok(laneMessage !== undefined, 'ошибка называет дорожку');
+    // work-a реально выше по графу (needs его называет) — старое правило
+    // «работа не выше по графу» здесь молчит, и звучит только новая причина.
+    assert.ok(!messages.some((message) => message.includes('выше по графу')));
+  });
+
+  it('те же записи в пределах своей дорожки — ошибки нет', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': LANE_PIPELINE.replace(
+          'work-a:\n    lane: a\n    needs: [slots]',
+          'work-a:\n    lane: a\n    needs: [slots]\n    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]\n  work-a2:\n    lane: a\n    needs: [slots, work-a]\n    context_upstream: [work-a]',
+        ),
+      }),
+    );
+    assert.equal(hasErrors(diagnostics), false);
+  });
+
+  it('работа без метки lane, называющая работы обеих дорожек, — ошибки нет', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': LANE_PIPELINE.replace(
+          'work-b:\n    lane: b\n    needs: [slots]\n    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]',
+          'work-b:\n    lane: b\n    needs: [slots]\n    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]\n  merge:\n    needs: [work-a, work-b]\n    context_upstream: [work-a, work-b]\n    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]',
+        ),
+      }),
+    );
+    assert.equal(hasErrors(diagnostics), false);
+  });
+
+  it('слот чужой дорожки в подстановке — ошибка, называющая обе дорожки', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': LANE_PIPELINE.replace(
+          'work-b:\n    lane: b\n    needs: [slots]\n    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]',
+          'work-b:\n    lane: b\n    needs: [slots]\n    steps: [{ id: c, run: [echo, "${jobs.slots.output.lanes.a.repo.check}"], expect: [{ exit_code: 0 }] }]',
+        ),
+      }),
+    );
+    const messages = errors(diagnostics);
+    assert.ok(
+      messages.some((message) => message.includes('work-b') && message.includes('«a»')),
+      messages.join('\n'),
+    );
+  });
+
+  it('собственная дорожка в подстановке слота допустима', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': LANE_PIPELINE.replace(
+          'work-a:\n    lane: a\n    needs: [slots]\n    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]',
+          'work-a:\n    lane: a\n    needs: [slots]\n    steps: [{ id: c, run: [echo, "${jobs.slots.output.lanes.a.repo.check}"], expect: [{ exit_code: 0 }] }]',
+        ),
+      }),
+    );
+    assert.equal(hasErrors(diagnostics), false);
+  });
+
+  it('выход работы соседней дорожки в подстановке — ошибка, называющая обе дорожки', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': LANE_PIPELINE.replace(
+          'work-b:\n    lane: b\n    needs: [slots]\n    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]',
+          'work-b:\n    lane: b\n    needs: [slots, work-a]\n    steps: [{ id: c, run: [echo, "${jobs.work-a.output.slug}"], expect: [{ exit_code: 0 }] }]',
+        ),
+      }),
+    );
+    const messages = errors(diagnostics);
+    assert.ok(messages.some((message) => message.includes('work-b') && message.includes('work-a')));
+  });
+
+  it('ссылка из общего файла промпта называет файл и позицию', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  slots:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+  work-a:
+    uses: ./jobs/work.yml
+    lane: a
+    needs: [slots]
+  work-b:
+    uses: ./jobs/work.yml
+    lane: b
+    needs: [slots]
+`,
+      'jobs/work.yml': `
+kind: job
+steps:
+  - id: думает
+    agent: fake
+    prompt: "file:../prompts/work.md"
+    expect: [{ exit_code: 0 }]
+`,
+      'prompts/work.md': 'Слот: ${jobs.slots.output.lanes.a.repo.check}\n',
+    });
+    const diagnostics = lint(project);
+    const promptPath = project.path('prompts/work.md');
+    const found = diagnostics.find(
+      (entry) => entry.severity === 'error' && entry.file === promptPath && entry.message.includes('work-b'),
+    );
+    assert.ok(found !== undefined, 'ошибка называет путь к файлу промпта');
+    assert.match(found?.at ?? '', /^\d+:\d+$/, 'место — позиция строка:столбец в файле');
+  });
+
+  // Решено и закреплено тестом: правило не распространяется на ключи
+  // display — их раскрывает витрина в момент отрисовки, когда все работы уже
+  // завершились, а не движок перед исполнением работы (checkDisplaySubstitutions).
+  it('ссылка на данные соседней дорожки в display ошибкой не является', () => {
+    // needs остаётся [slots]: display раскрывается витриной после того, как
+    // весь граф завершился, и требование «работа выше по графу» для него
+    // бессмысленно (checkDisplaySubstitutions) — упоминание work-a в needs
+    // здесь не нужно и само стало бы отдельной, не связанной с этим тестом
+    // ошибкой чужой дорожки.
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': LANE_PIPELINE.replace(
+          'work-b:\n    lane: b\n    needs: [slots]\n    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]',
+          'work-b:\n    lane: b\n    needs: [slots]\n    display: { title: "${jobs.work-a.data.title}" }\n    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]',
+        ),
+      }),
+    );
+    assert.equal(
+      errors(diagnostics).some((message) => message.includes('дорожк')),
+      false,
+    );
+  });
+
+  it('условие if, обращающееся к сегменту чужой дорожки, — ошибка', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': LANE_PIPELINE.replace(
+          'work-b:\n    lane: b\n    needs: [slots]',
+          'work-b:\n    lane: b\n    needs: [slots]\n    if: "jobs.slots.output.lanes.a.filled == true"',
+        ),
+      }),
+    );
+    const messages = errors(diagnostics);
+    assert.ok(messages.some((message) => message.includes('work-b') && message.includes('дорожк')));
+  });
+});
+
+describe('pipeline-definition: статическая проверка', () => {
   // Сценарий: «Цикл в зависимостях»
   it('находит цикл и перечисляет участников', () => {
     const diagnostics = lint(

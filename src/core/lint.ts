@@ -161,6 +161,139 @@ function checkContext(
 /** Пространства, чьи имена в `if` известны заранее. */
 const STATIC_NAMESPACES = new Set(['inputs', 'run', 'env', 'jobs']);
 
+/** Метка, зарезервированная за --lanes all команды сведения (design.md, решение 3). */
+const RESERVED_LANE = 'all';
+
+/**
+ * Словарь меток `lane`, объявленных пайплайном: имя работы → её метка и
+ * замкнутое множество встреченных меток. Собирается один раз в
+ * `lintPipeline` и передаётся всем проверкам «работа дорожки не адресует
+ * чужую дорожку» — ни одна не перебирает `pipeline.jobs` собственным
+ * проходом ради того же ответа.
+ */
+interface LaneDictionary {
+  readonly laneOf: ReadonlyMap<string, string>;
+  readonly lanes: ReadonlySet<string>;
+}
+
+function laneDictionary(jobs: readonly Job[]): LaneDictionary {
+  const laneOf = new Map<string, string>();
+  const lanes = new Set<string>();
+  for (const job of jobs) {
+    if (job.lane === undefined) continue;
+    laneOf.set(job.id, job.lane);
+    lanes.add(job.lane);
+  }
+  return { laneOf, lanes };
+}
+
+/**
+ * «Работа дорожки не адресует чужую дорожку» (design.md, решение 2): работа с
+ * меткой `lane: X` не вправе называть в `needs` работу с меткой `lane: Y ≠ X`
+ * — дорожки независимы до сведения, и такая зависимость не «рискованна», а
+ * бессмысленна. Работа без метки правилу не подлежит: `slots`, `merge` и
+ * `finalize` адресуют все дорожки по назначению.
+ */
+function checkLaneNeeds(
+  job: Job,
+  laneOf: LaneDictionary['laneOf'],
+  file: string,
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  if (job.lane === undefined || job.needs === 'all') return;
+  for (const other of job.needs) {
+    const otherLane = laneOf.get(other);
+    if (otherLane === undefined || otherLane === job.lane) continue;
+    push({
+      severity: 'error',
+      message: `Работа ${job.id} (дорожка ${job.lane}) называет в needs работу ${other} дорожки ${otherLane}`,
+      file,
+      at: `jobs.${job.id}.needs`,
+      hint: 'Дорожки независимы до сведения — уберите работу из needs либо снимите метку lane',
+    });
+  }
+}
+
+/**
+ * То же правило для `context_upstream` — рядом с `checkContextUpstream`, но
+ * отдельной диагностикой: «работа не выше по графу» и «работа чужой дорожки»
+ * — разные причины, и чинятся по-разному.
+ */
+function checkLaneContextUpstream(job: Job, laneOf: LaneDictionary['laneOf'], push: (diagnostic: Diagnostic) => void): void {
+  if (job.lane === undefined) return;
+  const selector = job.contextUpstream;
+  if (selector === 'all' || selector === 'none') return;
+  for (const other of selector) {
+    const otherLane = laneOf.get(other);
+    if (otherLane === undefined || otherLane === job.lane) continue;
+    push({
+      severity: 'error',
+      message: `context_upstream работы ${job.id} (дорожка ${job.lane}) называет работу ${other} дорожки ${otherLane}`,
+      file: job.source,
+      at: `jobs.${job.id}.context_upstream`,
+      hint: 'Дорожки независимы до сведения — уберите работу из context_upstream либо снимите метку lane',
+    });
+  }
+}
+
+/**
+ * То же правило для подстановок `${jobs.<id>...}`: имя работы, называющей
+ * чужую дорожку, и сегмент пути, равный чужой метке (случай
+ * `${jobs.slots.output.lanes.a.repo.check}` в работе дорожки `b`). Проход по
+ * той же карте подстановок, что и `checkJobSubstitutions` — префикс
+ * `jobs.<id>.`, без `display`: подпись живёт по своим правилам и подстановки
+ * в неё раскрывает витрина, а не движок (см. `checkDisplaySubstitutions`) —
+ * ссылка оттуда на данные соседней дорожки такой же исполнительной связи не
+ * создаёт.
+ *
+ * Сегмент, равный собственной метке работы, ошибкой не является: это и есть
+ * основной случай обращения к своему слоту.
+ */
+function checkLaneSubstitutions(
+  job: Job,
+  lanes: LaneDictionary['lanes'],
+  laneOf: LaneDictionary['laneOf'],
+  substitutions: ExpandedPipeline['substitutions'],
+  pipelineFile: string,
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  if (job.lane === undefined) return;
+  const prefix = `jobs.${job.id}.`;
+  const displayPrefix = `${prefix}display.`;
+
+  for (const [key, list] of substitutions) {
+    if (!key.startsWith(prefix) || key.startsWith(displayPrefix)) continue;
+
+    for (const item of list) {
+      if (item.namespace !== 'jobs') continue;
+      const segments = item.path.split('.');
+      const other = segments[0];
+      const location = substitutionLocation(item, key, pipelineFile);
+
+      const otherLane = other === undefined ? undefined : laneOf.get(other);
+      if (otherLane !== undefined && otherLane !== job.lane) {
+        push({
+          severity: 'error',
+          message: `Работа ${job.id} (дорожка ${job.lane}) подставляет ${item.expression} — работа ${other} дорожки ${otherLane}`,
+          ...location,
+          hint: 'Дорожки независимы до сведения — обратитесь к работе своей дорожки либо снимите метку lane',
+        });
+        continue;
+      }
+
+      const foreignSegment = segments.find((segment) => segment !== job.lane && lanes.has(segment));
+      if (foreignSegment !== undefined) {
+        push({
+          severity: 'error',
+          message: `Работа ${job.id} (дорожка ${job.lane}) подставляет ${item.expression} — сегмент пути «${foreignSegment}» совпадает с меткой чужой дорожки`,
+          ...location,
+          hint: 'Если это дорожка — обратитесь к своей; если совпадение случайно, переименуйте дорожку',
+        });
+      }
+    }
+  }
+}
+
 /**
  * Группа сессий: работы, объявившие одинаковый `session_group`, продолжают
  * один диалог агента. Три условия делают это исполнимым, и ни одно из них не
@@ -337,6 +470,11 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
   checkPipelineSubstitutions(substitutions, graph.byId, pipeline.file, push);
   checkSessionGroups(pipeline, graph, push);
 
+  // Считается один раз: обе стороны правила «работа дорожки не адресует
+  // чужую» (needs, context_upstream, подстановки, условие if) смотрят в один
+  // и тот же словарь, а не перебирают pipeline.jobs каждая своим проходом.
+  const { laneOf, lanes } = laneDictionary(pipeline.jobs);
+
   for (const job of pipeline.jobs) {
     const at = `jobs.${job.id}`;
     checkContext(job.context, base, job.source, `${at}.context`, substitutions, push, knowledgeDeclared);
@@ -373,11 +511,24 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
       });
     }
 
+    if (job.lane === RESERVED_LANE) {
+      push({
+        severity: 'error',
+        message: `Работа ${job.id} объявляет lane «${RESERVED_LANE}» — имя зарезервировано`,
+        file: pipeline.file,
+        at: `${at}.lane`,
+        hint: `${RESERVED_LANE} значит «все дорожки» в --lanes команды stepcast merge-lanes — выберите другую метку`,
+      });
+    }
+
     const upstreamOf = graph.upstream.get(job.id) ?? new Set();
-    checkCondition(job, upstreamOf, declaredInputs, graph.byId, pipeline.concurrency, pipeline.file, push);
+    checkCondition(job, upstreamOf, declaredInputs, graph.byId, pipeline.concurrency, pipeline.file, laneOf, push);
     checkJobSubstitutions(job, upstreamOf, substitutions, graph.byId, pipeline.file, push);
     checkDisplaySubstitutions(job, substitutions, graph.byId, pipeline.file, push);
     checkContextUpstream(job, upstreamOf, push);
+    checkLaneNeeds(job, laneOf, pipeline.file, push);
+    checkLaneContextUpstream(job, laneOf, push);
+    checkLaneSubstitutions(job, lanes, laneOf, substitutions, pipeline.file, push);
     checkEnv(job.env, envDenyMatchers, pipeline.envDeny, job.source, `${at}.env`, push);
 
     if (job.context.length > 0 && !job.steps.some((step) => step.kind === 'agent')) {
@@ -503,10 +654,12 @@ function checkCondition(
   byId: ReadonlyMap<string, Job>,
   concurrency: number,
   file: string,
+  laneOf: LaneDictionary['laneOf'],
   push: (diagnostic: Diagnostic) => void,
 ): void {
   if (job.if === undefined) return;
   const at = `jobs.${job.id}.if`;
+  const lanes = new Set(laneOf.values());
 
   let expression;
   try {
@@ -593,6 +746,35 @@ function checkCondition(
             at,
             hint: `Добавьте ${other} в needs или используйте needs: all`,
           });
+        }
+      }
+
+      // Пятое место правила «работа дорожки не адресует чужую дорожку»
+      // (design.md, решение 2): условие if разбирается структурно тем же
+      // `references`, а не читается строкой, — тот же случай, что и сегмент
+      // пути подстановки (self-improve.yml несёт условия вида
+      // jobs.slots.output.lanes.<буква>...).
+      if (job.lane !== undefined) {
+        const otherLane = other === undefined ? undefined : laneOf.get(other);
+        if (otherLane !== undefined && otherLane !== job.lane) {
+          push({
+            severity: 'error',
+            message: `Условие работы ${job.id} (дорожка ${job.lane}) обращается к работе ${other} дорожки ${otherLane}`,
+            file,
+            at,
+            hint: 'Дорожки независимы до сведения — обратитесь к работе своей дорожки либо снимите метку lane',
+          });
+        } else {
+          const foreignSegment = path.slice(1).find((segment) => segment !== job.lane && lanes.has(segment));
+          if (foreignSegment !== undefined) {
+            push({
+              severity: 'error',
+              message: `Условие работы ${job.id} (дорожка ${job.lane}) обращается к jobs.${path.slice(1).join('.')} — сегмент «${foreignSegment}» совпадает с меткой чужой дорожки`,
+              file,
+              at,
+              hint: 'Если это дорожка — обратитесь к своей; если совпадение случайно, переименуйте дорожку',
+            });
+          }
         }
       }
     }

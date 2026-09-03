@@ -84,6 +84,32 @@ function explainProject(pipelinePath: string) {
 }
 
 /**
+ * Область `job`: единственное имя `lane` — значение ключа обвязки `lane`,
+ * объявленного на месте подключения работы. Пусто у работы без объявленной
+ * метки — тогда `${job.lane}` не находит `lane` в значениях и падает в общую
+ * ветку `explain`, а не раскрывается в пустую строку: пустая строка собрала
+ * бы имя соседней сущности (`plan-`) молча.
+ */
+function jobValues(lane: string | undefined): Readonly<Record<string, unknown>> {
+  return lane === undefined ? {} : { lane };
+}
+
+/**
+ * Объяснение для тела работы: то же, что `explainProject`, плюс причина
+ * отсутствия `job.lane` — работа, которую называет `jobId`, не объявила метку
+ * обвязкой подключения.
+ */
+function explainBody(pipelinePath: string, jobId: string) {
+  const explainProjectFor = explainProject(pipelinePath);
+  return (expression: string, namespace: string, path: string): string | undefined => {
+    if (namespace === 'job') {
+      return `Работа ${jobId} не объявляет lane на месте подключения — ${'${'}${expression}${'}'} не может раскрыться в пустую строку`;
+    }
+    return explainProjectFor(expression, namespace, path);
+  };
+}
+
+/**
  * Действующие значения пространства `project`: пайплайн поверх конфигурации,
  * по каждому ключу отдельно — ни один слой не обязателен, и объявление части
  * группы в одном слое не должно затенять часть, объявленную в другом.
@@ -718,6 +744,11 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     );
     collect(wiring.substitutions);
 
+    // Метка известна сразу после раскрытия обвязки: кладётся в область тела
+    // ниже, а не в pipelineScope — обвязка (needs, if, сам lane, …) метку
+    // работы не читает, только объявляет.
+    const job = jobValues(wiring.value.lane as string | undefined);
+
     let body: Record<string, unknown>;
     let declaringFile: string;
     let bodyScope: Scope;
@@ -742,7 +773,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
 
       declaringFile = usesPath;
       bodyScope = {
-        values: { params, project: projectValues },
+        values: { params, project: projectValues, job },
         deferred: DEFERRED_NAMESPACES,
         // Поля тела объявлены в файле работы: диагностика должна называть его,
         // а не пайплайн, где работа только подключена.
@@ -752,7 +783,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
           // пайплайну и перестаёт быть переиспользуемой.
           inputs: 'Работе недоступны inputs пайплайна — передайте значение через with и объявите его в params',
         },
-        explain: explainProject(pipelinePath),
+        explain: explainBody(pipelinePath, id),
       };
 
       const { params: _params, kind: _kind, version: _version, ...rest } = jobDocument;
@@ -760,7 +791,15 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       collect(interpolated.substitutions);
       body = interpolated.value;
 
-      // Переопределения с места подключения накладываются поверх файла работы.
+      // Переопределения с места подключения накладываются поверх файла работы
+      // и делят с ним область job: буква дорожки известна уже здесь, на месте
+      // подключения, — ровно там, где стоит и сам ключ lane, — и решение
+      // сделать её доступной принято явно, а не по умолчанию.
+      const overrideScope: Scope = {
+        ...pipelineScope,
+        values: { ...pipelineScope.values, job },
+        explain: explainBody(pipelinePath, id),
+      };
       const overrides = interpolateTree(
         {
           ...(entry.description === undefined ? {} : { description: entry.description }),
@@ -771,14 +810,18 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
           ...(entry.context_upstream === undefined ? {} : { context_upstream: entry.context_upstream }),
           ...(entry.budget === undefined ? {} : { budget: entry.budget }),
         },
-        pipelineScope,
+        overrideScope,
         at,
       );
       collect(overrides.substitutions);
       body = { ...body, ...overrides.value };
     } else {
       declaringFile = pipelinePath;
-      bodyScope = pipelineScope;
+      bodyScope = {
+        ...pipelineScope,
+        values: { ...pipelineScope.values, job },
+        explain: explainBody(pipelinePath, id),
+      };
       const {
         needs: _needs,
         on: _on,
@@ -788,7 +831,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         session_group: _sessionGroup,
         ...rest
       } = entry;
-      const interpolated = interpolateTree(rest as Record<string, unknown>, pipelineScope, at);
+      const interpolated = interpolateTree(rest as Record<string, unknown>, bodyScope, at);
       collect(interpolated.substitutions);
       body = interpolated.value;
     }

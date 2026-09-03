@@ -18,7 +18,6 @@ name: propose
 description: Завести описание изменения под пункт очереди, выданный дорожке
 
 params:
-  lane: { type: string, required: true }
   spec_dir: { type: string, required: true }
   spec_rules: { type: string, required: true }
   spec_tool: { type: string, required: true }
@@ -35,7 +34,7 @@ steps:
     model: opus
     prompt: file:../prompts/propose.md
     context:
-      - path: ${run.dir}/item-${params.lane}.json
+      - path: ${run.dir}/item-${job.lane}.json
         mode: inline
       - path: ${params.spec_rules}
         mode: inline
