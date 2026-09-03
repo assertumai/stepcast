@@ -39,8 +39,13 @@ echo "==> Ставлю зависимости релиза (npm ci --omit=dev)"
 npm ci --omit=dev --prefix "$RELEASE_DIR" --no-audit --no-fund >/dev/null
 
 echo "==> Атомарно переключаю current -> $VERSION"
-ln -sfn "$RELEASE_DIR" "$RELEASES_DIR/current.tmp"
-mv "$RELEASES_DIR/current.tmp" "$RELEASES_DIR/current"
+# ln -sfn меняет саму ссылку current (unlink+symlink), а не то, на что она
+# указывает. Раньше здесь стояла пара `ln .../current.tmp` + `mv current.tmp
+# current` — на macOS BSD mv, увидев, что current указывает на директорию,
+# перемещает current.tmp ВНУТРЬ неё вместо подмены самой ссылки (mv: ...
+# identical), и current молча остаётся на старом релизе, хотя скрипт ниже уже
+# печатает "Готово".
+ln -sfn "$RELEASE_DIR" "$RELEASES_DIR/current"
 
 echo "==> Готово: $RELEASES_DIR/current -> $RELEASE_DIR"
 echo "    Глобальный stepcast (если настроен через bin-symlink) уже использует новую версию."
