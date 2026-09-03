@@ -17,9 +17,23 @@ export interface FakeBackendOptions {
    * запуска этого бэкенда, с нуля.
    */
   readonly lines: readonly string[] | ((invocationIndex: number) => readonly string[]);
-  readonly exitCode?: number;
-  /** Не завершаться самостоятельно это время — для проверки прерывания по таймауту. */
-  readonly hangMs?: number;
+  /** Код возврата. Функцией — по тому же номеру запуска, что и `lines`. */
+  readonly exitCode?: number | ((invocationIndex: number) => number);
+  /**
+   * Не завершаться самостоятельно это время — для проверки прерывания по
+   * таймауту или по отмене. Функцией — по тому же номеру запуска, что и
+   * `lines`, чтобы один шаг мог зависнуть, а другой на том же бэкенде — нет.
+   */
+  readonly hangMs?: number | ((invocationIndex: number) => number);
+  /**
+   * Файлы, которые «агент» записывает в рабочей директории до того, как
+   * зависнуть или выйти: путь относительно неё → содержимое. Функцией — по
+   * тому же номеру запуска, что и `lines`. Нужно там, где проверяется судьба
+   * дерева, а не потока: результат оборванной попытки, откат по якорю.
+   */
+  readonly writes?:
+    | Readonly<Record<string, string>>
+    | ((invocationIndex: number) => Readonly<Record<string, string>>);
 }
 
 export interface FakeBackend {
@@ -63,10 +77,22 @@ export function createFakeBackend(options: FakeBackendOptions): FakeBackend {
       // гарантию — таймер зависания заводится только после того, как данные
       // отданы в трубу.
       const payload = JSON.stringify(lines.map((line) => `${line}\n`).join(''));
+      const hangMs = typeof options.hangMs === 'function' ? options.hangMs(index) : options.hangMs ?? 0;
+      const exitCode = typeof options.exitCode === 'function' ? options.exitCode(index) : options.exitCode ?? 0;
       // Узел завершается по SIGTERM умолчательным обработчиком — этого
       // достаточно, чтобы проверить прерывание без настоящего висящего
       // процесса.
-      const script = `process.stdout.write(${payload}, () => setTimeout(() => process.exit(${options.exitCode ?? 0}), ${options.hangMs ?? 0}));`;
+      const writes =
+        typeof options.writes === 'function' ? options.writes(index) : options.writes ?? {};
+      // Запись идёт до вывода потока и до зависания: файл обязан оказаться на
+      // диске к моменту, когда отмена настигнет процесс на середине.
+      const writeScript = Object.entries(writes)
+        .map(
+          ([path, content]) =>
+            `require('fs').writeFileSync(${JSON.stringify(path)}, ${JSON.stringify(content)});`,
+        )
+        .join('');
+      const script = `${writeScript}process.stdout.write(${payload}, () => setTimeout(() => process.exit(${exitCode}), ${hangMs}));`;
       return {
         command: [process.execPath, '-e', script],
         stdin: invocation.prompt,

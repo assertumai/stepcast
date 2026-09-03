@@ -19,8 +19,17 @@ export interface PreviousFailure {
 export function buildPreviousFailure(
   paths: RunPaths,
   status: RunStatus,
+  /**
+   * Работы, чей шаг продолжает оборванную сессию: им достаётся запись о
+   * прерывании (`buildInterruptedNote`), а не эта выдержка — их отмена не
+   * была отказом, чинить в них нечего.
+   */
+  excludeJobs?: ReadonlySet<string>,
 ): PreviousFailure | undefined {
-  const job = status.jobs.find((item) => item.status === 'failed' || item.status === 'canceled');
+  const job = status.jobs.find(
+    (item) =>
+      (item.status === 'failed' || item.status === 'canceled') && excludeJobs?.has(item.id) !== true,
+  );
   if (job === undefined) return undefined;
 
   const step = job.steps.find((item) => item.status !== 'success' && item.status !== 'skipped');
@@ -50,6 +59,24 @@ export function buildPreviousFailure(
   );
 
   return { text: lines.join('\n'), job: job.id, step: step.id };
+}
+
+/**
+ * Запись о прерывании — соседняя сборка `buildPreviousFailure`, но иного
+ * существа: продолжаемый шаг не забраковали, его оборвали сигналом, и
+ * протокол попыток исходного прогона ему так же не переносится, как и
+ * выдержке об отказе.
+ */
+export function buildInterruptedNote(): string {
+  return [
+    '# Прошлая попытка прервана',
+    '',
+    'Диалог этого шага продолжается: предыдущая попытка была прервана сигналом отмены, а не отказом проверки — работу не забраковали.',
+    '',
+    'Вызов инструмента мог оборваться на середине. Сверьте состояние рабочего дерева, прежде чем продолжать: файл мог быть записан наполовину, либо результат вызова не дошёл до этого диалога.',
+    '',
+    'Протокол попыток прошлого прогона сюда не переносится.',
+  ].join('\n');
 }
 
 function failedPredicates(

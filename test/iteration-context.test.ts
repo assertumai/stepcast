@@ -349,6 +349,7 @@ jobs:
           ignoredEdits: [],
           fromScratch: true,
           failureNoteJob: 'работа',
+          adoptWorkspace: [],
         },
       },
     });

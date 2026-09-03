@@ -51,7 +51,7 @@ import { builtinRegistry } from '../plugins/builtin.js';
 import type { Registry } from '../plugins/registry.js';
 import { preflight } from './preflight.js';
 import { createScope, type ResourceScope } from './scope.js';
-import { buildPreviousFailure } from './previousFailure.js';
+import { buildInterruptedNote, buildPreviousFailure } from './previousFailure.js';
 import type { ResumePlan, SourceRun, StepPlan } from './resumePlan.js';
 import { computeStepKey, upstreamForKey } from './stepKey.js';
 import { prepareWorkspace, type PreparedWorkspace } from './workspace.js';
@@ -671,6 +671,7 @@ async function runJob(
   // запустить негде, — это `spawn_failed` из закрытого перечня, а не новая
   // причина остановки.
   const source = resolveInheritSource(context.graph, job, context.completedWorkspaces);
+  const adoptWorkspace = context.resume?.plan.adoptWorkspace.find((item) => item.job === job.id);
   let prepared: PreparedWorkspace;
   try {
     prepared = await prepareWorkspace({
@@ -685,6 +686,15 @@ async function runJob(
         ? {}
         : { nestedRepos: context.config.project.nestedRepos }),
       ...(context.anchorerFor === undefined ? {} : { anchorerFor: context.anchorerFor }),
+      ...(adoptWorkspace === undefined || context.resume === undefined
+        ? {}
+        : {
+            adoptFrom: {
+              path: adoptWorkspace.path,
+              runId: context.resume.source.manifest.run_id,
+              ...(adoptWorkspace.nested === undefined ? {} : { nested: adoptWorkspace.nested }),
+            },
+          }),
     });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -702,6 +712,7 @@ async function runJob(
       path: prepared.dir,
       ...(prepared.inheritedFrom === undefined ? {} : { inherited_from: prepared.inheritedFrom }),
       ...(prepared.continued === undefined ? {} : { continued: prepared.continued }),
+      ...(prepared.adoptedFrom === undefined ? {} : { adopted_from: prepared.adoptedFrom }),
       // Пишется здесь, до первого шага, а не по завершении работы: уборка
       // обязана быть полной и после отказа, отмены и остановки по бюджету —
       // то есть именно тогда, когда «по завершении» не наступает.
@@ -1342,6 +1353,31 @@ async function runJobSteps(
       continue;
     }
 
+    // Продолжение оборванной сессии: засев реестра и отметок об отправленном
+    // контексте случается до первой попытки — `executeAgentStep` берёт
+    // сессию как обычно и получает `resume: true` там, где реестр сегодня
+    // выдал бы новый идентификатор (design.md, решение 5).
+    const continuing = planned?.decision.kind === 'continue' ? planned.decision : undefined;
+    const continuationSourceId = context.resume?.source.manifest.run_id ?? 'неизвестно';
+    if (continuing !== undefined && step.kind === 'agent') {
+      const key = sessionKey(step.session);
+      context.sessions.seed(key, continuing.sessionId);
+      context.pipelineContextSent.add(key);
+      jobContextSent.add(key);
+      journal.event({
+        kind: 'session.continued',
+        job: job.id,
+        step: step.id,
+        session: continuing.sessionId,
+        source: continuationSourceId,
+      });
+      // Расход оборванной попытки складывается со счётом продолжающего шага
+      // независимо от исхода продолжения: он уже потрачен, а не поставлен
+      // под вопрос отказом сессии у бэкенда (design.md, решение 8).
+      const carriedUsage = continuing.record.attempts.at(-1)?.usage;
+      if (carriedUsage !== undefined) context.usage.carry(job.id, step.id, carriedUsage);
+    }
+
     journal.event({ kind: 'step.started', job: job.id, step: step.id, attempt: 1 });
 
     const treeBefore = treeAnchor;
@@ -1484,11 +1520,15 @@ async function runJobSteps(
       ...(reason === undefined ? {} : { reason }),
       ...(cause === undefined ? {} : { cause }),
       ...(outcome.session === undefined ? {} : { session: outcome.session }),
-      attempts: [...outcome.attempts],
+      attempts:
+        continuing === undefined
+          ? [...outcome.attempts]
+          : [...carriedAttempts(continuing.record, continuationSourceId), ...outcome.attempts],
       ...(outcome.observedInputs === undefined || outcome.observedInputs.length === 0
         ? {}
         : { observed_inputs: [...outcome.observedInputs] }),
       ...(outcome.backendInit === undefined ? {} : { backend_init: outcome.backendInit }),
+      ...(continuing === undefined ? {} : { continued_from: continuationSourceId }),
     };
     steps.push(stepRecord);
     journal.writeStepJson(stepDirPath, 'step.json', stepRecord);
@@ -1844,6 +1884,16 @@ async function runAgentStep(
   const { pipeline } = context.expanded;
   const adapter = adapterOf(step.agent, context);
 
+  /**
+   * Запись о прерывании достаётся ровно одному сообщению — первому, которое
+   * этот прогон отправляет в продолжаемый диалог. Дальше она была бы либо
+   * повтором прочитанного в том же диалоге (вторая и третья попытки обычного
+   * продолжения), либо прямой неправдой: попытка после неудавшегося
+   * продолжения (`onFailedContinuation`) начинает разговор с чистого листа, и
+   * «диалог этого шага продолжается» о ней не сказать.
+   */
+  let interruptedNotePending = planFor(context, job.id, step.id)?.decision.kind === 'continue';
+
   for (;;) {
   let exceeded: ReturnType<UsageAccumulator['check']>;
   let judgeCallCount = 0;
@@ -1891,11 +1941,16 @@ async function runAgentStep(
         context.pipelineContextSent.add(key);
         jobContextSent.add(key);
 
+        const interrupted = interruptedNotePending;
+        interruptedNotePending = false;
+
         const stepEntries = withIterationNote(
           context,
           job.id,
+          step.id,
           step.context,
           context.iterationCheck,
+          interrupted,
           (truncation) => {
             if (noteTruncationReported) return;
             noteTruncationReported = true;
@@ -2084,10 +2139,28 @@ async function runAgentStep(
           ...(failure.detail === undefined ? {} : { detail: failure.detail }),
         }),
       canContinue: () => {
+        // Отменённый прогон не заводит новых попыток: `AbortController` в
+        // `stepAbort` реагирует на сигнал отмены один раз, и попытка,
+        // начатая после первой отмены, его больше не увидит — процесс
+        // отработал бы до конца непрерванным, будто отмены не было вовсе.
+        // На этом же держится продолжение оборванной сессии: последняя
+        // запись попытки обязана быть `canceled`, иначе отмену не отличить
+        // от попытки, ответившей самой (`resolveContinuation`).
+        if (context.signal?.aborted === true) return false;
         const found = exceeded ?? context.usage.check(budgetScopes());
         exceeded ??= found;
         abort.trigger(found);
         return exceeded === undefined;
+      },
+      // Продолжение не открылось у бэкенда: отказ стоит одну попытку, а не
+      // шаг (design.md, решение 6). Следующая попытка того же шага обязана
+      // начать разговор заново — с новой сессией и полным контекстом, ровно
+      // как первая попытка любого другого переисполняемого шага.
+      onFailedContinuation: () => {
+        const key = sessionKey(step.session);
+        sessions.unseed(key);
+        context.pipelineContextSent.delete(key);
+        jobContextSent.delete(key);
       },
     });
   } finally {
@@ -2256,6 +2329,16 @@ function causeOf(
 /** Решение плана по конкретному шагу, если возобновление вообще идёт. */
 function planFor(context: RunContext, jobId: string, stepId: string): StepPlan | undefined {
   return context.resume?.plan.steps.find((item) => item.job === jobId && item.step === stepId);
+}
+
+/**
+ * Запись оборванной попытки — только последняя, та самая, что дала шагу
+ * статус `canceled`: более ранние попытки того же шага уже расходовали
+ * бюджет исходного прогона и к продолжению отношения не имеют.
+ */
+function carriedAttempts(record: StepRecord, sourceRunId: string): readonly StepRecord['attempts'][number][] {
+  const last = record.attempts.at(-1);
+  return last === undefined ? [] : [{ ...last, carried_from: sourceRunId }];
 }
 
 /**
@@ -2443,11 +2526,14 @@ function restoreForResume(
 function withIterationNote(
   context: RunContext,
   jobId: string,
+  stepId: string,
   own: readonly ContextEntry[],
   previousCheck: readonly PredicateResult[] | undefined,
+  /** Это сообщение — первое, которое прогон отправляет в продолжаемый диалог. */
+  interrupted: boolean,
   onTruncated: (truncation: IterationNoteTruncation) => void,
 ): { entries: readonly ContextEntry[]; hasNote: boolean } {
-  const entries = takeFailureNote(context, jobId, own);
+  const entries = takeFailureNote(context, jobId, stepId, own, interrupted);
   if (previousCheck === undefined) return { entries, hasNote: false };
 
   const failed = previousCheck.filter((item) => !item.passed && item.hard);
@@ -2459,21 +2545,42 @@ function withIterationNote(
   return { entries: [{ kind: 'text', text }, ...entries], hasNote: true };
 }
 
-/** Текст выдержки о прошлом отказе, если прошлый прогон её заслуживает. */
+/**
+ * Текст выдержки о прошлом отказе, если прошлый прогон её заслуживает.
+ *
+ * Работа, чей шаг продолжает оборванную сессию, исключается: её «отказ» —
+ * отмена, а не непройденная проверка, и ей достанется запись о прерывании,
+ * а не эта выдержка (`takeFailureNote`).
+ */
 function previousFailureText(resume: ResumeContext): string | undefined {
-  return buildPreviousFailure(resume.source.paths, resume.source.status)?.text;
+  const continuingJobs = new Set(
+    resume.plan.steps.filter((item) => item.decision.kind === 'continue').map((item) => item.job),
+  );
+  return buildPreviousFailure(resume.source.paths, resume.source.status, continuingJobs)?.text;
 }
 
 /**
  * Подложить выдержку о прошлом отказе первому агентскому шагу работы, с
- * которой возобновление начато. Запись входит в состав контекста наравне с
- * остальными и потому учитывается в пределе размера.
+ * которой возобновление начато, либо запись о прерывании — продолжаемому
+ * шагу. Запись входит в состав контекста наравне с остальными и потому
+ * учитывается в пределе размера.
+ *
+ * Шаг, продолжающий сессию, выдержки об отказе не получает вовсе: его не
+ * забраковали, а `plan.failureNoteJob` его работу своим адресатом и не
+ * выбирает (`resumePlan.ts`). Запись о прерывании при этом кладётся не всякой
+ * его попытке, а только той, что действительно продолжает оборванный диалог:
+ * решает это вызывающий (`runAgentStep`), потому что засев сессии может быть
+ * снят посреди шага отказом продолжения.
  */
 function takeFailureNote(
   context: RunContext,
   jobId: string,
+  stepId: string,
   own: readonly ContextEntry[],
+  interrupted: boolean,
 ): readonly ContextEntry[] {
+  if (interrupted) return [{ kind: 'text', text: buildInterruptedNote() }, ...own];
+
   const note = context.failureNote.pending;
   if (note === undefined) return own;
   if (context.resume?.plan.failureNoteJob !== jobId) return own;

@@ -25,6 +25,7 @@ import {
   selectOlderThan,
 } from '../src/core/run/cleanup.js';
 import { projectKey } from '../src/core/journal/paths.js';
+import { listRunsByKey } from '../src/core/journal/reader.js';
 import { RunJournal } from '../src/core/journal/writer.js';
 import type { RunManifest, StatusValue } from '../src/core/journal/schema.js';
 
@@ -797,5 +798,188 @@ describe('run-cleanup: снятие учётных записей рабочих
     assert.deepEqual(worktreeRecords(projectRoot), []);
     // Каталоги прогона удалены, несмотря на неснятую запись части.
     assert.ok(!existsSync(journal.paths.jobs));
+  });
+});
+
+describe('run-cleanup: сохранение каталога, перенятого другим прогоном', () => {
+  /**
+   * Прогон-источник с каталогом работы в режиме worktree, и прогон, который
+   * этот же каталог перенял (`workspace.adopted_from`) для продолжения
+   * оборванной сессии.
+   */
+  function makeAdoptedPair(
+    runsRoot: string,
+    projectRoot: string,
+  ): { readonly source: RunJournal; readonly adopter: RunJournal; readonly workDir: string } {
+    const source = RunJournal.create({ runsRoot, projectRoot, runId: 'run-a' });
+    const workDir = join(source.paths.dir, 'workspace', 'работа');
+    addWorktreeFor(projectRoot, workDir);
+    writeFileSync(join(workDir, 'недописанное.txt'), 'то, что успел прерванный вызов');
+
+    source.writeManifest({ ...baseManifest(source.paths.runId), project_root: projectRoot });
+    source.writeStatus({
+      run_id: source.paths.runId,
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'canceled',
+      workspace: { mode: 'worktree' },
+      inputs: {},
+      jobs: [{ id: 'работа', status: 'canceled', workspace: { mode: 'worktree', path: workDir }, steps: [] }],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+    source.writeUsage({
+      run_id: source.paths.runId,
+      total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 0, wallclock_ms: 0 },
+      unreported: [],
+      jobs: {},
+    });
+
+    const adopter = RunJournal.create({ runsRoot, projectRoot, runId: 'run-b' });
+    adopter.writeManifest({ ...baseManifest(adopter.paths.runId), project_root: projectRoot });
+    adopter.writeStatus({
+      run_id: adopter.paths.runId,
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'running',
+      workspace: { mode: 'worktree' },
+      inputs: {},
+      jobs: [
+        {
+          id: 'работа',
+          status: 'running',
+          workspace: { mode: 'worktree', path: workDir, adopted_from: source.paths.runId },
+          steps: [],
+        },
+      ],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+    adopter.writeUsage({
+      run_id: adopter.paths.runId,
+      total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 0, wallclock_ms: 0 },
+      unreported: [],
+      jobs: {},
+    });
+
+    return { source, adopter, workDir };
+  }
+
+  // Сценарий: «Каталог сохранён ради продолжения» (cleanupRun)
+  it('cleanupRun сохраняет перенятый каталог и его учётную запись рабочего дерева', () => {
+    const { runsRoot, projectRoot } = bed();
+    initGitRepo(projectRoot);
+    const { source, adopter, workDir } = makeAdoptedPair(runsRoot, projectRoot);
+    assert.equal(worktreeRecords(projectRoot).length, 1);
+
+    const result = cleanupRun(source.paths);
+
+    assert.equal(result.preservedWorkspaces.length, 1);
+    assert.equal(result.preservedWorkspaces[0]?.path, workDir);
+    assert.equal(result.preservedWorkspaces[0]?.adoptedBy, adopter.paths.runId);
+
+    assert.ok(existsSync(workDir), 'перенятый каталог обязан остаться');
+    assert.equal(readFileSync(join(workDir, 'недописанное.txt'), 'utf8'), 'то, что успел прерванный вызов');
+    assert.equal(worktreeRecords(projectRoot).length, 1, 'учётная запись рабочего дерева обязана остаться');
+
+    // Остальное содержимое убираемого прогона снято как обычно.
+    assert.ok(!existsSync(source.paths.jobs));
+    assert.ok(existsSync(source.paths.status), 'минимум переживает уборку');
+  });
+
+  // Сценарий: «Каталог сохранён ради продолжения» (removeRun)
+  it('removeRun сохраняет перенятый каталог и его учётную запись рабочего дерева', () => {
+    const { runsRoot, projectRoot } = bed();
+    initGitRepo(projectRoot);
+    const { source, adopter, workDir } = makeAdoptedPair(runsRoot, projectRoot);
+
+    const result = removeRun(runsRoot, projectKey(projectRoot), source.paths.runId);
+
+    assert.equal(result.preservedWorkspaces.length, 1);
+    assert.equal(result.preservedWorkspaces[0]?.path, workDir);
+    assert.equal(result.preservedWorkspaces[0]?.adoptedBy, adopter.paths.runId);
+
+    assert.ok(existsSync(workDir), 'перенятый каталог обязан остаться');
+    assert.equal(readFileSync(join(workDir, 'недописанное.txt'), 'utf8'), 'то, что успел прерванный вызов');
+    assert.equal(worktreeRecords(projectRoot).length, 1, 'учётная запись рабочего дерева обязана остаться');
+  });
+
+  // Сценарий: «Каталог снимает перенявший прогон»
+  it('уборка перенявшего прогона снимает перенятый каталог и его учётную запись', () => {
+    const { runsRoot, projectRoot } = bed();
+    initGitRepo(projectRoot);
+    const { adopter, workDir } = makeAdoptedPair(runsRoot, projectRoot);
+
+    // Каталог лежит в директории прогона-источника, а владеет им перенявший:
+    // его уборка обязана снять и каталог, и учётную запись — иначе после
+    // уборки обоих прогонов и то и другое осталось бы навсегда.
+    const result = cleanupRun(adopter.paths);
+
+    assert.deepEqual(result.preservedWorkspaces, [], 'перенявшему беречь каталог не для кого');
+    assert.deepEqual(result.unresolvedWorktrees, [], 'снятие не должно жаловаться на путь вне своей директории');
+    assert.ok(!existsSync(workDir), 'перенятый каталог снимает тот, кто им владеет');
+    assert.deepEqual(worktreeRecords(projectRoot), []);
+  });
+
+  // Уборка источника после того, как перенявший ушёл: беречь больше не для
+  // кого, и прогон снимается целиком, вместе с каталогом.
+  it('после уборки перенявшего прогона источник снимается целиком', () => {
+    const { runsRoot, projectRoot } = bed();
+    initGitRepo(projectRoot);
+    const { source, adopter, workDir } = makeAdoptedPair(runsRoot, projectRoot);
+    const key = projectKey(projectRoot);
+
+    removeRun(runsRoot, key, source.paths.runId);
+    assert.ok(existsSync(source.paths.status), 'пока каталог перенят, прогон остаётся читаемой записью истории');
+    assert.ok(existsSync(source.paths.manifest));
+    assert.ok(existsSync(source.paths.usage));
+    assert.ok(!existsSync(source.paths.jobs), 'остальное содержимое снято как обычно');
+    assert.ok(
+      listRunsByKey(runsRoot, key).includes(source.paths.runId),
+      'прогон обязан остаться разбираемым, а не превратиться в пустой каталог',
+    );
+
+    removeRun(runsRoot, key, adopter.paths.runId);
+    assert.ok(!existsSync(workDir), 'каталог ушёл вместе с прогоном, который им владел');
+
+    const second = removeRun(runsRoot, key, source.paths.runId);
+    assert.deepEqual(second.preservedWorkspaces, []);
+    assert.ok(!existsSync(source.paths.dir), 'повторное удаление снимает прогон целиком');
+    assert.deepEqual(worktreeRecords(projectRoot), []);
+  });
+
+  // Сценарий: «Обычный каталог удаляется»
+  it('уборка прогона, чьи каталоги никем не переняты, удаляет их и снимает записи', () => {
+    const { runsRoot, projectRoot } = bed();
+    initGitRepo(projectRoot);
+
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'run-a' });
+    const workDir = join(journal.paths.dir, 'workspace', 'работа');
+    addWorktreeFor(projectRoot, workDir);
+
+    journal.writeManifest({ ...baseManifest(journal.paths.runId), project_root: projectRoot });
+    journal.writeStatus({
+      run_id: journal.paths.runId,
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'canceled',
+      workspace: { mode: 'worktree' },
+      inputs: {},
+      jobs: [{ id: 'работа', status: 'canceled', workspace: { mode: 'worktree', path: workDir }, steps: [] }],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+    journal.writeUsage({
+      run_id: journal.paths.runId,
+      total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 0, wallclock_ms: 0 },
+      unreported: [],
+      jobs: {},
+    });
+
+    const result = cleanupRun(journal.paths);
+
+    assert.deepEqual(result.preservedWorkspaces, []);
+    assert.ok(!existsSync(workDir));
+    assert.deepEqual(worktreeRecords(projectRoot), []);
   });
 });

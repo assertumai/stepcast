@@ -18,7 +18,8 @@ import type { JobRecord, RunManifest, RunStatus, StepRecord } from '../journal/s
 import { expandPipeline } from '../pipeline/expand.js';
 import { jobLockHash } from '../pipeline/lock.js';
 import { definitionFiles, type ExpandedPipeline, type Job, type Pipeline, type Step } from '../pipeline/model.js';
-import { buildGraph, executionOrder, upstreamOutputs } from '../graph.js';
+import { buildGraph, executionOrder, upstreamOutputs, type Graph } from '../graph.js';
+import { declaredInheritance } from './inherit.js';
 import { computeStepKey, upstreamForKey } from './stepKey.js';
 
 /**
@@ -38,6 +39,13 @@ import { computeStepKey, upstreamForKey } from './stepKey.js';
  */
 export type StepDecision =
   | { readonly kind: 'reuse'; readonly record: StepRecord }
+  /**
+   * Шаг переисполняется продолжением записанной сессии, оборванной отменой:
+   * бэкенд получает `--resume <sessionId>` вместо нового диалога. `record` —
+   * запись оборванного шага исходного прогона, нужна для расхода
+   * (`carried_from`) и для выдержки о прерывании.
+   */
+  | { readonly kind: 'continue'; readonly record: StepRecord; readonly sessionId: string }
   | { readonly kind: 'rerun'; readonly reason: string };
 
 export interface StepPlan {
@@ -80,6 +88,20 @@ export interface ResumePlan {
    * молча. Пусто, если переисполняемых агентских шагов в плане нет вовсе.
    */
   readonly failureNoteJob?: string;
+  /**
+   * Каталоги рабочего дерева, подлежащие перениманию у исходного прогона —
+   * по одной записи на работу, чей шаг продолжает оборванную сессию в режиме
+   * worktree или copy. Пусто, если план не назначил ни одного продолжения.
+   */
+  readonly adoptWorkspace: readonly AdoptedWorkspace[];
+}
+
+/** Каталог работы исходного прогона, перенимаемый ради продолжения сессии. */
+export interface AdoptedWorkspace {
+  readonly job: string;
+  readonly path: string;
+  /** Части составного дерева, лежащие в каталоге: переходят вместе с ним. */
+  readonly nested?: readonly { readonly dir: string; readonly repo: string }[];
 }
 
 export interface SourceRun {
@@ -176,6 +198,13 @@ export interface BuildPlanOptions {
    * (`planResume`).
    */
   readonly allReason?: string;
+  /**
+   * Пригодность каталога работы к перениманию для продолжения оборванной
+   * сессии: существует ли он и совпадает ли его текущее состояние с якорем
+   * оборванного шага. Без колбэка продолжение не назначается никогда — тесты,
+   * которым перенятый каталог не нужен, не обязаны его подделывать.
+   */
+  readonly canAdoptWorkspace?: (job: JobRecord, step: StepRecord) => boolean;
 }
 
 export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
@@ -201,6 +230,9 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
   const ignoredEdits = new Set<string>();
   const upstream: { job: string; value: unknown }[] = [];
   const produced = new Set<string>();
+  /** Пути, произведённые переиспользованными шагами, по работам. */
+  const producedByJob = new Map<string, Set<string>>();
+  const adoptWorkspace: AdoptedWorkspace[] = [];
   let lastReused: StepRecord | undefined;
   let poisoned: string | undefined;
   // Обход идёт в порядке исполнения, а не объявления: и каскад пересчёта, и
@@ -261,9 +293,56 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
       for (const path of outcome.ignoredEdits ?? []) ignoredEdits.add(path);
 
       if (outcome.reason === undefined && previous !== undefined) {
-        steps.push({ job: job.id, step: step.id, decision: { kind: 'reuse', record: previous } });
-        for (const path of options.producedPaths?.(previous) ?? []) produced.add(path);
-        lastReused = previous;
+        if (previous.status === 'success') {
+          steps.push({ job: job.id, step: step.id, decision: { kind: 'reuse', record: previous } });
+          const own = producedByJob.get(job.id) ?? new Set<string>();
+          for (const path of options.producedPaths?.(previous) ?? []) {
+            produced.add(path);
+            own.add(path);
+          }
+          producedByJob.set(job.id, own);
+          lastReused = previous;
+          continue;
+        }
+
+        // Структурно шаг годен (ключ совпал, входы не тронуты, каскад его не
+        // задел), но прошлый статус — canceled: отмена, а не отказ. Единственный
+        // повод не переисполнять его с чистого диалога — продолжение записанной
+        // сессии, и оно назначается только когда отмена остаётся единственной
+        // причиной невалидности (design.md, решение 2).
+        const continuation = resolveContinuation({
+          job,
+          step,
+          previous,
+          record,
+          from,
+          isAbove,
+          graph,
+          options,
+        });
+        if (continuation !== undefined) {
+          steps.push({
+            job: job.id,
+            step: step.id,
+            decision: { kind: 'continue', record: previous, sessionId: continuation.sessionId },
+          });
+          adoptWorkspace.push({
+            job: job.id,
+            path: continuation.workspacePath,
+            ...(continuation.nested === undefined ? {} : { nested: continuation.nested }),
+          });
+          // Продолжаемый шаг тоже не отдаёт годного вывода следующему шагу:
+          // диалог продолжается, но сам шаг ещё не исполнен в этом прогоне.
+          poisoned ??= `продолжается ${address}`;
+          continue;
+        }
+
+        steps.push({
+          job: job.id,
+          step: step.id,
+          decision: { kind: 'rerun', reason: 'в прошлом прогоне шаг завершился: canceled' },
+        });
+        poisoned ??= `пересчитан ${address}`;
         continue;
       }
 
@@ -288,15 +367,27 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
     }
   }
 
-  const coarsened = coarsenSharedSessions(pipeline.jobs, steps);
-  const anyReuse = coarsened.some((plan) => plan.decision.kind === 'reuse');
+  const coarsenedResult = coarsenSharedSessions(pipeline.jobs, steps, adoptWorkspace);
+  const coarsened = coarsenedResult.steps;
+  const anyReuse = coarsened.some(
+    (plan) => plan.decision.kind === 'reuse' || plan.decision.kind === 'continue',
+  );
   const agentAddresses = new Set(
     pipeline.jobs.flatMap((job) =>
       job.steps.filter((step) => step.kind === 'agent').map((step) => `${job.id}/${step.id}`),
     ),
   );
+  // Работа, чей шаг продолжает оборванную сессию, выдержки о прошлом отказе не
+  // получает вовсе — ей достаётся запись о прерывании, и только продолжаемому
+  // шагу (см. `interrupted.md`, previousFailure.ts).
+  const continuingJobs = new Set(
+    coarsened.filter((plan) => plan.decision.kind === 'continue').map((plan) => plan.job),
+  );
   const failureNoteJob = coarsened.find(
-    (plan) => plan.decision.kind === 'rerun' && agentAddresses.has(`${plan.job}/${plan.step}`),
+    (plan) =>
+      plan.decision.kind === 'rerun' &&
+      agentAddresses.has(`${plan.job}/${plan.step}`) &&
+      !continuingJobs.has(plan.job),
   )?.job;
   const anchor =
     lastReused?.tree_id === undefined
@@ -308,7 +399,19 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
   // тронул ли его кто-то после прогона. Восстановить такой путь значит стереть
   // ровно ту правку, ради которой чаще всего и возобновляют: `--from` обещает
   // её проигнорировать, а не отменить.
-  const restorable = [...produced].filter((path) => !ignoredEdits.has(path));
+  //
+  // Дерево продолжаемой работы не откатывается вовсе (design.md, решение 4):
+  // оно и есть то состояние, которое диалог оставил, а его пройденный префикс
+  // — обычные `reuse`, и без изъятия их вывод попал бы под восстановление и
+  // стёр бы то, что оборванная попытка успела дописать поверх. В режимах
+  // `worktree` и `copy` каталог перенят и не готовится, в режиме `cwd`
+  // восстанавливать по якорю нечего и незачем — изъятие покрывает оба.
+  const keptByContinuation = new Set(
+    [...continuingJobs].flatMap((jobId) => [...(producedByJob.get(jobId) ?? [])]),
+  );
+  const restorable = [...produced].filter(
+    (path) => !ignoredEdits.has(path) && !keptByContinuation.has(path),
+  );
 
   return {
     sourceRunId: source.manifest.run_id,
@@ -321,6 +424,68 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
       : {}),
     fromScratch: !anyReuse,
     ...(failureNoteJob === undefined ? {} : { failureNoteJob }),
+    adoptWorkspace: coarsenedResult.adoptWorkspace,
+  };
+}
+
+/**
+ * Пригодность оборванного шага к продолжению своей сессии.
+ *
+ * Продолжение назначается только тогда, когда отмена остаётся единственной
+ * причиной невалидности (design.md, решение 2): вызывается лишь после того,
+ * как остальные проверки `invalidationReason` уже прошли структурно.
+ */
+function resolveContinuation(input: {
+  readonly job: Job;
+  readonly step: Step;
+  readonly previous: StepRecord;
+  readonly record: JobRecord | undefined;
+  readonly from: ResumeFrom | undefined;
+  /** Шаг лежит выше точки `--from` в порядке исполнения. */
+  readonly isAbove: boolean;
+  readonly graph: Graph;
+  readonly options: BuildPlanOptions;
+}):
+  | {
+      readonly sessionId: string;
+      readonly workspacePath: string;
+      readonly nested?: readonly { readonly dir: string; readonly repo: string }[];
+    }
+  | undefined {
+  const { job, step, previous, record, from, isAbove, graph, options } = input;
+
+  // Явный `--from` на этот шаг или выше отменяет продолжение: запрос «сделать
+  // заново» — это запрос чистого разговора (design.md, решение 2). Точка
+  // ниже по графу продолжения не касается: шаг выше неё `--from` не судит
+  // вовсе, и отменять ради него уже начатый диалог было бы наказанием за
+  // требование, обращённое к другому месту пайплайна.
+  if (from !== undefined && !isAbove) return undefined;
+  if (step.kind !== 'agent') return undefined;
+  if (job.session !== 'shared') return undefined;
+  if (job.until !== undefined) return undefined;
+  if (previous.session === undefined) return undefined;
+  // Последняя попытка обязана быть оборвана отменой сама: шаг мог получить
+  // status: canceled и тогда, когда его последняя попытка завершилась сама, а
+  // отмена застала прогон в ожидании между попытками, — там диалог уже
+  // ответил на вопрос, и продолжать нечего.
+  if (previous.attempts.at(-1)?.status !== 'canceled') return undefined;
+  if (options.config.backends[step.agent]?.sessions !== true) return undefined;
+  // Каталог работы в новом прогоне обязан быть её собственным: наследующая
+  // либо продолжающая чужую цепочку работа перенять нечего не может — её
+  // каталог решает наследование, а не эта работа.
+  if (declaredInheritance(graph, job).kind !== 'none') return undefined;
+  if (record === undefined || record.workspace === undefined) return undefined;
+  if (options.canAdoptWorkspace === undefined || !options.canAdoptWorkspace(record, previous)) {
+    return undefined;
+  }
+
+  return {
+    sessionId: previous.session,
+    workspacePath: record.workspace.path,
+    // Состав частей переходит вместе с каталогом: перенявшая работа обязана
+    // называть в своей записи те же рабочие деревья, что в каталоге лежат, —
+    // иначе их учётные записи не снимет ни одна уборка (`run/cleanup.ts`).
+    ...(record.workspace.nested === undefined ? {} : { nested: record.workspace.nested }),
   };
 }
 
@@ -431,7 +596,13 @@ function invalidationReason(input: ReasonOptions): ReasonOutcome {
   } = input;
 
   if (previous === undefined) return { reason: 'в прошлом прогоне шага не было' };
-  if (previous.status !== 'success') return { reason: `в прошлом прогоне шаг завершился: ${previous.status}` };
+  // `canceled` досчитывает остальные причины наравне с `success`: отмена
+  // может оказаться продолжаемой, и решить это обязан вызывающий, а не эта
+  // функция — она отвечает только за структурную годность шага (design.md,
+  // решение 2). Любой другой статус отбивает шаг сразу же, как и раньше.
+  if (previous.status !== 'success' && previous.status !== 'canceled') {
+    return { reason: `в прошлом прогоне шаг завершился: ${previous.status}` };
+  }
   if (previous.anchor_missing !== undefined) {
     return { reason: 'нет якоря состояния дерева — переиспользовать нечего' };
   }
@@ -557,20 +728,31 @@ function dedupe(paths: readonly string[]): readonly string[] {
  * частичном повторе не существует. Разрешить пошаговый повтор здесь означало бы
  * разрешить результат, полученный из другого разговора, чем записанный, —
  * поэтому единицей повтора становится работа целиком, и это не настройка.
+ *
+ * Продолжение сессии — исключение: диалог, ради отсутствия которого введено
+ * огрубление, здесь есть. Уступка — всё или ничего (design.md, решение 3):
+ * шаги до продолжаемого остаются переиспользуемыми, только если каждый из них
+ * переиспользуем сам по себе; иначе продолжение отменяется, и работа
+ * огрубляется целиком, как обычная общая сессия.
  */
-function coarsenSharedSessions(jobs: readonly Job[], steps: readonly StepPlan[]): StepPlan[] {
+function coarsenSharedSessions(
+  jobs: readonly Job[],
+  steps: readonly StepPlan[],
+  adoptWorkspace: readonly AdoptedWorkspace[],
+): { readonly steps: StepPlan[]; readonly adoptWorkspace: readonly AdoptedWorkspace[] } {
   const result = [...steps];
+  let adopt = adoptWorkspace;
 
-  for (const job of jobs) {
-    if (job.session !== 'shared') continue;
-
-    const indices = result
-      .map((plan, index) => ({ plan, index }))
-      .filter(({ plan }) => plan.job === job.id);
-    if (!indices.some(({ plan }) => plan.decision.kind === 'rerun')) continue;
-
-    for (const { plan, index } of indices) {
-      if (plan.decision.kind === 'rerun') continue;
+  /**
+   * Огрубить работу: всё, что не переисполняется само по себе, переводится в
+   * переисполнение с причиной «общая сессия». Шаги, уже признанные
+   * невалидными, огрубление не трогает — их причина настоящая (изменились
+   * входы, изменилось определение), и подменять её общей сессией значило бы
+   * прятать от читателя то, что на самом деле произошло.
+   */
+  const flattenJob = (jobId: string, indices: readonly { plan: StepPlan; index: number }[]): void => {
+    adopt = adopt.filter((item) => item.job !== jobId);
+    for (const { plan, index } of indices.filter(({ plan }) => plan.decision.kind !== 'rerun')) {
       result[index] = {
         ...plan,
         decision: {
@@ -579,9 +761,29 @@ function coarsenSharedSessions(jobs: readonly Job[], steps: readonly StepPlan[])
         },
       };
     }
+  };
+
+  for (const job of jobs) {
+    if (job.session !== 'shared') continue;
+
+    const indices = result
+      .map((plan, index) => ({ plan, index }))
+      .filter(({ plan }) => plan.job === job.id);
+
+    const continueAt = indices.findIndex(({ plan }) => plan.decision.kind === 'continue');
+    if (continueAt !== -1) {
+      const prefixReusable = indices
+        .slice(0, continueAt)
+        .every(({ plan }) => plan.decision.kind === 'reuse');
+      if (!prefixReusable) flattenJob(job.id, indices);
+      continue;
+    }
+
+    if (!indices.some(({ plan }) => plan.decision.kind === 'rerun')) continue;
+    flattenJob(job.id, indices);
   }
 
-  return result;
+  return { steps: result, adoptWorkspace: adopt };
 }
 
 /** Человекочитаемый отчёт: он же вывод `--dry-run`, он же основание решения. */
@@ -599,7 +801,9 @@ export function describePlan(plan: ResumePlan): string[] {
       lines.push(
         item.decision.kind === 'reuse'
           ? `  ${address}  переиспользуется из ${plan.sourceRunId.slice(-6)}`
-          : `  ${address}  переисполняется — ${item.decision.reason}`,
+          : item.decision.kind === 'continue'
+            ? `  ${address}  продолжает сессию оборванного прогона ${plan.sourceRunId.slice(-6)}`
+            : `  ${address}  переисполняется — ${item.decision.reason}`,
       );
     }
   }
@@ -612,10 +816,61 @@ export function describePlan(plan: ResumePlan): string[] {
   return lines;
 }
 
+/**
+ * Пригодность каталога работы к перениманию для продолжения оборванной
+ * сессии: каталог обязан существовать, и его текущее состояние — совпадать с
+ * якорем, который оставила оборванная попытка. Несовпадение означает, что
+ * каталог тронут после прогона (руками или уборкой), и продолжать в нём
+ * диалог — значит продолжать его поверх дерева, которого он не видел.
+ *
+ * Якорь снимается ровно так же, как его снимал исполнитель (`runJobSteps` в
+ * `runner.ts`): с репозиторием прогона и объявленным составом вложенных
+ * репозиториев. Без первого рабочая копия (`copy`) якорь снять не может — она
+ * сама рабочим деревом git не является; без второго составной якорь считает
+ * другой идентификатор, чем записанный. И то и другое отказало бы молча, под
+ * видом «каталог тронут после прогона».
+ */
+function canAdoptWorkspace(
+  source: SourceRun,
+  request: ResumeRequest,
+  job: JobRecord,
+  step: StepRecord,
+): boolean {
+  const dir = job.workspace?.path;
+  if (dir === undefined || step.tree_id === undefined || !existsSync(dir)) return false;
+
+  const nested = request.config.project.nestedRepos;
+  const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-adopt-'));
+  try {
+    const anchorer = createAnchorer({
+      dir,
+      stateDir,
+      kind: step.anchor_kind ?? 'git',
+      scope: 'adopt',
+      repoDir: request.cwd,
+      ...(nested === undefined ? {} : { nested }),
+      readStores: [manifestStore(source.paths.anchors)],
+    });
+    try {
+      const current = anchorer.capture();
+      return current !== undefined && current.id === step.tree_id;
+    } finally {
+      anchorer.dispose();
+    }
+  } catch {
+    return false;
+  }
+}
+
 /** Вердикт по работе: переиспользуется целиком, переисполняется целиком или с шага. */
 function jobVerdict(job: string, steps: readonly StepPlan[], sourceRunId: string): string {
   if (steps.every((item) => item.decision.kind === 'reuse')) {
     return `${job}  переиспользуется из ${sourceRunId.slice(-6)}`;
+  }
+
+  const continuing = steps.find((item) => item.decision.kind === 'continue');
+  if (continuing !== undefined) {
+    return `${job}  продолжает сессию с шага ${continuing.step} — прогон ${sourceRunId.slice(-6)}`;
   }
 
   const firstRerun = steps.find((item) => item.decision.kind === 'rerun');
@@ -762,6 +1017,7 @@ export function planResume(request: ResumeRequest): ResumePlanResult {
     ...(producedPaths === undefined ? {} : { producedPaths }),
     ...(from === undefined ? {} : { from }),
     ...(allReason === undefined ? {} : { allReason }),
+    canAdoptWorkspace: (job, step) => canAdoptWorkspace(source, request, job, step),
   });
 
   // Якорь нужен плану для вычисления произведённых путей, поэтому

@@ -29,6 +29,19 @@ import { runProcess, type ProcessResult } from './process.js';
 export interface SessionRegistry {
   /** Выдать идентификатор сессии по псевдониму, отметив, начата ли она. */
   acquire(alias: string): { readonly id: string; readonly resume: boolean };
+  /**
+   * Засеять псевдоним идентификатором уже начатой сессии — продолжение
+   * оборванной сессии из другого прогона. Следующий `acquire` того же
+   * псевдонима отдаёт этот идентификатор с `resume: true`, как если бы
+   * сессия была начата в этом же прогоне.
+   */
+  seed(alias: string, sessionId: string): void;
+  /**
+   * Снять засев псевдонима: продолженная попытка не открыла сессию (см.
+   * `capabilities.sessions` и отсутствие записи `init`), и следующая попытка
+   * того же шага обязана начать разговор заново, а не повторить тот же отказ.
+   */
+  unseed(alias: string): void;
 }
 
 export function createSessionRegistry(): SessionRegistry {
@@ -40,6 +53,12 @@ export function createSessionRegistry(): SessionRegistry {
       const id = randomUUID();
       started.set(alias, id);
       return { id, resume: false };
+    },
+    seed(alias, sessionId) {
+      started.set(alias, sessionId);
+    },
+    unseed(alias) {
+      started.delete(alias);
     },
   };
 }
@@ -83,6 +102,14 @@ export interface AgentStepOptions {
   /** Один вызов на каждый отказ бэкенда в разрешении на вызов инструмента. */
   readonly onPermissionDenied?: (plan: AttemptPlan, tool: string, input: unknown) => void;
   readonly onExpectFailed?: (plan: AttemptPlan, result: PredicateResult) => void;
+  /**
+   * Первая попытка продолжает засеянную сессию (см. `SessionRegistry.seed`)
+   * и завершается ненулевым кодом, не получив от бэкенда записи `init`:
+   * сессии у бэкенда больше нет. Отказ продолжения стоит одну попытку, а не
+   * шаг (design.md, решение 6) — вызывающая сторона снимает засев и отметки
+   * об отправленном контексте, и следующая попытка идёт с чистого листа.
+   */
+  readonly onFailedContinuation?: () => void;
   /** Может возвращать промис: судья внутри неё — асинхронный агентский вызов. */
   readonly evaluate?: (
     step: AgentStep,
@@ -268,6 +295,19 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
         failedByBackend,
         ...(refusal === undefined ? {} : { refusal }),
       };
+
+      // Отличимо от обычного повтора внутри шага: там `resume: true`
+      // приходит не раньше второй попытки, а здесь — на первой же, потому
+      // что сессию засеяли идентификатором из другого прогона.
+      if (
+        plan.attempt === 1 &&
+        session.resume &&
+        process_.outcome === 'exited' &&
+        process_.exitCode !== 0 &&
+        backendInit === undefined
+      ) {
+        options.onFailedContinuation?.();
+      }
 
       const results =
         process_.outcome === 'exited'

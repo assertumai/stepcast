@@ -56,6 +56,9 @@ export function runGcCommand(
     for (const item of result.unresolvedWorktrees) {
       write(`  не снята запись рабочего дерева: ${item}`);
     }
+    for (const item of result.preservedWorkspaces) {
+      write(`  каталог сохранён ради продолжения прогоном ${shortRunId(item.adoptedBy)}: ${item.path}`);
+    }
   }
   write(`освобождено: ${formatBytes(freed)}, прогонов ${selected.length}`);
   return ExitCode.ok;

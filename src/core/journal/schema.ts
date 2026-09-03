@@ -132,6 +132,13 @@ export const AttemptRecordSchema = z
      * «сведений нет», а не ноль отказов.
      */
     permission_denials: z.number().int().nonnegative().optional(),
+    /**
+     * Прогон, из которого перенесена эта попытка, оборванная отменой. Есть
+     * только у попытки, перенесённой в запись продолжающего шага без
+     * повторного исполнения, — её расход складывается с расходом
+     * продолженной попытки, но не входит в счёт объявленных `attempts`.
+     */
+    carried_from: z.string().optional(),
   })
   .strict();
 
@@ -187,6 +194,8 @@ export const StepRecordSchema = z
     backend_init: z.record(z.string(), z.unknown()).optional(),
     /** Прогон, из которого запись перенесена без исполнения шага. */
     reused_from: z.string().optional(),
+    /** Прогон, чью оборванную сессию продолжает этот шаг. */
+    continued_from: z.string().optional(),
   })
   .strict();
 
@@ -225,6 +234,11 @@ export const JobRecordSchema = z
         inherited_from: z.string().optional(),
         /** Каталог продолжен, а не заведён заново — цепочка, а не развилка. */
         continued: z.boolean().optional(),
+        /**
+         * Прогон, у которого перенят этот каталог для продолжения оборванной
+         * сессии. Отсутствует у работы, заведшей каталог сама.
+         */
+        adopted_from: z.string().optional(),
         /**
          * Материализованные части дерева — объявленный каталог и репозиторий,
          * которому он принадлежит. Нужно уборке: она снимает учётную запись
@@ -474,6 +488,16 @@ export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('iteration.started'), job: z.string(), iteration: z.number().int().positive() }).strict(),
   z.object({ ...eventBase, kind: z.literal('iteration.finished'), job: z.string(), iteration: z.number().int().positive(), passed: z.boolean(), reason: z.string().optional() }).strict(),
   z.object({ ...eventBase, kind: z.literal('step.reused'), job: z.string(), step: z.string(), source: z.string() }).strict(),
+  // Шаг переисполнен продолжением своей сессии, оборванной отменой в исходном
+  // прогоне: session — идентификатор диалога, source — прогон-источник.
+  z.object({
+    ...eventBase,
+    kind: z.literal('session.continued'),
+    job: z.string(),
+    step: z.string(),
+    session: z.string(),
+    source: z.string(),
+  }).strict(),
   z.object({ ...eventBase, kind: z.literal('tree.restored'), anchor: z.string(), path: z.string() }).strict(),
   // Пишется до первого шага наследующей работы: объясняет, откуда в её
   // каталоге чужие файлы и почему две работы делят один путь.

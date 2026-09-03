@@ -203,6 +203,76 @@ describe('CLI: stepcast gc', () => {
     assert.match(lines.join('\n'), /public-site/);
   });
 
+  // run-cleanup: «Каталог сохранён ради продолжения» — сохранённый каталог и
+  // прогон, который его перенял, названы в отчёте gc.
+  it('называет каталог, сохранённый ради продолжения в другом прогоне', () => {
+    const { runsRoot, projectRoot, home } = bed();
+    const source = makeRun(runsRoot, projectRoot, 'old', {
+      started_at: '2026-06-01T00:00:00.000Z',
+      finished_at: '2026-06-01T00:05:00.000Z',
+    });
+    const workDir = join(source.paths.dir, 'workspace', 'работа');
+    mkdirSync(workDir, { recursive: true });
+    writeFileSync(join(workDir, 'недописанное.txt'), 'то, что успел прерванный вызов');
+    source.writeStatus({
+      run_id: source.paths.runId,
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'canceled',
+      workspace: { mode: 'worktree' },
+      inputs: {},
+      jobs: [{ id: 'работа', status: 'canceled', workspace: { mode: 'worktree', path: workDir }, steps: [] }],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-06-01T00:05:00.000Z',
+    });
+
+    const adopter = RunJournal.create({ runsRoot, projectRoot, runId: 'new' });
+    adopter.writeManifest({
+      run_id: adopter.paths.runId,
+      pipeline: 'demo',
+      pipeline_file: '/tmp/stepcast.yml',
+      lock_hash: 'abc',
+      project_root: projectRoot,
+      workspace: { mode: 'worktree' },
+      inputs: {},
+      git: {},
+      backends: {},
+      // Перенявший прогон моложе срока уборки: убирается только источник, а
+      // каталог остаётся тому, кто в нём продолжает диалог. Уйди под уборку
+      // и перенявший — беречь каталог стало бы не для кого, и он снялся бы
+      // вместе с ним (см. test/cleanup.test.ts).
+      started_at: new Date().toISOString(),
+    });
+    adopter.writeStatus({
+      run_id: adopter.paths.runId,
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'running',
+      workspace: { mode: 'worktree' },
+      inputs: {},
+      jobs: [
+        {
+          id: 'работа',
+          status: 'running',
+          workspace: { mode: 'worktree', path: workDir, adopted_from: source.paths.runId },
+          steps: [],
+        },
+      ],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+
+    const lines: string[] = [];
+    const code = withHome(home, () =>
+      runGcCommand(args({ 'older-than': '1d' }), (line) => lines.push(line), projectRoot),
+    );
+
+    assert.equal(code, ExitCode.ok);
+    assert.ok(existsSync(workDir), 'перенятый каталог обязан остаться');
+    assert.match(lines.join('\n'), /каталог сохранён ради продолжения/);
+    assert.match(lines.join('\n'), /new/);
+  });
+
   // Сценарий: «Без интерактивного ввода» — команда синхронна и не трогает stdin.
   it('работает без обращения к stdin', () => {
     const { runsRoot, projectRoot, home } = bed();

@@ -196,6 +196,7 @@ function handleDelete(runsRoot: string, url: URL, watcher: Watcher, res: ServerR
   sendJson(res, 200, {
     removed: `${parsed.key}/${parsed.runId}`,
     ...(result.unresolvedWorktrees.length === 0 ? {} : { unresolvedWorktrees: result.unresolvedWorktrees }),
+    ...(result.preservedWorkspaces.length === 0 ? {} : { preservedWorkspaces: result.preservedWorkspaces }),
   });
 }
 

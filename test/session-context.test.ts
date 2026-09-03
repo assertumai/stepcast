@@ -5,11 +5,13 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { createFakeBackend, initLine, resultLine } from '../src/core/backend/fake.js';
+import type { BackendConfig } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { findStepDir } from '../src/core/journal/reader.js';
+import { findStepDir, readEvents, resolveRun } from '../src/core/journal/reader.js';
+import { planResume, readSourceRun } from '../src/core/run/resumePlan.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import type { ContextReport } from '../src/core/journal/schema.js';
-import { makeProject, type Project } from './helpers.js';
+import { gitInit, makeProject, type Project } from './helpers.js';
 
 /** Прогон с поддельным бэкендом: важен контекст, а не настоящая модель. */
 async function run(project: Project): Promise<RunResult> {
@@ -332,5 +334,207 @@ jobs:
     // унаследованного контекста уже нет. Сравнивать составы обеих попыток
     // поэтому нельзя, только промпты — они сохраняются в отдельные файлы.
     assert.deepEqual(inheritedOrigins(originsOf(result, 'работа', 'думает')), []);
+  });
+});
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForStepStarted(
+  runsRoot: string,
+  projectRoot: string,
+  job: string,
+  step: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const started = readEvents(resolveRun(runsRoot, projectRoot)).some(
+        (event) => event.kind === 'step.started' && event.job === job && event.step === step,
+      );
+      if (started) return;
+    } catch {
+      // Журнал прогона ещё не создан — рано, пробуем снова.
+    }
+    if (Date.now() > deadline) throw new Error(`шаг ${job}/${step} не начался за ${timeoutMs}мс`);
+    await sleep(10);
+  }
+}
+
+const FAKE_BACKEND_CONFIG: BackendConfig = {
+  command: 'fake',
+  enabled: true,
+  defaultModel: undefined,
+  concurrency: 1,
+  cacheReadWeight: 0.1,
+  sessions: true,
+  structuredOutput: true,
+  strictPermissions: true,
+  permissions: undefined,
+  env: {},
+};
+
+describe('step-context: продолженная сессия не пересылает унаследованный контекст', () => {
+  const CONTINUATION_PIPELINE = `
+version: 1
+kind: pipeline
+name: продолжение-без-повтора-контекста
+
+context:
+  - text: "контекст пайплайна"
+
+jobs:
+  работа:
+    session: shared
+    context:
+      - text: "контекст работы"
+    steps:
+      - id: первый
+        agent: fake
+        prompt: "Первый"
+        expect: [{ exit_code: 0 }]
+      - id: второй
+        agent: fake
+        prompt: "Второй"
+        expect: [{ exit_code: 0 }]
+      - id: третий
+        agent: fake
+        prompt: "Третий"
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Сценарий: «Продолженная сессия контекста не повторяет»
+  it('промпт продолженной попытки содержит промпт шага и запись о прерывании, но не контекст пайплайна и не выходы предшественников', async () => {
+    const project = makeProject({ 'stepcast.yml': CONTINUATION_PIPELINE });
+    gitInit(project.root);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const config: Project['config'] = {
+      ...project.config,
+      runs: { ...project.config.runs, root: runsRoot },
+      backends: { ...project.config.backends, fake: FAKE_BACKEND_CONFIG },
+    };
+
+    const backend = createFakeBackend({
+      lines: (index) => (index === 0 ? [initLine(), resultLine({ text: 'ок' })] : [initLine()]),
+      hangMs: (index) => (index === 0 ? 0 : 60_000),
+    });
+
+    const controller = new AbortController();
+    const firstPromise = runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: project.root,
+      cwd: project.root,
+      signal: controller.signal,
+      adapterFor: () => backend.adapter,
+    });
+
+    await waitForStepStarted(runsRoot, project.root, 'работа', 'второй');
+    controller.abort();
+    const first = await firstPromise;
+    assert.equal(first.status, 'canceled');
+
+    const { plan } = planResume({ cwd: project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.equal(plan.steps.find((item) => item.step === 'второй')?.decision.kind, 'continue');
+
+    const secondBackend = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово' }), initLine(), resultLine({ text: 'дальше' })],
+    });
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: project.root,
+      cwd: project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+    assert.equal(second.status, 'success');
+
+    const prompt = promptOf(second, 'работа', 'второй');
+    assert.match(prompt, /Второй/, 'собственный промпт шага обязан дойти');
+    assert.match(prompt, /прерван/, 'запись о прерывании обязана быть в составе');
+    assert.doesNotMatch(prompt, /контекст пайплайна/);
+    assert.doesNotMatch(prompt, /контекст работы/);
+
+    assert.deepEqual(inheritedOrigins(originsOf(second, 'работа', 'второй')), []);
+
+    // Сценарий: «Запись не достаётся другим шагам»
+    assert.doesNotMatch(
+      promptOf(second, 'работа', 'третий'),
+      /прерван/,
+      'запись о прерывании — только продолжаемому шагу',
+    );
+  });
+
+  const CONTINUATION_RETRY_PIPELINE = CONTINUATION_PIPELINE.replace(
+    `        prompt: "Второй"
+        expect: [{ exit_code: 0 }]`,
+    `        prompt: "Второй"
+        attempts: { max: 2 }
+        expect: [{ exit_code: 0 }]`,
+  );
+
+  // Попытка после неудавшегося продолжения начинает разговор с чистого листа:
+  // сессия не открылась, засев снят, контекст пересылается целиком — и запись
+  // о прерывании ей уже неправда, диалога, который «продолжается», нет.
+  it('попытка после неудавшегося продолжения получает полный контекст и записи о прерывании не получает', async () => {
+    const project = makeProject({ 'stepcast.yml': CONTINUATION_RETRY_PIPELINE });
+    gitInit(project.root);
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const config: Project['config'] = {
+      ...project.config,
+      runs: { ...project.config.runs, root: runsRoot },
+      backends: { ...project.config.backends, fake: FAKE_BACKEND_CONFIG },
+    };
+
+    const backend = createFakeBackend({
+      lines: (index) => (index === 0 ? [initLine(), resultLine({ text: 'ок' })] : [initLine()]),
+      hangMs: (index) => (index === 0 ? 0 : 60_000),
+    });
+
+    const controller = new AbortController();
+    const firstPromise = runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: project.root,
+      cwd: project.root,
+      signal: controller.signal,
+      adapterFor: () => backend.adapter,
+    });
+
+    await waitForStepStarted(runsRoot, project.root, 'работа', 'второй');
+    controller.abort();
+    const first = await firstPromise;
+    assert.equal(first.status, 'canceled');
+
+    const { plan } = planResume({ cwd: project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.equal(plan.steps.find((item) => item.step === 'второй')?.decision.kind, 'continue');
+
+    // Первый запуск нового прогона — отказ продолжения: ненулевой код и ни
+    // одной записи `init`.
+    const secondBackend = createFakeBackend({
+      lines: (index) => (index === 0 ? [] : [initLine(), resultLine({ text: 'готово' })]),
+      exitCode: (index) => (index === 0 ? 1 : 0),
+    });
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: project.root,
+      cwd: project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+    assert.equal(second.status, 'success');
+    assert.equal(secondBackend.invocations[0]?.resumeSession, true);
+    assert.equal(secondBackend.invocations[1]?.resumeSession, false, 'засев снят отказом продолжения');
+
+    assert.match(promptOf(second, 'работа', 'второй'), /прерван/, 'продолженная попытка — та самая');
+
+    const retry = promptOf(second, 'работа', 'второй', 2);
+    assert.doesNotMatch(retry, /прерван/, 'диалога, который продолжается, у этой попытки нет');
+    assert.match(retry, /контекст пайплайна/, 'разговор начинается заново — с полным контекстом');
+    assert.match(retry, /контекст работы/);
   });
 });

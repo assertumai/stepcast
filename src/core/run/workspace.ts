@@ -45,6 +45,8 @@ export interface PreparedWorkspace {
    * и заводить их заново нечего).
    */
   readonly nested?: readonly { readonly dir: string; readonly repo: string }[];
+  /** Прогон, у которого перенят этот каталог для продолжения оборванной сессии. */
+  readonly adoptedFrom?: string;
 }
 
 function git(dir: string, args: readonly string[]): string {
@@ -178,6 +180,25 @@ export interface PrepareOptions {
   readonly anchorsDir?: string;
   /** Объявленный состав вложенных репозиториев (`project.nested_repos`), в каноническом порядке. */
   readonly nestedRepos?: readonly string[];
+  /**
+   * Каталог, перенятый у исходного прогона для продолжения оборванной сессии
+   * — назван планом возобновления (`ResumePlan.adoptWorkspace`). Перенимается
+   * вместо заведения своего каталога, только в режимах `worktree` и `copy` и
+   * только когда работа не наследует чужой каталог и не продолжает цепочку:
+   * в этих случаях каталог решает наследование, а не эта работа.
+   */
+  readonly adoptFrom?: {
+    readonly path: string;
+    readonly runId: string;
+    /**
+     * Части составного дерева, лежащие в перенимаемом каталоге. Переходят в
+     * запись перенявшей работы вместе с каталогом: перечень читает уборка
+     * (`collectRunWorktrees` в `run/cleanup.ts`), и без него учётные записи
+     * частей не снял бы никто — исходный прогон каталог бережёт, а
+     * перенявший о частях не знал бы.
+     */
+    readonly nested?: readonly { readonly dir: string; readonly repo: string }[];
+  };
   /** Подмена якоря: тесты подставляют поддельный, как и в `runner.ts`. */
   readonly anchorerFor?: (options: {
     readonly dir: string;
@@ -196,6 +217,23 @@ export async function prepareWorkspace(options: PrepareOptions): Promise<Prepare
   const workspace = job.workspace;
 
   if (workspace.mode === 'cwd') return { mode: 'cwd', dir: cwd };
+
+  // Продолжение оборванной сессии: каталог исходного прогона перенимается
+  // как есть, а не заводится заново, — диалог помнит абсолютные пути именно
+  // этого дерева (design.md, решение 4), и дерево в нём не восстанавливается
+  // вовсе: перенятый каталог и есть то состояние, которое диалог оставил.
+  // Наследующая либо продолжающая чужую цепочку работа сюда не попадает: её
+  // каталог решает наследование, а не эта работа.
+  if (options.adoptFrom !== undefined && (source === undefined || source.kind === 'none')) {
+    return {
+      mode: workspace.mode,
+      dir: options.adoptFrom.path,
+      adoptedFrom: options.adoptFrom.runId,
+      ...(options.adoptFrom.nested === undefined
+        ? {}
+        : { nested: options.adoptFrom.nested.map((part) => ({ ...part })) }),
+    };
+  }
 
   // Цепочка: каталог предшественника продолжается как есть — ничего не
   // готовится и не восстанавливается, а неотслеживаемое содержимое (кеши

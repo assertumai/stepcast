@@ -6,9 +6,10 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { createAnchorer, detectAnchorKind, manifestStore } from '../src/core/anchor/index.js';
-import { createFakeBackend, resultLine, toolUseLine } from '../src/core/backend/fake.js';
+import { createFakeBackend, initLine, resultLine, toolUseLine } from '../src/core/backend/fake.js';
+import type { BackendConfig } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { findStepDir, readEvents, readStatus } from '../src/core/journal/reader.js';
+import { findStepDir, readEvents, readStatus, readUsage, resolveRun } from '../src/core/journal/reader.js';
 import {
   buildResumePlan,
   changedSince,
@@ -628,6 +629,51 @@ jobs:
     if (undelivered?.kind === 'resume.note_undelivered') {
       assert.equal(undelivered.job, 'review');
     }
+  });
+
+  // Сценарий: «Продолжаемый шаг выдержки об отказе не получает»
+  it('buildPreviousFailure не выбирает своим адресатом работу, чей шаг продолжает сессию', async () => {
+    const { buildPreviousFailure } = await import('../src/core/run/previousFailure.js');
+    const status = {
+      run_id: 'r1',
+      pipeline: 'p',
+      lock_hash: 'l',
+      status: 'canceled',
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-01-01T00:00:00.000Z',
+      jobs: [
+        {
+          id: 'работа',
+          status: 'canceled',
+          steps: [
+            { id: 'второй', index: 1, kind: 'agent', key: 'k', status: 'canceled', attempts: [] },
+          ],
+        },
+      ],
+    } as unknown as Parameters<typeof buildPreviousFailure>[1];
+
+    const paths = { dir: '/dev/null', jobs: '/dev/null' } as unknown as Parameters<typeof buildPreviousFailure>[0];
+    const withoutExclusion = buildPreviousFailure(paths, status);
+    assert.ok(withoutExclusion !== undefined, 'без исключения работа была бы выбрана адресатом');
+
+    const excluded = buildPreviousFailure(paths, status, new Set(['работа']));
+    assert.equal(excluded, undefined, 'работа с продолжаемым шагом не выбирается адресатом');
+  });
+});
+
+describe('run-resume: запись о прерывании', () => {
+  // Сценарий: «Запись добавлена продолжаемому шагу» / «Запись говорит о
+  // прерывании, а не о непройденной проверке»
+  it('interrupted.md называет прерывание прерыванием и не несёт протокол попыток', async () => {
+    const { buildInterruptedNote } = await import('../src/core/run/previousFailure.js');
+    const text = buildInterruptedNote();
+
+    assert.match(text, /прерван/i);
+    assert.doesNotMatch(text, /Прошлый прогон не дошёл до конца/, 'это не выдержка об отказе');
+    assert.doesNotMatch(text, /попытка \d/i, 'протокол попыток не переносится');
+    assert.match(text, /сверьте состояние рабочего дерева/i);
   });
 });
 
@@ -1975,5 +2021,724 @@ jobs:
       readEvents(second.journal.paths).some((event) => event.kind === 'tree.restored'),
       'восстановление произведённых путей должно попасть в журнал',
     );
+  });
+});
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Дождаться начала конкретного шага по журналу — так же надёжно на любой машине, как фиксированная пауза, но без гадания со сроком. */
+async function waitForStepStarted(
+  runsRoot: string,
+  projectRoot: string,
+  job: string,
+  step: string,
+  timeoutMs = 20_000,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const started = readEvents(resolveRun(runsRoot, projectRoot)).some(
+        (event) => event.kind === 'step.started' && event.job === job && event.step === step,
+      );
+      if (started) return;
+    } catch {
+      // Журнал прогона ещё не создан — рано, пробуем снова.
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`шаг ${job}/${step} не начался за ${timeoutMs}мс`);
+    }
+    await sleep(10);
+  }
+}
+
+const FAKE_BACKEND_CONFIG: BackendConfig = {
+  command: 'fake',
+  enabled: true,
+  defaultModel: undefined,
+  concurrency: 1,
+  cacheReadWeight: 0.1,
+  sessions: true,
+  structuredOutput: true,
+  strictPermissions: true,
+  permissions: undefined,
+  env: {},
+};
+
+/** Конфигурация с объявленной (или снятой) поддержкой сессий у бэкенда `fake`. */
+function configWithFakeSessions(b: Bed, sessions: boolean): Project['config'] {
+  const base = configOf(b);
+  return { ...base, backends: { ...base.backends, fake: { ...FAKE_BACKEND_CONFIG, sessions } } };
+}
+
+const SESSION_CONTINUATION_PIPELINE = `
+version: 1
+kind: pipeline
+name: продолжение-сессии
+jobs:
+  работа:
+    session: shared
+    steps:
+      - id: первый
+        agent: fake
+        prompt: "Первый"
+        expect: [{ exit_code: 0 }]
+      - id: второй
+        agent: fake
+        prompt: "Второй"
+        expect: [{ exit_code: 0 }]
+`;
+
+/**
+ * Прогнать первый шаг до успеха, а второй — до отмены посреди зависания:
+ * `hangMs` у второй попытки бэкенда достаточен, чтобы отмена настигла его
+ * посреди исполнения, а не до и не после.
+ */
+async function runFirstCanceledAtSecondStep(
+  b: Bed,
+  config: Project['config'],
+  backendOptions: Partial<Parameters<typeof createFakeBackend>[0]> = {},
+): Promise<{ readonly first: RunResult; readonly backend: ReturnType<typeof createFakeBackend> }> {
+  const backend = createFakeBackend({
+    lines: (index) => (index === 0 ? [initLine(), resultLine({ text: 'ок' })] : [initLine()]),
+    hangMs: (index) => (index === 0 ? 0 : 60_000),
+    ...backendOptions,
+  });
+
+  const controller = new AbortController();
+  const firstPromise = runPipeline({
+    expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+    config,
+    projectRoot: b.project.root,
+    cwd: b.project.root,
+    signal: controller.signal,
+    adapterFor: () => backend.adapter,
+  });
+
+  await waitForStepStarted(b.runsRoot, b.project.root, 'работа', 'второй');
+  // `step.started` пишется до запуска бэкенда: без короткой паузы отмена
+  // порой опережает разбор потока и застаёт попытку до того, как её расход
+  // (`resultLine` во втором шаге) вообще дошёл до движка.
+  await sleep(150);
+  controller.abort();
+  const first = await firstPromise;
+  return { first, backend };
+}
+
+describe('run-resume: продолжение сессии оборванного шага', () => {
+  // Сценарий: «Оборванная сессия продолжается»
+  it('продолжает сессию второго шага, а первый переиспользует', async () => {
+    const b = bed({ 'stepcast.yml': SESSION_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config);
+    assert.equal(first.status, 'canceled');
+
+    const firstSteps = steps(first);
+    const первыйRecord = firstSteps.find((step) => step.id === 'первый');
+    const второйRecord = firstSteps.find((step) => step.id === 'второй');
+    assert.equal(первыйRecord?.status, 'success');
+    assert.equal(второйRecord?.status, 'canceled');
+    assert.ok(второйRecord?.session !== undefined, 'оборванный шаг обязан записать идентификатор сессии');
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.deepEqual(decisions(plan), { 'работа/первый': 'reuse', 'работа/второй': 'continue' });
+
+    const secondBackend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'готово' })] });
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+
+    assert.equal(second.status, 'success');
+    assert.equal(secondBackend.invocations.length, 1);
+    assert.equal(secondBackend.invocations[0]?.resumeSession, true);
+    assert.equal(secondBackend.invocations[0]?.sessionId, второйRecord?.session);
+
+    const secondSteps = steps(second);
+    assert.equal(secondSteps.find((step) => step.id === 'первый')?.reused_from, first.journal.paths.runId);
+    assert.equal(secondSteps.find((step) => step.id === 'второй')?.continued_from, first.journal.paths.runId);
+
+    assert.ok(
+      readEvents(second.journal.paths).some(
+        (event) =>
+          event.kind === 'session.continued' &&
+          (event as { job: string }).job === 'работа' &&
+          (event as { step: string }).step === 'второй',
+      ),
+      'событие session.continued обязано попасть в журнал',
+    );
+  });
+
+  // Сценарий: «Бэкенд без поддержки сессий»
+  it('без поддержки сессий у бэкенда работа переисполняется целиком', async () => {
+    const b = bed({ 'stepcast.yml': SESSION_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, false);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config, { capabilities: { sessions: false } });
+    assert.equal(first.status, 'canceled');
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.deepEqual(decisions(plan), { 'работа/первый': 'rerun', 'работа/второй': 'rerun' });
+
+    const secondBackend = createFakeBackend({
+      capabilities: { sessions: false },
+      lines: [initLine(), resultLine({ text: 'ок' }), initLine(), resultLine({ text: 'готово' })],
+    });
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+
+    assert.equal(second.status, 'success');
+    assert.equal(secondBackend.invocations.length, 2, 'оба шага исполняются заново, а не продолжаются');
+    assert.equal(secondBackend.invocations[0]?.resumeSession, false);
+  });
+
+  // Сценарий: «Изменённое определение шага отменяет продолжение»
+  it('изменённый после прогона промпт шага отменяет продолжение', async () => {
+    const b = bed({ 'stepcast.yml': SESSION_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config);
+    assert.equal(first.status, 'canceled');
+
+    b.project.write('stepcast.yml', SESSION_CONTINUATION_PIPELINE.replace('"Второй"', '"Второй, но иначе"'));
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.deepEqual(decisions(plan), { 'работа/первый': 'rerun', 'работа/второй': 'rerun' });
+  });
+
+  // Сценарий: «Пошаговая сессия не затронута» — граница нового поведения:
+  // при `session: per_step` отмена возобновляется ровно так же, как до
+  // появления продолжения.
+  it('отмена шага работы с session: per_step продолжения не назначает', async () => {
+    const PER_STEP_PIPELINE = SESSION_CONTINUATION_PIPELINE.replace(
+      'session: shared',
+      'session: per_step',
+    );
+    const b = bed({ 'stepcast.yml': PER_STEP_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config);
+    assert.equal(first.status, 'canceled');
+    const второйRecord = steps(first).find((step) => step.id === 'второй');
+    assert.equal(второйRecord?.status, 'canceled');
+    assert.ok(второйRecord?.session !== undefined, 'сессия записана и при per_step');
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.deepEqual(
+      decisions(plan),
+      { 'работа/первый': 'reuse', 'работа/второй': 'rerun' },
+      'пошаговая сессия возобновляется с точностью до шага и без продолжения',
+    );
+
+    const secondBackend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'готово' })] });
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+
+    assert.equal(second.status, 'success');
+    assert.equal(secondBackend.invocations[0]?.resumeSession, false, 'диалог начинается заново');
+    assert.notEqual(secondBackend.invocations[0]?.sessionId, второйRecord?.session);
+  });
+
+  // Отмена завершает шаг, а не заводит ему следующую попытку: на этом держится
+  // условие продолжения — последняя запись попытки обязана быть `canceled`.
+  it('отмена не заводит шагу следующую попытку', async () => {
+    const b = bed({ 'stepcast.yml': CONTINUATION_WITH_ATTEMPTS_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config);
+    assert.equal(first.status, 'canceled');
+
+    const второйRecord = steps(first).find((step) => step.id === 'второй');
+    assert.equal(второйRecord?.attempts.length, 1, 'у шага с тремя попытками отмена оставляет одну');
+    assert.equal(второйRecord?.attempts.at(-1)?.status, 'canceled');
+  });
+
+  // Сценарий: «Перенесённая попытка отличима»
+  it('перенесённая попытка называет прогон, в котором она исполнялась', async () => {
+    const b = bed({ 'stepcast.yml': SESSION_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config);
+    assert.equal(first.status, 'canceled');
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.equal(plan.steps.find((item) => item.step === 'второй')?.decision.kind, 'continue');
+
+    const secondBackend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'готово' })] });
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+    assert.equal(second.status, 'success');
+
+    const record = steps(second).find((step) => step.id === 'второй');
+    assert.equal(record?.continued_from, first.journal.paths.runId, 'запись шага называет прогон-источник сессии');
+    assert.equal(record?.attempts.length, 2, 'перенесённая попытка стоит рядом с продолженной');
+    assert.equal(record?.attempts[0]?.carried_from, first.journal.paths.runId);
+    assert.equal(record?.attempts[0]?.status, 'canceled');
+    assert.equal(record?.attempts[1]?.carried_from, undefined, 'исполненная в этом прогоне попытка источника не называет');
+  });
+
+  // Сценарий: «Отмена между попытками» — последняя попытка завершилась сама
+  // (успехом или отказом), а отмена сама по себе к сессии не привязана.
+  it('отмена между попытками не назначает продолжение', async () => {
+    const b = bed({ 'stepcast.yml': SESSION_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const backend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'ок' })] });
+    const controller = new AbortController();
+    const firstPromise = runPipeline({
+      expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      signal: controller.signal,
+      adapterFor: () => backend.adapter,
+    });
+
+    // Оба шага успевают отработать до отмены: она застаёт прогон уже
+    // завершившим работу, а не посреди попытки.
+    const first = await firstPromise;
+    controller.abort();
+    assert.equal(first.status, 'success');
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.ok(
+      plan.steps.every((item) => item.decision.kind === 'reuse'),
+      'успешный прогон целиком переиспользуется, продолжать нечего',
+    );
+  });
+
+  const CONTINUATION_WITH_FOLLOWER_PIPELINE = `
+version: 1
+kind: pipeline
+name: продолжение-и-точка-from
+jobs:
+  работа:
+    session: shared
+    steps:
+      - id: первый
+        agent: fake
+        prompt: "Первый"
+        expect: [{ exit_code: 0 }]
+      - id: второй
+        agent: fake
+        prompt: "Второй"
+        expect: [{ exit_code: 0 }]
+  следующая:
+    needs: [работа]
+    session: per_step
+    steps:
+      - id: шаг
+        run: [sh, -c, 'true']
+        expect: [{ exit_code: 0 }]
+`;
+
+  // `--from` отменяет продолжение, только когда точка названа на продолжаемом
+  // шаге или выше: ниже по графу она о нём ничего не говорит.
+  it('точка --from ниже продолжаемого шага продолжения не отменяет, а на его работе — отменяет', async () => {
+    const b = bed({ 'stepcast.yml': CONTINUATION_WITH_FOLLOWER_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config);
+    assert.equal(first.status, 'canceled');
+
+    const below = planResume({
+      cwd: b.project.root,
+      config,
+      source: readSourceRun(first.journal.paths),
+      from: 'следующая',
+    }).plan;
+    assert.deepEqual(decisions(below), {
+      'работа/первый': 'reuse',
+      'работа/второй': 'continue',
+      'следующая/шаг': 'rerun',
+    });
+
+    const atJob = planResume({
+      cwd: b.project.root,
+      config,
+      source: readSourceRun(first.journal.paths),
+      from: 'работа',
+    }).plan;
+    assert.deepEqual(decisions(atJob), {
+      'работа/первый': 'rerun',
+      'работа/второй': 'rerun',
+      'следующая/шаг': 'rerun',
+    });
+    assert.match(
+      (atJob.steps.find((item) => item.step === 'первый')?.decision as { reason: string }).reason,
+      /--from работа/,
+    );
+  });
+
+  const CONTINUATION_WITH_ATTEMPTS_PIPELINE = `
+version: 1
+kind: pipeline
+name: продолжение-с-попытками
+jobs:
+  работа:
+    session: shared
+    steps:
+      - id: первый
+        agent: fake
+        prompt: "Первый"
+        expect: [{ exit_code: 0 }]
+      - id: второй
+        agent: fake
+        prompt: "Второй"
+        attempts: { max: 3 }
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Сценарий: «Сессии у бэкенда больше нет» / «Отмена не съедает попытку»
+  it('недоступная сессия стоит одной попытки, а объявленные попытки шага отмена не расходует', async () => {
+    const b = bed({ 'stepcast.yml': CONTINUATION_WITH_ATTEMPTS_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config);
+    assert.equal(first.status, 'canceled');
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.equal(plan.steps.find((item) => item.step === 'второй')?.decision.kind, 'continue');
+
+    const originalSessionId = steps(first).find((step) => step.id === 'второй')?.session;
+
+    // Три попытки нового прогона: первая — неудавшееся продолжение (без
+    // записи init), вторая — обычный отказ с чистой сессией, третья — успех.
+    // Все три обязаны состояться: перенос расхода не отнимает ни одной.
+    const secondBackend = createFakeBackend({
+      lines: (index) => (index === 0 ? [] : index === 1 ? [initLine()] : [initLine(), resultLine({ text: 'готово' })]),
+      exitCode: (index) => (index === 2 ? 0 : 1),
+    });
+
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+
+    assert.equal(second.status, 'success');
+    assert.equal(secondBackend.invocations.length, 3, 'шаг располагает всеми тремя объявленными попытками');
+
+    assert.equal(secondBackend.invocations[0]?.resumeSession, true);
+    assert.equal(secondBackend.invocations[0]?.sessionId, originalSessionId);
+
+    // Отказ продолжения снял засев — вторая попытка идёт с новым диалогом.
+    assert.equal(secondBackend.invocations[1]?.resumeSession, false);
+    assert.notEqual(secondBackend.invocations[1]?.sessionId, originalSessionId);
+
+    // Третья попытка — обычный повтор внутри уже начатого (на второй
+    // попытке) диалога, как и для любого другого переисполняемого шага.
+    assert.equal(secondBackend.invocations[2]?.resumeSession, true);
+    assert.equal(secondBackend.invocations[2]?.sessionId, secondBackend.invocations[1]?.sessionId);
+  });
+
+  // Сценарий: «Расход складывается»
+  it('сводка расхода нового прогона складывает оборванную и продолженную попытки шага', async () => {
+    const b = bed({ 'stepcast.yml': SESSION_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config, {
+      lines: (index) =>
+        index === 0
+          ? [initLine(), resultLine({ text: 'ок' })]
+          : [initLine(), resultLine({ tokensIn: 100, tokensOut: 50 })],
+    });
+    assert.equal(first.status, 'canceled');
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.equal(plan.steps.find((item) => item.step === 'второй')?.decision.kind, 'continue');
+
+    const secondBackend = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 20, tokensOut: 10 })],
+    });
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+    assert.equal(second.status, 'success');
+
+    const usage = readUsage(second.journal.paths);
+    const stepUsage = usage.jobs['работа']?.steps['второй'];
+    assert.equal(stepUsage?.billable_tokens, 100 + 50 + 20 + 10, 'сводка складывает обе попытки');
+
+    // Перенесённый расход живёт только в сводке шага: итог работы и итог
+    // прогона считают израсходованное этим прогоном, потому что именно они
+    // сверяются с потолками (design.md, решение 8). Отсюда и заявленное
+    // следствие: сумма по шагам работы больше её собственного итога.
+    assert.equal(usage.jobs['работа']?.billable_tokens, 20 + 10, 'итог работы — расход этого прогона');
+    assert.equal(usage.total.billable_tokens, 20 + 10, 'итог прогона — тоже');
+  });
+
+  const TIGHT_BUDGET_CONTINUATION_PIPELINE = `
+version: 1
+kind: pipeline
+name: продолжение-с-тесным-потолком
+jobs:
+  работа:
+    session: shared
+    steps:
+      - id: первый
+        agent: fake
+        prompt: "Первый"
+        expect: [{ exit_code: 0 }]
+      - id: второй
+        agent: fake
+        prompt: "Второй"
+        budget: { tokens: 10 }
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Сценарий: «Перенесённый расход не считается потолком»
+  it('перенесённый расход не останавливает продолженную попытку по превышению потолка', async () => {
+    // Потолок объявлен от начала (та же попытка при живом прогоне неизбежно
+    // упёрлась бы в него сама и получила бы budget_exceeded, а не canceled) —
+    // поэтому запись оборванной попытки правится на диске, как если бы она
+    // успела израсходовать больше потолка до того, как её оборвали.
+    const b = bed({ 'stepcast.yml': TIGHT_BUDGET_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config);
+    assert.equal(first.status, 'canceled');
+
+    const statusPath = first.journal.paths.status;
+    const status = JSON.parse(readFileSync(statusPath, 'utf8')) as {
+      jobs: { id: string; steps: { id: string; attempts: { usage?: Record<string, unknown> }[] }[] }[];
+    };
+    const step = status.jobs.find((job) => job.id === 'работа')?.steps.find((item) => item.id === 'второй');
+    const attempt = step?.attempts.at(-1);
+    assert.ok(attempt !== undefined, 'запись оборванной попытки обязана быть в состоянии');
+    attempt.usage = {
+      backend: 'fake',
+      tokens_in: 100,
+      tokens_out: 50,
+      cache_read: null,
+      cache_write: null,
+      wallclock_ms: 10,
+    };
+    writeFileSync(statusPath, JSON.stringify(status));
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.equal(plan.steps.find((item) => item.step === 'второй')?.decision.kind, 'continue');
+
+    const secondBackend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'готово' })] });
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+
+    assert.equal(second.status, 'success', 'перенесённый расход не должен останавливать шаг по превышению');
+    assert.equal(secondBackend.invocations.length, 1, 'продолжение обязано дойти до обращения к бэкенду');
+  });
+});
+
+describe('run-resume: перенятый каталог продолжаемой работы', () => {
+  const WORKTREE_CONTINUATION_PIPELINE = `
+version: 1
+kind: pipeline
+name: перенятый-каталог
+jobs:
+  работа:
+    session: shared
+    workspace:
+      mode: worktree
+    steps:
+      - id: первый
+        agent: fake
+        prompt: "Первый"
+        expect: [{ exit_code: 0 }]
+      - id: второй
+        agent: fake
+        prompt: "Второй"
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Сценарий: «Каталог перенят» / «Продолжаемая работа не откатывается»
+  it('продолжение в режиме worktree идёт в каталоге исходного прогона, а не в заведённом заново', async () => {
+    const b = bed({ 'stepcast.yml': WORKTREE_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config);
+    assert.equal(first.status, 'canceled');
+
+    const workspacePath = readStatus(first.journal.paths).jobs.find((job) => job.id === 'работа')?.workspace?.path;
+    assert.ok(workspacePath !== undefined, 'каталог работы обязан быть записан до первого шага');
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.deepEqual(decisions(plan), { 'работа/первый': 'reuse', 'работа/второй': 'continue' });
+
+    const secondBackend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'готово' })] });
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+
+    // Заведи `prepareWorkspace` каталог заново, `git worktree add` отказал бы
+    // на уже занятом пути — успех прогона сам по себе уже свидетельствует о
+    // перенятии, а `adopted_from` называет его источник явно.
+    assert.equal(second.status, 'success');
+    const secondWorkspace = readStatus(second.journal.paths).jobs.find((job) => job.id === 'работа')?.workspace;
+    assert.equal(secondWorkspace?.path, workspacePath, 'каталог исходного прогона перенят, а не заведён заново');
+    assert.equal(secondWorkspace?.adopted_from, first.journal.paths.runId);
+  });
+
+  const COPY_CONTINUATION_PIPELINE = WORKTREE_CONTINUATION_PIPELINE.replace(
+    'mode: worktree',
+    'mode: copy',
+  );
+
+  // Сценарий: «Каталог перенят» — режим `copy` объявлен спекой наравне с
+  // `worktree`. Рабочая копия сама рабочим деревом git не является, и якорь
+  // над ней снимается только с репозиторием прогона.
+  it('продолжение в режиме copy идёт в перенятой рабочей копии исходного прогона', async () => {
+    const b = bed({ 'stepcast.yml': COPY_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config);
+    assert.equal(first.status, 'canceled');
+
+    const workspacePath = readStatus(first.journal.paths).jobs.find((job) => job.id === 'работа')?.workspace?.path;
+    assert.ok(workspacePath !== undefined, 'каталог работы обязан быть записан до первого шага');
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.deepEqual(decisions(plan), { 'работа/первый': 'reuse', 'работа/второй': 'continue' });
+
+    const secondBackend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'готово' })] });
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+
+    assert.equal(second.status, 'success');
+    assert.equal(secondBackend.invocations[0]?.resumeSession, true);
+    const secondWorkspace = readStatus(second.journal.paths).jobs.find((job) => job.id === 'работа')?.workspace;
+    assert.equal(secondWorkspace?.path, workspacePath, 'рабочая копия исходного прогона перенята');
+    assert.equal(secondWorkspace?.adopted_from, first.journal.paths.runId);
+  });
+
+  // Сценарий: «Каталог снесён уборкой»
+  it('снесённый каталог отменяет продолжение и переисполняет работу с восстановлением дерева', async () => {
+    const b = bed({ 'stepcast.yml': WORKTREE_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config);
+    assert.equal(first.status, 'canceled');
+
+    const workspacePath = readStatus(first.journal.paths).jobs.find((job) => job.id === 'работа')?.workspace?.path;
+    assert.ok(workspacePath !== undefined);
+    rmSync(workspacePath, { recursive: true, force: true });
+
+    // Продолжить нечем — коллектив шагов той же общей сессии огрубляется
+    // целиком, как и всегда при session: shared без назначенного продолжения:
+    // первый шаг сам по себе был бы годен к переиспользованию, и его
+    // огрубление называет причиной именно общую сессию.
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.deepEqual(decisions(plan), { 'работа/первый': 'rerun', 'работа/второй': 'rerun' });
+    assert.match(
+      (plan.steps.find((item) => item.step === 'первый')?.decision as { reason: string }).reason,
+      /session: shared/,
+    );
+  });
+
+  // Сценарий: «Продолжаемая работа не откатывается» — в режиме `cwd`
+  // перенимать нечего, но и откатывать дерево продолжаемой работы по якорю
+  // нельзя: тогда правка, которую оборванная попытка успела положить поверх
+  // результата пройденного префикса, стёрлась бы, а остальные её правки
+  // остались — ровно то полурасхождение дерева с диалогом, которого
+  // продолжение и избегает.
+  it('файл, дописанный оборванной попыткой поверх результата префикса, откатом не стирается', async () => {
+    const b = bed({ 'stepcast.yml': SESSION_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    // Первый шаг пишет заметку, второй — переписывает её и обрывается.
+    const { first } = await runFirstCanceledAtSecondStep(b, config, {
+      writes: (index) =>
+        index === 0 ? { 'заметка.txt': 'первый' } : { 'заметка.txt': 'второй, недописанный' },
+    });
+    assert.equal(first.status, 'canceled');
+    assert.equal(readFileSync(b.project.path('заметка.txt'), 'utf8'), 'второй, недописанный');
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.deepEqual(decisions(plan), { 'работа/первый': 'reuse', 'работа/второй': 'continue' });
+    assert.deepEqual(
+      plan.restore?.paths ?? [],
+      [],
+      'пути продолжаемой работы в восстановление по якорю не входят',
+    );
+
+    const secondBackend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'готово' })] });
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+
+    assert.equal(second.status, 'success');
+    assert.equal(
+      readFileSync(b.project.path('заметка.txt'), 'utf8'),
+      'второй, недописанный',
+      'продолженный диалог застаёт дерево таким, каким его оставил',
+    );
+  });
+
+  // Сценарий: «Каталог тронут после прогона»
+  it('каталог, тронутый после прогона, отменяет продолжение', async () => {
+    const b = bed({ 'stepcast.yml': WORKTREE_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config);
+    assert.equal(first.status, 'canceled');
+
+    const workspacePath = readStatus(first.journal.paths).jobs.find((job) => job.id === 'работа')?.workspace?.path;
+    assert.ok(workspacePath !== undefined);
+    writeFileSync(join(workspacePath, 'правка-после-прогона.txt'), 'кто-то тронул каталог');
+
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.deepEqual(decisions(plan), { 'работа/первый': 'rerun', 'работа/второй': 'rerun' });
   });
 });

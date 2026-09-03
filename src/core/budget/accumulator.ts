@@ -147,6 +147,17 @@ export class UsageAccumulator {
   private readonly waits: WaitInterval[] = [];
   /** Отличает переисполнения одной и той же попытки в ключах расхода. */
   private sealCounter = 0;
+  /**
+   * Расход попыток, перенесённых при продолжении оборванной сессии —
+   * `<job>/<step>` → расход. Входит в сводку расхода шага (`report()`) как
+   * попытка номер 1, наравне с продолженной попыткой того же номера, но не
+   * в `usedFor`/`stepTotal`/`usedCostFor`: потолки нового прогона его не
+   * считают (design.md, решение 8). Уровни работы и прогона его не несут —
+   * `wallclock_ms` там уже занят иным смыслом (у прогона это `elapsedMs()`,
+   * реальное время, а не сумма попыток), и раздваивать их семантику ради
+   * одного поля не стоит того, что оно добавит за пределами сводки шага.
+   */
+  private readonly carried = new Map<string, Counters>();
 
   constructor(private readonly cacheReadWeight: (backend: string) => number) {}
 
@@ -294,6 +305,19 @@ export class UsageAccumulator {
       this.steps.delete(key);
       this.steps.set(sealedKey, counters);
       if (this.costUnreportedAttempts.delete(key)) this.costUnreportedAttempts.add(sealedKey);
+    }
+  }
+
+  /**
+   * Перенести расход попытки, оборванной отменой в исходном прогоне, в счёт
+   * продолжающего шага. Отдельное хранилище: `record()` его не трогает, и
+   * потолки прогона, работы и шага остаются точно такими, как если бы
+   * продолжение началось с нуля.
+   */
+  carry(jobId: string, stepId: string, usage: Usage): void {
+    this.carried.set(`${jobId}/${stepId}`, toCounters(usage, this.cacheReadWeight(usage.backend)));
+    for (const field of ['tokens_in', 'tokens_out', 'cache_read', 'cache_write'] as const) {
+      if (usage[field] === null) this.unreported.add(field);
     }
   }
 
@@ -489,7 +513,16 @@ export class UsageAccumulator {
           >;
         }
       > = {};
-      for (const [key, step] of this.steps) {
+      // Перенесённая попытка синтезирует ключ `<step>#1@carried`: тот же
+      // разбор ниже читает её как попытку номер 1 и складывает с продолженной
+      // попыткой того же номера — ровно то смешение, которого требует
+      // перенос расхода (design.md, решение 8), без отдельной ветки слияния.
+      const carriedForJob: (readonly [string, Counters])[] = [];
+      for (const [address, counters] of this.carried) {
+        if (address.startsWith(`${jobId}/`)) carriedForJob.push([`${address}#1@carried`, counters]);
+      }
+
+      for (const [key, step] of [...this.steps, ...carriedForJob]) {
         if (!key.startsWith(`${jobId}/`)) continue;
         // Разбор `stepId#attempt[@sealN]`: суффикс переисполнения роняется —
         // он лишь развёл ключи разных попыток одного номера во времени.
