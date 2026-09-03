@@ -195,6 +195,13 @@ table.runs tbody tr:hover { background: var(--panel); }
 table.runs td.num { text-align: right; font-family: var(--mono); white-space: nowrap; }
 table.runs .marks { display: flex; gap: .3rem; flex-wrap: wrap; }
 .run-name { font-weight: 600; }
+/* Причина беды чтения — под именем пайплайна, тем же приглушённым тоном, что .run-id. */
+.run-problem { font-size: .78rem; color: var(--dim); }
+
+/* Состояние всей витрины (расхождение версий), а не одного прогона — полоса
+   поверх экрана, тем же приглушённым видом, что и другие сообщения (.error). */
+.notice { color: var(--run); font-size: .85rem; }
+.notice code { font-family: var(--mono); }
 
 button.tokens {
   border: none;

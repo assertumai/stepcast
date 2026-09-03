@@ -24,11 +24,21 @@ import {
   listRuns,
   listRunsByKey,
   readEvents,
+  readEventsSoft,
   readManifest,
+  readManifestSoft,
   readResetHint,
   readStatus,
+  readStatusSoft,
+  readUsageSoft,
   resolveRun,
+  unknownKeyKind,
 } from '../src/core/journal/reader.js';
+import {
+  JOURNAL_FORMAT,
+  JOURNAL_FORMAT_FINGERPRINTS,
+  journalSchemaFingerprint,
+} from '../src/core/journal/format.js';
 import {
   findProjectRoot,
   makeRunId,
@@ -1375,5 +1385,227 @@ jobs:
     const parsed = AttemptRecordSchema.safeParse(oldAttemptRecord);
     assert.equal(parsed.success, true);
     assert.equal(parsed.success ? parsed.data.permission_denials : undefined, undefined);
+  });
+});
+
+describe('run-journal: версия формата и диагноз чтения', () => {
+  // Сценарий: «Новый прогон объявляет версию»
+  it('манифест несёт версию формата и в начальной, и в финальной записи', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+
+    journal.writeManifest(sampleManifest(journal.paths.runId));
+    assert.equal(readManifest(journal.paths).format, JOURNAL_FORMAT);
+
+    journal.writeManifest({ ...sampleManifest(journal.paths.runId), status: 'success' });
+    assert.equal(readManifest(journal.paths).format, JOURNAL_FORMAT);
+  });
+
+  // Сценарий: «Манифест прежней формы»
+  it('манифест без поля format читается как прежде, без предупреждения', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    const legacy = sampleManifest(journal.paths.runId);
+    writeFileSync(journal.paths.manifest, `${JSON.stringify(legacy, null, 2)}\n`);
+
+    const { manifest, problem } = readManifestSoft(journal.paths);
+    assert.equal(manifest?.run_id, journal.paths.runId);
+    assert.equal(problem, undefined);
+  });
+
+  // Сценарий: «Незнакомый ключ»
+  it('незнакомый ключ в run.json даёт расхождение версий с именем поля и обеими версиями', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeManifest(sampleManifest(journal.paths.runId));
+
+    const raw = JSON.parse(readFileSync(journal.paths.manifest, 'utf8')) as Record<string, unknown>;
+    raw.bogus_field = 'x';
+    writeFileSync(journal.paths.manifest, `${JSON.stringify(raw, null, 2)}\n`);
+
+    const { manifest, problem } = readManifestSoft(journal.paths);
+    assert.equal(manifest, undefined);
+    assert.equal(problem?.kind, 'version-skew');
+    assert.equal(problem?.file, 'run.json');
+    assert.match(problem?.detail ?? '', /bogus_field/);
+    assert.equal(problem?.journalFormat, JOURNAL_FORMAT);
+    assert.equal(problem?.readerFormat, JOURNAL_FORMAT);
+  });
+
+  // Сценарий: «Журнал новее читателя, но разбирается»
+  it('версия формата новее читателя даёт предупреждение и разобранные данные разом', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeManifest(sampleManifest(journal.paths.runId));
+
+    const raw = JSON.parse(readFileSync(journal.paths.manifest, 'utf8')) as Record<string, unknown>;
+    raw.format = JOURNAL_FORMAT + 1;
+    writeFileSync(journal.paths.manifest, `${JSON.stringify(raw, null, 2)}\n`);
+
+    const { manifest, problem } = readManifestSoft(journal.paths);
+    assert.equal(manifest?.run_id, journal.paths.runId);
+    assert.equal(problem?.kind, 'version-skew');
+    assert.equal(problem?.journalFormat, JOURNAL_FORMAT + 1);
+    assert.equal(problem?.readerFormat, JOURNAL_FORMAT);
+  });
+
+  // Сценарий: «Испорченный файл»
+  it('оборванный run.json даёт порчу, а не расхождение версий', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeManifest(sampleManifest(journal.paths.runId));
+    writeFileSync(journal.paths.manifest, '{ "run_id": "x",');
+
+    const { manifest, problem } = readManifestSoft(journal.paths);
+    assert.equal(manifest, undefined);
+    assert.equal(problem?.kind, 'malformed');
+    assert.equal(problem?.journalFormat, undefined);
+    assert.equal(problem?.readerFormat, JOURNAL_FORMAT);
+  });
+
+  // Сценарий: «Версия доступна при отказе разбора» + «диагноз status.json
+  // берёт версию из соседнего run.json»
+  it('status.json неверного типа даёт порчу и версию журнала из run.json', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeManifest(sampleManifest(journal.paths.runId));
+    journal.writeStatus(sampleStatus(journal.paths.runId));
+
+    const raw = JSON.parse(readFileSync(journal.paths.status, 'utf8')) as Record<string, unknown>;
+    raw.status = 42; // неверный тип вместо перечня StatusValue
+    writeFileSync(journal.paths.status, `${JSON.stringify(raw, null, 2)}\n`);
+
+    const { status, problem } = readStatusSoft(journal.paths);
+    assert.equal(status, undefined);
+    assert.equal(problem?.kind, 'malformed');
+    assert.equal(problem?.file, 'status.json');
+    assert.equal(problem?.journalFormat, JOURNAL_FORMAT);
+    assert.equal(problem?.readerFormat, JOURNAL_FORMAT);
+  });
+
+  // Сценарий: «Схема изменена без подъёма версии»
+  it('отпечаток схем журнала совпадает со строкой действующей версии формата', () => {
+    assert.deepEqual(
+      Object.keys(JOURNAL_FORMAT_FINGERPRINTS)
+        .map(Number)
+        .sort((a, b) => a - b),
+      Array.from({ length: JOURNAL_FORMAT }, (_, index) => index + 1),
+      'таблица отпечатков обязана хранить по строке на каждую версию формата, ' +
+        'от первой до действующей',
+    );
+
+    assert.equal(
+      journalSchemaFingerprint(),
+      JOURNAL_FORMAT_FINGERPRINTS[JOURNAL_FORMAT],
+      'схема журнала изменилась: поднимите JOURNAL_FORMAT в src/core/journal/format.ts ' +
+        'и добавьте в JOURNAL_FORMAT_FINGERPRINTS строку новой версии с вычисленным отпечатком',
+    );
+  });
+
+  it('отпечаток связан с версией формата: та же схема под другой версией даёт другой отпечаток', () => {
+    // Иначе правку схемы можно было бы замять заменой одной строки, не поднимая
+    // версию, — ровно тот случай, против которого версия и заведена.
+    assert.notEqual(journalSchemaFingerprint(JOURNAL_FORMAT + 1), journalSchemaFingerprint());
+  });
+
+  // Сценарий: «Незнакомый ключ» — обратная сторона
+  it('незнакомый ключ в журнале старше читателя не выдаётся за устаревшего читателя', () => {
+    // Журнал старше читателя с незнакомым ключом означает поле, удалённое или
+    // переименованное после той версии: перезапуск демона тут не лекарство.
+    assert.equal(unknownKeyKind(1, 2), 'legacy-journal');
+    assert.equal(unknownKeyKind(2, 1), 'version-skew');
+    assert.equal(unknownKeyKind(1, 1), 'version-skew');
+    assert.equal(unknownKeyKind(undefined, 1), 'version-skew');
+  });
+
+  it('незнакомый ключ в usage.json даёт диагноз с файлом, полем и обеими версиями', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeManifest(sampleManifest(journal.paths.runId));
+    journal.writeUsage({
+      run_id: journal.paths.runId,
+      total: {
+        tokens_in: 1,
+        tokens_out: 1,
+        cache_read: 0,
+        cache_write: 0,
+        billable_tokens: 2,
+        wallclock_ms: 10,
+      },
+      jobs: {},
+      unreported: [],
+    });
+
+    const raw = JSON.parse(readFileSync(journal.paths.usage, 'utf8')) as Record<string, unknown>;
+    raw.bogus_field = 'x';
+    writeFileSync(journal.paths.usage, `${JSON.stringify(raw, null, 2)}\n`);
+
+    const { summary, unavailable, problem } = readUsageSoft(journal.paths);
+    assert.equal(summary, undefined);
+    assert.equal(unavailable, 'unreadable');
+    assert.equal(problem?.kind, 'version-skew');
+    assert.equal(problem?.file, 'usage.json');
+    assert.match(problem?.detail ?? '', /bogus_field/);
+    assert.equal(problem?.journalFormat, JOURNAL_FORMAT);
+    assert.equal(problem?.readerFormat, JOURNAL_FORMAT);
+  });
+
+  it('отсутствующая сводка расхода остаётся отсутствующей, а не бедой разбора', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeManifest(sampleManifest(journal.paths.runId));
+
+    const { unavailable, problem } = readUsageSoft(journal.paths);
+    assert.equal(unavailable, 'missing');
+    assert.equal(problem?.kind, 'missing');
+  });
+
+  it('незнакомое поле в событии называется, а не теряется молча', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeManifest(sampleManifest(journal.paths.runId));
+    journal.event({ kind: 'run.started', run_id: journal.paths.runId, pipeline: 'demo' });
+
+    const lines = readFileSync(journal.paths.events, 'utf8').trim().split('\n');
+    const tampered = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    tampered.bogus_field = 'x';
+    writeFileSync(journal.paths.events, `${JSON.stringify(tampered)}\n`);
+
+    const { events, problem } = readEventsSoft(journal.paths);
+    assert.equal(events.length, 0, 'строка не прошла схему и потеряна');
+    assert.equal(problem?.kind, 'version-skew');
+    assert.equal(problem?.file, 'events.jsonl');
+    assert.match(problem?.at ?? '', /строка 1/);
+    assert.match(problem?.detail ?? '', /bogus_field/);
+    assert.equal(problem?.readerFormat, JOURNAL_FORMAT);
+  });
+
+  it('подсказка о сбросе окна не берётся из усечённого списка событий', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeManifest(sampleManifest(journal.paths.runId));
+    journal.event({
+      kind: 'backend.refused',
+      job: 'build',
+      step: 'compile',
+      attempt: 1,
+      class: 'rate_limit',
+      message: 'окно исчерпано',
+      resets_at: 1_800_000_000_000,
+    });
+
+    const paths = resolveRun(runsRoot, projectRoot);
+    assert.deepEqual(readResetHint(runsRoot, projectRoot, '/tmp/stepcast.yml'), {
+      resetsAt: 1_800_000_000_000,
+    });
+
+    // Дописанная строка с незнакомым полем делает список неполным: считать по
+    // нему момент сброса значило бы отложить срабатывание по догадке.
+    const lines = readFileSync(paths.events, 'utf8').trim().split('\n');
+    const tampered = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    tampered.bogus_field = 'x';
+    writeFileSync(paths.events, `${lines.join('\n')}\n${JSON.stringify(tampered)}\n`);
+
+    assert.equal(readResetHint(runsRoot, projectRoot, '/tmp/stepcast.yml'), undefined);
   });
 });

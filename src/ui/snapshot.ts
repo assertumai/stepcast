@@ -1,7 +1,14 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
-import { findStepDir, readStatus, readUsageSoft } from '../core/journal/reader.js';
+import {
+  findStepDir,
+  readManifestSoft,
+  readStatusSoft,
+  readUsageSoft,
+  type JournalProblem,
+  type readStatus,
+} from '../core/journal/reader.js';
 import type { RunPaths } from '../core/journal/paths.js';
 import { ContextReportSchema, type StatusValue, type UsageReport } from '../core/journal/schema.js';
 import { renderDisplay, type DisplayData } from '../core/pipeline/display.js';
@@ -113,6 +120,11 @@ export interface RunSnapshot {
   readonly graph: JobGraph;
   /** Прогон убран: остались только манифест, состояние и расход. */
   readonly swept: boolean;
+  /**
+   * Диагноз беды чтения журнала: манифеста, состояния или сводки расхода — в
+   * этом же порядке. Отсутствует, когда файлы прогона читаются штатно.
+   */
+  readonly problem?: JournalProblem;
 }
 
 function fileRef(runDir: string, absolute: string): JournalFileRef | undefined {
@@ -281,20 +293,23 @@ function publishedOutputs(paths: RunPaths): Set<string> {
 }
 
 export function buildSnapshot(paths: RunPaths, projectKeyValue: string): RunSnapshot {
-  const status = (() => {
-    try {
-      return readStatus(paths);
-    } catch {
-      return undefined;
-    }
-  })();
+  const { status, problem: statusProblem } = readStatusSoft(paths);
+  // Манифест читается ради диагноза: беда `run.json` — тот самый случай, ради
+  // которого страница и объясняет причину, и пользователь, перешедший сюда из
+  // строки обзора за подробностями, обязан найти здесь тот же ответ. Порядок
+  // тот же, что в обзоре: манифест первым, отсутствие ещё не записанного
+  // состояния бедой не считается.
+  const { problem: manifestProblem } = readManifestSoft(paths);
+  const { summary, problem: usageProblem } = readUsageSoft(paths);
+  const told = (candidate: JournalProblem | undefined): JournalProblem | undefined =>
+    candidate?.kind === 'missing' ? undefined : candidate;
+  const problem = manifestProblem ?? told(statusProblem) ?? told(usageProblem);
 
   // Уборка сносит всё, кроме манифеста, состояния и расхода: по отсутствию
   // каталога работ прогон и опознаётся как убранный.
   const swept = !existsSync(paths.jobs);
   const definitions = readLockJobs(paths.lock);
   const published = publishedOutputs(paths);
-  const summary = readUsageSoft(paths).summary;
 
   // Порядок работ задаёт лок; работы, оставшиеся только в состоянии
   // (например, после уборки лока), дописываются следом.
@@ -338,5 +353,6 @@ export function buildSnapshot(paths: RunPaths, projectKeyValue: string): RunSnap
       })),
     ),
     swept,
+    ...(problem === undefined ? {} : { problem }),
   };
 }

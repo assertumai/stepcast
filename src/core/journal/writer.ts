@@ -11,6 +11,7 @@ import {
 import { join } from 'node:path';
 
 import { StepcastError } from '../errors.js';
+import { JOURNAL_FORMAT } from './format.js';
 import {
   jobDir,
   jobScratchDir,
@@ -159,8 +160,15 @@ export class RunJournal {
     }
   }
 
-  writeManifest(manifest: RunManifest): void {
-    atomicWrite(this.paths.manifest, `${JSON.stringify(manifest, null, 2)}\n`);
+  /**
+   * `format` не берётся от вызывающего: поле, которое нужно не забыть
+   * передать, однажды забудут — ровно так исходная беда и появилась.
+   * Писатель проставляет действующую версию сам, поверх переданного
+   * манифеста, и обе записи прогона — начальная и финальная — несут её.
+   */
+  writeManifest(manifest: Omit<RunManifest, 'format'>): void {
+    const versioned: RunManifest = { ...manifest, format: JOURNAL_FORMAT };
+    atomicWrite(this.paths.manifest, `${JSON.stringify(versioned, null, 2)}\n`);
   }
 
   writeStatus(status: RunStatus): void {

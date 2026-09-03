@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -282,6 +282,38 @@ describe('ui-dashboard: детальный снимок прогона', () => {
     journal.prepareJob('producer');
     assert.equal(buildSnapshot(journal.paths, key).swept, false);
     assert.ok(join(journal.paths.jobs, 'producer').length > 0);
+  });
+
+  // Сценарий: «Страница нечитаемого прогона»
+  it('снимок прогона с нечитаемым состоянием несёт диагноз вместо пустых полей', () => {
+    const { journal, key } = seed();
+    writeFileSync(journal.paths.status, '{ "run_id": "x",');
+
+    const snapshot = buildSnapshot(journal.paths, key);
+
+    assert.equal(snapshot.pipeline, '');
+    assert.equal(snapshot.status, undefined);
+    assert.equal(snapshot.problem?.kind, 'malformed');
+    assert.equal(snapshot.problem?.file, 'status.json');
+  });
+
+  /**
+   * Найдено ревью: беда `run.json` — тот самый случай с незнакомым полем, —
+   * названная в строке обзора, обязана объясняться и на странице прогона:
+   * иначе перешедший за подробностями не находит их.
+   */
+  it('снимок несёт диагноз манифеста, а не только состояния', () => {
+    const { journal, key } = seed();
+
+    const raw = JSON.parse(readFileSync(journal.paths.manifest, 'utf8')) as Record<string, unknown>;
+    raw.bogus_field = 'x';
+    writeFileSync(journal.paths.manifest, `${JSON.stringify(raw, null, 2)}\n`);
+
+    const snapshot = buildSnapshot(journal.paths, key);
+
+    assert.equal(snapshot.problem?.kind, 'version-skew');
+    assert.equal(snapshot.problem?.file, 'run.json');
+    assert.match(snapshot.problem?.detail ?? '', /bogus_field/);
   });
 
   // Сценарий: «Расход работы и шага»

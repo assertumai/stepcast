@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -83,6 +83,56 @@ describe('ui-dashboard: обзор всех проектов и прогонов
     assert.ok(broken !== undefined, 'битый прогон не должен молча исчезать из обзора');
     assert.equal(broken.unreadable, true);
     assert.equal(broken.status, undefined);
+    assert.equal(broken.problem?.kind, 'missing');
+  });
+
+  // Сценарий: «Незнакомый ключ»
+  it('прогон с полем, которого читатель не знает, остаётся в обзоре с расхождением версий', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, { runId: 'skewed' });
+
+    const raw = JSON.parse(readFileSync(journal.paths.manifest, 'utf8')) as Record<string, unknown>;
+    raw.bogus_field = 'x';
+    writeFileSync(journal.paths.manifest, `${JSON.stringify(raw, null, 2)}\n`);
+
+    const runs = buildOverview(runsRoot).projects[0]?.runs ?? [];
+    const skewed = runs.find((run) => run.runId === 'skewed');
+
+    assert.ok(skewed !== undefined, 'прогон с расхождением версий не должен пропадать из обзора');
+    assert.equal(skewed.problem?.kind, 'version-skew');
+    assert.equal(skewed.problem?.file, 'run.json');
+    assert.match(skewed.problem?.detail ?? '', /bogus_field/);
+    assert.ok(skewed.problem?.journalFormat !== undefined);
+    assert.ok(skewed.problem?.readerFormat !== undefined);
+  });
+
+  /**
+   * Найдено ревью: `status.json` пишется позже манифеста, и опрос застаёт
+   * начинающийся прогон без него. Обвинять здоровый прогон бедой нельзя.
+   */
+  it('не считает бедой ещё не записанные состояние и сводку расхода', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, { runId: 'starting' });
+    rmSync(journal.paths.status);
+    rmSync(journal.paths.usage, { force: true });
+
+    const run = buildOverview(runsRoot).projects[0]?.runs[0];
+    assert.equal(run?.runId, 'starting');
+    assert.equal(run?.problem, undefined);
+  });
+
+  it('называет отказ разбора сводки расхода, когда манифест и состояние читаются', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, { runId: 'usage-broken' });
+
+    const raw = JSON.parse(readFileSync(journal.paths.usage, 'utf8')) as Record<string, unknown>;
+    raw.bogus_field = 'x';
+    writeFileSync(journal.paths.usage, `${JSON.stringify(raw, null, 2)}\n`);
+
+    const run = buildOverview(runsRoot).projects[0]?.runs[0];
+    assert.equal(run?.problem?.kind, 'version-skew');
+    assert.equal(run?.problem?.file, 'usage.json');
+    assert.match(run?.problem?.detail ?? '', /bogus_field/);
   });
 
   // Сценарий: «Убранный прогон в обзоре»

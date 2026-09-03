@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 
-import { fetchRun, type JobSnapshot, type RunSnapshot, type StepSnapshot } from '../api';
+import { fetchRun, type JobSnapshot, type JournalProblem, type RunSnapshot, type StepSnapshot } from '../api';
 import { fmtDuration, fmtMoney, fmtSpan, fmtTokens } from '../format';
 import { FileView } from '../components/FileView';
 import { JobGraph } from '../components/JobGraph';
@@ -114,6 +114,44 @@ function Pairs({
         </div>
       ))}
     </>
+  );
+}
+
+/**
+ * Объяснение беды чтения журнала — вместо пустого имени пайплайна и пустого
+ * списка работ. Три беды называются тремя разными словами: у расхождения
+ * версий лекарство есть, у журнала прежней формы и у порчи файла — нет, и
+ * предлагать перезапуск там, где он не поможет, значит врать подсказкой.
+ */
+function ProblemNotice({ problem }: { readonly problem: JournalProblem }): JSX.Element {
+  const at = problem.at === undefined ? '' : `, ${problem.at}`;
+  const place = `${problem.file}${at}: ${problem.detail}`;
+
+  if (problem.kind === 'version-skew') {
+    const journal = problem.journalFormat === undefined ? 'новее известной' : `версии ${problem.journalFormat}`;
+    return (
+      <p className="notice">
+        Прогон записан журналом {journal}, а витрина знает версию {problem.readerFormat}: читатель
+        устарел ({place}). Перезапустите демон командой{' '}
+        <code>stepcast down && stepcast up</code>.
+      </p>
+    );
+  }
+
+  if (problem.kind === 'legacy-journal') {
+    return (
+      <p className="notice">
+        Прогон записан журналом версии {problem.journalFormat}, а витрина знает версию{' '}
+        {problem.readerFormat}: этой записи в нынешних схемах уже нет ({place}). Прогон записан
+        прежней сборкой — перезапуск демона его не прочитает.
+      </p>
+    );
+  }
+
+  return (
+    <p className="error">
+      {problem.kind === 'missing' ? 'Файл не найден' : 'Файл повреждён'} ({place}).
+    </p>
   );
 }
 
@@ -272,6 +310,8 @@ export function RunDetail({
           Прогон убран: остались только манифест, состояние и расход. Подробностей больше нет.
         </p>
       ) : null}
+
+      {current.problem === undefined ? null : <ProblemNotice problem={current.problem} />}
 
       <JobGraph
         graph={current.graph}

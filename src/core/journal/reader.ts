@@ -4,6 +4,8 @@ import { uptime } from 'node:os';
 import { join } from 'node:path';
 
 import { StepcastError } from '../errors.js';
+import { describeSchemaFailure } from '../schema-failure.js';
+import { JOURNAL_FORMAT, probeJournalFormat } from './format.js';
 import {
   iterationDirName,
   parseIterationDirName,
@@ -27,6 +29,181 @@ import {
   type RunStatus,
   type UsageReport,
 } from './schema.js';
+
+/**
+ * Вид беды. `version-skew` — журнал новее читателя: лечится перезапуском.
+ * `legacy-journal` — журнал старше читателя и написан в форме, которой
+ * действующие схемы уже не знают (поле удалено или переименовано): лекарства
+ * нет, и предлагать перезапуск было бы враньём. `malformed` — файл пострадал,
+ * `missing` — файла нет.
+ */
+export type JournalProblemKind = 'version-skew' | 'legacy-journal' | 'malformed' | 'missing';
+
+/**
+ * Беда чтения файла журнала — данные, а не только текст исключения: витрина и
+ * лог демона решают по ним, что показать и что предложить.
+ */
+export interface JournalProblem {
+  readonly kind: JournalProblemKind;
+  /** Файл журнала — именем внутри каталога прогона: `run.json`, `status.json`. */
+  readonly file: string;
+  /** Место внутри документа: имя ключа или путь вроде `jobs.2.steps.0`. */
+  readonly at?: string;
+  /** Что именно не так: «неизвестный ключ pid». */
+  readonly detail: string;
+  /** Версия формата, объявленная журналом. Нет у журнала прежней формы. */
+  readonly journalFormat?: number;
+  /** Версия формата, которую знает этот читатель. */
+  readonly readerFormat: number;
+}
+
+/**
+ * Куда разошлись версии, когда строгая схема отвергла незнакомый ключ.
+ *
+ * Журнал старше читателя — значит поле было удалено или переименовано с тех
+ * пор, и читатель отвергает запись, которую сам когда-то писал: перезапуск
+ * демона такому прогону не поможет, и называть это устаревшим читателем
+ * нельзя. Во всех прочих случаях — журнал новее или вовсе не объявляет
+ * версии — отстал читатель.
+ *
+ * Случай `legacy-journal` становится достижимым с версии 2: при первой версии
+ * журнала объявить версию меньше читательской нечем.
+ */
+export function unknownKeyKind(
+  journalFormat: number | undefined,
+  readerFormat: number,
+): 'version-skew' | 'legacy-journal' {
+  return journalFormat !== undefined && journalFormat < readerFormat
+    ? 'legacy-journal'
+    : 'version-skew';
+}
+
+/**
+ * Диагноз документа журнала: читает файл сырым `JSON.parse`, пробует схему,
+ * классифицирует отказ по правилам design.md (Решение 4).
+ *
+ * `journalFormat` передаётся вызывающим, а не вычисляется здесь: у
+ * `status.json` версии нет вовсе, и её берут из соседнего `run.json` — один
+ * процесс одной сборки пишет оба файла, версия у них одна.
+ */
+function diagnoseDocument<T>(
+  filePath: string,
+  fileName: string,
+  schema: z.ZodType<T>,
+  journalFormat: number | undefined,
+): { readonly data?: T; readonly problem?: JournalProblem } {
+  const readerFormat = JOURNAL_FORMAT;
+
+  if (!existsSync(filePath)) {
+    return { problem: { kind: 'missing', file: fileName, detail: 'файл не найден', readerFormat } };
+  }
+
+  let text: string;
+  try {
+    text = readFileSync(filePath, 'utf8');
+  } catch (error) {
+    return {
+      problem: {
+        kind: 'malformed',
+        file: fileName,
+        detail: `не удалось прочитать: ${(error as Error).message}`,
+        readerFormat,
+      },
+    };
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    return {
+      problem: {
+        kind: 'malformed',
+        file: fileName,
+        detail: `документ не разбирается как JSON: ${(error as Error).message}`,
+        readerFormat,
+      },
+    };
+  }
+
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    const failure = describeSchemaFailure(parsed.error);
+    // Строгая схема отвергает ключ ровно тогда, когда читатель его не знает:
+    // движок ключей вне схемы не пишет, значит разошлись версии, а не файл
+    // пострадал. Куда разошлись — говорит объявленная версия: журнал старше
+    // читателя означает поле, удалённое или переименованное с тех пор, и
+    // перезапуск демона тут не лекарство.
+    const unknownKey = parsed.error.issues.some((issue) => issue.code === 'unrecognized_keys');
+    return {
+      problem: {
+        kind: unknownKey ? unknownKeyKind(journalFormat, readerFormat) : 'malformed',
+        file: fileName,
+        ...(failure.at === undefined ? {} : { at: failure.at }),
+        detail: failure.message,
+        ...(journalFormat === undefined ? {} : { journalFormat }),
+        readerFormat,
+      },
+    };
+  }
+
+  // Разбор прошёл, но объявленная версия новее читателя: новые поля
+  // необязательны, и удавшийся разбор не значит, что прочитано всё.
+  if (journalFormat !== undefined && journalFormat > readerFormat) {
+    return {
+      data: parsed.data,
+      problem: {
+        kind: 'version-skew',
+        file: fileName,
+        detail: `версия формата журнала ${journalFormat} новее версии читателя ${readerFormat}`,
+        journalFormat,
+        readerFormat,
+      },
+    };
+  }
+
+  return { data: parsed.data };
+}
+
+/**
+ * Подлежащее сообщения об отказе вместе с формами, которые с ним согласуются.
+ * Род задаётся здесь, а не выводится из строки: «Манифест прогона повреждён»
+ * и «Состояние прогона повреждено» — оба текста видны в выводе команд.
+ */
+interface ProblemSubject {
+  readonly subject: string;
+  readonly missing: string;
+  readonly written: string;
+  readonly damaged: string;
+}
+
+const MANIFEST_SUBJECT: ProblemSubject = {
+  subject: 'Манифест прогона',
+  missing: 'не найден',
+  written: 'записан',
+  damaged: 'повреждён',
+};
+
+const STATUS_SUBJECT: ProblemSubject = {
+  subject: 'Состояние прогона',
+  missing: 'не найдено',
+  written: 'записано',
+  damaged: 'повреждено',
+};
+
+function problemMessage(forms: ProblemSubject, problem: JournalProblem): string {
+  const { subject } = forms;
+  switch (problem.kind) {
+    case 'missing':
+      return `${subject} ${forms.missing}`;
+    case 'version-skew':
+      return `${subject} ${forms.written} более новой версией журнала, чем знает читатель: ${problem.detail}`;
+    case 'legacy-journal':
+      return `${subject} ${forms.written} прежней формой журнала, которой читатель уже не знает: ${problem.detail}`;
+    case 'malformed':
+      return `${subject} ${forms.damaged}: ${problem.detail}`;
+  }
+}
 
 /** Прогоны проекта, новейшие первыми. */
 export function listRuns(runsRoot: string, projectRoot: string): string[] {
@@ -128,21 +305,54 @@ export function resolveRun(runsRoot: string, projectRoot: string, runId?: string
   return runPaths(runsRoot, key, exact);
 }
 
+export interface ManifestSoftResult {
+  readonly manifest?: RunManifest;
+  readonly problem?: JournalProblem;
+}
+
+/**
+ * Манифест, который не бросает, а ставит диагноз: витрине и логу демона
+ * отказ разбора нужен как данные, а не как повод остановиться.
+ */
+export function readManifestSoft(paths: RunPaths): ManifestSoftResult {
+  const journalFormat = probeJournalFormat(paths.manifest);
+  const { data, problem } = diagnoseDocument(paths.manifest, 'run.json', RunManifestSchema, journalFormat);
+  return { ...(data === undefined ? {} : { manifest: data }), ...(problem === undefined ? {} : { problem }) };
+}
+
+export interface StatusSoftResult {
+  readonly status?: RunStatus;
+  readonly problem?: JournalProblem;
+}
+
+/**
+ * Состояние, которое не бросает, а ставит диагноз. `status.json` версии
+ * формата не несёт — она берётся из соседнего `run.json`: оба файла пишет
+ * один процесс одной сборки.
+ */
+export function readStatusSoft(paths: RunPaths): StatusSoftResult {
+  const journalFormat = probeJournalFormat(paths.manifest);
+  const { data, problem } = diagnoseDocument(paths.status, 'status.json', RunStatusSchema, journalFormat);
+  return { ...(data === undefined ? {} : { status: data }), ...(problem === undefined ? {} : { problem }) };
+}
+
 export function readStatus(paths: RunPaths): RunStatus {
-  const parsed = RunStatusSchema.safeParse(readJson(paths.status));
-  if (!parsed.success) {
-    throw new StepcastError('Состояние прогона повреждено', { file: paths.status });
-  }
-  return parsed.data;
+  const { status, problem } = readStatusSoft(paths);
+  if (status !== undefined) return status;
+  throw new StepcastError(problemMessage(STATUS_SUBJECT, problem as JournalProblem), {
+    file: paths.status,
+    ...(problem?.at === undefined ? {} : { at: problem.at }),
+  });
 }
 
 /** Манифест прогона: способ фиксации якоря, входы, происхождение. */
 export function readManifest(paths: RunPaths): RunManifest {
-  const parsed = RunManifestSchema.safeParse(readJson(paths.manifest));
-  if (!parsed.success) {
-    throw new StepcastError('Манифест прогона повреждён', { file: paths.manifest });
-  }
-  return parsed.data;
+  const { manifest, problem } = readManifestSoft(paths);
+  if (manifest !== undefined) return manifest;
+  throw new StepcastError(problemMessage(MANIFEST_SUBJECT, problem as JournalProblem), {
+    file: paths.manifest,
+    ...(problem?.at === undefined ? {} : { at: problem.at }),
+  });
 }
 
 export function readUsage(paths: RunPaths): UsageReport {
@@ -159,25 +369,37 @@ export interface UsageSummaryResult {
   readonly summary?: UsageReport;
   /** Отсутствует — файла ещё нет (прогон идёт); непрочитана — не прошла схему. */
   readonly unavailable?: UsageSummaryUnavailable;
+  /** Диагноз той же беды: файл, место, версии. Нет, когда сводка читается. */
+  readonly problem?: JournalProblem;
 }
 
 /**
  * Сводка расхода, которая не бросает. Отчёт о расходе (команда и витрина)
  * обязан строиться и на идущем прогоне без `usage.json`, и на прогоне со
  * сводкой прежней формы — `readUsage` для этого слишком строг.
+ *
+ * `unavailable` остаётся ради команды `stepcast usage`, которой хватает
+ * перечисления, а рядом идёт полный диагноз: `UsageReportSchema` так же
+ * строга, как остальные, и так же отвалится от следующего добавленного поля —
+ * молчать об этом на фоне вылеченных соседей значило бы оставить прежнюю
+ * ячейку «не сообщено» ни о чём.
  */
 export function readUsageSoft(paths: RunPaths): UsageSummaryResult {
-  if (!existsSync(paths.usage)) return { unavailable: 'missing' };
+  const journalFormat = probeJournalFormat(paths.manifest);
+  const { data, problem } = diagnoseDocument(
+    paths.usage,
+    'usage.json',
+    UsageReportSchema,
+    journalFormat,
+  );
 
-  let raw: unknown;
-  try {
-    raw = JSON.parse(readFileSync(paths.usage, 'utf8'));
-  } catch {
-    return { unavailable: 'unreadable' };
-  }
-
-  const parsed = UsageReportSchema.safeParse(raw);
-  return parsed.success ? { summary: parsed.data } : { unavailable: 'unreadable' };
+  // Разобранная сводка остаётся сводкой, даже когда версия разошлась: данные
+  // прочитаны, и `unavailable` о них соврал бы.
+  if (data !== undefined) return { summary: data, ...(problem === undefined ? {} : { problem }) };
+  return {
+    unavailable: problem?.kind === 'missing' ? 'missing' : 'unreadable',
+    ...(problem === undefined ? {} : { problem }),
+  };
 }
 
 /**
@@ -295,8 +517,16 @@ export function readResetHint(
     if (manifest.pipeline_file !== pipelineFile) continue;
     if (manifest.finished_at === undefined) continue;
 
+    // Подсказка считается по всем событиям прогона, и усечённый список даёт
+    // неверный ответ в обе стороны: потерянный `budget.resumed` отложит
+    // следующее срабатывание зря, потерянный `backend.refused` не отложит
+    // его вовсе. Прочитать список целиком не удалось — значит сказать
+    // нечего; планировщик сработает по своему расписанию, а не по догадке.
+    const { events, problem } = readEventsSoft(candidate);
+    if (problem !== undefined) return undefined;
+
     let resetsAt: number | undefined;
-    for (const event of readEvents(candidate)) {
+    for (const event of events) {
       if (event.kind === 'backend.refused' && event.resets_at !== undefined) {
         resetsAt = event.resets_at;
       } else if (event.kind === 'budget.waiting') {
@@ -314,15 +544,79 @@ export function readResetHint(
   return undefined;
 }
 
-export function readEvents(paths: RunPaths): Event[] {
-  if (!existsSync(paths.events)) return [];
+export interface EventsSoftResult {
+  /** Строки, прошедшие схему. Отказавшая строка сюда не попадает. */
+  readonly events: readonly Event[];
+  /** Диагноз первой отказавшей строки. Нет, когда прочитаны все строки. */
+  readonly problem?: JournalProblem;
+}
+
+/**
+ * События вместе с диагнозом: строка, не прошедшую схему, читатель теряет — и
+ * обязан об этом сказать. Потеря записи опаснее отказа манифеста: усечённый
+ * список событий выглядит полным, и решение по нему (`readResetHint`)
+ * принимается молча и неверно.
+ *
+ * Диагноз ставится по первой отказавшей строке: беда у всех строк одна —
+ * схема разошлась с записанным, — и перечислять её построчно значило бы
+ * повторять один и тот же ответ сотни раз.
+ */
+export function readEventsSoft(paths: RunPaths): EventsSoftResult {
+  if (!existsSync(paths.events)) return { events: [] };
+
+  const readerFormat = JOURNAL_FORMAT;
+  const journalFormat = probeJournalFormat(paths.manifest);
   const events: Event[] = [];
+  let problem: JournalProblem | undefined;
+  let lineNumber = 0;
+
   for (const line of readFileSync(paths.events, 'utf8').split('\n')) {
+    lineNumber += 1;
     if (line.trim() === '') continue;
-    const parsed = EventSchema.safeParse(JSON.parse(line));
-    if (parsed.success) events.push(parsed.data);
+
+    let raw: unknown;
+    try {
+      raw = JSON.parse(line);
+    } catch (error) {
+      problem ??= {
+        kind: 'malformed',
+        file: 'events.jsonl',
+        at: `строка ${lineNumber}`,
+        detail: `строка не разбирается как JSON: ${(error as Error).message}`,
+        ...(journalFormat === undefined ? {} : { journalFormat }),
+        readerFormat,
+      };
+      continue;
+    }
+
+    const parsed = EventSchema.safeParse(raw);
+    if (parsed.success) {
+      events.push(parsed.data);
+      continue;
+    }
+
+    const failure = describeSchemaFailure(parsed.error);
+    const unknownKey = parsed.error.issues.some((issue) => issue.code === 'unrecognized_keys');
+    problem ??= {
+      kind: unknownKey ? unknownKeyKind(journalFormat, readerFormat) : 'malformed',
+      file: 'events.jsonl',
+      at: failure.at === undefined ? `строка ${lineNumber}` : `строка ${lineNumber}, ${failure.at}`,
+      detail: failure.message,
+      ...(journalFormat === undefined ? {} : { journalFormat }),
+      readerFormat,
+    };
   }
-  return events;
+
+  return { events, ...(problem === undefined ? {} : { problem }) };
+}
+
+/**
+ * События прогона. Строки, не прошедшие схему, пропускаются: движок читает
+ * события ради признаков, и одна незнакомая запись не повод отказать в
+ * остальных. Кому важна полнота списка — `readEventsSoft`.
+ */
+export function readEvents(paths: RunPaths): Event[] {
+  return [...readEventsSoft(paths).events];
 }
 
 /** Найти каталог шага по идентификаторам, без знания его номера. */

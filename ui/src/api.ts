@@ -37,6 +37,29 @@ export interface RunUsageOverview {
   readonly unreported: readonly string[];
 }
 
+/**
+ * `version-skew` — журнал новее читателя: лечится перезапуском демона.
+ * `legacy-journal` — журнал старше читателя и написан формой, которой
+ * действующие схемы уже не знают: лекарства нет. `malformed` — файл
+ * пострадал, `missing` — файла нет.
+ */
+export type JournalProblemKind = 'version-skew' | 'legacy-journal' | 'malformed' | 'missing';
+
+/** Беда чтения файла журнала — данные, а не только текст исключения. */
+export interface JournalProblem {
+  readonly kind: JournalProblemKind;
+  /** Файл журнала — именем внутри каталога прогона: `run.json`, `status.json`. */
+  readonly file: string;
+  /** Место внутри документа: имя ключа или путь вроде `jobs.2.steps.0`. */
+  readonly at?: string;
+  /** Что именно не так: «неизвестный ключ pid». */
+  readonly detail: string;
+  /** Версия формата, объявленная журналом. Нет у журнала прежней формы. */
+  readonly journalFormat?: number;
+  /** Версия формата, которую знает этот читатель. */
+  readonly readerFormat: number;
+}
+
 export interface RunOverview {
   readonly runId: string;
   readonly shortId: string;
@@ -57,6 +80,8 @@ export interface RunOverview {
   readonly swept: boolean;
   readonly durationMs?: number;
   readonly unreadable: boolean;
+  /** Диагноз беды чтения: файл, место, версии. Отсутствует, когда читаются штатно. */
+  readonly problem?: JournalProblem;
   readonly usage?: RunUsageOverview;
 }
 
@@ -164,6 +189,8 @@ export interface RunSnapshot {
   readonly jobs: readonly JobSnapshot[];
   readonly graph: JobGraph;
   readonly swept: boolean;
+  /** Диагноз беды чтения журнала: манифест, состояние, сводка расхода — в этом порядке. */
+  readonly problem?: JournalProblem;
 }
 
 export interface PipelineStepView {

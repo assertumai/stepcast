@@ -23,6 +23,63 @@ function durationOf(run: RunOverview, now: number): number | undefined {
   return Number.isNaN(started) ? run.durationMs : Math.max(0, now - started);
 }
 
+interface VersionSkewSummary {
+  readonly count: number;
+  readonly journalFormat?: number;
+  readonly readerFormat: number;
+}
+
+/**
+ * Расхождение версий — состояние витрины, а не отдельного прогона: шесть
+ * прогонов об одной беде складываются в одну полосу с одним числом и одной
+ * командой, а не повторяют объяснение в каждой строке.
+ */
+function versionSkewSummary(overview: Overview): VersionSkewSummary | undefined {
+  let count = 0;
+  let journalFormat: number | undefined;
+  let readerFormat: number | undefined;
+  for (const project of overview.projects) {
+    for (const run of project.runs) {
+      if (run.problem?.kind !== 'version-skew') continue;
+      count += 1;
+      readerFormat ??= run.problem.readerFormat;
+      if (run.problem.journalFormat !== undefined) {
+        journalFormat = Math.max(journalFormat ?? 0, run.problem.journalFormat);
+      }
+    }
+  }
+  if (count === 0 || readerFormat === undefined) return undefined;
+  return { count, readerFormat, ...(journalFormat === undefined ? {} : { journalFormat }) };
+}
+
+/**
+ * «1 прогон записан», «2 прогона записаны», «5 прогонов записаны». Число
+ * задетых прогонов приходит из данных, и все три формы попадаются: полоса с
+ * «2 прогонов» выдавала бы, что склонение никто не считал.
+ */
+function affectedRuns(count: number): string {
+  const teens = count % 100;
+  const last = count % 10;
+  const one = last === 1 && teens !== 11;
+  const few = last >= 2 && last <= 4 && (teens < 12 || teens > 14);
+  const noun = one ? 'прогон' : few ? 'прогона' : 'прогонов';
+  return `${count} ${noun} ${one ? 'записан' : 'записаны'}`;
+}
+
+function VersionSkewBanner({ overview }: { readonly overview: Overview }): JSX.Element | null {
+  const summary = versionSkewSummary(overview);
+  if (summary === undefined) return null;
+
+  const journal = summary.journalFormat === undefined ? 'новее' : `версии ${summary.journalFormat}`;
+  return (
+    <p className="notice">
+      {affectedRuns(summary.count)} журналом {journal}, а витрина знает версию{' '}
+      {summary.readerFormat}: читатель устарел. Перезапустите демон командой{' '}
+      <code>stepcast down && stepcast up</code>.
+    </p>
+  );
+}
+
 function TokenCell({ run }: { readonly run: RunOverview }): JSX.Element {
   const [open, setOpen] = useState(false);
   const usage = run.usage;
@@ -156,6 +213,7 @@ export function Runs({
   return (
     <>
       <h1>Прогоны</h1>
+      <VersionSkewBanner overview={overview} />
       {overview.projects.map((project) => (
         <section key={project.key}>
           <h2 className={project.path === undefined ? 'project unknown-path' : 'project'}>
@@ -191,6 +249,12 @@ export function Runs({
                           }}
                         >
                           <div className="run-name">{run.pipeline || 'без имени'}</div>
+                          {run.problem === undefined ? null : (
+                            <div className="run-problem">
+                              {run.problem.file}
+                              {run.problem.at === undefined ? '' : `, ${run.problem.at}`}: {run.problem.detail}
+                            </div>
+                          )}
                           <div className="run-id">{run.shortId}</div>
                         </a>
                       </td>
@@ -200,7 +264,13 @@ export function Runs({
                             {run.status ?? 'неизвестно'}
                           </span>
                           {run.swept ? <span className="badge">убран</span> : null}
-                          {run.unreadable ? <span className="badge">не читается</span> : null}
+                          {run.problem?.kind === 'version-skew' ? (
+                            <span className="badge">читатель устарел</span>
+                          ) : run.problem?.kind === 'legacy-journal' ? (
+                            <span className="badge">журнал прежней формы</span>
+                          ) : run.unreadable ? (
+                            <span className="badge">не читается</span>
+                          ) : null}
                           {run.abandoned ? <span className="badge">оборван</span> : null}
                           {run.wakeAt === undefined ? null : (
                             <span className="badge" title={`сон до ${fmtTime(run.wakeAt)}`}>

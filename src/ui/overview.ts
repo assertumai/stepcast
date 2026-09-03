@@ -5,9 +5,10 @@ import {
   isRunAlive,
   listProjects,
   listRunsByKey,
-  readManifest,
-  readStatus,
+  readManifestSoft,
+  readStatusSoft,
   readUsageSoft,
+  type JournalProblem,
 } from '../core/journal/reader.js';
 import { runPaths } from '../core/journal/paths.js';
 import type { StatusValue } from '../core/journal/schema.js';
@@ -49,6 +50,12 @@ export interface RunOverview {
   readonly durationMs?: number;
   /** Манифест или состояние не читаются — прогон показан, но неполно. */
   readonly unreadable: boolean;
+  /**
+   * Диагноз беды чтения: файл, место, версии. Отсутствует, когда манифест и
+   * состояние читаются штатно. Манифест разбирается первым — при беде в
+   * обоих файлах называется его диагноз.
+   */
+  readonly problem?: JournalProblem;
   /** Отсутствует, если состояние прогона не прочиталось. */
   readonly usage?: RunUsageOverview;
 }
@@ -114,6 +121,16 @@ function pipelineFileView(projectPath: string | undefined, absolute: string): st
   return rel;
 }
 
+/**
+ * Беда, о которой стоит говорить. Отсутствие `status.json` или `usage.json`
+ * при читаемом манифесте — обычное состояние начинающегося прогона: манифест
+ * пишется первым, состояние следом, сводка расхода вовсе в конце. Называть
+ * это бедой значило бы обвинять здоровый прогон.
+ */
+function worthTelling(problem: JournalProblem | undefined): JournalProblem | undefined {
+  return problem?.kind === 'missing' ? undefined : problem;
+}
+
 function readRun(
   runsRoot: string,
   key: string,
@@ -130,24 +147,22 @@ function readRun(
   let finishedAt: string | undefined;
   let status: StatusValue | undefined;
   let wakeAt: string | undefined;
-  let unreadable = false;
   let usage: RunUsageOverview | undefined;
+  let usageProblem: JournalProblem | undefined;
 
-  try {
-    const manifest = readManifest(paths);
+  const { manifest, problem: manifestProblem } = readManifestSoft(paths);
+  if (manifest !== undefined) {
     pipeline = manifest.pipeline;
     pipelineFile = pipelineFileView(projectPath, manifest.pipeline_file);
     startedAt = manifest.started_at;
     finishedAt = manifest.finished_at;
     status = manifest.status;
-  } catch {
-    unreadable = true;
   }
 
   // Состояние точнее манифеста для идущего прогона: манифест дописывается
   // статусом только в конце, а состояние переписывается по ходу.
-  try {
-    const state = readStatus(paths);
+  const { status: state, problem: statusProblem } = readStatusSoft(paths);
+  if (state !== undefined) {
     status = state.status;
     wakeAt = state.wake_at;
     if (pipeline === '') pipeline = state.pipeline;
@@ -155,7 +170,8 @@ function readRun(
     // Расход читается тем же проходом: сводка, если уже записана и проходит
     // схему, точнее — `status.budget` растёт по ходу прогона и не хранит
     // `unreported`; на идущем прогоне сводки ещё нет, и берётся состояние.
-    const { summary } = readUsageSoft(paths);
+    const { summary, problem: usageFailure } = readUsageSoft(paths);
+    usageProblem = usageFailure;
     const costUsd = summary?.total.cost_usd ?? state.budget.cost_used_usd;
     usage = {
       billableTokens: summary?.total.billable_tokens ?? state.budget.tokens_used,
@@ -174,9 +190,18 @@ function readRun(
       aggregated: summary !== undefined,
       unreported: summary?.unreported ?? [],
     };
-  } catch {
-    if (status === undefined) unreadable = true;
   }
+
+  // Манифест разбирается первым — при беде в нескольких файлах его диагноз и
+  // есть ответ на вопрос «почему прогон показан неполно». Сводка расхода идёт
+  // последней: её беда объясняет пустую ячейку расхода, когда манифест и
+  // состояние читаются.
+  const problem =
+    manifestProblem ?? worthTelling(statusProblem) ?? worthTelling(usageProblem);
+  // То же правило, что было у пары try/catch: манифест не прочитался —
+  // прогон неполон; состояние не прочиталось — неполон, только если статус
+  // не достался и от манифеста тоже.
+  const unreadable = manifest === undefined || (state === undefined && status === undefined);
 
   const durationMs = duration(startedAt, finishedAt, now);
   // Живость проверяется только для идущих: на завершённом прогоне
@@ -198,6 +223,7 @@ function readRun(
     // Каталог работ исчезает только после уборки: движок создаёт его всегда.
     swept: !existsSync(paths.jobs),
     unreadable,
+    ...(problem === undefined ? {} : { problem }),
     ...(usage === undefined ? {} : { usage }),
   };
 }

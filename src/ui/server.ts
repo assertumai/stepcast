@@ -56,6 +56,8 @@ export interface UiServerOptions {
    * диска, то есть портить рабочее дерево ради одного сценария.
    */
   readonly dashboardFile?: string;
+  /** Куда наблюдатель печатает отказ разбора файла журнала. См. `WatcherOptions.log`. */
+  readonly log?: (line: string) => void;
 }
 
 export interface UiServer {
@@ -494,7 +496,9 @@ function handlePage(res: ServerResponse, dashboardFile: string | undefined): voi
 
 export function createUiServer(options: UiServerOptions): Promise<UiServer> {
   const { runsRoot, config, home, dashboardFile } = options;
-  const watcher = options.watcher ?? createWatcher({ runsRoot });
+  const watcher =
+    options.watcher ??
+    createWatcher({ runsRoot, ...(options.log === undefined ? {} : { log: options.log }) });
   const ownsWatcher = options.watcher === undefined;
 
   const server = createServer((req, res) => {
