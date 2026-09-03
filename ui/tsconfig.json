@@ -24,6 +24,7 @@
     "../src/ui/routes.ts",
     "../src/ui/grouping.ts",
     "../src/ui/format.ts",
+    "../src/ui/transcript.ts",
     "../vite.config.ts"
   ]
 }

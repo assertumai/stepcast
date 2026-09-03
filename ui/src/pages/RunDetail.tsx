@@ -4,6 +4,7 @@ import { fetchRun, type JobSnapshot, type RunSnapshot, type StepSnapshot } from 
 import { fmtDuration, fmtMoney, fmtSpan, fmtTokens } from '../format';
 import { FileView } from '../components/FileView';
 import { JobGraph } from '../components/JobGraph';
+import { StepOutput } from '../components/StepOutput';
 
 /**
  * Страница прогона: граф связей в шапке, под ним — выбранная работа.
@@ -24,7 +25,15 @@ import { JobGraph } from '../components/JobGraph';
  */
 const FALLBACK_DELAY_MS = 400;
 
-function Step({ address, step }: { readonly address: string; readonly step: StepSnapshot }): JSX.Element {
+function Step({
+  address,
+  jobId,
+  step,
+}: {
+  readonly address: string;
+  readonly jobId: string;
+  readonly step: StepSnapshot;
+}): JSX.Element {
   return (
     <div className="step">
       <div className="step-head">
@@ -72,6 +81,8 @@ function Step({ address, step }: { readonly address: string; readonly step: Step
           ))}
         </div>
       )}
+
+      <StepOutput address={address} jobId={jobId} stepId={step.id} kind={step.kind} />
     </div>
   );
 }
@@ -158,7 +169,7 @@ function Job({ address, job }: { readonly address: string; readonly job: JobSnap
       {job.data === undefined ? null : <Pairs label="данные" pairs={job.data} />}
 
       {job.steps.map((step) => (
-        <Step key={step.id} address={address} step={step} />
+        <Step key={step.id} address={address} jobId={job.id} step={step} />
       ))}
     </div>
   );

@@ -12,7 +12,8 @@ import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
 import { runHref } from '../src/ui/routes.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
-import { projectKey, runPaths } from '../src/core/journal/paths.js';
+import { projectKey, runPaths, stepDir } from '../src/core/journal/paths.js';
+import { MAX_FILE_BYTES } from '../src/ui/file.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 
 /**
@@ -1064,5 +1065,422 @@ jobs:
     const pipelines = await fetchJson(server, '/api/pipelines');
     assert.equal(pick(pipelines.json, 'pipelines', 0, 'file'), 'stepcast.yml');
     assert.match(String(pick(pipelines.json, 'pipelines', 0, 'error')), /схеме/);
+  });
+});
+
+describe('ui-dashboard: вывод шага', () => {
+  /**
+   * Каталог шага той же раскладки, что заводит движок: `jobs/<job>/steps/01-<step>`,
+   * а у работы с циклом — `jobs/<job>/steps/iter-<N>/01-<step>`.
+   */
+  function makeStepDir(
+    runsRoot: string,
+    projectRoot: string,
+    runId: string,
+    jobId: string,
+    stepId: string,
+    iteration?: number,
+  ): string {
+    const key = projectKey(projectRoot);
+    const paths = runPaths(runsRoot, key, runId);
+    const dir = stepDir(paths, jobId, 1, stepId, iteration);
+    mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  /** Запись шага, которую движок кладёт в каталог шага по его завершении. */
+  function writeStepRecord(dir: string, stepId: string): void {
+    writeFileSync(
+      join(dir, 'step.json'),
+      JSON.stringify({
+        id: stepId,
+        index: 1,
+        kind: 'run',
+        key: `key/${stepId}`,
+        status: 'success',
+        attempts: [],
+      }),
+    );
+  }
+
+  function outputPath(
+    key: string,
+    runId: string,
+    jobId: string,
+    stepId: string,
+    params: Readonly<Record<string, string | number>> = {},
+  ): string {
+    const query = new URLSearchParams({ run: `${key}/${runId}`, job: jobId, step: stepId });
+    for (const [name, value] of Object.entries(params)) query.set(name, String(value));
+    return `/api/step-output?${query.toString()}`;
+  }
+
+  // Сценарий: «Вывод идущего шага появляется сам»
+  it('отдаёт дописанное после смещения и пусто на повторном запросе с тем же концом', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'a',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: process.pid },
+    });
+    const key = projectKey(projectRoot);
+    const dir = makeStepDir(runsRoot, projectRoot, 'a', 'build', 'compile');
+    writeFileSync(join(dir, 'stdout.log'), 'первая строка\n');
+    const server = await startServer(t, { runsRoot });
+
+    const first = await fetchJson(server, outputPath(key, 'a', 'build', 'compile', { stdoutOffset: 0 }));
+    assert.equal(first.code, 200);
+    assert.deepEqual(first.json.attempts, [1]);
+    assert.equal(first.json.attempt, 1);
+    assert.equal(first.json.done, false, 'прогон идёт, и запись шага ещё не легла в status.json');
+    const stdout1 = pick(first.json, 'stdout') as { exists: boolean; content: string; offset: number };
+    assert.equal(stdout1.exists, true);
+    assert.equal(stdout1.content, 'первая строка\n');
+    const offsetAfterFirst = stdout1.offset;
+    assert.equal(offsetAfterFirst, Buffer.byteLength('первая строка\n'));
+
+    writeFileSync(join(dir, 'stdout.log'), 'вторая строка\n', { flag: 'a' });
+    const second = await fetchJson(
+      server,
+      outputPath(key, 'a', 'build', 'compile', { stdoutOffset: offsetAfterFirst }),
+    );
+    const stdout2 = pick(second.json, 'stdout') as { content: string; offset: number };
+    assert.equal(stdout2.content, 'вторая строка\n');
+    const offsetAfterSecond = stdout2.offset;
+
+    const third = await fetchJson(
+      server,
+      outputPath(key, 'a', 'build', 'compile', { stdoutOffset: offsetAfterSecond }),
+    );
+    const stdout3 = pick(third.json, 'stdout') as { content: string };
+    assert.equal(stdout3.content, '', 'файл не менялся — дописанного нет');
+  });
+
+  // Сценарий: «Шаг с повтором»
+  it('перечисляет попытки по файлам на диске и отдаёт вывод запрошенной', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    const dir = makeStepDir(runsRoot, projectRoot, 'a', 'build', 'compile');
+    writeFileSync(join(dir, 'stdout.log'), 'попытка один\n');
+    writeFileSync(join(dir, 'stdout.2.log'), 'попытка два\n');
+    const server = await startServer(t, { runsRoot });
+
+    const byDefault = await fetchJson(
+      server,
+      outputPath(key, 'a', 'build', 'compile', { stdoutOffset: 0 }),
+    );
+    assert.deepEqual(byDefault.json.attempts, [1, 2]);
+    assert.equal(byDefault.json.attempt, 2, 'по умолчанию — наибольшая существующая попытка');
+    assert.equal(pick(byDefault.json, 'stdout', 'content'), 'попытка два\n');
+
+    const first = await fetchJson(
+      server,
+      outputPath(key, 'a', 'build', 'compile', { attempt: 1, stdoutOffset: 0 }),
+    );
+    assert.equal(first.json.attempt, 1);
+    assert.equal(pick(first.json, 'stdout', 'content'), 'попытка один\n');
+  });
+
+  // Сценарий: «Шаг завершился» / «Прогон брошен»
+  it('называет вывод завершённым по записи шага, по не-последней попытке и по мёртвому прогону', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'running-unrecorded',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: process.pid },
+    });
+    const key = projectKey(projectRoot);
+    makeStepDir(runsRoot, projectRoot, 'running-unrecorded', 'build', 'compile');
+    writeFileSync(
+      join(stepDir(runPaths(runsRoot, key, 'running-unrecorded'), 'build', 1, 'compile'), 'stdout.log'),
+      'x',
+    );
+    const server = await startServer(t, { runsRoot });
+
+    const running = await fetchJson(
+      server,
+      outputPath(key, 'running-unrecorded', 'build', 'compile', { stdoutOffset: 0 }),
+    );
+    assert.equal(running.json.done, false);
+
+    // Запись шага уже лежит в его каталоге.
+    seedRun(runsRoot, projectRoot, {
+      runId: 'recorded',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: process.pid },
+    });
+    const recordedDir = makeStepDir(runsRoot, projectRoot, 'recorded', 'build', 'compile');
+    writeFileSync(join(recordedDir, 'stdout.log'), 'x');
+    writeStepRecord(recordedDir, 'compile');
+    const recorded = await fetchJson(
+      server,
+      outputPath(key, 'recorded', 'build', 'compile', { stdoutOffset: 0 }),
+    );
+    assert.equal(recorded.json.done, true, 'запись шага легла в каталог — дописывать больше нечего');
+
+    // Прогон, застрявший в running после гибели процесса.
+    seedRun(runsRoot, projectRoot, {
+      runId: 'abandoned',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: 999_999_999 },
+    });
+    const abandonedDir = makeStepDir(runsRoot, projectRoot, 'abandoned', 'build', 'compile');
+    writeFileSync(join(abandonedDir, 'stdout.log'), 'x');
+    const abandoned = await fetchJson(
+      server,
+      outputPath(key, 'abandoned', 'build', 'compile', { stdoutOffset: 0 }),
+    );
+    assert.equal(abandoned.json.done, true, 'процесс мёртв — дописывать некому');
+
+    // Запрошена не последняя из существующих попыток.
+    seedRun(runsRoot, projectRoot, {
+      runId: 'retried',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: process.pid },
+    });
+    const retriedDir = makeStepDir(runsRoot, projectRoot, 'retried', 'build', 'compile');
+    writeFileSync(join(retriedDir, 'stdout.log'), 'x');
+    writeFileSync(join(retriedDir, 'stdout.2.log'), 'x');
+    const notLast = await fetchJson(
+      server,
+      outputPath(key, 'retried', 'build', 'compile', { attempt: 1, stdoutOffset: 0 }),
+    );
+    assert.equal(notLast.json.done, true, 'в свой файл эта попытка больше не допишет');
+    const last = await fetchJson(
+      server,
+      outputPath(key, 'retried', 'build', 'compile', { attempt: 2, stdoutOffset: 0 }),
+    );
+    assert.equal(last.json.done, false, 'последняя попытка идущего прогона ещё может дописать');
+  });
+
+  // Сценарий: «Шаг работы с циклом на новой итерации»
+  it('не считает шаг новой итерации завершённым по одноимённому шагу прошлой', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    // Работа с `until`: шаги первой итерации уже записаны в состоянии прогона,
+    // и запись одноимённого шага лежит там всё время второй итерации.
+    seedRun(runsRoot, projectRoot, {
+      runId: 'loop',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: process.pid },
+      jobs: [
+        {
+          id: 'build',
+          status: 'running',
+          iterations: 1,
+          steps: [
+            { id: 'compile', index: 1, kind: 'run', key: 'build/compile', status: 'success', attempts: [] },
+          ],
+        },
+      ],
+    });
+    const key = projectKey(projectRoot);
+
+    const first = makeStepDir(runsRoot, projectRoot, 'loop', 'build', 'compile', 1);
+    writeFileSync(join(first, 'stdout.log'), 'итерация один\n');
+    writeStepRecord(first, 'compile');
+
+    const second = makeStepDir(runsRoot, projectRoot, 'loop', 'build', 'compile', 2);
+    writeFileSync(join(second, 'stdout.log'), 'итерация два\n');
+
+    const server = await startServer(t, { runsRoot });
+    const running = await fetchJson(server, outputPath(key, 'loop', 'build', 'compile', { stdoutOffset: 0 }));
+    assert.equal(pick(running.json, 'stdout', 'content'), 'итерация два\n', 'показана идущая итерация');
+    assert.equal(running.json.done, false, 'шаг идущей итерации своей записи ещё не написал');
+
+    writeStepRecord(second, 'compile');
+    const finished = await fetchJson(server, outputPath(key, 'loop', 'build', 'compile', { stdoutOffset: 0 }));
+    assert.equal(finished.json.done, true, 'запись шага этой итерации легла в её каталог');
+  });
+
+  it('перечисляет попытку, у которой на диске остался только stderr', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    const dir = makeStepDir(runsRoot, projectRoot, 'a', 'build', 'compile');
+    // Процесс не запустился, и стороны вывода на диске оказалась лишь одна.
+    writeFileSync(join(dir, 'stderr.log'), 'команда не найдена\n');
+    const server = await startServer(t, { runsRoot });
+
+    const answer = await fetchJson(
+      server,
+      outputPath(key, 'a', 'build', 'compile', { stdoutOffset: 0, stderrOffset: 0 }),
+    );
+    assert.deepEqual(answer.json.attempts, [1], 'попытка есть, хоть stdout.log и не заведён');
+    assert.equal(pick(answer.json, 'stdout', 'exists'), false);
+    assert.equal(pick(answer.json, 'stderr', 'content'), 'команда не найдена\n');
+  });
+
+  // Сценарий: «Дописанное сверх потолка»
+  it('отдаёт дописанное сверх потолка кусками и не называет вывод завершённым, пока остаток не дочитан', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    const dir = makeStepDir(runsRoot, projectRoot, 'a', 'build', 'compile');
+    const tail = 'хвост\n';
+    // Полтора потолка после смещения: одним ответом такое не отдаётся.
+    writeFileSync(join(dir, 'stdout.log'), `${'a'.repeat(MAX_FILE_BYTES + MAX_FILE_BYTES / 2)}${tail}`);
+    const server = await startServer(t, { runsRoot });
+
+    const chunk = await fetchJson(server, outputPath(key, 'a', 'build', 'compile', { stdoutOffset: 1 }));
+    const first = pick(chunk.json, 'stdout') as { content: string; offset: number; bytes: number };
+    assert.equal(
+      Buffer.byteLength(first.content),
+      MAX_FILE_BYTES,
+      'за раз отдаётся не больше потолка, а не весь остаток файла',
+    );
+    assert.ok(first.offset < first.bytes, 'остаток ещё не прочитан');
+    assert.equal(chunk.json.done, false, 'прогон не жив, но непрочитанный остаток держит опрос');
+
+    const rest = await fetchJson(
+      server,
+      outputPath(key, 'a', 'build', 'compile', { stdoutOffset: first.offset }),
+    );
+    const second = pick(rest.json, 'stdout') as { content: string; offset: number; bytes: number };
+    assert.ok(second.content.endsWith(tail), 'следующий кусок продолжает с того же места, без дыры');
+    assert.equal(second.offset, second.bytes);
+    assert.equal(rest.json.done, true, 'всё дочитано, и дописывать больше некому');
+  });
+
+  it('не отдаёт недописанный символ на конце окна, отданного с конца', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'a',
+      status: 'running',
+      manifest: { started_at: new Date().toISOString(), pid: process.pid },
+    });
+    const key = projectKey(projectRoot);
+    const dir = makeStepDir(runsRoot, projectRoot, 'a', 'build', 'compile');
+    const letter = Buffer.from('я', 'utf8');
+    // Файл крупнее потолка, оборванный на середине двухбайтового символа:
+    // так выглядит лог, который пишут прямо сейчас.
+    writeFileSync(
+      join(dir, 'stdout.log'),
+      Buffer.concat([Buffer.from('я'.repeat(MAX_FILE_BYTES)), letter.subarray(0, 1)]),
+    );
+    const server = await startServer(t, { runsRoot });
+
+    const head = await fetchJson(server, outputPath(key, 'a', 'build', 'compile', { stdoutOffset: 0 }));
+    const stdout = pick(head.json, 'stdout') as { content: string; offset: number; bytes: number };
+    assert.ok(!stdout.content.includes('�'), 'обрубок символа не превращается в вопросительный ромб');
+    assert.equal(stdout.offset, stdout.bytes - 1, 'недописанный байт остался непрочитанным');
+
+    writeFileSync(join(dir, 'stdout.log'), letter.subarray(1), { flag: 'a' });
+    const next = await fetchJson(
+      server,
+      outputPath(key, 'a', 'build', 'compile', { stdoutOffset: stdout.offset }),
+    );
+    assert.equal(pick(next.json, 'stdout', 'content'), 'я', 'символ дочитан целиком следующим куском');
+  });
+
+  it('отвечает ошибкой на нечитаемый каталог шага и остаётся на связи', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    // На месте каталога шагов — файл: так же выглядит гонка чтения с удалением
+    // прогона, только воспроизводимо.
+    const steps = join(runPaths(runsRoot, key, 'a').jobs, 'build', 'steps');
+    mkdirSync(dirname(steps), { recursive: true });
+    writeFileSync(steps, 'не каталог');
+    const server = await startServer(t, { runsRoot });
+
+    const broken = await fetchJson(server, outputPath(key, 'a', 'build', 'compile', { stdoutOffset: 0 }));
+    assert.ok(broken.code >= 400, 'сбой чтения — ответ одному запросу, а не падение демона');
+    assert.equal(typeof broken.json.error, 'string');
+
+    const alive = await fetchJson(server, '/api/overview');
+    assert.equal(alive.code, 200, 'демон продолжает отвечать');
+  });
+
+  // Сценарии: «Идентификатор работы за пределами раскладки», «Шаг, ещё ничего не написавший»
+  it('отклоняет составной идентификатор и не считает отсутствие каталога ошибкой', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    const badJob = await fetchJson(
+      server,
+      outputPath(key, 'a', '../etc', 'compile', { stdoutOffset: 0 }),
+    );
+    assert.equal(badJob.code, 400);
+
+    const badStep = await fetchJson(
+      server,
+      outputPath(key, 'a', 'build', 'no/such', { stdoutOffset: 0 }),
+    );
+    assert.equal(badStep.code, 400);
+
+    const noDir = await fetchJson(
+      server,
+      outputPath(key, 'a', 'build', 'not-started', { stdoutOffset: 0 }),
+    );
+    assert.equal(noDir.code, 200, 'шаг без каталога — не ошибка, а «вывода пока нет»');
+    assert.deepEqual(noDir.json.attempts, []);
+    assert.equal(noDir.json.stdout, undefined);
+  });
+
+  // Сценарий: «Вывод крупнее потолка» / «Смещение восстановления»
+  it('отдаёт крупный вывод с конца и распознаёт усечённый или заменённый файл по смещению', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    const dir = makeStepDir(runsRoot, projectRoot, 'a', 'build', 'compile');
+    const tail = 'причина отказа в конце\n';
+    const big = `начало\n${'я'.repeat(MAX_FILE_BYTES)}${tail}`;
+    writeFileSync(join(dir, 'stdout.log'), big);
+    const server = await startServer(t, { runsRoot });
+
+    const head = await fetchJson(server, outputPath(key, 'a', 'build', 'compile', { stdoutOffset: 0 }));
+    const stdout = pick(head.json, 'stdout') as {
+      truncated: boolean;
+      truncatedFrom: number;
+      content: string;
+      offset: number;
+      bytes: number;
+    };
+    assert.equal(stdout.truncated, true);
+    assert.ok(stdout.content.endsWith(tail));
+    assert.ok(!stdout.content.includes('начало'));
+    assert.equal(stdout.offset, stdout.bytes);
+    assert.equal(typeof stdout.truncatedFrom, 'number');
+
+    // Смещение больше текущего размера — файл усечён или заменён.
+    writeFileSync(join(dir, 'stdout.log'), 'заново\n');
+    const restarted = await fetchJson(
+      server,
+      outputPath(key, 'a', 'build', 'compile', { stdoutOffset: stdout.offset }),
+    );
+    const restartedStdout = pick(restarted.json, 'stdout') as { restarted: boolean; content: string };
+    assert.equal(restartedStdout.restarted, true);
+    assert.equal(restartedStdout.content, 'заново\n');
+  });
+
+  it('для командного шага отдаёт оба потока со своими смещениями', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    const dir = makeStepDir(runsRoot, projectRoot, 'a', 'build', 'compile');
+    writeFileSync(join(dir, 'stdout.log'), 'вывод\n');
+    // `stderr.log` создаётся процессом всегда, даже пустым — пустой поток
+    // отличим от отсутствующего именно этим.
+    writeFileSync(join(dir, 'stderr.log'), '');
+    const server = await startServer(t, { runsRoot });
+
+    const both = await fetchJson(
+      server,
+      outputPath(key, 'a', 'build', 'compile', { stdoutOffset: 0, stderrOffset: 0 }),
+    );
+    assert.equal(pick(both.json, 'stdout', 'content'), 'вывод\n');
+    const stderr = pick(both.json, 'stderr') as { exists: boolean; content: string };
+    assert.equal(stderr.exists, true, 'пустой файл всё равно существует');
+    assert.equal(stderr.content, '');
+
+    // Без параметра поток не запрошен вовсе — и не возвращается в ответе.
+    const stdoutOnly = await fetchJson(
+      server,
+      outputPath(key, 'a', 'build', 'compile', { stdoutOffset: 0 }),
+    );
+    assert.equal(stdoutOnly.json.stderr, undefined);
   });
 });

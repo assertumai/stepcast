@@ -341,6 +341,38 @@ button.tokens {
 .ctx { font-family: var(--mono); font-size: .78rem; color: var(--dim); margin-top: .3rem; }
 .ctx b { color: var(--text); font-weight: 600; }
 
+/*
+ * Вывод шага: ход агентского шага или два потока командного.
+ *
+ * `.transcript-entry` держит общий отступ и рамку слева — записи хода читаются
+ * как список реплик, а не как таблица; вид отличает только цвет рамки.
+ */
+.step-output { margin-top: .5rem; }
+.step-output-body { margin-top: .4rem; }
+.attempts { display: flex; gap: .3rem; margin-bottom: .4rem; }
+.attempts button.active { color: var(--accent); border-color: var(--accent); }
+
+.transcript { display: flex; flex-direction: column; gap: .4rem; }
+.transcript-entry {
+  border-left: 2px solid var(--border);
+  padding: .2rem .6rem;
+  font-size: .85rem;
+}
+.transcript-entry pre { margin: .2rem 0 0; }
+.transcript-entry.session { color: var(--dim); font-size: .78rem; font-family: var(--mono); }
+.transcript-entry.reply.thinking { border-left-color: var(--run); color: var(--dim); font-style: italic; }
+.transcript-entry.tool-call { border-left-color: var(--accent); }
+.transcript-entry.tool-call.error,
+.transcript-entry.tool-result.error { border-left-color: var(--fail); }
+.transcript-entry.result { border-left-color: var(--accent); font-weight: 600; }
+.transcript-entry.raw { border-left-color: var(--run); background: var(--bg); white-space: pre-wrap; }
+.tool-name { font-weight: 600; }
+.transcript-entry details { margin-top: .2rem; }
+.transcript-entry summary { cursor: pointer; color: var(--dim); }
+
+.stream-block { margin-top: .4rem; }
+.stream-block .kind { display: block; margin-bottom: .2rem; }
+
 pre {
   background: var(--bg);
   border: 1px solid var(--border);

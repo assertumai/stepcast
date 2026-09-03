@@ -13,6 +13,7 @@ import { buildPipelines } from './pipelines.js';
 import { isApiPath, isSafeSegment } from './routes.js';
 import { readSettings, writeSettings, type SettingsPatch } from './settings.js';
 import { buildSnapshot } from './snapshot.js';
+import { readStepOutput } from './stepOutput.js';
 import { createWatcher, type Watcher } from './watcher.js';
 
 /**
@@ -158,6 +159,83 @@ function handleFile(runsRoot: string, url: URL, res: ServerResponse): void {
   } catch (error) {
     // Выход за каталог прогона — ошибка клиента, а не сбой сервера.
     const message = isStepcastError(error) ? error.message : 'Файл не читается';
+    sendJson(res, isStepcastError(error) ? 400 : 404, { error: message });
+  }
+}
+
+const INVALID = Symbol('invalid');
+
+/** Параметр запроса как неотрицательное целое; `undefined` — параметра не было. */
+function readNonNegativeInt(url: URL, param: string): number | undefined | typeof INVALID {
+  const raw = url.searchParams.get(param);
+  if (raw === null) return undefined;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 0 ? value : INVALID;
+}
+
+/**
+ * Вывод шага по логическому адресу: прогон, работа, шаг, попытка, смещение.
+ *
+ * Путь файла клиент не подаёт вовсе (design.md, Решение 1) — разрешает его
+ * `readStepOutput` через `findStepDir` на каждый запрос, поэтому проверять
+ * выход за каталог прогона здесь нечего: обход невозможен по устройству.
+ * Идентификаторы работы и шага всё равно проходят проверку сегмента, как и
+ * везде в этом файле.
+ */
+function handleStepOutput(runsRoot: string, url: URL, res: ServerResponse): void {
+  const parsed = parseRunAddress(url.searchParams.get('run'));
+  const jobId = url.searchParams.get('job');
+  const stepId = url.searchParams.get('step');
+
+  if (
+    parsed === undefined ||
+    jobId === null ||
+    stepId === null ||
+    !isSafeSegment(jobId) ||
+    !isSafeSegment(stepId)
+  ) {
+    sendJson(res, 400, {
+      error: 'Нужны параметры run=<проект>/<прогон>, job и step одним сегментом раскладки',
+    });
+    return;
+  }
+
+  const paths = runPaths(runsRoot, parsed.key, parsed.runId);
+  if (!existsSync(paths.dir)) {
+    sendJson(res, 404, { error: `Прогон ${parsed.runId} не найден` });
+    return;
+  }
+
+  const attempt = readNonNegativeInt(url, 'attempt');
+  if (attempt === INVALID || attempt === 0) {
+    sendJson(res, 400, { error: 'attempt должен быть натуральным числом' });
+    return;
+  }
+
+  const stdoutOffset = readNonNegativeInt(url, 'stdoutOffset');
+  const stderrOffset = readNonNegativeInt(url, 'stderrOffset');
+  if (stdoutOffset === INVALID || stderrOffset === INVALID) {
+    sendJson(res, 400, { error: 'stdoutOffset и stderrOffset должны быть неотрицательными числами' });
+    return;
+  }
+
+  try {
+    sendJson(
+      res,
+      200,
+      readStepOutput(paths, jobId, stepId, {
+        ...(attempt === undefined ? {} : { attempt }),
+        ...(stdoutOffset === undefined ? {} : { stdoutOffset }),
+        ...(stderrOffset === undefined ? {} : { stderrOffset }),
+      }),
+    );
+  } catch (error) {
+    // Чтение с диска гоняется с удалением прогона и с ротацией файлов: между
+    // проверкой существования и чтением каталог шага может исчезнуть. Опрос
+    // раз в секунду на каждое раскрытое окно делает эту гонку рядовой, а
+    // необработанное исключение в слушателе запроса роняет весь демон —
+    // отвечать надо одному запросу, как это делает `handleFile`.
+    const message = isStepcastError(error) ? error.message : 'Вывод шага не читается';
     sendJson(res, isStepcastError(error) ? 400 : 404, { error: message });
   }
 }
@@ -437,6 +515,9 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
         return;
       case '/api/file':
         handleFile(runsRoot, url, res);
+        return;
+      case '/api/step-output':
+        handleStepOutput(runsRoot, url, res);
         return;
       case '/api/runs':
         handleSelectRuns(runsRoot, url, res);

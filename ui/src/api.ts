@@ -217,6 +217,28 @@ export interface FileContent {
   readonly side: FileSide;
 }
 
+/**
+ * Вывод шага по логическому адресу — сверено построчно с
+ * `src/ui/stepOutput.ts` и обработчиком `/api/step-output` в `src/ui/server.ts`.
+ */
+export interface StepOutputStream {
+  readonly exists: boolean;
+  readonly content: string;
+  readonly bytes: number;
+  readonly offset: number;
+  readonly truncated: boolean;
+  readonly truncatedFrom?: number;
+  readonly restarted: boolean;
+}
+
+export interface StepOutputResult {
+  readonly attempts: readonly number[];
+  readonly attempt?: number;
+  readonly done: boolean;
+  readonly stdout?: StepOutputStream;
+  readonly stderr?: StepOutputStream;
+}
+
 export interface SettingsValue {
   readonly value?: string;
   /** Откуда взято значение: встроенное умолчание или путь файла. */
@@ -303,6 +325,30 @@ export async function fetchFile(
 ): Promise<FileContent> {
   const query = `run=${encodeURIComponent(address)}&path=${encodeURIComponent(path)}&side=${side}`;
   return json<FileContent>(await fetch(`/api/file?${query}`));
+}
+
+/**
+ * Дописанное с вывода шага. Присутствие `stdoutOffset`/`stderrOffset` в
+ * параметрах — сама просьба прочитать поток (см. `StepOutputQuery` в
+ * `src/ui/stepOutput.ts`): не запрошенный поток демон не читает и не отдаёт.
+ */
+export async function fetchStepOutput(options: {
+  readonly address: string;
+  readonly jobId: string;
+  readonly stepId: string;
+  readonly attempt?: number;
+  readonly stdoutOffset?: number;
+  readonly stderrOffset?: number;
+}): Promise<StepOutputResult> {
+  const query = new URLSearchParams({
+    run: options.address,
+    job: options.jobId,
+    step: options.stepId,
+  });
+  if (options.attempt !== undefined) query.set('attempt', String(options.attempt));
+  if (options.stdoutOffset !== undefined) query.set('stdoutOffset', String(options.stdoutOffset));
+  if (options.stderrOffset !== undefined) query.set('stderrOffset', String(options.stderrOffset));
+  return json<StepOutputResult>(await fetch(`/api/step-output?${query.toString()}`));
 }
 
 export async function fetchPipelines(): Promise<PipelinesOverview> {
