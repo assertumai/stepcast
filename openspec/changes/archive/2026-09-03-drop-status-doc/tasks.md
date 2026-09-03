@@ -140,7 +140,11 @@
 задвоено между `docs/status.md` и пятью документами, и коммитить его
 нельзя. Порядок групп 6 → 7 → 8 сохраняется.
 
-- [ ] 6.1 Удалить `docs/status.md`, `docs/status.base.md`, `scripts/status.mjs`,
+Группы 6–8 выполнены человеком вне петли 2026-09-03, тем же коммитом,
+которым закрывается пункт очереди `drop-status-doc-for-real`. Расхождения
+с записанным ниже текстом — в разделе «Поправки исполнения (группы 6–8)».
+
+- [x] 6.1 Удалить `docs/status.md`, `docs/status.base.md`, `scripts/status.mjs`,
       `test/status-doc.test.ts` и четырнадцать фрагментов
       `openspec/changes/*/status.md` (`agent-cannot-clean-up`,
       `builtin-merge-lanes`, `configurable-check-command`, `context-dedup`,
@@ -150,41 +154,41 @@
       фрагмент собственного каталога `drop-status-doc` не заводить.
       В `openspec/changes/archive/` фрагментов нет — проверить `find`, а не
       предположить.
-- [ ] 6.2 `package.json` — убрать скрипты `status:build` и `status:check`,
+- [x] 6.2 `package.json` — убрать скрипты `status:build` и `status:check`,
       убрать `&& npm run status:check` из состава `check`. Прочие части
       `check` и их порядок не трогать.
-- [ ] 6.3 `.gitattributes` — убрать строку `docs/status.md merge=union` и
+- [x] 6.3 `.gitattributes` — убрать строку `docs/status.md merge=union` и
       шестистрочный комментарий над ней.
 
 ## 7. Снятие ссылок петли и движка
 
-- [ ] 7.1 `.stepcast/pipelines/self-improve.yml` — убрать запись `context`
+- [x] 7.1 `.stepcast/pipelines/self-improve.yml` — убрать запись `context`
       `- path: docs/status.md / mode: reference`. Текстовая запись `context`
       остаётся как есть.
-- [ ] 7.2 `.stepcast/prompts/implement.md` — убрать правило о фрагменте
+- [x] 7.2 `.stepcast/prompts/implement.md` — убрать правило о фрагменте
       `openspec/changes/${params.change}/status.md` и `npm run status:build`
       целиком; на его место — правило о том, что оговорка о реализованном
       поведении пишется в документ, описывающий это поведение, а снятое
       ограничение — удалением абзаца оттуда же.
-- [ ] 7.3 `.stepcast/prompts/propose.md` — «опираясь на код и
+- [x] 7.3 `.stepcast/prompts/propose.md` — «опираясь на код и
       `docs/status.md`» → «опираясь на код и документацию `docs/`».
-- [ ] 7.4 `.stepcast/jobs/verify.yml` — из комментария убрать `status:check`
+- [x] 7.4 `.stepcast/jobs/verify.yml` — из комментария убрать `status:check`
       из перечня того, чего не включали четыре прежних шага (`typecheck:ui`
       остаётся: пример остаётся верным и с одним именем).
-- [ ] 7.5 `.stepcast/jobs/implement.yml` — комментарий над `scripts/**` в
+- [x] 7.5 `.stepcast/jobs/implement.yml` — комментарий над `scripts/**` в
       `changed_only` перестаёт называть `scripts/status.mjs` примером
       (`scripts/merge-lanes.mjs` и `scripts/finalize.mjs` на месте и годятся).
-- [ ] 7.6 `src/core/pipeline/schema.ts` (строка ~224) — комментарий перестаёт
+- [x] 7.6 `src/core/pipeline/schema.ts` (строка ~224) — комментарий перестаёт
       отсылать к `docs/status.md`; форма запуска через GitHub названа прямо.
 
 ## 8. Подпорки
 
-- [ ] 8.1 `.stepcast/jobs/implement.yml` и `.stepcast/jobs/fix-review.yml` —
+- [x] 8.1 `.stepcast/jobs/implement.yml` и `.stepcast/jobs/fix-review.yml` —
       добавить `examples/**` в `changed_only` с комментарием о том, почему
       это не помогает текущему заходу: предикат фиксируется вместе с раскрытым
       пайплайном, расширение действует со следующего прогона (тот же порядок,
       каким `configurable-check-command` заводил `.stepcast/config.yml`).
-- [ ] 8.2 Новый тест (`test/no-status-doc.test.ts`), две проверки разного рода.
+- [x] 8.2 Новый тест (`test/no-status-doc.test.ts`), две проверки разного рода.
       **По содержимому** — отслеживаемые файлы (`git ls-files`) из `src/`,
       `test/`, `ui/`, `docs/`, `.stepcast/`, `schema/`, `scripts/`, а также
       `README.md`, `package.json` и `.gitattributes`: упоминание `status.md`,
@@ -200,14 +204,49 @@
       `docs/superpowers/plans/**` (архив прошлых планов, упоминания
       историчны). Исключение — необход, а не требование: когда человек снимет
       две ссылки, тест обязан остаться зелёным.
-- [ ] 8.3 Убедиться, что тест 8.2 действительно краснеет: временно вернуть
+- [x] 8.3 Убедиться, что тест 8.2 действительно краснеет: временно вернуть
       упоминание в `docs/config.md` и файл `openspec/changes/drop-status-doc/
       status.md`, увидеть два разных отказа, откатить обе временные правки.
       Зелёный тест на уже вычищенном дереве сам по себе ничего не
       доказывает — он был бы зелёным и пустым.
-- [ ] 8.4 Прогнать `${project.check}` целиком: типизация, линт и тесты
+- [x] 8.4 Прогнать `${project.check}` целиком: типизация, линт и тесты
       зелёные, `status:check` в составе больше нет, `test/status-doc.test.ts`
       не запускается, потому что его нет.
+
+## Поправки исполнения (группы 6–8)
+
+За время, пока группы 6–8 ждали человека, дерево ушло вперёд, и часть задач
+исполнена не буквой, а по существу:
+
+- 6.1 — фрагментов оказалось не четырнадцать, а двадцать восемь: новые
+  изменения продолжали заводить свой, пока механизм числился живым. Удалены
+  все двадцать восемь, найденные `find openspec/changes -maxdepth 2 -name
+  status.md`; в `openspec/changes/archive/` их действительно нет.
+- 6.3 — снятие строки и комментария над ней не оставляло в `.gitattributes`
+  никакого другого содержимого, поэтому файл удалён целиком. Своей границей
+  правок он остаётся: `project.edit_paths` его по-прежнему называет, и
+  вернуть его правкой петля сможет.
+- 7.1–7.3 — исполнены раньше, попутно другими изменениями:
+  `openspec-follows-repo` снял правило из `implement.md`, ссылки в
+  `self-improve.yml` и `propose.md` ушли вместе с ним. Здесь оставлено
+  только положительное правило 7.2 (куда пишется оговорка) — в переносимом
+  виде, без имени документа.
+- 7.5 — комментарий про `scripts/**` переехал из `implement.yml` в
+  `.stepcast/config.yml` вместе с раскладкой репозитория
+  (`changed-only-boundaries-declaration`); правка сделана там.
+- 8.1 — по той же причине `examples/**` добавлен в `project.edit_paths`
+  `.stepcast/config.yml`, а не литералом в две работы: обе читают границы
+  подстановкой. Ожидаемый набор границ в `test/loop-portability.test.ts`
+  обновлён вместе с ним.
+- 8.2 — тест не смотрит и на самого себя: он обязан называть то, что
+  стережёт. Заодно сняты два последних живых упоминания — иллюстративный
+  путь в комментарии `test/lint-paths.test.ts` и ставшие беспредметными
+  образцы `status.md`/`status:build` в списке запретов
+  `test/loop-portability.test.ts`.
+- Преамбула `backlog.md` перестала называть упразднённый документ
+  источником кандидатов (клауза `done_when` пункта `drop-status-doc`);
+  запрет группы 1–3 на правку очереди относился к агентскому заходу, а не к
+  человеку, который её же и ведёт.
 
 ## Поправки по ревью (группы 1–3)
 

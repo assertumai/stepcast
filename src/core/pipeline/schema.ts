@@ -303,7 +303,7 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
 
   /**
    * Ключ `triggers` заведён с запасом на вторую объявленную, но нереализованную
-   * форму запуска (GitHub, см. docs/status.md). В этом изменении внутри него
+   * форму запуска — по событию GitHub. В этом изменении внутри него
    * признаётся только `schedule` — `.strict()` отклоняет любой другой вид сам,
    * называя его в сообщении об ошибке (см. `validateDocument`).
    */

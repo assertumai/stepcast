@@ -28,10 +28,8 @@
     "lint": "eslint src test ui",
     "test": "npm run build:node && node --test \"dist/test/**/*.test.js\"",
     "test:only": "node --test \"dist/test/**/*.test.js\"",
-    "check": "npm run typecheck && npm run typecheck:ui && npm run lint && npm run build && npm run test:only && npm run status:check",
-    "schema": "npm run build:node && node dist/scripts/generate-schema.js",
-    "status:build": "node scripts/status.mjs --write",
-    "status:check": "node scripts/status.mjs --check"
+    "check": "npm run typecheck && npm run typecheck:ui && npm run lint && npm run build && npm run test:only",
+    "schema": "npm run build:node && node dist/scripts/generate-schema.js"
   },
   "dependencies": {
     "ajv": "^8.20.0",

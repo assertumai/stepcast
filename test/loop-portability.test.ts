@@ -56,12 +56,6 @@ describe('self-improvement-loop: переносимость файлов пет�
     /design\.md/,
     /tasks\.md/,
     /specs\/\*\*/,
-    // Документ каталога изменения и команда его пересборки — такая же часть
-    // практики репозитория, как имена остальных документов: чужой репозиторий,
-    // скопировавший промпты, получил бы указание завести status.md и позвать
-    // скрипт, которого у него нет.
-    /status\.md/,
-    /status:build/,
     // job-tools-declaration: инструментарий этого репозитория называется
     // объявлением project.tools, а не правом файла работы напрямую. Образец —
     // само право (`Bash(npm`), а не всякое вхождение слова: комментарий,
@@ -85,6 +79,7 @@ describe('self-improvement-loop: переносимость файлов пет�
     /eslint\.config/,
     /README\.md/,
     /\.gitattributes/,
+    /examples\/\*\*/,
     // Та же раскладка, пересказанная промптом словами, а не шаблоном
     // changed_only: каталог, названный в обратных кавычках со слешем, — это
     // объявление границы промптом, а не случайное упоминание пути в тексте.
@@ -280,6 +275,7 @@ describe('self-improvement-loop: настоящий пайплайн петли 
       'vite.config.ts',
       'README.md',
       'eslint.config.js',
+      'examples/**',
     ]);
   }
 
@@ -531,6 +527,7 @@ jobs:
       'eslint.config.js',
       'README.md',
       '.gitattributes',
+      'examples/**',
     ];
 
     const pipeline = expandForeign(makeProject());

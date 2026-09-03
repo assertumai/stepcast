@@ -311,8 +311,8 @@ ${AGENT_STEP}`),
 
   it('контекст считается от корня проекта, а не от каталога пайплайна', () => {
     // Пайплайн в подкаталоге: только так видно, что основанием взят корень.
-    // С каталогом пайплайна `docs/status.md` искался бы в
-    // `.stepcast/pipelines/docs/status.md`.
+    // С каталогом пайплайна `real-context.md` искался бы в
+    // `.stepcast/pipelines/real-context.md`.
     const project = makeProject({
       '.stepcast/pipelines/nested.yml': `
 version: 1
