@@ -314,6 +314,17 @@ export const RunManifestSchema = z
      * считается.
      */
     format: z.number().int().positive().optional(),
+    /**
+     * Движок, которым прогон исполнялся: корень пакета, точка входа и признак
+     * снимка (`run/engine.ts`). Пишется у всякого прогона, включая тот, что
+     * шёл обычной установкой (`pinned: false`) — «движок лежал вне дерева» и
+     * «версия движка не умела писать это поле» разные утверждения, и
+     * отсутствие поля значит второе, а не первое.
+     */
+    engine: z
+      .object({ root: z.string(), entry: z.string(), pinned: z.boolean() })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -458,6 +469,11 @@ const eventBase = { ts: z.string(), seq: z.number().int().nonnegative() };
 
 export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('run.started'), pipeline: z.string(), run_id: z.string() }).strict(),
+  // Движок распознан правимым и снят снимком (run-engine-snapshot); root —
+  // корень установки, path — каталог снимка в директории прогона. Событие не
+  // пишется, если движок правимым не распознан: обычной установке объявлять
+  // нечего.
+  z.object({ ...eventBase, kind: z.literal('engine.pinned'), root: z.string(), path: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('run.finished'), status: StatusValueSchema, exit_code: z.number() }).strict(),
   z.object({ ...eventBase, kind: z.literal('job.started'), job: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('job.errored'), job: z.string(), detail: z.string() }).strict(),

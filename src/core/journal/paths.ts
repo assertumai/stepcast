@@ -53,6 +53,14 @@ export interface RunPaths {
   readonly workspace: string;
   /** Служебные файлы якоря: индекс git, тела манифестов. Вне рабочего дерева. */
   readonly anchors: string;
+  /**
+   * Снимок движка, снятый из правимого дерева (`run/engine.ts`). Существует,
+   * только когда движок был правимым, — но путь называется всегда, единым
+   * местом для того, кто снимает снимок, и для уборки прогона, которая стирает
+   * его наравне со всем прочим содержимым директории, кроме объявленного
+   * минимума.
+   */
+  readonly engine: string;
 }
 
 export function runPaths(runsRoot: string, key: string, runId: string): RunPaths {
@@ -71,6 +79,7 @@ export function runPaths(runsRoot: string, key: string, runId: string): RunPaths
     jobs: join(dir, 'jobs'),
     workspace: join(dir, 'workspace'),
     anchors: join(dir, 'anchors'),
+    engine: join(dir, 'engine'),
   };
 }
 

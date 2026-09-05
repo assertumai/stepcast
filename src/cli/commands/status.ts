@@ -2,7 +2,7 @@ import { resolveConfig, type Config } from '../../core/config/resolve.js';
 import { describePlan, planResume, readSourceRun } from '../../core/run/resumePlan.js';
 import type { RunPaths } from '../../core/journal/paths.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
-import { readStatus, resolveRun } from '../../core/journal/reader.js';
+import { readManifestSoft, readStatus, resolveRun } from '../../core/journal/reader.js';
 import { describeBudgetAmounts } from '../../core/budget/accumulator.js';
 import type { RunStatus } from '../../core/journal/schema.js';
 import { shortRunId } from '../../core/journal/paths.js';
@@ -42,6 +42,18 @@ export function runStatusCommand(
     `прогон ${shortRunId(status.run_id)}  ${status.pipeline}  ${sleeping ? 'спит' : label(status.status)}`,
   );
   write(`каталог: ${paths.dir}`);
+  // Манифест журнала прежней версии engine не несёт вовсе — «версия движка не
+  // умела писать это поле», а не «движок лежал вне дерева», и строка молчит,
+  // не притворяясь одним из двух. Читается мягко: строка о движке —
+  // необязательная деталь вывода, и манифест, разошедшийся по версии формата
+  // или испорченный, не вправе отнимать у читателя весь остальной ответ,
+  // который целиком берётся из `status.json`.
+  const engine = readManifestSoft(paths).manifest?.engine;
+  if (engine !== undefined) {
+    write(
+      `движок: ${engine.root} → ${engine.entry}${engine.pinned ? ' (снимок)' : ''}`,
+    );
+  }
   if (sleeping) write(`проснётся: ${status.wake_at}`);
 
   const rows: string[][] = [];

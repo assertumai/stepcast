@@ -102,7 +102,10 @@ export function parseEnvFile(path: string): Record<string, string> {
 export interface InjectedContext {
   readonly runId: string;
   readonly runDir: string;
-  /** Путь к точке входа исполняющего процесса stepcast — `process.argv[1]`. */
+  /**
+   * Точка входа движка этого прогона: снимка, если прогон его снял, иначе
+   * исполняющего процесса (`process.argv[1]`) — см. `run/engine.ts`.
+   */
   readonly binPath: string;
   readonly jobId: string;
   readonly jobDir: string;

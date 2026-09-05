@@ -225,6 +225,38 @@ describe('self-improvement-loop: переносимость файлов пет�
   });
 
   /**
+   * merge-check-rebuilds-engine: движок прогона зафиксирован снимком в
+   * каталоге прогона (run-engine-snapshot), и текст контекста больше не
+   * вправе запрещать агенту сборку и тесты — их зовёт сама объявленная
+   * команда проверки, и петля исполняет её же четырежды за итерацию
+   * (self-improvement-loop, «Контекст петли не запрещает агенту того, что
+   * петля делает сама»). Падала до правки документа: старый текст запрещал
+   * прямой вызов `npm run build` и `npm test`.
+   */
+  it('текст контекста пайплайна не запрещает команду, входящую в объявленную проверку', () => {
+    const file = join(PIPELINES_DIR, 'self-improve.yml');
+    const document = parseYaml(readFileSync(file, 'utf8')) as {
+      context?: readonly { text?: string }[];
+    };
+    const FORBIDDING_VERB = /\bне (вызывай|зови|используй|запускай)\b/i;
+    const CHECK_COMMANDS = [/npm run build/, /npm test\b/];
+
+    for (const entry of document.context ?? []) {
+      if (typeof entry.text !== 'string') continue;
+      for (const sentence of entry.text.split(/(?<=[.!?])\s+/)) {
+        if (!FORBIDDING_VERB.test(sentence)) continue;
+        for (const pattern of CHECK_COMMANDS) {
+          assert.doesNotMatch(
+            sentence,
+            pattern,
+            `${file}: запрет вернулся в текст контекста — "${sentence.trim()}"`,
+          );
+        }
+      }
+    }
+  });
+
+  /**
    * Обратная сторона: команду проверки агент всё же обязан узнать — из промпта
    * той работы, которая гоняет ею гейт, где параметр дорожки доступен. Иначе
    * запрет выше просто оставил бы агента без указания, чем проверять.

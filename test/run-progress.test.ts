@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -48,6 +48,15 @@ const PRINTABLE: readonly { readonly event: Event; readonly says: readonly RegEx
   {
     event: { ...BASE, kind: 'run.finished', status: 'success', exit_code: 0 },
     says: [/прогон:/, /success/, /код 0/],
+  },
+  {
+    event: {
+      ...BASE,
+      kind: 'engine.pinned',
+      root: '/opt/homebrew/lib/node_modules/stepcast',
+      path: '/run/dir/engine',
+    },
+    says: [/движок:/, /снят снимок/, /stepcast/, /engine/],
   },
   { event: { ...BASE, kind: 'job.started', job: 'build' }, says: [/build:/, /начата/] },
   {
@@ -484,6 +493,74 @@ jobs:
         expect: [{ exit_code: 0 }]
 `;
 
+/**
+ * run-engine-snapshot: объявление снимка движка на старте прогона.
+ * «Обычная установка ленту не засоряет» проверяется отдельно ниже: движок вне
+ * правимого дерева не даёт события вовсе, и рендерить в этом случае нечего.
+ */
+describe('run-progress: событие engine.pinned', () => {
+  it('лента называет снимок среди первых строк, после начала прогона и до первой работы', async () => {
+    const project = makeProject({ 'stepcast.yml': ONE_STEP_PIPELINE });
+    const engineRoot = project.path('vendor/engine');
+    mkdirSync(join(engineRoot, 'dist', 'src'), { recursive: true });
+    writeFileSync(join(engineRoot, 'package.json'), JSON.stringify({ name: 'fake-engine', files: ['dist'] }));
+    const entry = join(engineRoot, 'dist', 'src', 'bin.js');
+    writeFileSync(entry, 'x');
+    chmodSync(entry, 0o755);
+
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const rendered: string[] = [];
+
+    await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      engineLocator: () => ({ root: engineRoot, entry }),
+      onEvent: (event, usage) => {
+        const line = renderProgressLine(event, usage, 0);
+        if (line !== undefined) rendered.push(line);
+      },
+    });
+
+    const runIndex = rendered.findIndex((line) => line.includes('прогон:') && line.includes('начат'));
+    const engineIndex = rendered.findIndex((line) => line.includes('движок:'));
+    const jobIndex = rendered.findIndex((line) => line.includes('build:'));
+
+    assert.ok(runIndex >= 0, 'строка начала прогона должна быть в ленте');
+    assert.ok(engineIndex >= 0, 'строка о снимке движка должна быть в ленте');
+    assert.ok(engineIndex > runIndex, 'снимок объявляется после начала прогона');
+    assert.ok(jobIndex < 0 || engineIndex < jobIndex, 'снимок объявляется раньше первой работы');
+    assert.match(rendered[engineIndex] ?? '', /vendor\/engine/);
+  });
+
+  it('движок вне правимого дерева: лента о нём не сообщает', async () => {
+    const project = makeProject({ 'stepcast.yml': ONE_STEP_PIPELINE });
+    const outsideRoot = mkdtempSync(join(tmpdir(), 'stepcast-outside-engine-'));
+    mkdirSync(join(outsideRoot, 'dist'), { recursive: true });
+    writeFileSync(join(outsideRoot, 'package.json'), JSON.stringify({ name: 'fake-engine', files: ['dist'] }));
+    const entry = join(outsideRoot, 'dist', 'bin.js');
+    writeFileSync(entry, 'x');
+
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const rendered: string[] = [];
+
+    await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      engineLocator: () => ({ root: outsideRoot, entry }),
+      onEvent: (event, usage) => {
+        const line = renderProgressLine(event, usage, 0);
+        if (line !== undefined) rendered.push(line);
+      },
+    });
+
+    assert.equal(rendered.some((line) => line.includes('движок:')), false);
+  });
+});
+
 describe('run-progress: команда run печатает ход', () => {
   it('ход виден до возврата команды: строки прогона, работы и шага собраны раньше строки итога', async () => {
     const project = makeProject({ 'stepcast.yml': ONE_STEP_PIPELINE });
@@ -557,6 +634,10 @@ describe('run-progress: команда run печатает ход', () => {
     assert.equal(quietExit, loudExit);
     assert.equal(quiet.lines.some((line) => line.includes('build:')), false, 'строк о работе быть не должно');
     assert.equal(quiet.lines.some((line) => line.includes('build/compile:')), false, 'строк о шаге быть не должно');
+    // Строка о снимке движка — часть той же ленты: `--quiet` не заводит
+    // наблюдателя вовсе (`src/cli/commands/run.ts`), и ни одно событие,
+    // включая engine.pinned, до печати не доходит.
+    assert.equal(quiet.lines.some((line) => line.startsWith('движок:')), false, 'строк о движке быть не должно');
     assert.ok(quiet.lines.some((line) => /^прогон .+: success$/.test(line)), 'итог остаётся');
     assert.ok(quiet.lines.some((line) => /^журнал: /.test(line)), 'путь к журналу остаётся');
   });

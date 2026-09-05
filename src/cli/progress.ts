@@ -87,6 +87,8 @@ export function renderProgressLine(
   switch (event.kind) {
     case 'run.started':
       return line('прогон', `начат — ${inline(event.pipeline)}`);
+    case 'engine.pinned':
+      return line('движок', `снят снимок — ${inline(event.root)} → ${inline(event.path)}`);
     case 'run.finished':
       return line('прогон', `${event.status} (код ${event.exit_code})`);
     case 'job.started':

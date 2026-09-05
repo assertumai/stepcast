@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import { runStatusCommand } from '../src/cli/commands/status.js';
@@ -117,6 +118,73 @@ describe('CLI: stepcast status', () => {
     assert.match(text, /Failed to authenticate: OAuth session expired/);
     assert.match(text, /возобновите прогон командой stepcast resume/);
     assert.doesNotMatch(text, /stdout\.log/);
+  });
+});
+
+describe('CLI: stepcast status — движок прогона', () => {
+  it('прогон со снимком называет корень исходного пакета, точку входа снимка и признак снимка', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, {
+      manifest: {
+        engine: { root: '/opt/homebrew/lib/node_modules/stepcast', entry: '/tmp/run/engine/dist/src/bin.js', pinned: true },
+      },
+    });
+
+    const { lines, write } = capture();
+    withHome(home, () => runStatusCommand(args({ run: journal.paths.runId }), write, projectRoot));
+
+    const text = lines.join('\n');
+    assert.match(text, /движок: \/opt\/homebrew\/lib\/node_modules\/stepcast → \/tmp\/run\/engine\/dist\/src\/bin\.js \(снимок\)/);
+  });
+
+  it('прогон на обычной установке называет её корень и точку входа, без пометки снимка', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, {
+      manifest: {
+        engine: { root: '/opt/homebrew/lib/node_modules/stepcast', entry: '/opt/homebrew/lib/node_modules/stepcast/dist/src/bin.js', pinned: false },
+      },
+    });
+
+    const { lines, write } = capture();
+    withHome(home, () => runStatusCommand(args({ run: journal.paths.runId }), write, projectRoot));
+
+    const text = lines.join('\n');
+    assert.match(text, /движок: \/opt\/homebrew\/lib\/node_modules\/stepcast → .+bin\.js$/m);
+    assert.doesNotMatch(text, /\(снимок\)/);
+  });
+
+  /**
+   * Строка о движке — необязательная деталь вывода, и её источник не вправе
+   * отнимать у читателя весь ответ: остальное берётся из `status.json`.
+   * Манифест, записанный движком новее (строгая схема отвергает незнакомый
+   * ключ), до правки уронил бы команду целиком.
+   */
+  it('манифест новее читателя не роняет команду: остальное состояние показано', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, {});
+    const raw = JSON.parse(readFileSync(journal.paths.manifest, 'utf8')) as Record<string, unknown>;
+    writeFileSync(
+      journal.paths.manifest,
+      JSON.stringify({ ...raw, format: 99, engine_pin_mode: 'что-то из будущего' }),
+    );
+
+    const { lines, write } = capture();
+    const exitCode = withHome(home, () => runStatusCommand(args({ run: journal.paths.runId }), write, projectRoot));
+
+    assert.equal(exitCode, 0);
+    assert.ok(lines.some((line) => line.startsWith('каталог:')), 'каталог прогона остаётся в выводе');
+    assert.equal(lines.some((line) => line.startsWith('движок:')), false);
+  });
+
+  it('манифест прежней версии, без поля engine, строки о движке не даёт', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, {});
+
+    const { lines, write } = capture();
+    const exitCode = withHome(home, () => runStatusCommand(args({ run: journal.paths.runId }), write, projectRoot));
+
+    assert.equal(lines.some((line) => line.startsWith('движок:')), false);
+    assert.equal(exitCode, 0);
   });
 });
 

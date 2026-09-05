@@ -11,6 +11,7 @@ import type { Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { findStepDir, readEvents, readStatus } from '../src/core/journal/reader.js';
 import { resolveExitCode, runPipeline, type RunResult } from '../src/core/run/runner.js';
+import { locateEngine } from '../src/core/run/engine.js';
 import { HALT_CAUSES, HaltCause } from '../src/core/run/halt.js';
 import { ExitCode } from '../src/core/errors.js';
 import type { Event, StatusValue, StepRecord } from '../src/core/journal/schema.js';
@@ -758,6 +759,9 @@ jobs:
 
 describe('step-execution: STEPCAST_BIN', () => {
   it('указывает на исполняющий движок и не переопределяется объявленным env', async () => {
+    // Сверяется с точкой входа движка этого прогона, а не с `process.argv[1]`:
+    // под `node --test` argv[1] — файл теста, и движок он не называет
+    // (merge-check-rebuilds-engine).
     const project = makeProject({
       'stepcast.yml': `
 kind: pipeline
@@ -766,7 +770,7 @@ jobs:
   probe:
     steps:
       - id: check
-        run: 'test "$STEPCAST_BIN" = "${process.argv[1]}"'
+        run: 'test "$STEPCAST_BIN" = "${locateEngine().entry}"'
         env: { STEPCAST_BIN: подделка }
         expect: [{ exit_code: 0 }]
 `,

@@ -44,8 +44,12 @@ export const checkWorkspaceMode: PreflightCheck = ({ expanded, cwd, nestedRepos 
  * `realpathSync` требует, чтобы путь существовал целиком, а `runsRoot` на
  * первом прогоне ещё не создан — резолвим то, что есть, и дописываем остаток
  * буквально: несуществующий хвост не может содержать симлинков.
+ *
+ * Экспортирована ради `run/engine.ts`: распознавание правимого движка
+ * сравнивает пути тем же приёмом, что и `checkRunsRootOutsideTree` ниже, и
+ * второй копии этой функции в дереве быть не должно.
  */
-function realOrLiteral(path: string): string {
+export function realOrLiteral(path: string): string {
   const absolute = resolve(path);
   try {
     return realpathSync(absolute);

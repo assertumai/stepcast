@@ -45,6 +45,7 @@ import type { KnowledgeSource } from '../knowledge/types.js';
 import { buildGraph, upstreamOutputs, type Graph } from '../graph.js';
 import { bookkeep } from './bookkeeping.js';
 import { buildIterationNote, type IterationNoteTruncation } from './iterationNote.js';
+import { locateEngine, isEditableEngine, pinEngine, type EngineInfo, type EngineLocation } from './engine.js';
 import { HaltCause, type HaltCauseValue } from './halt.js';
 import { resolveInheritSource, type CompletedJob } from './inherit.js';
 import { builtinRegistry } from '../plugins/builtin.js';
@@ -111,6 +112,13 @@ export interface RunOptions {
     readonly repoDir?: string;
     readonly nested?: readonly string[];
   }) => TreeAnchorer;
+  /**
+   * Подмена расположения движка. Тот же приём, что у `anchorerFor`: настоящий
+   * `locateEngine()` всегда укажет на пакет, которым гоняются тесты, — а
+   * сценариям снимка нужен движок то внутри временного дерева проекта, то
+   * снаружи него, то в его `node_modules`.
+   */
+  readonly engineLocator?: () => EngineLocation;
   /**
    * Наблюдение за потоком событий: вызывается синхронно с записью каждого
    * события в журнал, рядом со снимком накопленного расхода прогона.
@@ -199,7 +207,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   });
   journal.writeLock(lock);
 
-  const manifest: RunManifest = {
+  let manifest: RunManifest = {
     run_id: journal.paths.runId,
     pipeline: pipeline.name,
     pipeline_file: pipeline.file,
@@ -226,6 +234,35 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   };
   journal.writeManifest(manifest);
   journal.event({ kind: 'run.started', pipeline: pipeline.name, run_id: journal.paths.runId });
+
+  // Движок фиксируется здесь: каталог прогона и журнал уже на диске (снимку
+  // есть куда лечь), а первая работа ещё не создана — снимок обязан
+  // существовать до первого рекурсивного вызова $STEPCAST_BIN (design.md,
+  // решение 5). Отказ снятия останавливает прогон конфигурационной ошибкой:
+  // молчаливый откат к незафиксированному движку — ровно то поведение,
+  // против которого изменение и делается.
+  const engineLocation = options.engineLocator?.() ?? locateEngine();
+  const engineEditable = isEditableEngine({
+    engineRoot: engineLocation.root,
+    projectRoot: options.projectRoot,
+  });
+  const engine: EngineInfo = engineEditable
+    ? {
+        root: engineLocation.root,
+        entry: pinEngine({ engine: engineLocation, snapshotDir: journal.paths.engine }),
+        pinned: true,
+      }
+    : { root: engineLocation.root, entry: engineLocation.entry, pinned: false };
+
+  // Второй манифест несёт то же, что первый, плюс движок: поле пишется у
+  // всякого прогона, включая обычную установку (`pinned: false`) — «движок
+  // лежал вне дерева» и «версия движка не умела писать это поле» разные
+  // утверждения (run-journal, «Манифест прогона записывает движок»).
+  manifest = { ...manifest, engine };
+  journal.writeManifest(manifest);
+  if (engine.pinned) {
+    journal.event({ kind: 'engine.pinned', root: engine.root, path: journal.paths.engine });
+  }
 
   const usage = new UsageAccumulator(
     (backend) => config.backends[backend]?.cacheReadWeight ?? 1,
@@ -268,6 +305,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     pipelineContextSent: new Set<string>(),
     lockHash,
     anchorKind,
+    engine,
     runCwd: options.cwd,
     graph,
     completedWorkspaces,
@@ -492,6 +530,14 @@ interface RunContext extends RunOptions {
   readonly lockHash: string;
   /** Способ фиксации состояния: определён один раз на прогон. */
   readonly anchorKind: AnchorKind;
+  /**
+   * Движок, которым прогон исполняется, — корень, точка входа и признак
+   * снимка (`run/engine.ts`). Определяется один раз на прогон, до первой
+   * работы: `STEPCAST_BIN` шагов и проверок цикла берёт точку входа отсюда,
+   * а не из `process.argv[1]` напрямую, чтобы пересборка `dist/` в рабочем
+   * дереве не подменяла код, которым прогон уже идёт.
+   */
+  readonly engine: EngineInfo;
   /**
    * Каталог запуска. В отличие от `cwd`, который ниже по коду означает рабочую
    * директорию текущей работы, этот остаётся каталогом прогона: якорю рабочей
@@ -960,7 +1006,7 @@ function jobEnv(job: Job, context: RunContext): Record<string, string> {
     injected: injectedVariables({
       runId: context.journal.paths.runId,
       runDir: context.journal.paths.dir,
-      binPath: process.argv[1] ?? '',
+      binPath: context.engine.entry,
       jobId: job.id,
       jobDir: context.journal.prepareJob(job.id),
       attempt: 1,
@@ -2431,7 +2477,7 @@ function stepEnv(
     injected: injectedVariables({
       runId: context.journal.paths.runId,
       runDir: context.journal.paths.dir,
-      binPath: process.argv[1] ?? '',
+      binPath: context.engine.entry,
       jobId: job.id,
       jobDir: context.journal.prepareJob(job.id),
       stepId: step.id,
@@ -2644,9 +2690,22 @@ function carryOverRunDir(resume: ResumeContext, journal: RunJournal): void {
   // разошёлся бы с раскладкой при первом же её пополнении, и новый служебный
   // файл поехал бы из прогона в прогон как чужое состояние.
   const own = new Set(
-    [paths.manifest, paths.lock, paths.status, paths.events, paths.usage, paths.artifacts, paths.jobs, paths.workspace, paths.anchors].map(
-      (path) => basename(path),
-    ),
+    [
+      paths.manifest,
+      paths.lock,
+      paths.status,
+      paths.events,
+      paths.usage,
+      paths.artifacts,
+      paths.jobs,
+      paths.workspace,
+      paths.anchors,
+      // Снимок движка принадлежит прогону, который его снял: этот прогон снял
+      // собственный до первой работы (`run/engine.ts`), и чужой, скопированный
+      // поверх, вернул бы исполнение к коду другого прогона — при том что
+      // манифест называет путь своего снимка (run-engine-snapshot).
+      paths.engine,
+    ].map((path) => basename(path)),
   );
 
   try {

@@ -1,15 +1,16 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
+import type { EngineLocation } from '../src/core/run/engine.js';
 import { readStatus } from '../src/core/journal/reader.js';
 import { makeProject, testBaseEnv, type Project } from './helpers.js';
 
-async function run(project: Project): Promise<RunResult> {
+async function run(project: Project, engineLocator?: () => EngineLocation): Promise<RunResult> {
   const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
   return runPipeline({
     expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
@@ -21,6 +22,7 @@ async function run(project: Project): Promise<RunResult> {
     // проверка «переменная шага сюда не доходит» была бы неверной по причине,
     // не имеющей отношения к движку.
     baseEnv: testBaseEnv(),
+    ...(engineLocator === undefined ? {} : { engineLocator }),
   });
 }
 
@@ -105,6 +107,44 @@ jobs:
     });
 
     assert.equal((await run(project)).status, 'success');
+  });
+
+  /**
+   * merge-check-rebuilds-engine: движок правимого дерева фиксируется снимком
+   * в каталоге прогона, и `STEPCAST_BIN` называет его точку входа — тем же
+   * значением, что видит шаг (run-engine-snapshot, «STEPCAST_BIN называет
+   * точку входа движка этого прогона»). Проверка цикла — не шаг, и обязана
+   * получать то же самое, а не прежнее `process.argv[1]`.
+   */
+  it('STEPCAST_BIN проверки цикла ведёт в каталог прогона, когда движок снят снимком', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: checked
+workspace: { mode: cwd }
+jobs:
+  looped:
+    until:
+      max_iterations: 1
+      check:
+        - cmd: 'test "$STEPCAST_BIN" = "$STEPCAST_RUN_DIR/engine/dist/src/bin.js"'
+    steps:
+      - id: noop
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    const engineRoot = project.path('vendor/engine');
+    mkdirSync(join(engineRoot, 'dist', 'src'), { recursive: true });
+    writeFileSync(join(engineRoot, 'package.json'), JSON.stringify({ name: 'fake-engine', files: ['dist'] }));
+    const entry = join(engineRoot, 'dist', 'src', 'bin.js');
+    writeFileSync(entry, 'x');
+    chmodSync(entry, 0o755);
+
+    const result = await run(project, () => ({ root: engineRoot, entry }));
+
+    assert.equal(result.status, 'success');
   });
 
   it('переменная уровня шага проверке цикла не объявляется', async () => {
