@@ -423,11 +423,12 @@ done_when: npm run check зелёный в свежем клоне и в све�
 
 ## lockfile-drift
 
-status: pending
+status: done
 title: package-lock.json обязан совпадать с package.json
 track: express
 why: Проверяя герметичность npm run check (пункт hermetic-check-artifacts), в свежем git worktree выяснилось: `npm ci` там не работает — package-lock.json просит @types/node@26.2.0, а package.json объявляет ^24.0.0. Дорожки петли поднимаются с чистого HEAD именно через установку зависимостей заново, и если она когда-нибудь перейдёт с `npm install` на `npm ci` (более быстрый и строгий выбор для одноразового дерева), любой заход упадёт ещё до первого шага. Сейчас спасает только то, что дорожки используют `npm install`, который тихо чинит рассинхронизацию вместо того, чтобы её показать.
 done_when: package-lock.json синхронизирован с package.json (`npm ci` проходит в чистом worktree без изменения package-lock.json); проверка расхождения лока с манифестом входит в npm run check, чтобы дрейф не накопился снова незамеченным; docs/status.md обновлён
+started_at: 2026-09-05T15:47:55.568Z
 
 ## budget-stop-status-lies
 
