@@ -141,11 +141,21 @@ export interface ContextBreakdown {
   readonly total: number;
 }
 
+/** Модель одной попытки шага, как её сообщил бэкенд в `usage.json`. */
+export interface AttemptModel {
+  readonly attempt: number;
+  /** Отсутствует, если бэкенду не передавали `--model` вовсе. */
+  readonly model?: string;
+}
+
 export interface StepSnapshot {
   readonly id: string;
   readonly kind: 'agent' | 'run';
   readonly agent?: string;
+  /** Модель, объявленная определением. */
   readonly model?: string;
+  /** Модели попыток, которыми шаг фактически исполнился, — из сводки расхода. */
+  readonly attemptModels: readonly AttemptModel[];
   readonly status?: StatusValue;
   readonly reason?: string;
   readonly attempts: number;
@@ -195,11 +205,22 @@ export interface RunSnapshot {
   readonly problem?: JournalProblem;
 }
 
+/** Слой, из которого пришла модель шага. Слой `config` несёт файл, победивший в этом проекте. */
+export type PipelineModelOrigin =
+  | { readonly layer: 'step' }
+  | { readonly layer: 'pipeline' }
+  | { readonly layer: 'config'; readonly file: string }
+  | { readonly layer: 'backend'; readonly backend: string }
+  | { readonly layer: 'none' };
+
 export interface PipelineStepView {
   readonly id: string;
   readonly kind: 'agent' | 'run';
   readonly agent?: string;
+  /** Модель, которой шаг исполнится. Отсутствует у шага без модели ни на одном слое. */
   readonly model?: string;
+  /** Слой, давший `model`, — только у агентских шагов. */
+  readonly modelOrigin?: PipelineModelOrigin;
   readonly command?: string;
 }
 

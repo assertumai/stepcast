@@ -49,11 +49,27 @@ export interface UsageSnapshot {
   readonly costUsd: number | null;
 }
 
+/** Модель одной попытки шага, как её сообщил бэкенд в `usage.json`. */
+export interface AttemptModel {
+  readonly attempt: number;
+  /** Отсутствует, если бэкенду не передавали `--model` вовсе — движок этого не подменяет. */
+  readonly model?: string;
+}
+
 export interface StepSnapshot {
   readonly id: string;
   readonly kind: 'agent' | 'run';
   readonly agent?: string;
+  /** Модель, объявленная определением, — из `pipeline.lock.yml`. */
   readonly model?: string;
+  /**
+   * Модели попыток, которыми шаг фактически исполнился, — из `usage.json`.
+   * Это факт, а не намерение: ступень эскалации вправе сменить модель между
+   * попытками, и объявленная `model` этого не покажет. Живёт рядом с ней, а
+   * не вместо: `usage.json` переживает `stepcast gc`, `pipeline.lock.yml` —
+   * нет, и убранный прогон обязан сохранить хотя бы это (design.md, Решение 4).
+   */
+  readonly attemptModels: readonly AttemptModel[];
   readonly status?: StatusValue;
   readonly reason?: string;
   readonly attempts: number;
@@ -172,6 +188,24 @@ function stepUsage(summary: UsageReport | undefined, jobId: string, stepId: stri
   };
 }
 
+/**
+ * Модели попыток шага в порядке исполнения. Прежняя форма сводки хранит
+ * `attempts` числом (см. `journal/schema.ts`), и препроцессор приводит его к
+ * пустому списку — старый прогон отдаёт объявленную модель и не отдаёт
+ * исполнявшихся, без отказа.
+ */
+function attemptModels(
+  summary: UsageReport | undefined,
+  jobId: string,
+  stepId: string,
+): readonly AttemptModel[] {
+  const attempts = summary?.jobs[jobId]?.steps[stepId]?.attempts ?? [];
+  return attempts.map((attempt) => ({
+    attempt: attempt.attempt,
+    ...(attempt.model === undefined ? {} : { model: attempt.model }),
+  }));
+}
+
 function jobUsage(summary: UsageReport | undefined, jobId: string): UsageSnapshot {
   const job = summary?.jobs[jobId];
   return {
@@ -207,6 +241,7 @@ function buildStep(
       : { finishedAt: record.attempts.at(-1)?.finished_at as string }),
     ...(definition?.agent === undefined ? {} : { agent: definition.agent }),
     ...(definition?.model === undefined ? {} : { model: definition.model }),
+    attemptModels: attemptModels(summary, jobId, id),
     ...(definition?.prompt === undefined ? {} : { prompt: definition.prompt }),
     ...(definition?.command === undefined ? {} : { command: definition.command }),
     context: definition?.context ?? [],

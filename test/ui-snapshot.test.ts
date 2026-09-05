@@ -388,3 +388,250 @@ describe('ui-dashboard: детальный снимок прогона', () => {
     assert.deepEqual(producer?.usage, { billableTokens: null, wallclockMs: null, costUsd: null });
   });
 });
+
+describe('ui-dashboard: модель попытки из сводки', () => {
+  const PIPELINE_MODEL = `
+version: 1
+kind: pipeline
+name: витрина модели
+
+jobs:
+  producer:
+    output:
+      from: think
+    steps:
+      - id: think
+        agent: claude
+        model: opus
+        prompt: "подумай"
+`;
+
+  function lockTextWithModel(): string {
+    const project = makeProject({ 'stepcast.yml': PIPELINE_MODEL });
+    return serializeLock(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }).pipeline,
+    );
+  }
+
+  const JOBS_MODEL: RunStatus['jobs'] = [
+    {
+      id: 'producer',
+      status: 'success',
+      started_at: '2026-08-01T00:00:00.000Z',
+      finished_at: '2026-08-01T00:02:00.000Z',
+      steps: [
+        {
+          id: 'think',
+          index: 1,
+          kind: 'agent',
+          key: 'k1',
+          status: 'success',
+          attempts: [
+            {
+              attempt: 1,
+              status: 'failed',
+              started_at: '2026-08-01T00:00:00.000Z',
+              finished_at: '2026-08-01T00:01:00.000Z',
+            },
+            {
+              attempt: 2,
+              status: 'success',
+              started_at: '2026-08-01T00:01:00.000Z',
+              finished_at: '2026-08-01T00:02:00.000Z',
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  it('несёт модель попытки, взятую из сводки, рядом с объявленной', () => {
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-model',
+      jobs: [JOBS_MODEL[0]!].map((job) => ({ ...job, steps: [job.steps[0]!] })),
+      lock: lockTextWithModel(),
+      usage: {
+        run_id: 'run-model',
+        total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 300, wallclock_ms: 60_000 },
+        unreported: [],
+        jobs: {
+          producer: {
+            billable_tokens: 300,
+            wallclock_ms: 60_000,
+            steps: {
+              think: {
+                billable_tokens: 300,
+                wallclock_ms: 60_000,
+                attempts: [{ attempt: 1, backend: 'claude', model: 'opus', billable_tokens: 300, wallclock_ms: 60_000 }],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const think = buildSnapshot(journal.paths, projectKey(bed.projectRoot)).jobs.find(
+      (job) => job.id === 'producer',
+    )?.steps[0];
+    assert.equal(think?.model, 'opus');
+    assert.deepEqual(think?.attemptModels, [{ attempt: 1, model: 'opus' }]);
+  });
+
+  it('эскалация со сменой модели: попытки несут разные модели', () => {
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-escalation',
+      jobs: JOBS_MODEL,
+      lock: lockTextWithModel(),
+      usage: {
+        run_id: 'run-escalation',
+        total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 600, wallclock_ms: 120_000 },
+        unreported: [],
+        jobs: {
+          producer: {
+            billable_tokens: 600,
+            wallclock_ms: 120_000,
+            steps: {
+              think: {
+                billable_tokens: 600,
+                wallclock_ms: 120_000,
+                attempts: [
+                  { attempt: 1, backend: 'claude', model: 'opus', billable_tokens: 300, wallclock_ms: 60_000 },
+                  { attempt: 2, backend: 'claude', model: 'sonnet', billable_tokens: 300, wallclock_ms: 60_000 },
+                ],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const think = buildSnapshot(journal.paths, projectKey(bed.projectRoot)).jobs.find(
+      (job) => job.id === 'producer',
+    )?.steps[0];
+    // Объявленная модель — из лока, у попыток каждая своя: ступень эскалации
+    // сменила модель между первой и второй.
+    assert.equal(think?.model, 'opus');
+    assert.deepEqual(think?.attemptModels, [
+      { attempt: 1, model: 'opus' },
+      { attempt: 2, model: 'sonnet' },
+    ]);
+  });
+
+  it('попытка без назначенной модели не подменяется объявленной', () => {
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-no-model',
+      jobs: [{ ...JOBS_MODEL[0]!, steps: [JOBS_MODEL[0]!.steps[0]!] }],
+      lock: lockTextWithModel(),
+      usage: {
+        run_id: 'run-no-model',
+        total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 300, wallclock_ms: 60_000 },
+        unreported: [],
+        jobs: {
+          producer: {
+            billable_tokens: 300,
+            wallclock_ms: 60_000,
+            steps: {
+              // Бэкенду не передавали --model вовсе: движок не подменяет её
+              // объявленной задним числом.
+              think: {
+                billable_tokens: 300,
+                wallclock_ms: 60_000,
+                attempts: [{ attempt: 1, backend: 'claude', billable_tokens: 300, wallclock_ms: 60_000 }],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    const think = buildSnapshot(journal.paths, projectKey(bed.projectRoot)).jobs.find(
+      (job) => job.id === 'producer',
+    )?.steps[0];
+    assert.equal(think?.model, 'opus');
+    assert.deepEqual(think?.attemptModels, [{ attempt: 1 }]);
+  });
+
+  it('прогон без сводки не несёт моделей попыток, но не отказывает', () => {
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-no-summary',
+      status: 'running',
+      jobs: [{ ...JOBS_MODEL[0]!, status: 'running', steps: [JOBS_MODEL[0]!.steps[0]!] }],
+      lock: lockTextWithModel(),
+      skipUsage: true,
+    });
+
+    const think = buildSnapshot(journal.paths, projectKey(bed.projectRoot)).jobs.find(
+      (job) => job.id === 'producer',
+    )?.steps[0];
+    assert.equal(think?.model, 'opus');
+    assert.deepEqual(think?.attemptModels, []);
+  });
+
+  it('сводка прежней формы (attempts числом) не несёт моделей попыток', () => {
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-legacy',
+      jobs: [{ ...JOBS_MODEL[0]!, steps: [JOBS_MODEL[0]!.steps[0]!] }],
+      lock: lockTextWithModel(),
+      usage: {
+        run_id: 'run-legacy',
+        total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 300, wallclock_ms: 60_000 },
+        unreported: [],
+        jobs: {
+          producer: {
+            billable_tokens: 300,
+            wallclock_ms: 60_000,
+            // Прежняя форма: число попыток, а не их перечень.
+            steps: { think: { billable_tokens: 300, wallclock_ms: 60_000, attempts: 1 } as never },
+          },
+        },
+      },
+    });
+
+    const think = buildSnapshot(journal.paths, projectKey(bed.projectRoot)).jobs.find(
+      (job) => job.id === 'producer',
+    )?.steps[0];
+    assert.equal(think?.model, 'opus');
+    assert.deepEqual(think?.attemptModels, []);
+  });
+
+  it('убранный прогон без лока сохраняет модели исполнявшихся попыток', () => {
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-swept',
+      jobs: [{ ...JOBS_MODEL[0]!, steps: [JOBS_MODEL[0]!.steps[0]!] }],
+      lock: lockTextWithModel(),
+      usage: {
+        run_id: 'run-swept',
+        total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 300, wallclock_ms: 60_000 },
+        unreported: [],
+        jobs: {
+          producer: {
+            billable_tokens: 300,
+            wallclock_ms: 60_000,
+            steps: {
+              think: {
+                billable_tokens: 300,
+                wallclock_ms: 60_000,
+                attempts: [{ attempt: 1, backend: 'claude', model: 'opus', billable_tokens: 300, wallclock_ms: 60_000 }],
+              },
+            },
+          },
+        },
+      },
+    });
+    cleanupRun(journal.paths);
+
+    const snapshot = buildSnapshot(journal.paths, projectKey(bed.projectRoot));
+    assert.equal(snapshot.swept, true);
+    const think = snapshot.jobs.find((job) => job.id === 'producer')?.steps[0];
+    // Лок убран вместе с остальным — объявленной модели больше нет, но
+    // `usage.json` переживает уборку, и исполнявшаяся модель остаётся видна.
+    assert.equal(think?.model, undefined);
+    assert.deepEqual(think?.attemptModels, [{ attempt: 1, model: 'opus' }]);
+  });
+});

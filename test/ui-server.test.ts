@@ -1068,6 +1068,191 @@ jobs:
   });
 });
 
+describe('ui-dashboard: слой модели шага', () => {
+  it('слой step: шаг объявляет модель сам', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(
+      join(projectRoot, 'stepcast.yml'),
+      `version: 1
+kind: pipeline
+name: demo
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+        model: opus
+`,
+    );
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    const step = pick(pipelines.json, 'pipelines', 0, 'jobs', 0, 'steps', 0);
+    assert.equal(pick(step, 'model'), 'opus');
+    assert.deepEqual(pick(step, 'modelOrigin'), { layer: 'step' });
+  });
+
+  it('слой pipeline: модель пришла из умолчаний документа', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(
+      join(projectRoot, 'stepcast.yml'),
+      `version: 1
+kind: pipeline
+name: demo
+defaults:
+  model: opus
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`,
+    );
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    const step = pick(pipelines.json, 'pipelines', 0, 'jobs', 0, 'steps', 0);
+    assert.equal(pick(step, 'model'), 'opus');
+    assert.deepEqual(pick(step, 'modelOrigin'), { layer: 'pipeline' });
+  });
+
+  it('слой config: проект со своим defaults.model показан своим значением и своим файлом', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    mkdirSync(join(projectRoot, '.stepcast'), { recursive: true });
+    const projectConfigFile = join(projectRoot, '.stepcast', 'config.yml');
+    writeFileSync(projectConfigFile, 'defaults:\n  model: opus\n');
+    writeFileSync(
+      join(projectRoot, 'stepcast.yml'),
+      `version: 1
+kind: pipeline
+name: demo
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`,
+    );
+    // Демон поднят с другим умолчанием модели: карточка обязана показать
+    // значение проекта, а не каталога демона.
+    writeFileSync(
+      join(home, '.stepcast', 'config.yml'),
+      `runs:\n  root: ${runsRoot}\ndefaults:\n  model: sonnet\n`,
+    );
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    const step = pick(pipelines.json, 'pipelines', 0, 'jobs', 0, 'steps', 0);
+    assert.equal(pick(step, 'model'), 'opus');
+    assert.deepEqual(pick(step, 'modelOrigin'), { layer: 'config', file: projectConfigFile });
+  });
+
+  it('слой config: значение глобального файла названо именно им, а не проектным', async (t) => {
+    // Экран настроек правит только глобальный файл, поэтому обязан отличать
+    // «моё значение» от «значения ближнего слоя»: различает их имя файла на
+    // карточке шага, и оно должно совпадать с файлом, который называет
+    // `/api/settings`.
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(
+      join(projectRoot, 'stepcast.yml'),
+      `version: 1
+kind: pipeline
+name: demo
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`,
+    );
+    const globalConfigFile = join(home, '.stepcast', 'config.yml');
+    writeFileSync(globalConfigFile, `runs:\n  root: ${runsRoot}\ndefaults:\n  model: sonnet\n`);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    const step = pick(pipelines.json, 'pipelines', 0, 'jobs', 0, 'steps', 0);
+    assert.equal(pick(step, 'model'), 'sonnet');
+    assert.deepEqual(pick(step, 'modelOrigin'), { layer: 'config', file: globalConfigFile });
+
+    const settings = await fetchJson(server, '/api/settings');
+    assert.equal(pick(settings.json, 'file'), globalConfigFile);
+  });
+
+  it('слой backend: модель — умолчание бэкенда шага', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(
+      join(projectRoot, 'stepcast.yml'),
+      `version: 1
+kind: pipeline
+name: demo
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`,
+    );
+    writeFileSync(
+      join(home, '.stepcast', 'config.yml'),
+      `runs:\n  root: ${runsRoot}\nbackends:\n  claude:\n    default_model: haiku\n`,
+    );
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    const step = pick(pipelines.json, 'pipelines', 0, 'jobs', 0, 'steps', 0);
+    assert.equal(pick(step, 'model'), 'haiku');
+    assert.deepEqual(pick(step, 'modelOrigin'), { layer: 'backend', backend: 'claude' });
+  });
+
+  it('слой none: модель не задана ни на одном из четырёх звеньев', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(
+      join(projectRoot, 'stepcast.yml'),
+      `version: 1
+kind: pipeline
+name: demo
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`,
+    );
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    const step = pick(pipelines.json, 'pipelines', 0, 'jobs', 0, 'steps', 0);
+    assert.equal(pick(step, 'model'), undefined);
+    assert.deepEqual(pick(step, 'modelOrigin'), { layer: 'none' });
+  });
+
+  it('нечитаемая конфигурация проекта не выдаёт слой модели, а даёт карточку с объяснением', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    mkdirSync(join(projectRoot, '.stepcast'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'config.yml'), 'project:\n  check: "   "\n');
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.match(String(pick(pipelines.json, 'pipelines', 0, 'error')), /схеме/);
+    assert.deepEqual(pick(pipelines.json, 'pipelines', 0, 'jobs'), []);
+  });
+});
+
 describe('ui-dashboard: расход поперёк прогонов', () => {
   // Сценарий: «Агрегат приходит одним ответом»
   it('GET /api/usage без параметра отдаёт весь период наблюдений, с days=7 — неделю', async (t) => {

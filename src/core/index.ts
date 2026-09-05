@@ -32,6 +32,7 @@ export type {
   Budget,
   Workspace,
   ExpandedPipeline,
+  ModelOrigin,
   Substitution,
   SubstitutionMap,
 } from './pipeline/model.js';

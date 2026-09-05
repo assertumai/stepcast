@@ -5,9 +5,24 @@ import { parse as parseYaml } from 'yaml';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { interpolate, interpolateTree, type Scope } from '../src/core/pipeline/interpolate.js';
 import { serializeLock } from '../src/core/pipeline/lock.js';
+import { computeStepKey } from '../src/core/run/stepKey.js';
 import { StepcastError } from '../src/core/errors.js';
-import type { Config } from '../src/core/config/resolve.js';
+import type { BackendConfig, Config } from '../src/core/config/resolve.js';
 import { asAgent, asRun, makeProject, MINIMAL_PIPELINE, type Project } from './helpers.js';
+
+/** Бэкенд с умолчанием модели — для проверки слоя `backend`. */
+const BACKEND_WITH_DEFAULT_MODEL: BackendConfig = {
+  command: 'claude',
+  enabled: true,
+  defaultModel: 'haiku',
+  concurrency: 2,
+  cacheReadWeight: 0.1,
+  sessions: true,
+  structuredOutput: true,
+  strictPermissions: true,
+  permissions: undefined,
+  env: {},
+};
 
 /** Тот же проект, но с указанным `project.check`, будто он объявлен в `.stepcast/config.yml`. */
 function withProjectCheck(project: Project, check: string | undefined): Config {
@@ -531,6 +546,217 @@ jobs:
     assert.equal(first.timeoutMs, 30 * 60_000, 'умолчание step_timeout из конфигурации');
     assert.equal(second.model, 'sonnet');
     assert.equal(second.timeoutMs, 5 * 60_000);
+  });
+
+  describe('слой модели шага', () => {
+    it('слой step: модель объявлена самим шагом', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+defaults:
+  model: opus
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+        model: sonnet
+`,
+      });
+
+      const { pipeline, modelOrigins } = expand(project);
+      assert.equal(asAgent(pipeline.jobs[0]!.steps[0]!).model, 'sonnet');
+      assert.deepEqual(modelOrigins.get('ask/a'), { layer: 'step' });
+    });
+
+    it('слой pipeline: модель пришла из умолчаний документа', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+defaults:
+  model: opus
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`,
+      });
+
+      const { pipeline, modelOrigins } = expand(project);
+      assert.equal(asAgent(pipeline.jobs[0]!.steps[0]!).model, 'opus');
+      assert.deepEqual(modelOrigins.get('ask/a'), { layer: 'pipeline' });
+    });
+
+    it('слой config: модель пришла из конфигурации, документ умолчания не объявляет', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`,
+      });
+      const config: Config = {
+        ...project.config,
+        defaults: { ...project.config.defaults, model: 'opus' },
+      };
+
+      const { pipeline, modelOrigins } = expandWith(project, config);
+      assert.equal(asAgent(pipeline.jobs[0]!.steps[0]!).model, 'opus');
+      assert.deepEqual(modelOrigins.get('ask/a'), { layer: 'config' });
+    });
+
+    it('слой backend: модель — умолчание бэкенда шага', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`,
+      });
+      const config: Config = {
+        ...project.config,
+        backends: { ...project.config.backends, claude: BACKEND_WITH_DEFAULT_MODEL },
+      };
+
+      const { pipeline, modelOrigins } = expandWith(project, config);
+      assert.equal(asAgent(pipeline.jobs[0]!.steps[0]!).model, 'haiku');
+      assert.deepEqual(modelOrigins.get('ask/a'), { layer: 'backend', backend: 'claude' });
+    });
+
+    it('слой none: модель не задана ни на одном из четырёх звеньев', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`,
+      });
+
+      const { pipeline, modelOrigins } = expand(project);
+      assert.equal(asAgent(pipeline.jobs[0]!.steps[0]!).model, undefined);
+      assert.deepEqual(modelOrigins.get('ask/a'), { layer: 'none' });
+    });
+
+    it('одинаковое значение модели с разных звеньев остаётся различимо', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  ask:
+    steps:
+      - id: declared
+        prompt: спроси
+        model: opus
+      - id: from-config
+        prompt: спроси
+`,
+      });
+      const config: Config = {
+        ...project.config,
+        defaults: { ...project.config.defaults, model: 'opus' },
+      };
+
+      const { pipeline, modelOrigins } = expandWith(project, config);
+      const steps = pipeline.jobs[0]!.steps;
+      assert.equal(asAgent(steps[0]!).model, 'opus');
+      assert.equal(asAgent(steps[1]!).model, 'opus');
+      assert.deepEqual(modelOrigins.get('ask/declared'), { layer: 'step' });
+      assert.deepEqual(modelOrigins.get('ask/from-config'), { layer: 'config' });
+    });
+
+    it('ключ шага и pipeline.lock.yml не зависят от слоя, давшего модель', () => {
+      // Один и тот же шаг `a`, одно и то же значение модели `opus`, но с
+      // разных звеньев: документ объявляет умолчание в одном пайплайне,
+      // конфигурация — в другом. Step, который хеширует `computeStepKey`, не
+      // видит звена вовсе (design.md, Решение 1) — значит, объекты обязаны
+      // выйти побитово равными, а ключ и лок — совпасть.
+      const pipelineLayerProject = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+defaults:
+  model: opus
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`,
+      });
+      const configLayerProject = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`,
+      });
+      const configLayerConfig: Config = {
+        ...configLayerProject.config,
+        defaults: { ...configLayerProject.config.defaults, model: 'opus' },
+      };
+
+      const fromPipelineLayer = expand(pipelineLayerProject);
+      const fromConfigLayer = expandWith(configLayerProject, configLayerConfig);
+
+      assert.deepEqual(fromPipelineLayer.modelOrigins.get('ask/a'), { layer: 'pipeline' });
+      assert.deepEqual(fromConfigLayer.modelOrigins.get('ask/a'), { layer: 'config' });
+
+      const stepA = fromPipelineLayer.pipeline.jobs[0]!.steps[0]!;
+      const stepB = fromConfigLayer.pipeline.jobs[0]!.steps[0]!;
+      assert.deepEqual(stepA, stepB, 'Step не несёт слоя — объекты обязаны совпасть');
+
+      const keyFor = (step: typeof stepA): string =>
+        computeStepKey({
+          lockHash: 'лок',
+          jobId: 'ask',
+          step,
+          inputsFingerprint: undefined,
+          backendCommand: undefined,
+          upstream: [],
+        });
+      assert.equal(keyFor(stepA), keyFor(stepB));
+
+      // Ожидание зафиксировано, а не пересчитано этим же движком: сверка двух
+      // раскрытий друг с другом ловит только слой, попавший в `Step`, — любое
+      // другое новое поле сдвинуло бы обе стороны одинаково, и тест остался бы
+      // зелёным при обнулённом переиспользовании шагов. Ключ снят до появления
+      // карты слоёв; если он поменялся — первый же `resume` перестанет узнавать
+      // шаги прошлых прогонов, и менять его можно только сознательно.
+      assert.equal(keyFor(stepA), 'e23b8b5db41c59d4');
+
+      // Лок сериализуется из `Pipeline`, а не из `ExpandedPipeline`: путь к
+      // файлу пайплайна в нём неизбежно разный (разные временные проекты), но
+      // секция шага внутри — как и его ключ — от слоя не зависит и тоже снята
+      // до появления карты.
+      const lock = serializeLock(fromPipelineLayer.pipeline);
+      const marker = '    steps:\n';
+      assert.ok(lock.includes(marker));
+      assert.equal(
+        lock.slice(lock.indexOf(marker) + marker.length),
+        `      - id: a
+        index: 1
+        timeout: 30m
+        attempts:
+          max: 1
+        agent: claude
+        model: opus
+        session: default
+        prompt: спроси
+`,
+      );
+    });
   });
 
   it('раздаёт псевдонимы сессий по режиму работы', () => {

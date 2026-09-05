@@ -1,6 +1,55 @@
 import { useEffect, useState, type JSX } from 'react';
 
-import { fetchSettings, saveSettings, type Settings as SettingsData } from '../api';
+import { fetchPipelines, fetchSettings, saveSettings, type PipelineView, type Settings as SettingsData } from '../api';
+
+/** Четыре числа для области действия `defaults.model`, посчитанные по известным витрине пайплайнам. */
+interface ModelScope {
+  /** Агентские шаги, которым модель назначит именно правка этого экрана. */
+  readonly affected: number;
+  /** Агентские шаги, объявившие модель сами (слой step/pipeline) — их правка не коснётся. */
+  readonly unaffected: number;
+  /** Агентские шаги, чью модель задаёт другой файл: проектный `.stepcast/config.yml` либо плагин. */
+  readonly overridden: number;
+  /** Пайплайны, которые не разбираются: их шаги не сосчитаны ни в одну из групп. */
+  readonly unparsed: number;
+}
+
+/**
+ * Счёт складывается здесь же, из ответа `/api/pipelines`, а не в `readSettings`:
+ * `defaults.model` — вопрос конфигурации, размер области действия — вопрос
+ * пайплайнов, и оба экрана обязаны видеть одни и те же числа (design.md,
+ * Решение 3).
+ *
+ * Слоя `config` для счёта мало: экран пишет только глобальный файл
+ * (`src/ui/settings.ts`), а значение того же слоя может прийти из проектного
+ * `.stepcast/config.yml` или от плагина — и там правка отсюда проиграет
+ * ближнему слою. Различает их файл, победивший в проекте: витрина уже несёт его
+ * на карточке шага, и сравнить с файлом настроек — единственный способ не
+ * посчитать чужой шаг своим (docs/config.md, «Разрешение»).
+ */
+function scopeOf(pipelines: readonly PipelineView[], settingsFile: string): ModelScope {
+  let affected = 0;
+  let unaffected = 0;
+  let overridden = 0;
+  let unparsed = 0;
+  for (const pipeline of pipelines) {
+    if (pipeline.error !== undefined) {
+      unparsed += 1;
+      continue;
+    }
+    for (const job of pipeline.jobs) {
+      for (const step of job.steps) {
+        const origin = step.modelOrigin;
+        if (origin === undefined) continue;
+        if (origin.layer === 'step' || origin.layer === 'pipeline') unaffected += 1;
+        else if (origin.layer !== 'config') affected += 1;
+        else if (origin.file === settingsFile) affected += 1;
+        else overridden += 1;
+      }
+    }
+  }
+  return { affected, unaffected, overridden, unparsed };
+}
 
 /**
  * Экран настроек: агент и модель по умолчанию.
@@ -24,6 +73,11 @@ export function Settings(): JSX.Element {
   const [agent, setAgent] = useState<string>('');
   const [model, setModel] = useState<string>('');
 
+  // `undefined` — ещё не пришёл ответ; `null` — пришёл отказ либо пустой
+  // список: пайплайнов витрине не известно, и ноль здесь был бы неправдой, а
+  // не фактом (design.md, Решение 3).
+  const [pipelines, setPipelines] = useState<readonly PipelineView[] | null | undefined>(undefined);
+
   const adopt = (data: SettingsData): void => {
     setSettings(data);
     setAgent(data.agent.value ?? '');
@@ -34,6 +88,9 @@ export function Settings(): JSX.Element {
     fetchSettings()
       .then(adopt)
       .catch((failure: Error) => setError(failure.message));
+    fetchPipelines()
+      .then((data) => setPipelines(data.pipelines.length === 0 ? null : data.pipelines))
+      .catch(() => setPipelines(null));
   }, []);
 
   if (error !== undefined && settings === undefined) return <p className="error">{error}</p>;
@@ -107,9 +164,46 @@ export function Settings(): JSX.Element {
             />
             <span className="small dim">
               {settings.model.value === undefined
-                ? `пусто — берётся у бэкенда${chosen?.defaultModel === undefined ? '' : `: ${chosen.defaultModel}`}`
+                ? `не задано — шаг без своей модели получит модель бэкенда${chosen?.defaultModel === undefined ? '' : `: ${chosen.defaultModel}`}`
                 : settings.model.source}
             </span>
+          </div>
+        </div>
+
+        <div className="field">
+          <span className="label" />
+          <div className="field-body">
+            <p className="note dim">
+              Значение применяется только к шагам, которые не объявили модель сами — ни в самом
+              шаге, ни в умолчаниях пайплайна.{' '}
+              {pipelines === undefined ? (
+                'Область действия ещё считается…'
+              ) : pipelines === null ? (
+                'Пайплайнов не известно — область действия посчитать нечем.'
+              ) : (
+                (() => {
+                  const scope = scopeOf(pipelines, settings.file);
+                  return (
+                    <>
+                      В известных витрине пайплайнах затронет шагов <b>{scope.affected}</b>, не
+                      затронет — они уже объявили модель сами — <b>{scope.unaffected}</b>
+                      {scope.overridden === 0 ? null : (
+                        <>
+                          ; ещё <b>{scope.overridden}</b> берут модель из файла ближе этого —
+                          проектного или плагинного, — и правка отсюда их не изменит
+                        </>
+                      )}
+                      {scope.unparsed === 0 ? null : (
+                        <>
+                          ; не разобрано пайплайнов <b>{scope.unparsed}</b>, их шаги не сосчитаны
+                        </>
+                      )}
+                      .
+                    </>
+                  );
+                })()
+              )}
+            </p>
           </div>
         </div>
 

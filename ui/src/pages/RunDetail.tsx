@@ -25,6 +25,36 @@ import { StepOutput } from '../components/StepOutput';
  */
 const FALLBACK_DELAY_MS = 400;
 
+/**
+ * Расхождение объявленной и исполнявшейся моделей — либо `undefined`, когда
+ * его называть незачем: сводки нет, или все попытки прошли объявленной
+ * моделью (design.md, Решение 5).
+ *
+ * Попытка без названной модели входит в сравнение как отдельное значение, а
+ * не как объявленная: движок не подменяет одно другим, и карточка не должна
+ * подменять их тоже (ui-dashboard: «Модель попытки не назначалась»).
+ *
+ * Схлопываются только подряд идущие повторы, а не значение целиком: экран
+ * показывает факт по порядку попыток, и возврат к прежней модели (opus →
+ * sonnet → opus) — это событие, а не дубль. Множество на его месте показало бы
+ * «opus → sonnet», то есть эскалацию, которой не было.
+ */
+function attemptModelsNote(step: StepSnapshot): string | undefined {
+  if (step.attemptModels.length === 0) return undefined;
+  const NO_MODEL = 'модель не названа';
+  const executed: string[] = [];
+  for (const attempt of step.attemptModels) {
+    const label = attempt.model ?? NO_MODEL;
+    if (executed[executed.length - 1] !== label) executed.push(label);
+  }
+  if (executed.length === 1 && executed[0] === step.model) return undefined;
+
+  const executedLabel = executed.join(' → ');
+  return step.model === undefined
+    ? `исполнилось: ${executedLabel} (модель не объявлена)`
+    : `объявлено ${step.model} · исполнилось: ${executedLabel}`;
+}
+
 function Step({
   address,
   jobId,
@@ -47,6 +77,9 @@ function Step({
             {step.agent}
             {step.model === undefined ? '' : ` · ${step.model}`}
           </span>
+        )}
+        {attemptModelsNote(step) === undefined ? null : (
+          <span className="kind dim">{attemptModelsNote(step)}</span>
         )}
         {step.attempts > 1 ? <span className="kind">попыток: {step.attempts}</span> : null}
         {/*

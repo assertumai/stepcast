@@ -5,6 +5,7 @@ import {
   fetchPipelines,
   type Overview,
   type PipelineJobView,
+  type PipelineModelOrigin,
   type PipelineView,
   type RunOverview,
 } from '../api';
@@ -38,6 +39,27 @@ function stepsOf(job: PipelineJobView): string {
   return rest.length === 0 ? first.id : `${first.id} +${rest.length}`;
 }
 
+/**
+ * Слой модели словами: карточка не должна заставлять читателя сравнивать
+ * значения самому, чтобы понять, что `opus` шага и `opus` настроек — не одно
+ * и то же решение (design.md, «Экран пайплайна показывает значение, не
+ * называя слоя»).
+ */
+function modelOriginLabel(origin: PipelineModelOrigin): string {
+  switch (origin.layer) {
+    case 'step':
+      return 'объявлена шагом';
+    case 'pipeline':
+      return 'умолчание пайплайна';
+    case 'config':
+      return `настройки · ${origin.file}`;
+    case 'backend':
+      return `модель бэкенда ${origin.backend}`;
+    case 'none':
+      return 'модель не задана — выберет бэкенд';
+  }
+}
+
 function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
   return (
     <div className="job">
@@ -64,6 +86,9 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
                 {step.agent}
                 {step.model === undefined ? '' : ` · ${step.model}`}
               </span>
+            )}
+            {step.modelOrigin === undefined ? null : (
+              <span className="kind dim model-origin">{modelOriginLabel(step.modelOrigin)}</span>
             )}
           </div>
           {step.command === undefined ? null : <div className="ctx">$ {step.command}</div>}

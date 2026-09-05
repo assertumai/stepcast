@@ -34,6 +34,7 @@ import type {
   ExpandedPipeline,
   Job,
   KnowledgeDeclaration,
+  ModelOrigin,
   Pipeline,
   Predicate,
   Step,
@@ -591,6 +592,13 @@ function recordPromptSubstitutions(
 interface StepDefaults {
   readonly agent: string;
   readonly model: string | undefined;
+  /**
+   * Слой, давший `model`, — `pipeline` либо `config`, не определён, когда
+   * `model` тоже не определена. Разрешается один раз в `expandPipeline`, рядом
+   * со значением: сравнивать строки задним числом нельзя, одинаковое значение
+   * законно прийти с разных слоёв.
+   */
+  readonly modelLayer: 'pipeline' | 'config' | undefined;
   readonly timeoutMs: number;
   readonly sessionMode: 'shared' | 'per_step';
   /** Политика доступа, объявленная работой — применяется к шагу без своей. */
@@ -607,7 +615,7 @@ function toStep(
   substitutions: Map<string, readonly Substitution[]>,
   at: string,
   registry: Registry,
-): Step {
+): { readonly step: Step; readonly modelOrigin?: ModelOrigin } {
   const common = {
     id: raw.id,
     index: index + 1,
@@ -638,13 +646,15 @@ function toStep(
       onFail = { analyze: raw.on_fail.analyze, prompt: onFailPrompt.text };
     }
     return {
-      ...common,
-      kind: 'run',
-      command: raw.run,
-      ...(onFail === undefined ? {} : { onFail }),
-      ...(raw.output_schema === undefined
-        ? {}
-        : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
+      step: {
+        ...common,
+        kind: 'run',
+        command: raw.run,
+        ...(onFail === undefined ? {} : { onFail }),
+        ...(raw.output_schema === undefined
+          ? {}
+          : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
+      },
     };
   }
 
@@ -655,27 +665,39 @@ function toStep(
   const backend = config.backends[agent];
   const model = raw.model ?? defaults.model ?? backend?.defaultModel;
 
+  const modelOrigin: ModelOrigin =
+    raw.model !== undefined
+      ? { layer: 'step' }
+      : defaults.modelLayer !== undefined
+        ? { layer: defaults.modelLayer }
+        : backend?.defaultModel !== undefined
+          ? { layer: 'backend', backend: agent }
+          : { layer: 'none' };
+
   return {
-    ...common,
-    kind: 'agent',
-    agent,
-    ...(model === undefined ? {} : { model }),
-    // Псевдоним сессии: явный побеждает всегда, иначе одна общая на работу
-    // либо своя на каждый шаг — по режиму работы.
-    session: raw.session ?? (defaults.sessionMode === 'shared' ? 'default' : raw.id),
-    prompt: prompt.text,
-    ...(prompt.source === undefined ? {} : { promptSource: prompt.source }),
-    ...(raw.output_schema === undefined
-      ? {}
-      : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
-    // Ближайшее объявление побеждает целиком: политика не складывается между
-    // уровнями, поэтому job-level политика применяется, только если шаг не
-    // назвал своей вовсе.
-    ...(raw.permissions !== undefined
-      ? { permissions: toPermissions(raw.permissions) }
-      : defaults.permissions === undefined
+    step: {
+      ...common,
+      kind: 'agent',
+      agent,
+      ...(model === undefined ? {} : { model }),
+      // Псевдоним сессии: явный побеждает всегда, иначе одна общая на работу
+      // либо своя на каждый шаг — по режиму работы.
+      session: raw.session ?? (defaults.sessionMode === 'shared' ? 'default' : raw.id),
+      prompt: prompt.text,
+      ...(prompt.source === undefined ? {} : { promptSource: prompt.source }),
+      ...(raw.output_schema === undefined
         ? {}
-        : { permissions: defaults.permissions }),
+        : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
+      // Ближайшее объявление побеждает целиком: политика не складывается между
+      // уровнями, поэтому job-level политика применяется, только если шаг не
+      // назвал своей вовсе.
+      ...(raw.permissions !== undefined
+        ? { permissions: toPermissions(raw.permissions) }
+        : defaults.permissions === undefined
+          ? {}
+          : { permissions: defaults.permissions }),
+    },
+    modelOrigin,
   };
 }
 
@@ -749,8 +771,14 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   const defaultSession = doc.defaults?.session ?? config.defaults.session;
   const defaultAgent = doc.defaults?.agent ?? config.defaults.agent;
   const defaultModel = doc.defaults?.model ?? config.defaults.model;
+  // Слой умолчания разрешается здесь же, рядом со значением: сравнивать
+  // строки задним числом в toStep нельзя — документ пайплайна и конфигурация
+  // законно объявляют одну и ту же модель, и слои должны остаться различимы.
+  const defaultModelLayer: 'pipeline' | 'config' | undefined =
+    doc.defaults?.model !== undefined ? 'pipeline' : config.defaults.model !== undefined ? 'config' : undefined;
 
   const jobs: Job[] = [];
+  const modelOrigins = new Map<string, ModelOrigin>();
 
   for (const [id, entryRaw] of Object.entries(document.jobs)) {
     const at = `jobs.${id}`;
@@ -976,8 +1004,8 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         ? {}
         : { budget: toBudget(body.budget as RawBudget, substitutions, `${at}.budget`) }),
       ...(jobPermissions === undefined ? {} : { permissions: jobPermissions }),
-      steps: rawSteps.map((step, index) =>
-        toStep(
+      steps: rawSteps.map((step, index) => {
+        const expanded = toStep(
           step,
           index,
           declaringFile,
@@ -985,6 +1013,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
           {
             agent: defaultAgent,
             model: defaultModel,
+            modelLayer: defaultModelLayer,
             timeoutMs: config.defaults.stepTimeoutMs,
             sessionMode,
             permissions: jobPermissions,
@@ -993,8 +1022,12 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
           substitutions,
           `${at}.steps.${index}`,
           registry,
-        ),
-      ),
+        );
+        if (expanded.modelOrigin !== undefined) {
+          modelOrigins.set(`${id}/${expanded.step.id}`, expanded.modelOrigin);
+        }
+        return expanded.step;
+      }),
     });
   }
 
@@ -1021,5 +1054,5 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     jobs,
   };
 
-  return { pipeline, substitutions };
+  return { pipeline, substitutions, modelOrigins };
 }

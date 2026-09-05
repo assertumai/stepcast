@@ -325,9 +325,28 @@ export interface Substitution {
 /** Где в документе какие подстановки применялись. Ключ — точечный путь. */
 export type SubstitutionMap = ReadonlyMap<string, readonly Substitution[]>;
 
+/**
+ * Звено цепочки, давшее модель агентского шага: объявление самого шага,
+ * умолчания документа пайплайна, умолчания конфигурации, умолчание бэкенда
+ * (с его именем) либо отсутствие модели во всех четырёх.
+ */
+export type ModelOrigin =
+  | { readonly layer: 'step' }
+  | { readonly layer: 'pipeline' }
+  | { readonly layer: 'config' }
+  | { readonly layer: 'backend'; readonly backend: string }
+  | { readonly layer: 'none' };
+
 export interface ExpandedPipeline {
   readonly pipeline: Pipeline;
   readonly substitutions: SubstitutionMap;
+  /**
+   * Слой модели каждого агентского шага, ключ — `<job>/<step>`. Живёт рядом с
+   * раскрытым пайплайном, а не полем `Step`: `computeStepKey` хеширует `Step`
+   * целиком, и справочное поле, ничего не меняющее в исполнении, обнулило бы
+   * переиспользование шагов всех прошлых прогонов при первом же `resume`.
+   */
+  readonly modelOrigins: ReadonlyMap<string, ModelOrigin>;
 }
 
 /** Файлы, из которых собрано определение прогона: пайплайн и работы. */
