@@ -537,6 +537,7 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
     const upstreamOf = graph.upstream.get(job.id) ?? new Set();
     checkCondition(job, upstreamOf, declaredInputs, graph.byId, pipeline.concurrency, pipeline.file, laneOf, push);
     checkJobSubstitutions(job, upstreamOf, substitutions, graph.byId, pipeline.file, push);
+    checkJobDataSubstitutions(job, substitutions, graph.byId, pipeline.file, push);
     checkDisplaySubstitutions(job, substitutions, graph.byId, pipeline.file, push);
     checkContextUpstream(job, upstreamOf, push);
     checkLaneNeeds(job, laneOf, pipeline.file, push);
@@ -806,6 +807,29 @@ function checkCondition(
         }
       }
 
+      // Данные читателя сверяются с объявлением производителя и здесь:
+      // условие — третий потребитель `jobs.<работа>.data.<ключ>` наравне с
+      // полями шага и подписью, и вычисляется оно по записи работы, куда
+      // необъявленный ключ не попадает ни при каком ходе прогона. Без сверки
+      // такое условие тихо считалось бы по отсутствующему значению — работа
+      // пропускалась бы вместо отказа до захода.
+      const producer = other === undefined ? undefined : byId.get(other);
+      if (producer !== undefined && path[2] === 'data') {
+        const dataKey = path[3];
+        if (dataKey === undefined || !producer.data.includes(dataKey)) {
+          push({
+            severity: 'error',
+            message: `Условие работы ${job.id} читает jobs.${path.slice(1).join('.')} — работа ${other} не объявляет ключ данных «${dataKey ?? '?'}»`,
+            file,
+            at,
+            hint:
+              producer.data.length === 0
+                ? `Работа ${other} не объявляет ни одного ключа данных`
+                : `Объявлены: ${producer.data.join(', ')}`,
+          });
+        }
+      }
+
       // Пятое место правила «работа дорожки не адресует чужую дорожку»
       // (design.md, решение 2): условие if разбирается структурно тем же
       // `references`, а не читается строкой, — тот же случай, что и сегмент
@@ -878,7 +902,7 @@ function checkDisplaySubstitutions(
         continue;
       }
 
-      const [other, namespace] = item.path.split('.');
+      const [other, namespace, dataKey] = item.path.split('.');
       if (other === undefined || !byId.has(other)) {
         push({
           severity: 'error',
@@ -895,6 +919,24 @@ function checkDisplaySubstitutions(
           message: `display работы ${job.id} подставляет ${item.expression} — в подписи доступны только данные работы`,
           ...location,
           hint: `Допустимо ${'${'}jobs.${other}.data.<ключ>${'}'}: их публикует сама работа командой stepcast data`,
+        });
+        continue;
+      }
+
+      // Подпись раскрывается мягко (ключ без значения — просто пустое поле),
+      // но ключ, которого объявление производителя не содержит вовсе, не
+      // раскроется ни при каком ходе прогона — это опечатка, а не пустое
+      // место (design.md, решение 8).
+      const producer = byId.get(other) as Job;
+      if (dataKey === undefined || !producer.data.includes(dataKey)) {
+        push({
+          severity: 'error',
+          message: `display работы ${job.id} подставляет ${item.expression} — работа ${other} не объявляет ключ данных «${dataKey ?? '?'}»`,
+          ...location,
+          hint:
+            producer.data.length === 0
+              ? `Работа ${other} не объявляет ни одного ключа данных`
+              : `Объявлены: ${producer.data.join(', ')}`,
         });
       }
     }
@@ -1041,6 +1083,59 @@ function checkJobSubstitutions(
         message: `Работа ${job.id} подставляет ${item.expression} — выход работы ${other}, не входящей в её зависимости`,
         ...location,
         hint: `Добавьте ${other} в needs или используйте needs: all`,
+      });
+    }
+  }
+}
+
+/**
+ * `${jobs.<работа>.data.<ключ>}` в полях, потребляемых шагом, сверяется с
+ * объявлением названной работы — тем же образцом, что и разбор отказа записи
+ * во время исполнения (`journal/data.ts`). Отдельная функция, а не ветка
+ * `checkJobSubstitutions`: там подстановки одного и того же чужого `other`
+ * схлопываются флагом после первой находки (`flagged.has(other)` в начале
+ * цикла), а здесь разные ключи одной работы обязаны получить каждый свою
+ * диагностику.
+ */
+function checkJobDataSubstitutions(
+  job: Job,
+  substitutions: ExpandedPipeline['substitutions'],
+  byId: ReadonlyMap<string, Job>,
+  pipelineFile: string,
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  const prefix = `jobs.${job.id}.`;
+  const displayPrefix = `${prefix}display.`;
+  const flagged = new Set<string>();
+
+  for (const [key, list] of substitutions) {
+    if (!key.startsWith(prefix) || key.startsWith(displayPrefix)) continue;
+
+    for (const item of list) {
+      if (item.namespace !== 'jobs') continue;
+      const [other, namespace, dataKey] = item.path.split('.');
+      // Самоссылка на собственные данные вне display — уже отдельная ошибка
+      // выше по функции; здесь она не дублируется.
+      if (other === undefined || other === job.id || namespace !== 'data' || dataKey === undefined) {
+        continue;
+      }
+
+      const producer = byId.get(other);
+      // Отсутствие работы в пайплайне называет соседняя проверка выше.
+      if (producer === undefined || producer.data.includes(dataKey)) continue;
+
+      const flagKey = `${other}.${dataKey}`;
+      if (flagged.has(flagKey)) continue;
+      flagged.add(flagKey);
+
+      push({
+        severity: 'error',
+        message: `Работа ${job.id} подставляет ${item.expression} — работа ${other} не объявляет ключ данных «${dataKey}»`,
+        ...substitutionLocation(item, key, pipelineFile),
+        hint:
+          producer.data.length === 0
+            ? `Работа ${other} не объявляет ни одного ключа данных`
+            : `Объявлены: ${producer.data.join(', ')}`,
       });
     }
   }

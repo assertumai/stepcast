@@ -5,6 +5,7 @@ import type { Config } from '../config/resolve.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
 import { StepcastError } from '../errors.js';
+import { assertDataKey } from '../journal/data.js';
 import { builtinRegistry } from '../plugins/builtin.js';
 import { predicateNames, type Registry } from '../plugins/registry.js';
 import { packagedSchemaPath } from '../package-schema.js';
@@ -246,6 +247,32 @@ function toCount(
   }
 
   return parse(raw, at, source);
+}
+
+/**
+ * Разобрать объявление `data`: каждое имя проверяется тем же предикатом, что и
+ * ключ данных при записи (`assertDataKey`), — недопустимое имя отклоняется
+ * здесь, при разборе, а не отказом на середине прогона.
+ */
+function toDataDeclaration(
+  raw: readonly string[] | undefined,
+  declaringFile: string,
+  at: string,
+): readonly string[] {
+  const names = raw ?? [];
+  for (const name of names) {
+    try {
+      assertDataKey(name);
+    } catch (error) {
+      throw new StepcastError(`Работа объявляет данные с недопустимым именем «${name}»`, {
+        file: declaringFile,
+        at: `${at}.data`,
+        ...(error instanceof StepcastError && error.hint !== undefined ? { hint: error.hint } : {}),
+        cause: error,
+      });
+    }
+  }
+  return names;
 }
 
 function toBudget(raw: RawBudget, substitutions: SubstitutionMap, at: string): Budget {
@@ -918,6 +945,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       contextUpstream:
         (body.context_upstream as ContextUpstream | undefined) ?? doc.context_upstream ?? 'all',
       inputs: (body.inputs as readonly string[] | undefined) ?? [],
+      data: toDataDeclaration(body.data as readonly string[] | undefined, declaringFile, at),
       ...(until === undefined
         ? {}
         : {

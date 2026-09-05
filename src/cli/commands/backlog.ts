@@ -85,6 +85,7 @@ export function runBacklogCommand(
   args: ParsedArgs,
   write: (line: string) => void,
   cwd: string,
+  writeErr: (line: string) => void,
 ): ExitCodeValue {
   const [action, slug] = args.positional;
   const file = resolvePath(cwd, stringFlag(args.flags, 'file') ?? 'backlog.md');
@@ -93,7 +94,7 @@ export function runBacklogCommand(
     case 'list':
       return runList(file, write);
     case 'pick':
-      return runPick(args, file, cwd, write);
+      return runPick(args, file, cwd, write, writeErr);
     case 'finish':
       return runFinish(args, slug, file);
     case 'settle':
@@ -116,6 +117,7 @@ function runPick(
   file: string,
   cwd: string,
   write: (line: string) => void,
+  writeErr: (line: string) => void,
 ): ExitCodeValue {
   const staleHours = numberFlag(args.flags, 'stale-hours') ?? DEFAULT_STALE_HOURS;
   if (!Number.isFinite(staleHours) || staleHours <= 0) {
@@ -137,7 +139,7 @@ function runPick(
     if (args.flags['slots'] !== undefined) {
       throw new StepcastError('ключи --lanes и --slots взаимно исключают друг друга: форма выдачи одна');
     }
-    runPickLanes(args, file, cwd, text, entries, now, nowMs, staleMs, lanesOption, write);
+    runPickLanes(args, file, cwd, text, entries, now, nowMs, staleMs, lanesOption, write, writeErr);
     return ExitCode.ok;
   }
 
@@ -164,6 +166,7 @@ function runPickLanes(
   staleMs: number,
   lanesOption: string,
   write: (line: string) => void,
+  writeErr: (line: string) => void,
 ): void {
   const lanes = parseLanes(lanesOption);
   // Относительный путь разрешается от того же рабочего каталога, что и
@@ -198,7 +201,7 @@ function runPickLanes(
     }
   });
 
-  publishPickedTitles(lanes, chosen);
+  publishPickedTitles(lanes, chosen, writeErr);
   write(JSON.stringify({ lanes: result }, null, 2));
 }
 
@@ -219,10 +222,16 @@ function runPickLanes(
  * на все дорожки, и выбрать «какую из двух дорожек показать» нечем. Ключи с
  * суффиксом — потому что склеенная строка не разбирается обратно, а
  * потребителю, которому нужна одна дорожка, нужна именно она.
+ *
+ * Работа, не объявившая эти ключи, их не получит: `mergeJobData` отказывает,
+ * и отказ не отменяет уже состоявшийся выбор — пункты в очереди уже помечены.
+ * Молчание здесь, однако, не заведено: агент, вызвавший `backlog pick` внутри
+ * чужой работы на пробу, — главный адресат объяснения, почему подписи нет.
  */
 function publishPickedTitles(
   lanes: readonly string[],
   chosen: readonly BacklogEntry[],
+  writeErr: (line: string) => void,
 ): void {
   const jobDir = process.env.STEPCAST_JOB_DIR;
   if (jobDir === undefined || jobDir.trim() === '') return;
@@ -245,8 +254,9 @@ function publishPickedTitles(
   // уронить команду из-за подписи значило бы потерять сделанную работу.
   try {
     mergeJobData(jobDir, patch);
-  } catch {
-    // Данные — необязательная публикация; молчание здесь намеренное.
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    writeErr(`backlog pick: подпись выбора не опубликована: ${detail}`);
   }
 }
 

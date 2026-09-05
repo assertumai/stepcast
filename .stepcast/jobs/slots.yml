@@ -10,6 +10,11 @@ kind: job
 name: slots
 description: Проверить чистоту дерева и раздать слоты дорожек из очереди улучшений
 
+# Ключи выбора, которые публикует backlog pick --lanes a шага pick-lanes:
+# title (общая подпись) и title-a, slug-a (по дорожке a). Список меняется
+# вместе с --lanes — вернувшаяся дорожка b добавит title-b и slug-b.
+data: [title, title-a, slug-a]
+
 output:
   from: pick-lanes
   schema: stepcast:backlog-slots

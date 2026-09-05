@@ -227,6 +227,11 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
     // Объявленные входы — опция для тех, кому нужна предсказуемость: отпечаток
     // считается только по ним, под ответственность автора.
     inputs: z.array(z.string()).optional(),
+    // Ключи данных, которые работа вправе опубликовать. Список именной, а не
+    // шаблонный: форма ключа не отличает объявленную публикацию от случайной
+    // (см. design.md решение 2), значит нужно именно перечисление. Каждое имя
+    // проверяется тем же разбором, что и ключ при записи (`assertDataKey`).
+    data: z.array(z.string()).optional(),
     budget: BudgetSchema.optional(),
     until: UntilSchema.optional(),
     permissions: PermissionsSchema.optional(),

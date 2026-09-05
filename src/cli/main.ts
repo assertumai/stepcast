@@ -291,7 +291,7 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
   {
     name: 'backlog',
     spec: COMMANDS['backlog'] as CommandSpec,
-    run: (args, io, env) => runBacklogCommand(args, io.out, env.cwd),
+    run: (args, io, env) => runBacklogCommand(args, io.out, env.cwd, io.err),
   },
   {
     name: 'knowledge',

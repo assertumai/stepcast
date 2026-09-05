@@ -273,6 +273,71 @@ describe('CLI: stepcast backlog pick', () => {
   });
 });
 
+describe('CLI: stepcast backlog pick публикует данные работы', () => {
+  /** Каталог работы с объявлением — тот же вид, что заводит движок до первого шага. */
+  function jobDirWithDeclaration(declared: readonly string[]): string {
+    const dir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-jobdir-'));
+    writeFileSync(join(dir, 'resolved.json'), JSON.stringify({ id: 'slots', data: declared }));
+    return dir;
+  }
+
+  /** Позвать backlog с заданным (или отсутствующим) `STEPCAST_JOB_DIR`, восстановив окружение после. */
+  async function backlogAsStep(
+    cwd: string,
+    argv: readonly string[],
+    jobDir: string | undefined,
+  ): Promise<Result> {
+    const previous = process.env.STEPCAST_JOB_DIR;
+    if (jobDir === undefined) delete process.env.STEPCAST_JOB_DIR;
+    else process.env.STEPCAST_JOB_DIR = jobDir;
+    try {
+      return await backlog(cwd, argv);
+    } finally {
+      if (previous === undefined) delete process.env.STEPCAST_JOB_DIR;
+      else process.env.STEPCAST_JOB_DIR = previous;
+    }
+  }
+
+  // Сценарий: «Выбор публикуется работой slots»
+  it('внутри работы, объявившей ключи выбора, публикует title, title-<дорожка> и slug-<дорожка>', async () => {
+    const dir = bed(item('a', { ...COMPLETE, group: 'a' }));
+    const jobDir = jobDirWithDeclaration(['title', 'title-a-lane', 'slug-a-lane']);
+
+    const result = await backlogAsStep(dir, ['pick', '--lanes', 'a-lane'], jobDir);
+
+    assert.equal(result.code, ExitCode.ok);
+    assert.equal(result.stderr, '');
+    const data = JSON.parse(readFileSync(join(jobDir, 'data.json'), 'utf8')) as Record<string, string>;
+    assert.equal(data['slug-a-lane'], 'a');
+    assert.ok(data['title-a-lane']);
+    assert.ok(data['title']);
+  });
+
+  // Сценарий: «Публикация отклонена объявлением»
+  it('внутри работы без объявления — выбор состоялся, код 0, а stderr называет работу и ключ', async () => {
+    const dir = bed(item('a', { ...COMPLETE, group: 'a' }));
+    const jobDir = jobDirWithDeclaration([]);
+
+    const result = await backlogAsStep(dir, ['pick', '--lanes', 'a-lane'], jobDir);
+
+    assert.equal(result.code, ExitCode.ok);
+    assert.match(result.stderr, /подпись выбора не опубликована/);
+    assert.match(result.stderr, /slots/);
+    assert.equal(existsSync(join(jobDir, 'data.json')), false);
+    assert.equal(fieldOf(readFileSync(join(dir, 'backlog.md'), 'utf8'), 'a', 'status'), 'in_progress');
+  });
+
+  // Сценарий: «Вызов вне прогона»
+  it('вне шага прогона ничего не публикует и ни о чём не сообщает', async () => {
+    const dir = bed(item('a', { ...COMPLETE, group: 'a' }));
+
+    const result = await backlogAsStep(dir, ['pick', '--lanes', 'a-lane'], undefined);
+
+    assert.equal(result.code, ExitCode.ok);
+    assert.equal(result.stderr, '');
+  });
+});
+
 describe('CLI: stepcast backlog finish', () => {
   it('finish done проставляет исход', async () => {
     const dir = bed(item('an-item', { ...COMPLETE, status: 'in_progress' }));

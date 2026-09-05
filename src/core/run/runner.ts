@@ -56,7 +56,7 @@ import type { ResumePlan, SourceRun, StepPlan } from './resumePlan.js';
 import { computeStepKey, upstreamForKey } from './stepKey.js';
 import { prepareWorkspace, type PreparedWorkspace } from './workspace.js';
 import { createWaitState } from './waitState.js';
-import { jobDataPath, readJobData, writeJobData } from '../journal/data.js';
+import { jobDataPath, readJobData, writeJobDataUnchecked } from '../journal/data.js';
 import { jobDir, jobScratchDir, shortRunId } from '../journal/paths.js';
 import { findStepDir } from '../journal/reader.js';
 import { RunJournal } from '../journal/writer.js';
@@ -785,7 +785,7 @@ async function runJob(
   // Данные переиспользованных шагов переносятся до первого шага: работа ниже
   // по графу читает их подстановкой, и пустота здесь ломала бы её ровно при
   // возобновлении.
-  transferJobData(context, job.id);
+  transferJobData(context, job);
 
   // Ниже по коду `context` — контекст работы: у него своя рабочая директория.
   //
@@ -1376,7 +1376,8 @@ async function runJobSteps(
         ...(context.records.get(job.id) as JobRecord),
         steps: [...steps],
       });
-      foldJobData(context, job.id);
+      const dataViolation = foldJobData(context, job);
+      if (dataViolation !== undefined) return { status: 'failed', reason: dataViolation };
       if (
         (step.kind === 'agent' || step.outputSchemaPath !== undefined) &&
         planned.decision.record.status === 'success'
@@ -1645,15 +1646,28 @@ async function runJobSteps(
       ...(context.records.get(job.id) as JobRecord),
       steps: [...steps],
     });
-    foldJobData(context, job.id);
+    // Данные складываются при любом исходе шага — они рассказывают, на чём
+    // работа встала, — но исход шага решает первым: шаг, упавший по `expect`,
+    // таймауту или бюджету, обязан отдать наружу свою причину и свой
+    // `cause`. Нарушение объявления при этом не теряется: оно дописывается к
+    // причине, потому что статус у работы всё равно один.
+    const dataViolation = foldJobData(context, job);
 
     if (status !== 'success') {
+      const detail = reason === undefined ? undefined : `шаг ${step.id}: ${reason}`;
+      const joined = [detail, dataViolation].filter((part) => part !== undefined).join('; ');
       return {
         status,
-        ...(reason === undefined ? {} : { reason: `шаг ${step.id}: ${reason}` }),
+        ...(joined === '' ? {} : { reason: joined }),
         ...(cause === undefined ? {} : { cause }),
       };
     }
+
+    // Шаг отработал успешно, а данные оставил недопустимые: причина отказа —
+    // сама запись мимо объявления. Причины остановки прогона (`cause`) здесь
+    // нет — перечень закрыт, и ни одна его строка про это не говорит; так же
+    // возвращается отказ по неперенесённому выходу шага ниже.
+    if (dataViolation !== undefined) return { status: 'failed', reason: dataViolation };
   }
 
   if (outputFromStepMissing) {
@@ -2513,17 +2527,40 @@ function transferStepOutput(
  *
  * Следствие честное и его стоит знать: данные, записанные в середине долгого
  * шага, появятся в витрине по его завершении, а не в момент записи.
+ *
+ * В запись попадают только ключи, объявленные определением работы, — тем
+ * определением, которым движок её исполняет, а не файлом `resolved.json` на
+ * диске: иначе шаг, которому доступна файловая система работы, расширял бы
+ * себе объявление правкой этого файла. Необъявленный ключ — это `data.json`,
+ * написанный в обход команды (`stepcast data` сама такого не допустит), и
+ * возвращённая причина роняет работу без повторных попыток: файл остался на
+ * месте, повтор упёрся бы в то же самое. Объявленные соседи необъявленного
+ * ключа в запись всё равно попадают — они и правда опубликованы.
  */
-function foldJobData(context: RunContext, jobId: string): void {
-  const record = context.records.get(jobId);
-  if (record === undefined) return;
+function foldJobData(context: RunContext, job: Job): string | undefined {
+  const record = context.records.get(job.id);
+  if (record === undefined) return undefined;
 
-  const data = readJobData(jobDir(context.journal.paths, jobId));
-  context.records.set(jobId, {
+  const raw = readJobData(jobDir(context.journal.paths, job.id));
+  const declared = new Set(job.data);
+  const data: Record<string, string> = {};
+  let rejected: string | undefined;
+  for (const [key, value] of Object.entries(raw)) {
+    if (declared.has(key)) data[key] = value;
+    else rejected ??= key;
+  }
+
+  context.records.set(job.id, {
     ...record,
     ...(Object.keys(data).length === 0 ? {} : { data }),
   });
   context.refreshStatus();
+
+  if (rejected === undefined) return undefined;
+  return (
+    `работа ${job.id} не объявляла ключ данных «${rejected}»: ` +
+    (job.data.length === 0 ? 'объявленный состав пуст' : `объявлены ${job.data.join(', ')}`)
+  );
 }
 
 /**
@@ -2538,22 +2575,31 @@ function foldJobData(context: RunContext, jobId: string): void {
  * Переносится всё, что успел записать исходный прогон, и только когда хотя бы
  * один шаг работы переиспользуется: работа, переисполняемая с начала, обязана
  * начать с чистого листа. Уже записанное в этом прогоне не затирается.
+ *
+ * Перенесённое подчиняется объявлению нового определения работы, а не
+ * старого: определение могло поменяться между прогонами, и объявление нового
+ * прогона — единственное, которым он сам исполняется.
  */
-function transferJobData(context: RunContext, jobId: string): void {
+function transferJobData(context: RunContext, job: Job): void {
   const source = context.resume?.source;
   if (source === undefined) return;
-  if (!context.resume?.plan.steps.some((step) => step.job === jobId && step.decision.kind === 'reuse')) {
+  if (!context.resume?.plan.steps.some((step) => step.job === job.id && step.decision.kind === 'reuse')) {
     return;
   }
 
-  const target = jobDir(context.journal.paths, jobId);
+  const target = jobDir(context.journal.paths, job.id);
   if (existsSync(jobDataPath(target))) return;
 
-  const carried = readJobData(jobDir(source.paths, jobId));
-  if (Object.keys(carried).length === 0) return;
+  const carried = readJobData(jobDir(source.paths, job.id));
+  const declared = new Set(job.data);
+  const allowed = Object.fromEntries(Object.entries(carried).filter(([key]) => declared.has(key)));
+  if (Object.keys(allowed).length === 0) return;
 
-  bookkeep({ journal: context.journal, job: jobId }, 'перенос данных работы', () => {
-    writeJobData(target, carried);
+  // Обход объявления здесь законен и уже отработан: `allowed` отобран по
+  // `job.data` строкой выше, то есть тем же объявлением, которым сверяется
+  // всякая запись.
+  bookkeep({ journal: context.journal, job: job.id }, 'перенос данных работы', () => {
+    writeJobDataUnchecked(target, allowed);
   });
 }
 

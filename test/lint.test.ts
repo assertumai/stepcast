@@ -300,18 +300,21 @@ steps:
     // бессмысленно (checkDisplaySubstitutions) — упоминание work-a в needs
     // здесь не нужно и само стало бы отдельной, не связанной с этим тестом
     // ошибкой чужой дорожки.
+    // Ключ подписи объявлен производителем: без объявления та же ссылка стала
+    // бы ошибкой о необъявленном ключе, и тест зеленел бы не по той причине,
+    // ради которой написан.
     const diagnostics = lint(
       makeProject({
         'stepcast.yml': LANE_PIPELINE.replace(
+          'work-a:\n    lane: a\n    needs: [slots]',
+          'work-a:\n    lane: a\n    needs: [slots]\n    data: [title]',
+        ).replace(
           'work-b:\n    lane: b\n    needs: [slots]\n    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]',
           'work-b:\n    lane: b\n    needs: [slots]\n    display: { title: "${jobs.work-a.data.title}" }\n    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]',
         ),
       }),
     );
-    assert.equal(
-      errors(diagnostics).some((message) => message.includes('дорожк')),
-      false,
-    );
+    assert.deepEqual(errors(diagnostics), []);
   });
 
   it('условие if, обращающееся к сегменту чужой дорожки, — ошибка', () => {
