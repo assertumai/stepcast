@@ -1886,6 +1886,7 @@ project:
     dir: openspec/changes
     rules: .stepcast/prompts/spec-rules.md
     tool: openspec
+    check: openspec validate "$SPEC_CHANGE" --strict
 jobs:
   build:
     steps:
@@ -1895,12 +1896,15 @@ jobs:
         run: "\${project.spec.rules}"
       - id: tool
         run: "\${project.spec.tool}"
+      - id: check
+        run: "\${project.spec.check}"
 `,
     });
     const steps = expand(project).pipeline.jobs[0]!.steps;
     assert.equal(asRun(steps[0]!).command, 'openspec/changes');
     assert.equal(asRun(steps[1]!).command, '.stepcast/prompts/spec-rules.md');
     assert.equal(asRun(steps[2]!).command, 'openspec');
+    assert.equal(asRun(steps[3]!).command, 'openspec validate "$SPEC_CHANGE" --strict');
   });
 
   it('отклоняет пустой dir внутри группы spec', () => {
@@ -2009,6 +2013,98 @@ jobs:
     assert.equal(asRun(steps[0]!).command, 'docs/changes');
     assert.equal(asRun(steps[1]!).command, 'make');
   });
+
+  // Задача 3.3 / Сценарий: «Ключ practice.spec.check раскрывается из конфигурации»
+  it('project.spec.check раскрывается из конфигурации, когда пайплайн ключ не называет', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec.check}" }]
+`,
+    });
+    const config = withProjectSpec(project, { check: 'openspec validate "$SPEC_CHANGE" --strict' });
+    const step = asRun(expandWith(project, config).pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.command, 'openspec validate "$SPEC_CHANGE" --strict');
+  });
+
+  // Задача 3.3 / Сценарий: «Пайплайн перекрывает конфигурацию по project.spec.check»
+  it('пайплайн перекрывает конфигурацию по project.spec.check', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  spec:
+    check: make spec-check
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec.check}" }]
+`,
+    });
+    const config = withProjectSpec(project, { check: 'openspec validate "$SPEC_CHANGE" --strict' });
+    const step = asRun(expandWith(project, config).pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.command, 'make spec-check');
+  });
+
+  // Задача 1.7 / Сценарий: «Соседний ключ группы не затирается». Тест выше
+  // («частичное объявление в обоих слоях…») сливает группу по двум ключам и
+  // до появления `check` доказывал полистовое слияние целиком; теперь ключей
+  // четыре, и слияние проверяется на полном составе: три из конфигурации,
+  // четвёртый из документа пайплайна. Слияние по группе целиком (а не по
+  // листьям) обнулило бы здесь три значения из четырёх.
+  it('project.spec.check из пайплайна не затирает dir, rules и tool из конфигурации', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  spec:
+    check: make spec-check
+jobs:
+  build:
+    steps:
+      - id: dir
+        run: "\${project.spec.dir}"
+      - id: rules
+        run: "\${project.spec.rules}"
+      - id: tool
+        run: "\${project.spec.tool}"
+      - id: check
+        run: "\${project.spec.check}"
+`,
+    });
+    const config = withProjectSpec(project, {
+      dir: 'openspec/changes',
+      rules: '.stepcast/prompts/spec-rules.md',
+      tool: 'openspec',
+    });
+
+    const steps = expandWith(project, config).pipeline.jobs[0]!.steps;
+    assert.equal(asRun(steps[0]!).command, 'openspec/changes');
+    assert.equal(asRun(steps[1]!).command, '.stepcast/prompts/spec-rules.md');
+    assert.equal(asRun(steps[2]!).command, 'openspec');
+    assert.equal(asRun(steps[3]!).command, 'make spec-check');
+  });
+
+  // Задача 3.4: значение известно до прогона — снимок несёт объявленную
+  // команду строкой, а не подстановку, дожившую до исполнения.
+  it('project.spec.check попадает в снимок пайплайна строкой, а не подстановкой', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  spec:
+    check: openspec validate "$SPEC_CHANGE" --strict
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec.check}" }]
+`,
+    });
+
+    const lock = serializeLock(expand(project).pipeline);
+    assert.doesNotMatch(lock, /\$\{project\.spec\.check\}/);
+    assert.match(lock, /openspec validate "\$SPEC_CHANGE" --strict/);
+  });
 });
 
 describe('pipeline-definition: состав пространства project.spec.*', () => {
@@ -2051,6 +2147,52 @@ jobs:
         assert.match(error.hint ?? '', /spec\.dir/);
         assert.match(error.hint ?? '', /spec\.rules/);
         assert.match(error.hint ?? '', /spec\.tool/);
+        assert.match(error.hint ?? '', /spec\.check/);
+        return true;
+      },
+    );
+  });
+
+  // Задача 3.3 / Сценарий: «${project.spec.validate} — не имя, а грамматика подкоманды»
+  it('ссылка на ${project.spec.validate} отклоняется, называя спискок имён, среди которых spec.check', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec.validate}" }]
+`,
+    });
+
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.hint ?? '', /содержит только/);
+        assert.match(error.hint ?? '', /spec\.check/);
+        return true;
+      },
+    );
+  });
+
+  // Задача 3.3 / Сценарий: «Ссылка на необъявленный project.spec.check — оба места»
+  it('ссылка на необъявленный project.spec.check — отказ, называющий ключ и оба места', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: "\${project.spec.check}" }]
+`,
+    });
+
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.hint ?? '', /project\.spec\.check/);
+        assert.match(error.hint ?? '', new RegExp(project.path('stepcast.yml').replace(/[/\\]/g, '\\$&')));
+        assert.match(error.hint ?? '', /\.stepcast\/config\.yml/);
         return true;
       },
     );

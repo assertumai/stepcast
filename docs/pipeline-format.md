@@ -59,7 +59,7 @@ context:
 project:                         # необязателен, перекрывает project.* конфигурации
   check: npm run check
   tools: [npm, npx, node]
-  spec: { dir: openspec/changes, rules: .stepcast/prompts/spec-rules.md, tool: openspec }
+  spec: { dir: openspec/changes, rules: .stepcast/prompts/spec-rules.md, tool: openspec, check: 'openspec validate "$SPEC_CHANGE" --strict' }
   edit_paths: [src/**, test/**, docs/**, package.json]
 
 defaults:
@@ -558,12 +558,13 @@ jobs:
 инструментов и границ правок репозитория (см.
 [config.md](config.md#инструменты-репозитория) и
 [config.md](config.md#границы-правок)) — и составных имён `spec.dir`,
-`spec.rules`, `spec.tool` — действующего объявления практики спецификации (см.
-[config.md](config.md#команда-проверки-проекта) и
+`spec.rules`, `spec.tool`, `spec.check` — действующего объявления практики
+спецификации (см. [config.md](config.md#команда-проверки-проекта) и
 [config.md](config.md#практика-спецификации)). Обращение к любому из них —
 `${project.check}`, `${project.tools}`, `${project.edit_paths}`,
-`${project.spec.dir}`, `${project.spec.rules}`, `${project.spec.tool}` — там,
-где ключ не объявлен ни пайплайном, ни `.stepcast/config.yml`, — отказ
+`${project.spec.dir}`, `${project.spec.rules}`, `${project.spec.tool}`,
+`${project.spec.check}` — там, где ключ не объявлен ни пайплайном, ни
+`.stepcast/config.yml`, — отказ
 разбора, а не пустая строка: наличие ключа не обязательно само по себе,
 обязательна только ссылка на него без объявления. Обращение к имени вне этого
 состава (`${project.name}`, `${project.spec.folder}`) называет доступные

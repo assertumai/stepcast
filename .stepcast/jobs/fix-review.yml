@@ -12,13 +12,16 @@ params:
   change: { type: string, required: true }
   # Каталог, команда проверки и практика спецификации выбранного репозитория
   # — та же причина, что в implement.yml: пункт очереди мог назвать вложенный
-  # репозиторий, и правка находки обязана гнать проверку и инструмент именно
-  # его.
+  # репозиторий, и правка находки обязана гнать проверку кода и проверку
+  # документов изменения именно его.
   repo_dir: { type: string, required: true }
   check: { type: string, required: true }
   spec_dir: { type: string, required: true }
   spec_rules: { type: string, required: true }
-  spec_tool: { type: string, required: true }
+  spec_check: { type: string, required: true }
+
+env:
+  SPEC_CHANGE: "${params.change}"
 
 session: shared
 
@@ -38,10 +41,10 @@ until:
   check:
     # cd, а не поле cwd шага: см. verify.yml.
     - cmd: cd "${params.repo_dir}" && ${params.check}
-    # Инструмент практики спецификации выбранного репозитория — по той же
+    # Команда практики спецификации выбранного репозитория — по той же
     # причине, что в implement.yml: устранение находки правит документы
     # изменения наравне с кодом, и ломает их так же незаметно.
-    - cmd: cd "${params.repo_dir}" && ${params.spec_tool} validate "${params.change}" --strict
+    - cmd: cd "${params.repo_dir}" && ${params.spec_check}
 
 steps:
   # Модель того же класса, что и у ревью: находки сформулировал opus, и модель

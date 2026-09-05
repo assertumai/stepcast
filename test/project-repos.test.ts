@@ -28,11 +28,12 @@ function config(projectYaml: string) {
   return resolveConfig({ cwd, home, globalPath: join(home, '.stepcast', 'config.yml') }).config;
 }
 
-const ROOT_ONLY = 'project:\n  check: npm run check\n  spec:\n    dir: openspec/changes\n    rules: openspec/rules.md\n    tool: openspec\n';
+const ROOT_ONLY =
+  'project:\n  check: npm run check\n  spec:\n    dir: openspec/changes\n    rules: openspec/rules.md\n    tool: openspec\n    check: openspec validate "$SPEC_CHANGE" --strict\n';
 
 const WITH_BACKEND =
-  'project:\n  check: npm run check\n  spec:\n    dir: openspec/changes\n    rules: openspec/rules.md\n    tool: openspec\n' +
-  '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n';
+  'project:\n  check: npm run check\n  spec:\n    dir: openspec/changes\n    rules: openspec/rules.md\n    tool: openspec\n    check: openspec validate "$SPEC_CHANGE" --strict\n' +
+  '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n        check: make spec-check\n';
 
 describe('project/repos: resolveItemRepo', () => {
   it('пункт без поля repos разрешается в объявление корня без приставки к путям', () => {
@@ -40,7 +41,12 @@ describe('project/repos: resolveItemRepo', () => {
     assert.deepEqual(resolved, {
       dir: '.',
       check: 'npm run check',
-      spec: { dir: 'openspec/changes', rules: 'openspec/rules.md', tool: 'openspec' },
+      spec: {
+        dir: 'openspec/changes',
+        rules: 'openspec/rules.md',
+        tool: 'openspec',
+        check: 'openspec validate "$SPEC_CHANGE" --strict',
+      },
     });
   });
 
@@ -55,7 +61,12 @@ describe('project/repos: resolveItemRepo', () => {
     assert.deepEqual(resolved, {
       dir: 'backend',
       check: './gradlew check',
-      spec: { dir: 'backend/docs/changes', rules: 'backend/docs/spec-rules.md', tool: 'openspec' },
+      spec: {
+        dir: 'backend/docs/changes',
+        rules: 'backend/docs/spec-rules.md',
+        tool: 'openspec',
+        check: 'make spec-check',
+      },
     });
   });
 
@@ -142,6 +153,30 @@ describe('project/repos: resolveItemRepo', () => {
     );
   });
 
+  it('вложенный репозиторий с dir/rules/tool, но без spec.check отказывает этим ключом', () => {
+    const incomplete =
+      ROOT_ONLY +
+      '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n';
+    assert.throws(
+      () => resolveItemRepo(config(incomplete), { slug: 'an-item', repos: ['backend'] }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /an-item/);
+        assert.match(error.message, /backend/);
+        assert.match(error.message, /spec\.check/);
+        return true;
+      },
+    );
+  });
+
+  it('check практики спецификации несёт объявленную команду и не склеивается с каталогом', () => {
+    const resolved = resolveItemRepo(config(WITH_BACKEND), { slug: 'an-item', repos: ['backend'] });
+    assert.equal(resolved.spec.check, 'make spec-check');
+    assert.equal(resolved.spec.tool, 'openspec');
+    assert.equal(resolved.spec.dir, 'backend/docs/changes');
+    assert.equal(resolved.spec.rules, 'backend/docs/spec-rules.md');
+  });
+
   /**
    * Заполнены обе дорожки, репозитории у них разные, и неполно объявлен тот,
    * что достался второй, — по отказу обязано быть видно, чей пункт остановил
@@ -151,7 +186,7 @@ describe('project/repos: resolveItemRepo', () => {
   it('отказ несёт слаг именно того пункта, чей репозиторий недообъявлен', () => {
     const twoRepos =
       ROOT_ONLY +
-      '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n    - dir: mobile\n';
+      '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n        check: make spec-check\n    - dir: mobile\n';
     const resolved = config(twoRepos);
 
     assert.doesNotThrow(() => resolveItemRepo(resolved, { slug: 'lane-a-item', repos: ['backend'] }));
@@ -175,8 +210,8 @@ describe('project/repos: resolveItemRepo', () => {
    */
   it('инструменты вложенного репозитория складываются с корневыми, корневые впереди', () => {
     const withTools =
-      'project:\n  check: npm run check\n  tools: [npm, git]\n  spec:\n    dir: openspec/changes\n    rules: openspec/rules.md\n    tool: openspec\n' +
-      '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      tools: ["./gradlew", npm]\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n';
+      'project:\n  check: npm run check\n  tools: [npm, git]\n  spec:\n    dir: openspec/changes\n    rules: openspec/rules.md\n    tool: openspec\n    check: openspec validate "$SPEC_CHANGE" --strict\n' +
+      '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      tools: ["./gradlew", npm]\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n        check: make spec-check\n';
     const resolved = resolveItemRepo(config(withTools), { slug: 'an-item', repos: ['backend'] });
     assert.deepEqual(resolved.tools, ['npm', 'git', './gradlew']);
   });
@@ -185,7 +220,7 @@ describe('project/repos: resolveItemRepo', () => {
     const rootTools = ROOT_ONLY.replace('  check: npm run check\n', '  check: npm run check\n  tools: [npm, git]\n');
     const withBackend =
       rootTools +
-      '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n';
+      '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n        check: make spec-check\n';
     const resolved = resolveItemRepo(config(withBackend), { slug: 'an-item', repos: ['backend'] });
     assert.deepEqual(resolved.tools, ['npm', 'git']);
   });

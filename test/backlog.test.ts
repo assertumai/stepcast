@@ -295,7 +295,16 @@ describe('backlog: блок repo у дорожки в ответе pick --lanes'
           group: 'g',
           track: 'express',
           item: RECORD,
-          repo: { dir: 'backend', check: './gradlew check', spec: { dir: 'backend/docs/changes', rules: 'backend/docs/spec-rules.md', tool: 'openspec' } },
+          repo: {
+            dir: 'backend',
+            check: './gradlew check',
+            spec: {
+              dir: 'backend/docs/changes',
+              rules: 'backend/docs/spec-rules.md',
+              tool: 'openspec',
+              check: 'make spec-check',
+            },
+          },
         },
       },
     };
@@ -322,7 +331,7 @@ describe('backlog: блок repo у дорожки в ответе pick --lanes'
           group: 'g',
           track: 'express',
           item: RECORD,
-          repo: { dir: '.', check: 'npm run check', spec: { dir: 'a', rules: 'b', tool: 'c' }, extra: true },
+          repo: { dir: '.', check: 'npm run check', spec: { dir: 'a', rules: 'b', tool: 'c', check: 'd' }, extra: true },
         },
       },
     };

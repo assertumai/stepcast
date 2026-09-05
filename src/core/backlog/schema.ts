@@ -141,6 +141,7 @@ const BacklogRepoBlockSchema = z
         dir: z.string(),
         rules: z.string(),
         tool: z.string(),
+        check: z.string(),
       })
       .strict(),
   })

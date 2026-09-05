@@ -33,6 +33,7 @@ export interface NestedRepoDeclaration {
     readonly dir: string | undefined;
     readonly rules: string | undefined;
     readonly tool: string | undefined;
+    readonly check: string | undefined;
   };
 }
 
@@ -130,6 +131,7 @@ export interface Config {
       readonly dir: string | undefined;
       readonly rules: string | undefined;
       readonly tool: string | undefined;
+      readonly check: string | undefined;
     };
     /**
      * Практика памяти репозитория. `provider` неопределён — практики нет:
@@ -315,6 +317,7 @@ function canonicalizeNestedRepos(value: unknown): CanonicalNestedRepos | undefin
           dir: typeof spec.dir === 'string' ? spec.dir : undefined,
           rules: typeof spec.rules === 'string' ? spec.rules : undefined,
           tool: typeof spec.tool === 'string' ? spec.tool : undefined,
+          check: typeof spec.check === 'string' ? spec.check : undefined,
         },
       };
     } else {
@@ -436,6 +439,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   const projectSpecDir = values.get('project.spec.dir');
   const projectSpecRules = values.get('project.spec.rules');
   const projectSpecTool = values.get('project.spec.tool');
+  const projectSpecCheck = values.get('project.spec.check');
   const knowledgeProvider = values.get('project.knowledge.provider');
   const knowledgeCommand = values.get('project.knowledge.command');
   const knowledgeDir = values.get('project.knowledge.dir');
@@ -514,6 +518,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
         dir: typeof projectSpecDir === 'string' ? projectSpecDir : undefined,
         rules: typeof projectSpecRules === 'string' ? projectSpecRules : undefined,
         tool: typeof projectSpecTool === 'string' ? projectSpecTool : undefined,
+        check: typeof projectSpecCheck === 'string' ? projectSpecCheck : undefined,
       },
       knowledge: {
         provider:

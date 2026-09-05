@@ -268,6 +268,11 @@
               "type": "string",
               "minLength": 1,
               "pattern": "\\S"
+            },
+            "check": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
             }
           },
           "additionalProperties": false

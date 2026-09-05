@@ -29,7 +29,10 @@ params:
   change: { type: string, required: true }
   repo_dir: { type: string, required: true }
   check: { type: string, required: true }
-  spec_tool: { type: string, required: true }
+  spec_check: { type: string, required: true }
+
+env:
+  SPEC_CHANGE: "${params.change}"
 
 steps:
   # cd, а не поле cwd у шага: движок не заводит его ради одного потребителя,
@@ -42,12 +45,12 @@ steps:
 
   # Второй шаг — не разбор объявленной команды на части (против которого
   # написано выше), а другой гейт: код проверяет params.check, документы
-  # изменения — инструмент практики спецификации выбранного репозитория, и ни
+  # изменения — команда практики спецификации выбранного репозитория, и ни
   # один из них не проверяет то, что проверяет другой. Здесь он повторно
   # после until обеих правящих работ по той же причине, по которой
   # повторяется сама проверка: цикл until гоняет её ради обратной связи
   # агенту, а исход улучшения решает чистый прогон снаружи.
-  - id: validate-spec
-    run: cd "${params.repo_dir}" && ${params.spec_tool} validate "${params.change}" --strict
+  - id: spec-check
+    run: cd "${params.repo_dir}" && ${params.spec_check}
     timeout: 2m
     expect: [{ exit_code: 0 }]

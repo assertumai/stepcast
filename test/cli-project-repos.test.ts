@@ -58,11 +58,11 @@ function makeRepo(configYaml?: string): string {
 }
 
 const ROOT_CONFIG =
-  'project:\n  check: npm run check\n  spec:\n    dir: openspec/changes\n    rules: openspec/rules.md\n    tool: openspec\n';
+  'project:\n  check: npm run check\n  spec:\n    dir: openspec/changes\n    rules: openspec/rules.md\n    tool: openspec\n    check: openspec validate "$SPEC_CHANGE" --strict\n';
 
 const WITH_BACKEND =
   ROOT_CONFIG +
-  '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n';
+  '  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n        check: make spec-check\n';
 
 interface LaneRecord {
   readonly slug: string;
@@ -95,7 +95,12 @@ describe('CLI: stepcast project repos', () => {
     assert.deepEqual(parsed.lanes.a?.repo, {
       dir: 'backend',
       check: './gradlew check',
-      spec: { dir: 'backend/docs/changes', rules: 'backend/docs/spec-rules.md', tool: 'openspec' },
+      spec: {
+        dir: 'backend/docs/changes',
+        rules: 'backend/docs/spec-rules.md',
+        tool: 'openspec',
+        check: 'make spec-check',
+      },
     });
   });
 

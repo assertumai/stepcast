@@ -93,6 +93,13 @@ describe('self-improvement-loop: переносимость файлов пет�
     /`src\//,
     /`test\//,
     /`docs\//,
+    // spec-validate-command-declaration: вторая сеть на случай команды,
+    // собранной в файле работы не из подстановки ${params.spec_check}, а
+    // литералом флага чужой практики — как раньше был собран
+    // `${params.spec_tool} validate … --strict`. Само имя openspec первая
+    // сеть (`/openspec/i`) уже ловит; `--strict` ловит флаг, который мог
+    // остаться от практики, использующей другое имя инструмента.
+    /--strict/,
   ];
 
   it('файлы работ петли не называют OpenSpec и его документы', () => {
@@ -117,6 +124,50 @@ describe('self-improvement-loop: переносимость файлов пет�
   it('файл правил остаётся местом, где OpenSpec назван', () => {
     const text = readFileSync(join(PROMPTS_DIR, 'spec-rules.md'), 'utf8');
     assert.match(text, /openspec/i);
+  });
+
+  /**
+   * spec-validate-command-declaration: имя инструмента практики
+   * (`${params.spec_tool}`, `${project.spec.tool}`) законно ровно в одной
+   * форме — внутри записи права `Bash(… *)` (`propose.yml`,
+   * `propose-express.yml`), потому что там оно и есть имя, а не команда.
+   * Всякое другое употребление — файл работы сам собирает из имени
+   * грамматику подкоманды чужой практики (`${params.spec_tool} validate …
+   * --strict`), и знание этой грамматики — то самое, что снимает это
+   * изменение (спор ключей: команду целиком объявляет `spec.check`).
+   *
+   * До правки задач 5.1–5.4 эта проверка падала на всех четырёх файлах
+   * работ (`verify.yml`, `implement.yml`, `fix-review.yml`,
+   * `implement-express.yml`) — предикат `until`/шаг каждого собирал
+   * `${params.spec_tool} validate "${params.change}" --strict`. Зелёный
+   * результат здесь и сейчас доказывает, что правка снята, а не то, что
+   * возможность никогда не была реализована наполовину.
+   */
+  it('${params.spec_tool} и ${project.spec.tool} допустимы только внутри записи права Bash(… *)', () => {
+    const TOOL_NAME_EXPRESSIONS = ['${params.spec_tool}', '${project.spec.tool}'];
+    const PERMISSION_PREFIX = 'Bash(';
+    const PERMISSION_SUFFIX = ' *)';
+
+    const violations: string[] = [];
+    for (const file of jobFiles()) {
+      const text = readFileSync(file, 'utf8');
+      for (const expr of TOOL_NAME_EXPRESSIONS) {
+        let from = 0;
+        for (;;) {
+          const index = text.indexOf(expr, from);
+          if (index === -1) break;
+          from = index + expr.length;
+
+          const before = text.slice(Math.max(0, index - PERMISSION_PREFIX.length), index);
+          const after = text.slice(index + expr.length, index + expr.length + PERMISSION_SUFFIX.length);
+          if (before === PERMISSION_PREFIX && after === PERMISSION_SUFFIX) continue;
+
+          violations.push(`${file}:${lineAt(text, index)}: ${expr} вне записи права Bash(… *)`);
+        }
+      }
+    }
+
+    assert.deepEqual(violations, []);
   });
 
   /**
@@ -426,6 +477,7 @@ project:
     dir: docs/changes
     rules: docs/spec-rules.md
     tool: make
+    check: make spec-check
   edit_paths: [${editPaths.join(', ')}]
 jobs:
   propose-a:
@@ -448,7 +500,7 @@ jobs:
       check: "\${project.check}"
       spec_dir: "\${project.spec.dir}"
       spec_rules: "\${project.spec.rules}"
-      spec_tool: "\${project.spec.tool}"
+      spec_check: "\${project.spec.check}"
     needs: [plan-a]
   review-a:
     uses: ${JOBS_DIR}/review.yml
@@ -462,8 +514,21 @@ jobs:
       check: "\${project.check}"
       spec_dir: "\${project.spec.dir}"
       spec_rules: "\${project.spec.rules}"
-      spec_tool: "\${project.spec.tool}"
+      spec_check: "\${project.spec.check}"
     needs: [review-a]
+  # Облегчённая ветка — работой без предшественников, как она и подключается
+  # в петле: работы плана у неё нет (implement-express.yml не наследует
+  # context_upstream), и приставлять её к цепочке полной ветки значило бы
+  # проверять ветку, которой в петле не бывает.
+  implement-express-a:
+    uses: ${JOBS_DIR}/implement-express.yml
+    with:
+      change: demo-change
+      repo_dir: "."
+      check: "\${project.check}"
+      spec_dir: "\${project.spec.dir}"
+      spec_rules: "\${project.spec.rules}"
+      spec_check: "\${project.spec.check}"
 `;
   }
 
@@ -515,6 +580,28 @@ jobs:
     ).globs;
     assert.ok(globs.includes('docs/changes/**'));
     assert.ok(globs.includes('docs/spec-rules.md'));
+  });
+
+  // spec-validate-command-declaration: until правящих работ обеих веток
+  // (полной и облегчённой — Сценарий «Облегчённая ветка») несёт объявленную
+  // команду целиком (project.spec.check), а не собранную из имени инструмента
+  // и глагола чужой практики — ни слова validate, ни флага --strict, ни имени
+  // openspec среди них нет.
+  it('until implement-a, fix-review-a и implement-express-a несут project.spec.check целиком, без validate/--strict/openspec', () => {
+    const pipeline = expandForeign(makeProject());
+    for (const id of ['implement-a', 'fix-review-a', 'implement-express-a']) {
+      const job = pipeline.jobs.find((item) => item.id === id)!;
+      const cmds = (job.until?.check ?? [])
+        .map((entry) => (entry.kind === 'cmd' ? entry.command : undefined))
+        .filter((cmd): cmd is string => cmd !== undefined);
+
+      assert.ok(cmds.some((cmd) => cmd.includes('make spec-check')), `${id}: нет команды make spec-check`);
+      for (const cmd of cmds) {
+        assert.doesNotMatch(cmd, /validate/, `${id}: ${cmd}`);
+        assert.doesNotMatch(cmd, /--strict/, `${id}: ${cmd}`);
+        assert.doesNotMatch(cmd, /openspec/i, `${id}: ${cmd}`);
+      }
+    }
   });
 
   it('review-a: путь контекста ведёт в чужой каталог документов', () => {
@@ -648,9 +735,15 @@ jobs:
  * есть свой файл `${run.dir}/item-<дорожка>.json`, который в настоящей петле
  * пишет `slots`). Четырёх оставшихся работ достаточно, чтобы доказать: чужое
  * объявление `project.spec` доезжает подстановкой через контекст, цикл
- * `until` (командами `${project.check}` и инструмента практики), границы
+ * `until` (командами `${project.check}` и `${project.spec.check}`), границы
  * `changed_only` и права — до самого конца, ни разу не споткнувшись о литерал
- * OpenSpec.
+ * OpenSpec. Команда `project.spec.check` вдобавок проверяет, что слаг
+ * изменения действительно доезжает до предиката переменной `SPEC_CHANGE`
+ * (env работы) — см. тест ниже с недоехавшим слагом.
+ *
+ * Облегчённая ветка прогоняется отдельным документом пайплайна в этом же
+ * describe (`EXPRESS_RUN_PIPELINE`): её реализующая работа гейтит документы
+ * тем же порядком, но работы плана перед собой не имеет.
  */
 describe('self-improvement-loop: сквозной прогон против чужого объявления', () => {
   const RUN_PIPELINE = `
@@ -662,11 +755,13 @@ project:
   spec:
     dir: docs/changes
     rules: docs/spec-rules.md
-    # "true", а не make: инструмент практики попал в предикат цикла until и
-    # теперь исполняется, а не только раскрывается, — а make в дереве проверок
-    # звать нечем. Статические проверки выше берут make и стерегут именно
-    # раскрытие.
-    tool: "true"
+    tool: make
+    # Команда проверяет доставку слага изменения переменной SPEC_CHANGE,
+    # которую объявляет env работы (implement.yml, fix-review.yml): прогон
+    # доходит до конца, только когда предикат until действительно получает
+    # значение, а не когда команда всегда зелёная — обратное этому ловит
+    # тест ниже с недоехавшим слагом.
+    check: 'test "$SPEC_CHANGE" = demo-change'
   edit_paths: [cmd/**, internal/**, go.mod]
 jobs:
   plan-a:
@@ -681,7 +776,7 @@ jobs:
       check: "\${project.check}"
       spec_dir: "\${project.spec.dir}"
       spec_rules: "\${project.spec.rules}"
-      spec_tool: "\${project.spec.tool}"
+      spec_check: "\${project.spec.check}"
     needs: [plan-a]
   review-a:
     uses: ${JOBS_DIR}/review.yml
@@ -695,7 +790,7 @@ jobs:
       check: "\${project.check}"
       spec_dir: "\${project.spec.dir}"
       spec_rules: "\${project.spec.rules}"
-      spec_tool: "\${project.spec.tool}"
+      spec_check: "\${project.spec.check}"
     needs: [review-a]
 `;
 
@@ -743,6 +838,134 @@ jobs:
     // Документы изменения дошли до агента: глоб раскрылся в чужом каталоге, а
     // не остался пустым, — иначе успех цепочки ничего бы не доказывал.
     assert.match(backend.invocations[0]?.prompt ?? '', /docs\/changes\/demo-change\/README\.md/);
+  });
+
+  /**
+   * Обратная сторона предыдущего теста: команда, ожидающая слаг, который
+   * никогда не доедет (`SPEC_CHANGE` всегда несёт `demo-change`), обязана
+   * проваливать until на каждой итерации и уронить прогон — иначе успех
+   * теста выше доказывал бы только то, что predicate cmd всегда зелёный, а не
+   * то, что он действительно сверяет доставленное значение.
+   *
+   * Отдельного теста доставки переменной env работы до предиката until на
+   * уровне движка здесь не заводится: это свойство общее для любой env
+   * работы, а не частное для SPEC_CHANGE, и уже закреплено
+   * `test/until-env.test.ts` («переменные пайплайна и работы доходят до
+   * проверки цикла»).
+   */
+  it('спец.check, ожидающий недоехавший слаг, роняет прогон', async () => {
+    const project = makeProject({
+      'stepcast.yml': RUN_PIPELINE.replace(
+        'test "$SPEC_CHANGE" = demo-change',
+        'test "$SPEC_CHANGE" = never-delivered',
+      ),
+      'docs/spec-rules.md': 'Документы изменения пишутся руками, проверяются `make spec`.\n',
+      'docs/changes/demo-change/README.md': '# demo-change\n\nОписание изменения.\n',
+    });
+
+    const structuredByInvocation = [
+      { tasks: [{ id: 't1', title: 'demo', files: ['src/x.ts'], done_when: 'tests pass' }] },
+      { changed_files: [], completed: ['t1'], remaining: [] },
+    ];
+    const backend = createFakeBackend({
+      lines: (index) => [
+        initLine(),
+        resultLine({ text: 'ок', structured: structuredByInvocation[index] ?? structuredByInvocation[1] }),
+      ],
+    });
+
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: () => backend.adapter,
+    });
+
+    assert.notEqual(result.status, 'success');
+    const status = readStatus(result.journal.paths);
+    assert.equal(status.jobs.find((job) => job.id === 'implement-a')?.status, 'failed');
+  });
+
+  /**
+   * spec-validate-command-declaration / Сценарий «Облегчённая ветка»:
+   * реализующая работа облегчённой ветки гейтит документы той же объявленной
+   * командой, что и работа полной ветки, и слаг доезжает до неё тем же путём.
+   *
+   * Своим документом пайплайна, а не работой, дописанной в `RUN_PIPELINE`: у
+   * облегчённой ветки нет работы плана (`implement-express.yml` не наследует
+   * `context_upstream`), и цепочка `plan → implement-express` проверяла бы
+   * ветку, которой в петле не бывает.
+   */
+  const EXPRESS_RUN_PIPELINE = `
+kind: pipeline
+name: foreign-run-express
+project:
+  check: "true"
+  tools: [make]
+  spec:
+    dir: docs/changes
+    rules: docs/spec-rules.md
+    tool: make
+    check: 'test "$SPEC_CHANGE" = demo-change'
+  edit_paths: [cmd/**, internal/**, go.mod]
+jobs:
+  implement-express-a:
+    uses: ${JOBS_DIR}/implement-express.yml
+    with:
+      change: demo-change
+      repo_dir: "."
+      check: "\${project.check}"
+      spec_dir: "\${project.spec.dir}"
+      spec_rules: "\${project.spec.rules}"
+      spec_check: "\${project.spec.check}"
+`;
+
+  async function runExpress(pipelineText: string) {
+    const project = makeProject({
+      'stepcast.yml': pipelineText,
+      'docs/spec-rules.md': 'Документы изменения пишутся руками, проверяются `make spec`.\n',
+      'docs/changes/demo-change/README.md': '# demo-change\n\nОписание изменения.\n',
+    });
+
+    const backend = createFakeBackend({
+      lines: () => [
+        initLine(),
+        resultLine({ text: 'ок', structured: { changed_files: [], completed: [], remaining: [] } }),
+      ],
+    });
+
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: () => backend.adapter,
+    });
+
+    return { result, backend };
+  }
+
+  it('облегчённая ветка доходит до конца на чужой объявленной команде', async () => {
+    const { result, backend } = await runExpress(EXPRESS_RUN_PIPELINE);
+
+    assert.equal(result.status, 'success');
+    const status = readStatus(result.journal.paths);
+    assert.equal(status.jobs.find((job) => job.id === 'implement-express-a')?.status, 'success');
+    // Документы изменения дошли до агента — иначе успех ничего бы не доказывал.
+    assert.match(backend.invocations[0]?.prompt ?? '', /docs\/changes\/demo-change\/README\.md/);
+  });
+
+  it('облегчённая ветка падает, когда слаг до объявленной команды не доехал', async () => {
+    const { result } = await runExpress(
+      EXPRESS_RUN_PIPELINE.replace('test "$SPEC_CHANGE" = demo-change', 'test "$SPEC_CHANGE" = never-delivered'),
+    );
+
+    assert.notEqual(result.status, 'success');
+    const status = readStatus(result.journal.paths);
+    assert.equal(status.jobs.find((job) => job.id === 'implement-express-a')?.status, 'failed');
   });
 
   /**
@@ -846,7 +1069,7 @@ jobs:
       change: demo-change
       repo_dir: ${JSON.stringify(repoDir)}
       check: ${JSON.stringify(check)}
-      spec_tool: "true"
+      spec_check: "true"
 `;
   }
 

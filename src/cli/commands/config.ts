@@ -37,6 +37,7 @@ function describeNestedRepoEntry(item: unknown): string {
   if (typeof spec?.dir === 'string') parts.push(`spec.dir: ${spec.dir}`);
   if (typeof spec?.rules === 'string') parts.push(`spec.rules: ${spec.rules}`);
   if (typeof spec?.tool === 'string') parts.push(`spec.tool: ${spec.tool}`);
+  if (typeof spec?.check === 'string') parts.push(`spec.check: ${spec.check}`);
 
   return parts.length === 0 ? dir : `${dir} (${parts.join(', ')})`;
 }

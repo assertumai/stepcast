@@ -25,6 +25,8 @@ export interface ResolvedRepo {
     readonly dir: string;
     readonly rules: string;
     readonly tool: string;
+    /** Команда проверки документов — целиком, как объявлена; см. `requireComplete`. */
+    readonly check: string;
   };
 }
 
@@ -64,14 +66,18 @@ interface SpecFields {
   readonly dir: string | undefined;
   readonly rules: string | undefined;
   readonly tool: string | undefined;
+  readonly check: string | undefined;
 }
 
 /**
- * Четыре величины объявления обязаны быть все — вместе они и есть проверка
- * репозитория плюс инструмент спецификации, которыми петля затем правит и
- * гейтит документы. Первая недостающая по порядку check → spec.dir → rules →
- * tool называется отказом; называть все сразу здесь смысла нет — репозиторий
- * либо объявлен полностью, либо его правят до следующего захода.
+ * Пять величин объявления обязаны быть все — вместе они и есть проверка
+ * репозитория плюс практика спецификации (место документов, файл правил,
+ * имя инструмента для записи права, команда, которой петля их гейтит), а
+ * без любой из них дорожка не может ни проверить репозиторий, ни довести
+ * документы изменения до `openspec validate`. Первая недостающая по порядку
+ * check → spec.dir → spec.rules → spec.tool → spec.check называется отказом;
+ * называть все сразу здесь смысла нет — репозиторий либо объявлен полностью,
+ * либо его правят до следующего захода.
  *
  * Пункт очереди назван и здесь, наравне с двумя другими отказами вокруг
  * имени: при двух заполненных дорожках, взявших разные репозитории, отказ без
@@ -82,7 +88,15 @@ function requireComplete(
   label: string,
   check: string | undefined,
   spec: SpecFields,
-): { readonly check: string; readonly spec: { readonly dir: string; readonly rules: string; readonly tool: string } } {
+): {
+  readonly check: string;
+  readonly spec: {
+    readonly dir: string;
+    readonly rules: string;
+    readonly tool: string;
+    readonly check: string;
+  };
+} {
   const missing =
     check === undefined
       ? 'check'
@@ -92,7 +106,9 @@ function requireComplete(
           ? 'spec.rules'
           : spec.tool === undefined
             ? 'spec.tool'
-            : undefined;
+            : spec.check === undefined
+              ? 'spec.check'
+              : undefined;
 
   if (missing !== undefined) {
     throw new StepcastError(
@@ -103,7 +119,12 @@ function requireComplete(
 
   return {
     check: check as string,
-    spec: { dir: spec.dir as string, rules: spec.rules as string, tool: spec.tool as string },
+    spec: {
+      dir: spec.dir as string,
+      rules: spec.rules as string,
+      tool: spec.tool as string,
+      check: spec.check as string,
+    },
   };
 }
 
@@ -148,7 +169,7 @@ export function resolveItemRepo(config: Config, item: RepoOwner): ResolvedRepo {
     item.slug,
     name,
     declaration?.check,
-    declaration?.spec ?? { dir: undefined, rules: undefined, tool: undefined },
+    declaration?.spec ?? { dir: undefined, rules: undefined, tool: undefined, check: undefined },
   );
 
   const tools = mergeTools(config.project.tools, declaration?.tools);
@@ -161,6 +182,10 @@ export function resolveItemRepo(config: Config, item: RepoOwner): ResolvedRepo {
       dir: joinFromRoot(name, spec.dir),
       rules: joinFromRoot(name, spec.rules),
       tool: spec.tool,
+      // Не склеивается с каталогом, в отличие от dir/rules: команда исполняется
+      // после cd внутрь репозитория (job-файлы петли), и путь в ней самой не
+      // предполагается — как и у tool.
+      check: spec.check,
     },
   };
 }

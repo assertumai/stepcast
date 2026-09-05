@@ -415,6 +415,60 @@ describe('stepcast-configuration', () => {
     );
   });
 
+  // Задача 1.5 / Сценарий: «Команда проверки практики объявлена в проектном конфиге»
+  it('принимает project.spec.check в проектном конфиге', () => {
+    const box = sandbox({ project: 'project:\n  spec:\n    check: openspec validate "$SPEC_CHANGE" --strict\n' });
+    const { config, provenance } = resolveIn(box);
+    assert.equal(config.project.spec.check, 'openspec validate "$SPEC_CHANGE" --strict');
+    assert.equal(describeSource(provenance.get('project.spec.check')!), box.projectPath);
+  });
+
+  // Задача 1.5 / Сценарий: «Ключ не объявлен»
+  it('project.spec.check отсутствует, если не объявлен ни одним слоем', () => {
+    const box = sandbox({ project: 'project:\n  spec:\n    dir: openspec/changes\n' });
+    const { config } = resolveIn(box);
+    assert.equal(config.project.spec.check, undefined);
+  });
+
+  // Задача 1.5 / Сценарий: «Пустая команда проверки практики»
+  it('отклоняет пустой project.spec.check', () => {
+    const box = sandbox({ project: 'project:\n  spec:\n    check: "   "\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.at, 'project.spec.check');
+        assert.equal(error.file, box.projectPath);
+        return true;
+      },
+    );
+  });
+
+  // Задача 1.6 / Сценарий: «Команда практики в глобальном конфиге»
+  it('отклоняет project.spec.check в глобальном конфиге той же диагностикой, что project.check', () => {
+    const box = sandbox({ global: 'project:\n  spec:\n    check: make spec-check\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /project\.spec\.check/);
+        assert.equal(error.file, box.globalPath);
+        assert.match(error.hint ?? '', /\.stepcast\/config\.yml/);
+        return true;
+      },
+    );
+  });
+
+  it('печатает project.spec.check в отчёте stepcast config рядом с spec.tool', () => {
+    const box = sandbox({
+      project: 'project:\n  spec:\n    tool: openspec\n    check: openspec validate "$SPEC_CHANGE" --strict\n',
+    });
+    const lines = renderConfigReport(resolveIn(box));
+    const line = lines.find((item) => item.startsWith('project.spec.check'));
+    assert.ok(line !== undefined);
+    assert.match(line, /openspec validate/);
+  });
+
   // Задача 1.5 / Сценарий: «Инструменты объявлены в проектном конфиге»
   it('принимает project.tools в проектном конфиге в объявленном порядке', () => {
     const box = sandbox({ project: 'project:\n  tools: [npm, npx, node]\n' });
@@ -773,7 +827,7 @@ describe('stepcast-configuration', () => {
 
 describe('stepcast-configuration: объектная форма project.nested_repos', () => {
   const OBJECT_ITEM =
-    'project:\n  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n';
+    'project:\n  nested_repos:\n    - dir: backend\n      check: "./gradlew check"\n      spec:\n        dir: docs/changes\n        rules: docs/spec-rules.md\n        tool: openspec\n        check: make spec-check\n';
 
   it('разбирается, а состав дерева содержит каталог наравне со строковой формой', () => {
     const box = sandbox({ project: OBJECT_ITEM });
@@ -787,7 +841,12 @@ describe('stepcast-configuration: объектная форма project.nested_r
     const declaration = config.project.nestedRepoDeclarations?.get('backend');
     assert.ok(declaration !== undefined);
     assert.equal(declaration.check, './gradlew check');
-    assert.deepEqual(declaration.spec, { dir: 'docs/changes', rules: 'docs/spec-rules.md', tool: 'openspec' });
+    assert.deepEqual(declaration.spec, {
+      dir: 'docs/changes',
+      rules: 'docs/spec-rules.md',
+      tool: 'openspec',
+      check: 'make spec-check',
+    });
   });
 
   it('строковая форма не несёт объявлений: карта не содержит записи для неё', () => {
@@ -882,6 +941,7 @@ describe('stepcast-configuration: объектная форма project.nested_r
     assert.match(line, /backend/);
     assert.match(line, /gradlew check/);
     assert.match(line, /docs\/changes/);
+    assert.match(line, /spec\.check: make spec-check/);
   });
 });
 
@@ -915,6 +975,7 @@ describe('stepcast-configuration: RawSpecSchema', () => {
       dir: 'openspec/changes',
       rules: '.stepcast/prompts/spec-rules.md',
       tool: 'openspec',
+      check: 'openspec validate "$SPEC_CHANGE" --strict',
     });
     assert.equal(result.success, true);
   });
@@ -934,6 +995,7 @@ describe('stepcast-configuration: запрет глобального слоя �
   it('project.** ловит ключ первого уровня и вложенный, не ловит соседнюю секцию', () => {
     assert.equal(matchesKeyPattern('project.check', 'project.**'), true);
     assert.equal(matchesKeyPattern('project.spec.dir', 'project.**'), true);
+    assert.equal(matchesKeyPattern('project.spec.check', 'project.**'), true);
     assert.equal(matchesKeyPattern('defaults.model', 'project.**'), false);
   });
 

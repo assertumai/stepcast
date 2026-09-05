@@ -99,12 +99,16 @@
                   },
                   "tool": {
                     "type": "string"
+                  },
+                  "check": {
+                    "type": "string"
                   }
                 },
                 "required": [
                   "dir",
                   "rules",
-                  "tool"
+                  "tool",
+                  "check"
                 ],
                 "additionalProperties": false
               }

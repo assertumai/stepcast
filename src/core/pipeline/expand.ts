@@ -59,6 +59,7 @@ const PROJECT_NAMES = [
   'spec.dir',
   'spec.rules',
   'spec.tool',
+  'spec.check',
   // Практика памяти публикуется тремя именами из семи объявляемых: `dir` и
   // `rules` вставляются документами (границей правок работы записи, записью
   // контекста с правилами письма), `provider` — тем, что о нём иногда надо
@@ -73,7 +74,7 @@ const PROJECT_NAMES = [
  * Разное объяснение для двух разных ошибок пространства `project`:
  * обращение к имени вне состава — про сам состав, обращение к необъявленному
  * имени из состава (`check`, `tools`, `edit_paths`, `spec.dir`, `spec.rules`,
- * `spec.tool`) — про оба места, где его можно объявить.
+ * `spec.tool`, `spec.check`) — про оба места, где его можно объявить.
  */
 function explainProject(pipelinePath: string) {
   return (_expression: string, namespace: string, path: string): string | undefined => {
@@ -130,6 +131,7 @@ function resolveProjectValues(
       dir: document.project?.spec?.dir ?? config.project.spec.dir,
       rules: document.project?.spec?.rules ?? config.project.spec.rules,
       tool: document.project?.spec?.tool ?? config.project.spec.tool,
+      check: document.project?.spec?.check ?? config.project.spec.check,
     },
     knowledge: {
       dir: document.project?.knowledge?.dir ?? config.project.knowledge.dir,

@@ -142,8 +142,9 @@ jobs:
   # который project repos дополнила блоком repo; пункт, не назвавший
   # репозиторий, даёт те же значения, что ${project.*} давал до этого
   # изменения. Параметров у работы столько, сколько она потребляет: verify —
-  # каталог, команду и инструмент; implement и fix-review — их же плюс пути
-  # документов; propose, plan и review — путь(и) документов и/или инструмент.
+  # каталог, команду и команду проверки практики; implement и fix-review — их
+  # же плюс пути документов; propose и propose-express — путь(и) документов
+  # и имя инструмента для записи права; plan и review — путь(и) документов.
 
   propose-a:
     uses: ../jobs/propose.yml
@@ -181,7 +182,7 @@ jobs:
       check: "${jobs.slots.output.lanes.a.repo.check}"
       spec_dir: "${jobs.slots.output.lanes.a.repo.spec.dir}"
       spec_rules: "${jobs.slots.output.lanes.a.repo.spec.rules}"
-      spec_tool: "${jobs.slots.output.lanes.a.repo.spec.tool}"
+      spec_check: "${jobs.slots.output.lanes.a.repo.spec.check}"
     lane: a
     needs: [plan-a]
 
@@ -201,7 +202,7 @@ jobs:
       check: "${jobs.slots.output.lanes.a.repo.check}"
       spec_dir: "${jobs.slots.output.lanes.a.repo.spec.dir}"
       spec_rules: "${jobs.slots.output.lanes.a.repo.spec.rules}"
-      spec_tool: "${jobs.slots.output.lanes.a.repo.spec.tool}"
+      spec_check: "${jobs.slots.output.lanes.a.repo.spec.check}"
     lane: a
     needs: [review-a]
 
@@ -211,7 +212,7 @@ jobs:
       change: "${jobs.propose-a.output.slug}"
       repo_dir: "${jobs.slots.output.lanes.a.repo.dir}"
       check: "${jobs.slots.output.lanes.a.repo.check}"
-      spec_tool: "${jobs.slots.output.lanes.a.repo.spec.tool}"
+      spec_check: "${jobs.slots.output.lanes.a.repo.spec.check}"
     lane: a
     needs: [fix-review-a]
 
@@ -245,7 +246,7 @@ jobs:
       check: "${jobs.slots.output.lanes.a.repo.check}"
       spec_dir: "${jobs.slots.output.lanes.a.repo.spec.dir}"
       spec_rules: "${jobs.slots.output.lanes.a.repo.spec.rules}"
-      spec_tool: "${jobs.slots.output.lanes.a.repo.spec.tool}"
+      spec_check: "${jobs.slots.output.lanes.a.repo.spec.check}"
     lane: a
     needs: [propose-express-a]
 
@@ -255,7 +256,7 @@ jobs:
       change: "${jobs.propose-express-a.output.slug}"
       repo_dir: "${jobs.slots.output.lanes.a.repo.dir}"
       check: "${jobs.slots.output.lanes.a.repo.check}"
-      spec_tool: "${jobs.slots.output.lanes.a.repo.spec.tool}"
+      spec_check: "${jobs.slots.output.lanes.a.repo.spec.check}"
     lane: a
     needs: [implement-express-a]
 
@@ -288,7 +289,7 @@ jobs:
       check: "${jobs.slots.output.lanes.b.repo.check}"
       spec_dir: "${jobs.slots.output.lanes.b.repo.spec.dir}"
       spec_rules: "${jobs.slots.output.lanes.b.repo.spec.rules}"
-      spec_tool: "${jobs.slots.output.lanes.b.repo.spec.tool}"
+      spec_check: "${jobs.slots.output.lanes.b.repo.spec.check}"
     lane: b
     needs: [plan-b]
 
@@ -308,7 +309,7 @@ jobs:
       check: "${jobs.slots.output.lanes.b.repo.check}"
       spec_dir: "${jobs.slots.output.lanes.b.repo.spec.dir}"
       spec_rules: "${jobs.slots.output.lanes.b.repo.spec.rules}"
-      spec_tool: "${jobs.slots.output.lanes.b.repo.spec.tool}"
+      spec_check: "${jobs.slots.output.lanes.b.repo.spec.check}"
     lane: b
     needs: [review-b]
 
@@ -318,7 +319,7 @@ jobs:
       change: "${jobs.propose-b.output.slug}"
       repo_dir: "${jobs.slots.output.lanes.b.repo.dir}"
       check: "${jobs.slots.output.lanes.b.repo.check}"
-      spec_tool: "${jobs.slots.output.lanes.b.repo.spec.tool}"
+      spec_check: "${jobs.slots.output.lanes.b.repo.spec.check}"
     lane: b
     needs: [fix-review-b]
 
@@ -342,7 +343,7 @@ jobs:
       check: "${jobs.slots.output.lanes.b.repo.check}"
       spec_dir: "${jobs.slots.output.lanes.b.repo.spec.dir}"
       spec_rules: "${jobs.slots.output.lanes.b.repo.spec.rules}"
-      spec_tool: "${jobs.slots.output.lanes.b.repo.spec.tool}"
+      spec_check: "${jobs.slots.output.lanes.b.repo.spec.check}"
     lane: b
     needs: [propose-express-b]
 
@@ -352,7 +353,7 @@ jobs:
       change: "${jobs.propose-express-b.output.slug}"
       repo_dir: "${jobs.slots.output.lanes.b.repo.dir}"
       check: "${jobs.slots.output.lanes.b.repo.check}"
-      spec_tool: "${jobs.slots.output.lanes.b.repo.spec.tool}"
+      spec_check: "${jobs.slots.output.lanes.b.repo.spec.check}"
     lane: b
     needs: [implement-express-b]
 
