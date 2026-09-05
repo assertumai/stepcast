@@ -516,6 +516,9 @@
               "session_group": {
                 "type": "string"
               },
+              "budget_exempt": {
+                "type": "boolean"
+              },
               "description": {
                 "type": "string"
               },
@@ -778,6 +781,9 @@
               },
               "session_group": {
                 "type": "string"
+              },
+              "budget_exempt": {
+                "type": "boolean"
               },
               "name": {
                 "type": "string"

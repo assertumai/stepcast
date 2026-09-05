@@ -1085,6 +1085,111 @@ jobs:
     assert.equal(hasErrors(diagnostics), false);
   });
 
+  it('даёт ошибку на budget_exempt при on: success', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    budget_exempt: true
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+      }),
+    );
+    assert.ok(errors(diagnostics).some((message) => /budget_exempt/.test(message) && /on: success/.test(message)));
+  });
+
+  it('даёт ошибку на освобождённую работу с агентскими шагами без собственного budget', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  finalize:
+    on: always
+    budget_exempt: true
+    steps: [{ id: c, agent: claude, prompt: "Сделай" }]
+`,
+      }),
+    );
+    assert.ok(
+      errors(diagnostics).some(
+        (message) => /Освобождённая работа finalize/.test(message) && /budget/.test(message),
+      ),
+    );
+  });
+
+  it('даёт ту же ошибку на освобождённую работу с судьёй в командном шаге', () => {
+    // Судья — такой же вызов бэкенда с таким же расходом, как агентский шаг:
+    // работа из одних командных шагов с судьями стоит столько же, и
+    // освобождать её без собственного потолка так же нельзя.
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  finalize:
+    on: always
+    budget_exempt: true
+    steps:
+      - id: c
+        run: [echo, ok]
+        expect:
+          - exit_code: 0
+          - judge: "вывод корректен"
+            hard: true
+            agent: claude
+`,
+      }),
+    );
+    assert.ok(
+      errors(diagnostics).some(
+        (message) => /Освобождённая работа finalize/.test(message) && /budget/.test(message),
+      ),
+    );
+  });
+
+  it('не даёт ошибку на освобождённую агентскую работу с собственным budget', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  finalize:
+    on: always
+    budget_exempt: true
+    budget: { tokens: 10k }
+    steps: [{ id: c, agent: claude, prompt: "Сделай" }]
+`,
+      }),
+    );
+    assert.equal(hasErrors(diagnostics), false);
+  });
+
+  it('предупреждает о неосвобождённой работе on: always в пайплайне с бюджетом', () => {
+    const diagnostics = lint(
+      makeProject({
+        'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  finalize:
+    on: always
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+      }),
+    );
+    assert.ok(warnings(diagnostics).some((message) => /finalize/.test(message) && /не освобождена/.test(message)));
+    // Предупреждение — не отказ: у автора пайплайна остаётся законный выбор
+    // не освобождать работу вовсе.
+    assert.equal(hasErrors(diagnostics), false);
+  });
+
   it('предупреждает о cwd при параллелизме', () => {
     const diagnostics = lint(
       makeProject({

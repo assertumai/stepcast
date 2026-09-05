@@ -70,6 +70,7 @@ import type {
   Step,
 } from '../pipeline/model.js';
 import type {
+  BudgetExceededState,
   Event,
   JobRecord,
   PredicateResult,
@@ -271,6 +272,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     graph,
     completedWorkspaces,
     failureNote: { pending: options.resume === undefined ? undefined : previousFailureText(options.resume) },
+    budgetExceededLatch: { value: undefined },
     ...(options.resume === undefined
       ? {}
       : { observedInputs: options.resume.plan.observedInputs }),
@@ -325,6 +327,9 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
         ...(pipeline.budget?.wallclockMs === undefined
           ? {}
           : { wallclock_limit_ms: pipeline.budget.wallclockMs }),
+        ...(context.budgetExceededLatch.value === undefined
+          ? {}
+          : { exceeded: context.budgetExceededLatch.value }),
       },
       ...(blocked === undefined
         ? {}
@@ -412,21 +417,30 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     });
   }
 
-  writeStatus(result.status);
+  // Защёлка перейдённого потолка поднимает исход прогона поверх вычисленного
+  // по работам: работа, до которой потолок остановил дело, могла успеть
+  // отчитаться успехом сама, а освобождённые завершающие — тем более
+  // (design.md, решение 3). Отмена остаётся важнее.
+  const finalStatus: StatusValue =
+    context.budgetExceededLatch.value !== undefined && result.status !== 'canceled'
+      ? 'budget_exceeded'
+      : result.status;
+
+  writeStatus(finalStatus);
   journal.writeUsage(usage.report(journal.paths.runId));
 
-  const exitCode = resolveExitCode(result.status, result.settled);
+  const exitCode = resolveExitCode(finalStatus, result.settled);
   journal.writeManifest({
     ...manifest,
     finished_at: new Date().toISOString(),
-    status: result.status,
+    status: finalStatus,
     exit_code: exitCode,
   });
-  journal.event({ kind: 'run.finished', status: result.status, exit_code: exitCode });
+  journal.event({ kind: 'run.finished', status: finalStatus, exit_code: exitCode });
 
   const costLimitUnapplied = anyCostBudgetDeclared(pipeline) && usage.runCostNeverReported();
 
-  return { journal, status: result.status, exitCode, costLimitUnapplied };
+  return { journal, status: finalStatus, exitCode, costLimitUnapplied };
 }
 
 interface RunContext extends RunOptions {
@@ -484,6 +498,15 @@ interface RunContext extends RunOptions {
    * исполнении значит не отдавать никому определённому.
    */
   readonly failureNote: { pending: string | undefined };
+  /**
+   * Защёлка первого превышения, остановившего исполнение. Заполняется один
+   * раз — вторая и последующие остановки его не переписывают, иначе
+   * состояние прогона называло бы не первую причину, а последнюю подвернувшуюся.
+   * Исход прогона (`scheduler.ts`) читает её поверх статусов работ: работа,
+   * до которой потолок остановил дело, могла успеть отчитаться успехом
+   * (design.md, решение 3).
+   */
+  readonly budgetExceededLatch: { value: BudgetExceededState | undefined };
   /** Результаты непрошедшего `check` предыдущей итерации текущей работы. */
   readonly iterationCheck?: readonly PredicateResult[];
   /**
@@ -937,12 +960,41 @@ function jobEnv(job: Job, context: RunContext): Record<string, string> {
   return env;
 }
 
+/**
+ * Область прогона в перечне потолков работы.
+ *
+ * У освобождённой работы (`budget_exempt`) потолки расхода и времени прогона
+ * из проверки выпадают — в этом освобождение и состоит. Но `rate_limit_pct`
+ * не потолок расхода: это доля чужого окна лимита подписки, и упор в него
+ * означает не «прогон потратил своё», а «бэкенду сейчас нельзя». Снять его
+ * вместе с потолком значило бы, что освобождённая работа с агентскими шагами
+ * долбит бэкенд ровно тогда, когда окно уже выбрано, — поэтому у
+ * освобождённой работы от области прогона остаётся один этот сторож
+ * (pipeline-execution, «Работа, освобождённая от потолка прогона»).
+ */
+function runScopeOf(job: Job, context: RunContext): BudgetScope | undefined {
+  const budget = context.expanded.pipeline.budget;
+  if (job.budgetExempt !== true) return { kind: 'run', name: 'пайплайн', budget };
+  if (budget?.rateLimitPct === undefined) return undefined;
+  return {
+    kind: 'run',
+    name: 'пайплайн',
+    budget: {
+      rateLimitPct: budget.rateLimitPct,
+      onExceed: budget.onExceed,
+      ...(budget.declaredOnExceed === undefined ? {} : { declaredOnExceed: budget.declaredOnExceed }),
+    },
+  };
+}
+
 /** Области бюджета работы и прогона: цикл ограничен ими обеими. */
 function jobScopes(job: Job, context: RunContext): BudgetScope[] {
-  return [
+  const scopes: BudgetScope[] = [
     { kind: 'job', name: `работа ${job.id}`, jobId: job.id, budget: job.budget },
-    { kind: 'run', name: 'пайплайн', budget: context.expanded.pipeline.budget },
   ];
+  const run = runScopeOf(job, context);
+  if (run !== undefined) scopes.push(run);
+  return scopes;
 }
 
 /**
@@ -1393,26 +1445,40 @@ async function runJobSteps(
     // Начало шага — здесь: потолок времени шага меряет шаг, а не прогон.
     const stepStartedAt = Date.now();
 
-    const budgetScopes = (): BudgetScope[] => [
-      {
-        kind: 'step',
-        name: `${job.id}/${step.id}`,
-        jobId: job.id,
-        stepId: step.id,
-        startedAt: stepStartedAt,
-        budget: step.budget,
-      },
-      {
-        kind: 'job',
-        name: `работа ${job.id}`,
-        jobId: job.id,
-        startedAt: jobStartedAt,
-        budget: job.budget,
-      },
-      { kind: 'run', name: 'пайплайн', budget: context.expanded.pipeline.budget },
-    ];
+    // Освобождённая работа (`budget_exempt`) не проверяется на потолок
+    // прогона: область `run` выпадает из перечня — кроме сторожа окна лимита
+    // подписки, который в ней остаётся (`runScopeOf`). Области работы и шага
+    // остаются как есть. Расход при этом по-прежнему копится в счётчиках
+    // прогона через context.usage.record — освобождение снимает применение
+    // потолка, а не учёт (design.md, решение 4).
+    const budgetScopes = (): BudgetScope[] => {
+      const scopes: BudgetScope[] = [
+        {
+          kind: 'step',
+          name: `${job.id}/${step.id}`,
+          jobId: job.id,
+          stepId: step.id,
+          startedAt: stepStartedAt,
+          budget: step.budget,
+        },
+        {
+          kind: 'job',
+          name: `работа ${job.id}`,
+          jobId: job.id,
+          startedAt: jobStartedAt,
+          budget: job.budget,
+        },
+      ];
+      const run = runScopeOf(job, context);
+      if (run !== undefined) scopes.push(run);
+      return scopes;
+    };
 
-    let exceeded = context.usage.check(budgetScopes());
+    // Потолок, перейдённый до этого шага, решает ровно один вопрос — запускать
+    // ли его. Шаг, который движок решил не запускать, получает budget_exceeded
+    // тем же путём, что и любой неуспешный шаг ниже, но бэкенд и команда не
+    // стартуют вовсе (design.md, решение 1).
+    const exceeded = context.usage.check(budgetScopes());
 
     // Пути, изменившиеся за время шага, нужны только предикату границ —
     // считаем их лениво и только когда он объявлен.
@@ -1429,48 +1495,72 @@ async function runJobSteps(
       return comparison?.comparable === true ? comparison.paths : undefined;
     };
 
-    const outcome =
-      step.kind === 'run'
-        ? await runCommandStep(
-            step,
-            job,
-            context,
-            stepDirPath,
-            context.sessions,
-            budgetScopes,
-            changedPaths,
-          )
-        : await runAgentStep(
-            step,
-            job,
-            context,
-            stepDirPath,
-            context.sessions,
-            sessionKey,
-            jobContextSent,
-            budgetScopes,
-            changedPaths,
-          );
-
-    // Превышение, обнаруженное за время шага, приписывается ему, только если
-    // его собственный расход потолок и перевёл. Успевшая попытка соседа,
-    // ничего в этот потолок не добавившая, остаётся успешной: её результат
-    // получен и оплачен. Новых попыток и шагов после этого всё равно не
-    // будет — следующий шаг упрётся в проверку до запуска.
-    if (exceeded === undefined && outcome.exceeded !== undefined) {
-      const own =
-        outcome.status !== 'success' ||
-        context.usage.crossedBy(outcome.exceeded, job.id, step.id);
-      if (own) exceeded = outcome.exceeded;
-    }
+    // Исход исполненного шага — его собственный, без исключений: попытку,
+    // которую применение потолка оборвало на середине, `runCommandStep`/
+    // `runAgentStep` отдают уже как budget_exceeded сами (design.md, решение
+    // 2) — здесь статус больше не переписывается.
+    const outcome: StepOutcome =
+      exceeded !== undefined
+        ? { status: 'budget_exceeded', reason: describeExceeded(exceeded), attempts: [], results: [], exceeded }
+        : step.kind === 'run'
+          ? await runCommandStep(
+              step,
+              job,
+              context,
+              stepDirPath,
+              context.sessions,
+              budgetScopes,
+              changedPaths,
+            )
+          : await runAgentStep(
+              step,
+              job,
+              context,
+              stepDirPath,
+              context.sessions,
+              sessionKey,
+              jobContextSent,
+              budgetScopes,
+              changedPaths,
+            );
 
     for (const [index, results] of outcome.results.entries()) {
       journal.writeExpectReport(stepDirPath, { attempt: index + 1, results: [...results] });
     }
 
-    const status: StatusValue = exceeded !== undefined ? 'budget_exceeded' : outcome.status;
-    const reason = exceeded !== undefined ? describeExceeded(exceeded) : outcome.reason;
+    const status: StatusValue = outcome.status;
+    const reason = outcome.reason;
     const cause = causeOf(status, outcome.results, outcome.cause);
+
+    // Защёлка прогона запоминает первое превышение, которое дело остановило.
+    // Остановивших два вида, и оба ниже: шаг, который потолок не дал запустить
+    // или чью попытку оборвал, — он и числится `budget_exceeded`; и перейдённый
+    // потолок прогона, останавливающий всё, что после него, даже когда сам шаг
+    // дошёл до конца успехом (design.md, решение 3).
+    //
+    // Перейдённый потолок шага или работы, никого не остановивший (его перевела
+    // последняя запись расхода успевшей попытки, а следующему шагу область
+    // отсчитывается заново), в защёлку не идёт: прогон доигрывается целиком, и
+    // объявлять его остановленным по бюджету — та же ложь в поле статуса,
+    // против которой заведено изменение, только уровнем выше. Она заодно
+    // прятала бы под собой настоящий отказ, случившийся позже.
+    const stopping =
+      outcome.exceeded !== undefined &&
+      (status === 'budget_exceeded' || outcome.exceeded.scopeKind === 'run')
+        ? outcome.exceeded
+        : undefined;
+
+    if (context.budgetExceededLatch.value === undefined && stopping !== undefined) {
+      context.budgetExceededLatch.value = {
+        scope: stopping.scope,
+        dimension: stopping.dimension,
+        used: stopping.used,
+        limit: stopping.limit,
+        at: new Date().toISOString(),
+        job: job.id,
+        step: step.id,
+      };
+    }
 
     // Якорь снимается при любом исходе, включая отказ, отмену и превышение
     // бюджета: разбирать упавший прогон без состояния дерева нечем.
@@ -1543,7 +1633,10 @@ async function runJobSteps(
       kind: 'step.finished',
       job: job.id,
       step: step.id,
-      attempt: outcome.attempts.length,
+      // Ни одной попытки не было, когда потолок остановил шаг до запуска
+      // (`outcome.attempts` пуст) — событие всё равно называет номер попытки,
+      // и им остаётся первая: `step.started` его уже назвал этим же числом.
+      attempt: outcome.attempts.length === 0 ? 1 : outcome.attempts.length,
       status,
       ...(reason === undefined ? {} : { reason }),
     });
@@ -1641,6 +1734,24 @@ function stepAbort(
     },
   };
   return state;
+}
+
+/**
+ * Отдаёт `budget_exceeded` попытке, которую применение потолка оборвало на
+ * середине, — и только ей. Попытка, дошедшая до собственного конца, могла
+ * тоже перевести потолок последней записью расхода: `abort.trigger` дошёл до
+ * неё и вызвал `controller.abort()`, но слушать сигнал уже некому, и
+ * `naturalStatus` при этом остаётся её настоящим исходом, не `canceled`.
+ * Различие — ровно в `naturalStatus`: интерполяция чужого исхода делает его
+ * `canceled` лишь тогда, когда абort действительно прервал исполнение.
+ * Настоящая отмена прогона (`context.signal`) важнее и здесь не подменяется.
+ */
+function budgetInterrupted(
+  exceeded: Exceeded | undefined,
+  naturalStatus: StatusValue,
+  context: RunContext,
+): exceeded is Exceeded {
+  return exceeded !== undefined && naturalStatus === 'canceled' && context.signal?.aborted !== true;
 }
 
 /** Денежный потолок объявлен хоть на одном из трёх уровней, охватывающих шаг. */
@@ -1852,18 +1963,30 @@ async function runCommandStep(
       const waited = await waitForReset(abort.waitTrigger, context, { job: job.id, step: step.id });
       if (waited.kind === 'resumed') continue;
       if (waited.kind === 'stopped') {
-        return { status: 'budget_exceeded', attempts: result.attempts, results: result.results, exceeded: waited.exceeded };
+        return {
+          status: 'budget_exceeded',
+          reason: describeExceeded(waited.exceeded),
+          attempts: result.attempts,
+          results: result.results,
+          exceeded: waited.exceeded,
+        };
       }
       return { status: 'canceled', attempts: result.attempts, results: result.results };
     }
 
+    // Копия в `const`: `exceeded` выше — `let`, переписываемый вложенными
+    // колбэками попытки, и сужение типа по нему после вызова функции-охранника
+    // не удержалось бы.
+    const found = exceeded;
+    const interrupted = budgetInterrupted(found, result.status, context);
+    const reason = interrupted ? describeExceeded(found) : result.reason;
     return {
-      status: result.status,
-      ...(result.reason === undefined ? {} : { reason: result.reason }),
+      status: interrupted ? 'budget_exceeded' : result.status,
+      ...(reason === undefined ? {} : { reason }),
       attempts: result.attempts,
       results: result.results,
       ...(structuredOutput === undefined ? {} : { structured: structuredOutput }),
-      ...(exceeded === undefined ? {} : { exceeded }),
+      ...(found === undefined ? {} : { exceeded: found }),
     };
   }
 }
@@ -2214,6 +2337,7 @@ async function runAgentStep(
     if (waited.kind === 'stopped') {
       return {
         status: 'budget_exceeded',
+        reason: describeExceeded(waited.exceeded),
         attempts: result.attempts,
         results: result.results,
         session: result.sessionId,
@@ -2229,9 +2353,15 @@ async function runAgentStep(
     };
   }
 
+  // Копия в `const`: `exceeded` выше — `let`, переписываемый вложенными
+  // колбэками попытки, и сужение типа по нему после вызова функции-охранника
+  // не удержалось бы.
+  const found = exceeded;
+  const interrupted = budgetInterrupted(found, result.status, context);
+  const reason = interrupted ? describeExceeded(found) : result.reason;
   return {
-    status: result.status,
-    ...(result.reason === undefined ? {} : { reason: result.reason }),
+    status: interrupted ? 'budget_exceeded' : result.status,
+    ...(reason === undefined ? {} : { reason }),
     attempts: result.attempts,
     results: result.results,
     ...(result.last?.structured === undefined ? {} : { structured: result.last.structured }),
@@ -2240,7 +2370,7 @@ async function runAgentStep(
       ? {}
       : { observedInputs: result.last.observedInputs }),
     ...(result.last?.backendInit === undefined ? {} : { backendInit: result.last.backendInit }),
-    ...(exceeded === undefined ? {} : { exceeded }),
+    ...(found === undefined ? {} : { exceeded: found }),
   };
   }
 }

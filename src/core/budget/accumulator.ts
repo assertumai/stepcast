@@ -42,6 +42,14 @@ export type BudgetScope =
 
 export interface Exceeded {
   readonly scope: string;
+  /**
+   * Уровень области, чей потолок упёрся. Имя области (`scope`) человеческое и
+   * для сравнения не годится: различать уровни по нему однажды уже приводило
+   * к молча не срабатывающему потолку. Читателю нужен именно уровень —
+   * перейдённый потолок прогона останавливает всё, что после него, а
+   * перейдённый потолок шага не останавливает и следующего шага.
+   */
+  readonly scopeKind: BudgetScope['kind'];
   readonly dimension: BudgetDimension;
   readonly used: number;
   readonly limit: number;
@@ -352,29 +360,6 @@ export class UsageAccumulator {
     return total;
   }
 
-  /**
-   * Перевёл ли потолок расход именно этого шага.
-   *
-   * При одновременном исполнении потолок прогона может упереться из-за
-   * соседней работы, пока попытка этого шага идёт. Приписать превышение ей
-   * значило бы объявить перерасходом успевшую попытку, которая на потолок
-   * ничего не потратила, — и заодно назвать в состоянии прогона две работы
-   * там, где превышение произошло на одной.
-   *
-   * Время и доля окна лимита ничьи: они принадлежат прогону целиком, и
-   * вычитать из них чей-то вклад нечего.
-   */
-  crossedBy(exceeded: Exceeded, jobId: string, stepId: string): boolean {
-    switch (exceeded.dimension) {
-      case 'tokens':
-        return exceeded.used - this.stepTotal(jobId, stepId) <= exceeded.limit;
-      case 'cost':
-        return exceeded.used - this.stepCostTotal(jobId, stepId) <= exceeded.limit;
-      default:
-        return true;
-    }
-  }
-
   /** Первый потолок, который упёрся. Связывает тот, что ближе. */
   check(scopes: readonly BudgetScope[], usage?: Usage): Exceeded | undefined {
     for (const scope of scopes) {
@@ -385,6 +370,7 @@ export class UsageAccumulator {
       if (budget.tokens !== undefined && used > budget.tokens) {
         return {
           scope: scope.name,
+          scopeKind: scope.kind,
           dimension: 'tokens',
           used,
           limit: budget.tokens,
@@ -396,6 +382,7 @@ export class UsageAccumulator {
       if (budget.costMicroUsd !== undefined && usedCost > budget.costMicroUsd) {
         return {
           scope: scope.name,
+          scopeKind: scope.kind,
           dimension: 'cost',
           used: usedCost,
           limit: budget.costMicroUsd,
@@ -416,6 +403,7 @@ export class UsageAccumulator {
       if (budget.wallclockMs !== undefined && elapsed > budget.wallclockMs) {
         return {
           scope: scope.name,
+          scopeKind: scope.kind,
           dimension: 'wallclock',
           used: elapsed,
           limit: budget.wallclockMs,
@@ -440,6 +428,7 @@ export class UsageAccumulator {
         if (worst !== undefined) {
           return {
             scope: scope.name,
+            scopeKind: scope.kind,
             dimension: 'rate_limit',
             used: worst.usedPct,
             limit: budget.rateLimitPct,

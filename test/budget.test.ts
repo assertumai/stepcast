@@ -141,7 +141,7 @@ jobs:
             agent: critic
 `;
 
-  it('агентский шаг получает budget_exceeded, когда расход судьи довёл до потолка', async () => {
+  it('шаг, дошедший до конца, числится success, даже когда его последняя запись расхода перевела потолок', async () => {
     const project = makeProject({ 'stepcast.yml': PIPELINE_TOKENS });
     const fake = createFakeBackend({
       lines: [initLine(), resultLine({ text: 'план готов', tokensIn: 40, tokensOut: 0 })],
@@ -153,7 +153,16 @@ jobs:
     });
 
     const result = await run(project, { fake, critic });
-    assert.equal(stepStatus(result, 'build', 'plan'), 'budget_exceeded');
+    // Попытка дошла до собственного конца — результат получен и оплачен,
+    // статус шага её собственный. Перейдён при этом потолок шага, и он не
+    // остановил ничего: следующему шагу область отсчитывалась бы заново,
+    // а следующего шага и нет. Прогон доигран целиком и остановленным по
+    // бюджету не числится (run-journal, «Перейдённый потолок шага никого не
+    // остановил»).
+    assert.equal(stepStatus(result, 'build', 'plan'), 'success');
+    assert.equal(result.status, 'success');
+    assert.equal(result.exitCode, ExitCode.ok);
+    assert.equal(readStatus(result.journal.paths).budget.exceeded, undefined);
   });
 
   const RUN_PIPELINE_TOKENS = `
@@ -174,7 +183,7 @@ jobs:
             agent: critic
 `;
 
-  it('командный шаг получает budget_exceeded тем же образом', async () => {
+  it('командный шаг остаётся success тем же образом, и прогон доигран', async () => {
     const project = makeProject({ 'stepcast.yml': RUN_PIPELINE_TOKENS });
     const fake = createFakeBackend({ lines: [] });
     const critic = createFakeBackend({
@@ -184,7 +193,10 @@ jobs:
     });
 
     const result = await run(project, { fake, critic });
-    assert.equal(stepStatus(result, 'build', 'check'), 'budget_exceeded');
+    assert.equal(stepStatus(result, 'build', 'check'), 'success');
+    assert.equal(result.status, 'success');
+    assert.equal(result.exitCode, ExitCode.ok);
+    assert.equal(readStatus(result.journal.paths).budget.exceeded, undefined);
   });
 });
 
@@ -221,6 +233,413 @@ jobs:
 
     assert.equal(critic.invocations.length, 0, 'бюджет уже исчерпан расходом самого шага');
     assert.equal(stepStatus(result, 'build', 'plan'), 'budget_exceeded');
+  });
+});
+
+describe('early-exit: шаг, начатый после исчерпанного потолка', () => {
+  const PIPELINE = `
+version: 1
+kind: pipeline
+name: early-exit-before-step
+budget:
+  tokens: 45
+jobs:
+  build:
+    steps:
+      - id: first
+        agent: fake
+        prompt: "первый"
+        expect:
+          - exit_code: 0
+          - judge: "план полный"
+            hard: true
+            agent: critic
+      - id: second
+        agent: fake2
+        prompt: "второй"
+        expect:
+          - exit_code: 0
+`;
+
+  it('второй шаг не запускается: первый исчерпал потолок, дойдя до своего конца', async () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE });
+    // Первый шаг переходит потолок последней записью расхода — усилиями
+    // судьи, вызванного уже после того, как собственный процесс шага
+    // отработал и вышел: перевод потолка её ничего не прерывает, и исход
+    // шага остаётся его собственным (success). Второй шаг упирается в тот
+    // же потолок ещё до старта: его бэкенд не запускается вовсе.
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'план готов', tokensIn: 40, tokensOut: 0 })],
+    });
+    const critic = createFakeBackend({
+      lines: [resultLine({ structured: { pass: true, reason: 'ок' }, tokensIn: 10, tokensOut: 0 })],
+    });
+    const fake2 = createFakeBackend({ lines: [initLine(), resultLine({ text: 'не должно случиться' })] });
+
+    const result = await run(project, { fake, critic, fake2 });
+
+    assert.equal(stepStatus(result, 'build', 'first'), 'success');
+    assert.equal(stepStatus(result, 'build', 'second'), 'budget_exceeded');
+    // Второй шаг не исполнялся вовсе: его бэкенд не был вызван.
+    assert.equal(fake2.invocations.length, 0, 'процесс второго шага не стартовал');
+    assert.equal(result.status, 'budget_exceeded');
+    assert.equal(result.exitCode, ExitCode.budgetExceeded);
+  });
+
+  // Спека run-journal: «Отмена важнее исчерпанного потолка»
+  it('отменённый прогон с записью о перейдённом потолке остаётся canceled', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: budget-then-cancel
+concurrency: 1
+budget:
+  tokens: 45
+jobs:
+  plan:
+    steps:
+      - id: p
+        agent: fake
+        prompt: "план"
+        expect:
+          - exit_code: 0
+          - judge: "план полный"
+            hard: true
+            agent: critic
+  cleanup:
+    needs: all
+    on: always
+    budget_exempt: true
+    budget:
+      tokens: 200
+    steps:
+      - id: c
+        agent: cleaner
+        prompt: "разбор"
+`,
+    });
+    const controller = new AbortController();
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'план готов', tokensIn: 40, tokensOut: 0 })],
+    });
+    const critic = createFakeBackend({
+      lines: [resultLine({ structured: { pass: true, reason: 'ок' }, tokensIn: 10, tokensOut: 0 })],
+    });
+    // Освобождённая работа исполняется и после остановки по бюджету — на её
+    // зависании прогон и застаёт отмена.
+    const cleaner = createFakeBackend({ hangMs: 30_000, lines: [initLine()] });
+
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const promise = runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      signal: controller.signal,
+      adapterFor: (name) => {
+        const backend = { fake, critic, cleaner }[name];
+        assert.ok(backend !== undefined, `нет поддельного бэкенда для «${name}»`);
+        return backend.adapter;
+      },
+    });
+
+    // Отмена — после того, как потолок уже перейдён (защёлка заполнена) и
+    // освобождённая работа дошла до своего шага: так проверяется именно
+    // старшинство отмены над исчерпанным потолком, а не гонка.
+    const deadline = Date.now() + 20_000;
+    for (;;) {
+      const started = readEvents(resolveRun(runsRoot, project.root)).some(
+        (event) => event.kind === 'step.started' && event.job === 'cleanup',
+      );
+      if (started) break;
+      if (Date.now() > deadline) throw new Error('освобождённая работа не дошла до своего шага');
+      await sleep(20);
+    }
+    controller.abort();
+
+    const result = await promise;
+
+    assert.equal(result.status, 'canceled');
+    assert.equal(result.exitCode, ExitCode.canceled);
+    // Защёлка при этом заполнена: отмена важнее, но причину остановки
+    // состояние всё равно называет.
+    assert.ok(readStatus(result.journal.paths).budget.exceeded !== undefined);
+  });
+});
+
+describe('budget-exempt: работа, освобождённая от потолка прогона', () => {
+  const PIPELINE = `
+version: 1
+kind: pipeline
+name: budget-exempt-pipeline
+concurrency: 1
+budget:
+  tokens: 45
+jobs:
+  plan:
+    steps:
+      - id: p
+        agent: fake
+        prompt: "план"
+        expect:
+          - exit_code: 0
+          - judge: "план полный"
+            hard: true
+            agent: critic
+  blocked:
+    needs: [plan]
+    steps:
+      - id: b
+        run: [echo, ok]
+  cleanup:
+    needs: all
+    on: always
+    budget_exempt: true
+    steps:
+      - id: c
+        run: [echo, cleanup]
+  audit:
+    needs: all
+    on: always
+    steps:
+      - id: a
+        run: [echo, audit]
+`;
+
+  it('освобождённая on: always исполняется и отчитывается успехом; неосвобождённая — budget_exceeded', async () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'план готов', tokensIn: 40, tokensOut: 0 })],
+    });
+    const critic = createFakeBackend({
+      lines: [resultLine({ structured: { pass: true, reason: 'ок' }, tokensIn: 10, tokensOut: 0 })],
+    });
+
+    const result = await run(project, { fake, critic });
+
+    assert.equal(stepStatus(result, 'plan', 'p'), 'success');
+    assert.equal(stepStatus(result, 'blocked', 'b'), 'budget_exceeded');
+    // Освобождённая работа исполняется и после остановки по бюджету — тест
+    // должен упасть, если её успешный шаг снова метят budget_exceeded.
+    assert.equal(stepStatus(result, 'cleanup', 'c'), 'success');
+    assert.equal(stepStatus(result, 'audit', 'a'), 'budget_exceeded');
+
+    assert.equal(result.status, 'budget_exceeded');
+    assert.equal(result.exitCode, ExitCode.budgetExceeded);
+
+    // Подсказка resume называет действительно не доведённую работу, а не
+    // освобождённую cleanup, которая успешно отработала (design.md, решение 3;
+    // спека run-journal).
+    const status = readStatus(result.journal.paths);
+    assert.equal(status.resume?.blocked_by, 'blocked');
+
+    // Причина остановки читается из состояния, а не собирается разбором
+    // статусов работ: перешёл потолок успешно завершившийся шаг plan/p
+    // (спека run-journal, «Причина остановки читается из состояния»).
+    BudgetStateSchema.parse(status.budget);
+    const exceeded = status.budget.exceeded;
+    assert.ok(exceeded !== undefined, 'состояние называет перейдённый потолок');
+    assert.equal(exceeded.scope, 'пайплайн');
+    assert.equal(exceeded.dimension, 'tokens');
+    assert.equal(exceeded.limit, 45);
+    assert.ok(exceeded.used > exceeded.limit, 'израсходованное выше потолка');
+    assert.equal(exceeded.job, 'plan');
+    assert.equal(exceeded.step, 'p');
+  });
+
+  const USAGE_PIPELINE = `
+version: 1
+kind: pipeline
+name: budget-exempt-usage
+concurrency: 1
+budget:
+  tokens: 45
+jobs:
+  plan:
+    steps:
+      - id: p
+        agent: fake
+        prompt: "план"
+        expect:
+          - exit_code: 0
+          - judge: "план полный"
+            hard: true
+            agent: critic
+  cleanup:
+    needs: all
+    on: always
+    budget_exempt: true
+    budget:
+      tokens: 200
+    steps:
+      - id: c
+        agent: cleaner
+        prompt: "разбор"
+        expect:
+          - exit_code: 0
+`;
+
+  // Спека pipeline-execution: «Расход освобождённой работы виден»
+  it('расход освобождённой работы целиком виден в отчёте и в состоянии прогона', async () => {
+    const project = makeProject({ 'stepcast.yml': USAGE_PIPELINE });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'план готов', tokensIn: 40, tokensOut: 0 })],
+    });
+    const critic = createFakeBackend({
+      lines: [resultLine({ structured: { pass: true, reason: 'ок' }, tokensIn: 10, tokensOut: 0 })],
+    });
+    const cleaner = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'разобрано', tokensIn: 30, tokensOut: 0, costUsd: 0.25 })],
+    });
+
+    const result = await run(project, { fake, critic, cleaner });
+
+    assert.equal(stepStatus(result, 'cleanup', 'c'), 'success');
+
+    // Освобождение снимает применение потолка, а не учёт: траты работы за
+    // остановкой видны целиком — и в отчёте о расходе, и в блоке budget
+    // состояния прогона, где 80 = 40 (план) + 10 (судья) + 30 (разбор).
+    const usage = readUsage(result.journal.paths);
+    assert.equal(usage.jobs.cleanup?.steps.c?.billable_tokens, 30);
+    const status = readStatus(result.journal.paths);
+    assert.equal(status.budget.tokens_used, 80);
+    assert.ok((status.budget.cost_used_usd ?? 0) >= 0.25, 'цена освобождённой работы вошла в счёт прогона');
+  });
+
+  // Спека pipeline-execution: «Собственный потолок освобождённой работы действует»
+  it('собственный потолок освобождённой работы обрывает её попытку', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: budget-exempt-own-budget
+concurrency: 1
+budget:
+  tokens: 45
+jobs:
+  plan:
+    steps:
+      - id: p
+        agent: fake
+        prompt: "план"
+        expect:
+          - exit_code: 0
+          - judge: "план полный"
+            hard: true
+            agent: critic
+  cleanup:
+    needs: all
+    on: always
+    budget_exempt: true
+    budget:
+      tokens: 50
+    steps:
+      - id: c
+        agent: cleaner
+        prompt: "разбор"
+`,
+    });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'план готов', tokensIn: 40, tokensOut: 0 })],
+    });
+    const critic = createFakeBackend({
+      lines: [resultLine({ structured: { pass: true, reason: 'ок' }, tokensIn: 10, tokensOut: 0 })],
+    });
+    // Тот же приём, что в «streaming budget»: расход приходит в потоке до
+    // терминальной записи, и применение потолка обрывает попытку на середине.
+    const cleaner = createFakeBackend({
+      lines: [
+        JSON.stringify({
+          type: 'assistant',
+          message: {
+            id: 'msg-exempt-over-budget',
+            content: [{ type: 'tool_use', name: 'Read', input: { file_path: 'src/a.ts' } }],
+            usage: { input_tokens: 60 },
+          },
+        }),
+      ],
+      hangMs: 5_000,
+    });
+
+    const result = await run(project, { fake, critic, cleaner });
+
+    // Освобождение снимает потолок прогона, а не собственный потолок работы:
+    // 60 токенов перевели её потолок в 50, и попытку это оборвало.
+    assert.equal(stepStatus(result, 'cleanup', 'c'), 'budget_exceeded');
+    assert.equal(result.status, 'budget_exceeded');
+  });
+
+  // Спека pipeline-execution: «Окно лимита подписки сторожит и освобождённую работу»
+  it('rate_limit_pct прогона усыпляет и освобождённую работу', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: budget-exempt-rate-limit
+concurrency: 1
+budget:
+  tokens: 45
+  rate_limit_pct: 50
+  on_exceed: wait
+jobs:
+  plan:
+    steps:
+      - id: p
+        agent: fake
+        prompt: "план"
+        expect:
+          - exit_code: 0
+          - judge: "план полный"
+            hard: true
+            agent: critic
+  cleanup:
+    needs: all
+    on: always
+    budget_exempt: true
+    budget:
+      tokens: 200
+    steps:
+      - id: c
+        agent: cleaner
+        prompt: "разбор"
+        attempts:
+          max: 2
+        expect:
+          - exit_code: 0
+`,
+    });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'план готов', tokensIn: 40, tokensOut: 0 })],
+    });
+    const critic = createFakeBackend({
+      lines: [resultLine({ structured: { pass: true, reason: 'ок' }, tokensIn: 10, tokensOut: 0 })],
+    });
+    const cleaner = createFakeBackend({
+      hangMs: 1_000,
+      lines: (index) =>
+        index === 0
+          ? [
+              initLine(),
+              resultLine({
+                text: 'упёрлись в лимит',
+                tokensIn: 10,
+                tokensOut: 0,
+                rateLimits: { five_hour: { usedPct: 80, resetsAt: Date.now() + 4_000 } },
+              }),
+            ]
+          : [initLine(), resultLine({ text: 'разобрано', tokensIn: 10, tokensOut: 0 })],
+    });
+
+    const result = await run(project, { fake, critic, cleaner }, { configOverride: { maxWaitMs: 60_000 } });
+
+    // Доля окна лимита — не потолок расхода, а условие бэкенда: освобождение
+    // снимает потолок прогона, но не право бэкенда сказать «сейчас нельзя».
+    assert.equal(stepStatus(result, 'cleanup', 'c'), 'success');
+    assert.equal(cleaner.invocations.length, 2, 'освобождённая работа дождалась сброса и переисполнила шаг');
+    const events = readEvents(result.journal.paths);
+    assert.equal(events.some((event) => event.kind === 'budget.waiting'), true);
+    assert.equal(events.some((event) => event.kind === 'budget.resumed'), true);
   });
 });
 
@@ -261,6 +680,9 @@ jobs:
     const started = Date.now();
     const result = await run(project, { fake });
 
+    // Применение потолка оборвало попытку на середине (процесс ещё не дошёл
+    // до terminal result) — шаг отдаёт budget_exceeded сам, это и оборвало его.
+    assert.equal(stepStatus(result, 'build', 'implement'), 'budget_exceeded');
     assert.equal(result.status, 'budget_exceeded');
     assert.ok(Date.now() - started < 2_000, 'лимит должен остановить процесс, не дожидаясь hangMs');
   });
@@ -1317,7 +1739,11 @@ jobs:
     });
 
     const result = await run(project, { fake, critic });
-    assert.equal(stepStatus(result, 'build', 'plan'), 'budget_exceeded');
+    // Попытка дошла до собственного конца, перейдя потолок последней ценой —
+    // исход её собственный. Перейден потолок шага, никого не остановивший:
+    // прогон доигран и остановленным по бюджету не числится.
+    assert.equal(stepStatus(result, 'build', 'plan'), 'success');
+    assert.equal(result.status, 'success');
 
     const usage = readUsage(result.journal.paths);
     const step = usage.jobs.build?.steps.plan;

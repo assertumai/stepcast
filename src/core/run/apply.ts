@@ -8,6 +8,7 @@ import { StepcastError } from '../errors.js';
 import { readManifest, readStatus } from '../journal/reader.js';
 import type { RunPaths } from '../journal/paths.js';
 import type { JobRecord, RunManifest } from '../journal/schema.js';
+import { readLaneMerge } from '../lanes/mergeRecord.js';
 
 /**
  * Возврат результата изолированного прогона в текущее дерево.
@@ -27,6 +28,13 @@ export interface ApplyOptions {
   readonly job?: string;
   /** Ограничить наложение одной дорожкой — взаимоисключимо с `job`. */
   readonly lane?: string;
+  /**
+   * Снять отказ в повторном наложении дорожки, чей записанный исход —
+   * «сведена». Решение человека, названное явно: без ключа накладывать такую
+   * дорожку снова нельзя (lane-merge, «Сведённая дорожка не накладывается
+   * второй раз»).
+   */
+  readonly force?: boolean;
   /**
    * Объявленный состав вложенных репозиториев дерева (`project.nested_repos`)
    * — только для прогонов составного способа фиксации. Читает конфигурацию
@@ -262,6 +270,32 @@ export function laneAnchorRange(paths: RunPaths, lane: string): LaneAnchorRange 
 }
 
 /**
+ * Коммиты сведения дорожки, читаемые из её записи, — текстом для отказа.
+ * Запись без коммитов (сведение, не тронувшее ни один репозиторий) называет
+ * это явно, а не молчит о причине пустого перечня.
+ */
+function describeMergeCommits(commits: Readonly<Record<string, string>> | undefined): string {
+  const entries = Object.entries(commits ?? {});
+  if (entries.length === 0) return 'коммиты не записаны';
+  return entries.map(([repo, sha]) => `${repo}: ${sha}`).join(', ');
+}
+
+/**
+ * Отказ в повторном наложении дорожки, чей записанный исход в каталоге
+ * прогона — «сведена» (lane-merge, design.md, решение 7). `force` снимает
+ * отказ решением человека, названным явно, а не молчаливым пропуском.
+ */
+function refuseIfMerged(paths: RunPaths, lane: string, force: boolean): void {
+  if (force) return;
+  const record = readLaneMerge(paths.dir, lane);
+  if (record?.kind !== 'merged') return;
+  throw new StepcastError(
+    `Дорожка «${lane}» уже сведена (${describeMergeCommits(record.commits)})`,
+    { hint: 'Повторное наложение сведённой дорожки отсекается — если это осознанное решение, передайте --force' },
+  );
+}
+
+/**
  * Наложить дорожку одним диффом: от `tree_before` первого шага дорожки до
  * последнего непустого `tree_id` — в отличие от `--job`, который накладывает
  * каждую работу отдельным диффом, здесь диффов ровно один. На составном
@@ -274,7 +308,9 @@ function applyLane(
   manifest: RunManifest,
   lane: string,
   nestedRepos: readonly string[],
+  force: boolean,
 ): ApplyOutcome {
+  refuseIfMerged(paths, lane, force);
   const jobs = laneIsolatedJobs(paths, lane);
   if (jobs.length === 0) return { kind: 'nothing-to-apply' };
 
@@ -328,7 +364,9 @@ export function applyRun(options: ApplyOptions): ApplyOutcome {
   const manifest = readManifest(paths);
   const nestedRepos = options.nestedRepos ?? [];
 
-  if (options.lane !== undefined) return applyLane(paths, cwd, manifest, options.lane, nestedRepos);
+  if (options.lane !== undefined) {
+    return applyLane(paths, cwd, manifest, options.lane, nestedRepos, options.force ?? false);
+  }
 
   const jobs = isolatedJobs(paths, options.job);
 

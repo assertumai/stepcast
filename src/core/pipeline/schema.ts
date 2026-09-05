@@ -268,6 +268,14 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
      * различались бы только формой.
      */
     session_group: z.string().optional(),
+    /**
+     * Освобождение от потолка прогона. Ключ обвязки, а не поля работы: «тратит
+     * ли эта работа деньги прогона» решает тот, кто собирает пайплайн, а не
+     * автор работы — та же работа в другом пайплайне может быть обычной.
+     * Допустимость только при `on: always`/`on: failure` проверяет линт, не
+     * схема: здесь она не видна без соседнего поля `on`.
+     */
+    budget_exempt: z.boolean().optional(),
   };
 
   const JobUseSchema = z
@@ -408,4 +416,5 @@ export const WIRING_KEYS = [
   'lane',
   'display',
   'session_group',
+  'budget_exempt',
 ] as const;

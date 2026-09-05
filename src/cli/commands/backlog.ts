@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync } from 'node:fs';
-import { join, resolve as resolvePath } from 'node:path';
+import { basename, join, relative, resolve as resolvePath } from 'node:path';
 
 import {
   DEFAULT_STALE_HOURS,
@@ -13,10 +13,13 @@ import {
   type BacklogEntry,
   type BacklogRecord,
 } from '../../core/backlog/index.js';
+import { resolveConfig } from '../../core/config/resolve.js';
 import { mergeJobData } from '../../core/journal/data.js';
 import { atomicWrite } from '../../core/journal/writer.js';
+import { shortRunId } from '../../core/journal/paths.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { readLaneItem, takenLanes } from '../../core/lanes/item.js';
+import { commitPath, nestedRepoOf } from '../../core/lanes/tree.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -317,6 +320,27 @@ function runSettle(
     write(`пункт «${item.slug}» (дорожка ${lane}) помечен failed: ${SETTLE_REASON}`);
   }
 
-  if (settled === 0) write('все взятые пункты уже свели свой исход — проставлять нечего');
+  if (settled === 0) {
+    write('все взятые пункты уже свели свой исход — проставлять нечего');
+    return ExitCode.ok;
+  }
+
+  // Коммит адресован файлу очереди в том репозитории, где он лежит — не
+  // индексу целиком: settle отвечает за очередь и не подметает в коммит чужие
+  // правки дерева (design.md, решение 8). Отметка исхода дорожки обязана
+  // пережить восстановление дерева — незакоммиченной она пропадает при первом
+  // же resume.
+  const { config } = resolveConfig({ cwd });
+  const relDir = nestedRepoOf(cwd, config.project.nestedRepos ?? [], file);
+  const repoDir = relDir === undefined ? cwd : join(cwd, relDir);
+  const relPath = relative(repoDir, file);
+  const message = `backlog: исходы дорожек прогона ${shortRunId(basename(runDir))}`;
+  const committed = commitPath(repoDir, relPath, message);
+  write(
+    committed
+      ? `правка очереди закоммичена в ${relDir ?? '.'}`
+      : 'правка очереди не закоммичена: файл не отслеживается репозиторием или лежит вне его',
+  );
+
   return ExitCode.ok;
 }

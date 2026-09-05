@@ -9,6 +9,7 @@ import { evaluateLane, knownLanes } from '../src/core/lanes/lanes.js';
 import { assertCleanTree, commitAll, currentCommit, headMessage, resetToCommit } from '../src/core/lanes/tree.js';
 import { runCheck } from '../src/core/lanes/check.js';
 import { hasLaneItem, readLaneItem, takenLanes } from '../src/core/lanes/item.js';
+import { mergedLanes, readLaneMerge, writeLaneMerge } from '../src/core/lanes/mergeRecord.js';
 import { StepcastError } from '../src/core/errors.js';
 import type { JobRecord } from '../src/core/journal/schema.js';
 import { gitCommit, gitInit } from './helpers.js';
@@ -508,5 +509,81 @@ describe('lanes: item', () => {
 
   it('takenLanes на несуществующем каталоге — пустой перечень', () => {
     assert.deepEqual(takenLanes(join(tmpdir(), 'stepcast-lanes-item-нет-такого')), []);
+  });
+});
+
+describe('lanes: mergeRecord', () => {
+  it('writeLaneMerge и readLaneMerge — круг записи-чтения', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    writeLaneMerge(dir, {
+      lane: 'a',
+      kind: 'merged',
+      slug: 'a-item',
+      repos: ['.'],
+      commits: { '.': 'deadbeef' },
+      at: '2026-09-05T00:00:00.000Z',
+    });
+    assert.deepEqual(readLaneMerge(dir, 'a'), {
+      lane: 'a',
+      kind: 'merged',
+      slug: 'a-item',
+      repos: ['.'],
+      commits: { '.': 'deadbeef' },
+      at: '2026-09-05T00:00:00.000Z',
+    });
+  });
+
+  it('readLaneMerge на отсутствующем файле — undefined', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    assert.equal(readLaneMerge(dir, 'a'), undefined);
+  });
+
+  it('readLaneMerge на битом файле — StepcastError с именем файла', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    const path = join(dir, 'merge-a.json');
+    writeFileSync(path, 'не json{{{');
+    assert.throws(() => readLaneMerge(dir, 'a'), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.equal(error.file, path);
+      return true;
+    });
+  });
+
+  it('readLaneMerge на записи с незнакомым исходом — StepcastError, а не молчаливое «не сведена»', () => {
+    // Тихая деградация здесь опаснее отказа: на этой записи держится отказ от
+    // повторного наложения сведённой дорожки, и запись другой версии движка
+    // выключала бы щит вместо того, чтобы назвать себя.
+    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    const path = join(dir, 'merge-a.json');
+    writeFileSync(path, JSON.stringify({ lane: 'a', kind: 'слито', at: '2026-09-05T00:00:00.000Z' }));
+    assert.throws(() => readLaneMerge(dir, 'a'), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.equal(error.file, path);
+      assert.match(error.message, /знакомого исхода/);
+      return true;
+    });
+  });
+
+  it('readLaneMerge на записи без исхода — StepcastError', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    writeFileSync(join(dir, 'merge-a.json'), JSON.stringify({ lane: 'a', at: '2026-09-05T00:00:00.000Z' }));
+    assert.throws(() => readLaneMerge(dir, 'a'), StepcastError);
+  });
+
+  it('readLaneMerge на записи без момента — StepcastError', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    writeFileSync(join(dir, 'merge-a.json'), JSON.stringify({ lane: 'a', kind: 'merged' }));
+    assert.throws(() => readLaneMerge(dir, 'a'), StepcastError);
+  });
+
+  it('mergedLanes перечисляет дорожки с записью исхода, как takenLanes — item', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    writeLaneMerge(dir, { lane: 'a', kind: 'merged', slug: 'a-item', at: '2026-09-05T00:00:00.000Z' });
+    writeLaneMerge(dir, { lane: 'b', kind: 'not_reached', at: '2026-09-05T00:00:00.000Z' });
+    assert.deepEqual([...mergedLanes(dir)].sort(), ['a', 'b']);
+  });
+
+  it('mergedLanes на несуществующем каталоге — пустой перечень', () => {
+    assert.deepEqual(mergedLanes(join(tmpdir(), 'stepcast-lanes-merge-нет-такого')), []);
   });
 });

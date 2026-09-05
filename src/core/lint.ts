@@ -404,6 +404,19 @@ function lintPluginPredicate(
   }
 }
 
+/**
+ * Зовёт ли шаг модель — и, значит, тратит ли непредсказуемо.
+ *
+ * Агентский шаг зовёт её собой, но не он один: судья (`judge:`) в `expect`
+ * командного шага — такой же вызов бэкенда с таким же расходом, входящим в те
+ * же потолки (`runJudgePass` в `src/core/run/runner.ts`). Работа из одних
+ * командных шагов с судьями стоит ровно столько же, сколько агентская, и
+ * освобождать её от потолка прогона без собственного потолка так же нельзя.
+ */
+function callsModel(step: Step): boolean {
+  return step.kind === 'agent' || step.expect.some((predicate) => predicate.kind === 'judge');
+}
+
 export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): Diagnostic[] {
   const { pipeline, substitutions } = expanded;
   const diagnostics: Diagnostic[] = [];
@@ -582,6 +595,50 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
       at: `jobs.${job.id}.budget`,
       hint: `Худший случай: до ${attempts * job.until.maxIterations} исполнений шагов (${job.until.maxIterations} итераций)`,
     });
+  }
+
+  for (const job of pipeline.jobs) {
+    // Освобождение задумано для работ, подключённых отработать после отказа:
+    // на обычной работе оно было бы просто дырой в потолке прогона
+    // (design.md, решение 5).
+    if (job.budgetExempt === true && job.on === 'success') {
+      push({
+        severity: 'error',
+        message: `Работа ${job.id} объявляет budget_exempt при on: success`,
+        file: pipeline.file,
+        at: `jobs.${job.id}.budget_exempt`,
+        hint: 'Освобождение допустимо только для работ с on: always/failure — тех, что подключены отработать после отказа',
+      });
+    }
+
+    // Без собственного потолка освобождённая работа, зовущая модель, осталась
+    // бы за остановленным потолком прогона с неограниченной ценой.
+    if (job.budgetExempt === true && job.budget === undefined && job.steps.some(callsModel)) {
+      push({
+        severity: 'error',
+        message: `Освобождённая работа ${job.id} зовёт модель, но не объявляет собственный budget`,
+        file: job.source,
+        at: `jobs.${job.id}.budget`,
+        hint: 'budget_exempt снимает потолок прогона — без своего потолка цена работы за остановкой ничем не ограничена',
+      });
+    }
+
+    // Работа, подключённая отработать после отказа, но не освобождённая явно,
+    // после остановки по бюджету попросту не запустится — стоит услышать это
+    // здесь, а не по итогам ночного прогона.
+    if (
+      job.budgetExempt !== true &&
+      pipeline.budget !== undefined &&
+      (job.on === 'always' || job.on === 'failure')
+    ) {
+      push({
+        severity: 'warning',
+        message: `Работа ${job.id} с on: ${job.on} не освобождена от потолка прогона`,
+        file: pipeline.file,
+        at: `jobs.${job.id}.budget_exempt`,
+        hint: 'После остановки по бюджету эта работа не запустится, пока не объявлен budget_exempt: true',
+      });
+    }
   }
 
   for (const job of pipeline.jobs) {

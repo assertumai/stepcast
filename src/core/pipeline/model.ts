@@ -216,6 +216,13 @@ export interface Job {
    */
   readonly inputs: readonly string[];
   readonly budget?: Budget;
+  /**
+   * Освобождение от потолка прогона, объявленное обвязкой. Шаги такой работы
+   * запускаются и после остановки по бюджету прогона; расход по-прежнему
+   * копится в счётчиках прогона и виден в отчёте — освобождение снимает
+   * применение потолка, а не учёт.
+   */
+  readonly budgetExempt?: boolean;
   readonly until?: Until;
   /** Политика доступа агентских шагов работы, объявленная на её уровне. */
   readonly permissions?: Permissions;

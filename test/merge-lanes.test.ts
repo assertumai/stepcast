@@ -12,6 +12,8 @@ import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPaths } from '../src/core/journal/paths.js';
 import { mergeLanes } from '../src/core/lanes/merge.js';
+import { readLaneMerge } from '../src/core/lanes/mergeRecord.js';
+import { applyRun } from '../src/core/run/apply.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { gitCommit, gitInit as gitInitDir, makeProject, withHome, type Project } from './helpers.js';
 
@@ -250,6 +252,20 @@ function statusOf(text: string, slug: string): string | undefined {
 function fieldOf(text: string, slug: string, name: string): string | undefined {
   const section = text.split(`## ${slug}\n`)[1]?.split('\n## ')[0] ?? '';
   return new RegExp(`^${name}:\\s*(.*)$`, 'm').exec(section)?.[1];
+}
+
+/** Пайплайн с единственной дорожкой `a`. */
+function oneLanePipeline(aCommand: string): string {
+  return `
+version: 1
+kind: pipeline
+name: одна-дорожка
+workspace: { mode: worktree }
+jobs:
+  work-a:
+    lane: a
+    steps: [{ id: шаг, run: [sh, -c, '${aCommand}'], expect: [{ exit_code: 0 }] }]
+`;
 }
 
 /** Пайплайн с двумя однорабочими дорожками — по умолчанию обе завершаются успешно. */
@@ -1998,6 +2014,228 @@ describe('core: mergeLanes — дорожка без вклада', () => {
   });
 });
 
+describe('core: mergeLanes — запись исхода дорожки в каталог прогона', () => {
+  it('сведённая дорожка: запись merged с коммитами', async () => {
+    const project = makeProject({ 'stepcast.yml': oneLanePipeline(SUCCESS_A) });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'Заголовок A');
+
+    await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+    });
+
+    const record = readLaneMerge(result.journal.paths.dir, 'a');
+    assert.equal(record?.kind, 'merged');
+    assert.equal(record?.slug, 'a-item');
+    assert.equal(record?.commits?.['.'], headShaAt(project.root));
+  });
+
+  it('откачённая дорожка: запись check_failed с причиной', async () => {
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a', 'b'],
+      check: 'test ! -f b.txt',
+      file: backlogFile,
+    });
+
+    const recordA = readLaneMerge(result.journal.paths.dir, 'a');
+    assert.equal(recordA?.kind, 'merged');
+    const recordB = readLaneMerge(result.journal.paths.dir, 'b');
+    assert.equal(recordB?.kind, 'check_failed');
+    assert.match(recordB?.reason ?? '', /красная/);
+  });
+
+  it('дорожка, до которой обход не дошёл: запись not_reached, отличимая от отсутствия записи', async () => {
+    const project = makeProject({
+      'stepcast.yml': twoLanePipeline(
+        'printf "общий файл, правка a\\n" > конфликт.txt',
+        SUCCESS_B,
+      ),
+    });
+    gitInit(project);
+    writeFileSync(project.path('конфликт.txt'), 'исходное\n');
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    // Правка дерева до сведения — тот же файл, что и work-a — конфликт наложения.
+    writeFileSync(project.path('конфликт.txt'), 'несовместимая правка\n');
+    commit(project, 'несовместимая правка');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a', 'b'],
+      check: 'exit 0',
+      file: backlogFile,
+    });
+
+    assert.equal(outcomes[0]?.kind, 'conflict');
+    assert.equal(outcomes[1]?.kind, 'not_reached');
+    assert.equal(readLaneMerge(result.journal.paths.dir, 'b')?.kind, 'not_reached');
+  });
+});
+
+describe('core: mergeLanes — already_merged', () => {
+  it('повторный merge-lanes даёт already_merged сведённым дорожкам, остальные обходит как обычно', async () => {
+    // Дорожка c негодна (работа падает) — она не сведётся ни при каком
+    // обходе, и второй вызов должен вычислить её исход заново, не путая с
+    // already_merged.
+    const project = makeProject({ 'stepcast.yml': threeLanePipeline(SUCCESS_A, SUCCESS_B, 'exit 1') });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    const first = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: 'all',
+      check: 'exit 0',
+      file: backlogFile,
+    });
+    assert.deepEqual(
+      first.map((o) => o.kind),
+      ['merged', 'merged', 'unfit'],
+    );
+
+    const second = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: 'all',
+      check: 'exit 0',
+      file: backlogFile,
+    });
+
+    assert.deepEqual(
+      second.map((o) => o.kind),
+      ['already_merged', 'already_merged', 'unfit'],
+    );
+  });
+});
+
+describe('core: applyRun --lane — отказ повторного наложения сведённой дорожки', () => {
+  it('отказывает, называя коммиты сведения, дерева не тронув', async () => {
+    const project = makeProject({ 'stepcast.yml': oneLanePipeline(SUCCESS_A) });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+    });
+
+    const before = commitCount(project);
+    assert.throws(
+      () => applyRun({ paths: result.journal.paths, cwd: project.root, lane: 'a' }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /уже сведена/);
+        return true;
+      },
+    );
+    assert.equal(commitCount(project), before, 'отказ не тронул дерево');
+  });
+
+  it('--force снимает отказ и накладывает дорожку', async () => {
+    const project = makeProject({ 'stepcast.yml': oneLanePipeline(SUCCESS_A) });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+    });
+
+    // --force снимает отказ: наложение идёт как обычно, а не молчаливым
+    // пропуском.
+    const outcome = applyRun({ paths: result.journal.paths, cwd: project.root, lane: 'a', force: true });
+    assert.equal(outcome.kind, 'applied');
+  });
+
+  it('дорожка с исходом, отличным от merged, накладывается свободно', async () => {
+    const project = makeProject({ 'stepcast.yml': oneLanePipeline(SUCCESS_A) });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const result = await runLanes(project, runsRoot);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    // Проверка красная сразу — дорожка a откатывается, запись check_failed.
+    await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 1',
+      file: backlogFile,
+    });
+    assert.equal(readLaneMerge(result.journal.paths.dir, 'a')?.kind, 'check_failed');
+
+    const outcome = applyRun({ paths: result.journal.paths, cwd: project.root, lane: 'a' });
+    assert.equal(outcome.kind, 'applied');
+  });
+});
+
 describe('CLI: stepcast merge-lanes', () => {
   async function cli(cwd: string, home: string, argv: readonly string[]): Promise<{
     code: ExitCodeValue;
@@ -2045,6 +2283,37 @@ describe('CLI: stepcast merge-lanes', () => {
     assert.match(out.stdout, /дорожка a:.*сведена/);
     assert.match(out.stdout, /дорожка b:.*сведена/);
     assert.match(out.stdout, /итог: сведено 2, не сведено 0/);
+  });
+
+  it('повторный обход: итог не числит уже сведённые дорожки несведёнными', async () => {
+    const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
+    gitInit(project);
+    commit(project, 'начальный');
+    const { result } = await preparedRun(project);
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, `${backlogItem('a-item')}\n${backlogItem('b-item')}`);
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeItem(result.journal.paths.dir, 'b', 'b-item', 'B');
+
+    const args = [
+      result.journal.paths.runId,
+      '--lanes',
+      'a,b',
+      '--check',
+      'exit 0',
+      '--file',
+      backlogFile,
+    ];
+    await cli(project.root, project.home, args);
+    const out = await cli(project.root, project.home, args);
+
+    assert.equal(out.code, ExitCode.ok, out.stderr);
+    assert.match(out.stdout, /дорожка a:.*уже сведена ранее/);
+    // «Не сведено 2» здесь было бы ровно тем ложным сигналом «дорожки
+    // потеряны», против которого изменение и заведено: обе лежат в дереве.
+    assert.match(out.stdout, /итог: сведено 0, уже было сведено 2, не сведено 0/);
   });
 
   it('красная проверка одной дорожки не мешает следующей: код 1, отчёт различает сведённую и откачённую', async () => {

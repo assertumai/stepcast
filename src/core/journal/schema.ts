@@ -317,6 +317,15 @@ export const RunManifestSchema = z
   })
   .strict();
 
+/**
+ * Измерение потолка бюджета: в чём считаны `used` и `limit`. Без него
+ * величины события — голые числа, одинаково похожие на токены, микродоллары,
+ * миллисекунды и проценты.
+ */
+export const BudgetDimensionSchema = z.enum(['tokens', 'cost', 'wallclock', 'rate_limit']);
+
+export type BudgetDimension = z.infer<typeof BudgetDimensionSchema>;
+
 export const BudgetStateSchema = z
   .object({
     tokens_used: z.number(),
@@ -327,6 +336,24 @@ export const BudgetStateSchema = z
     cost_unreported_attempts: z.number().optional(),
     wallclock_ms: z.number(),
     wallclock_limit_ms: z.number().optional(),
+    /**
+     * Первое превышение потолка, остановившее исполнение — заполняется один
+     * раз, тем же превышением, что уходит в событие `budget.exceeded`.
+     * Отсутствует, если ни один потолок прогон не остановил: расход выше
+     * этого поля не поднимается сам по себе, только явной остановкой.
+     */
+    exceeded: z
+      .object({
+        scope: z.string(),
+        dimension: BudgetDimensionSchema.optional(),
+        used: z.number(),
+        limit: z.number(),
+        at: z.string(),
+        job: z.string(),
+        step: z.string(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -421,15 +448,6 @@ export const UsageReportSchema = z
   .strict();
 
 const eventBase = { ts: z.string(), seq: z.number().int().nonnegative() };
-
-/**
- * Измерение потолка бюджета: в чём считаны `used` и `limit`. Без него
- * величины события — голые числа, одинаково похожие на токены, микродоллары,
- * миллисекунды и проценты.
- */
-export const BudgetDimensionSchema = z.enum(['tokens', 'cost', 'wallclock', 'rate_limit']);
-
-export type BudgetDimension = z.infer<typeof BudgetDimensionSchema>;
 
 export const EventSchema = z.discriminatedUnion('kind', [
   z.object({ ...eventBase, kind: z.literal('run.started'), pipeline: z.string(), run_id: z.string() }).strict(),
@@ -535,6 +553,8 @@ type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K>
 
 export type RunManifest = z.infer<typeof RunManifestSchema>;
 export type RunStatus = z.infer<typeof RunStatusSchema>;
+export type BudgetState = z.infer<typeof BudgetStateSchema>;
+export type BudgetExceededState = NonNullable<BudgetState['exceeded']>;
 export type JobRecord = z.infer<typeof JobRecordSchema>;
 export type StepRecord = z.infer<typeof StepRecordSchema>;
 export type AttemptRecord = z.infer<typeof AttemptRecordSchema>;

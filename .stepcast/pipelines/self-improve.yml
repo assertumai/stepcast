@@ -359,18 +359,24 @@ jobs:
   # --- Сведение и завершение ---
 
   # on: always — дорожка с пустым слотом даёт verify статусом skipped, а не
-  # success, и без always merge не запустилась бы вовсе.
+  # success, и без always merge не запустилась бы вовсе. budget_exempt: true —
+  # явное освобождение от потолка прогона: без него исчерпанный потолок
+  # останавливал бы её шаги наравне с любой другой работой, и зелёная дорожка
+  # осталась бы несведённой (budget-stop-status-lies).
   merge:
     uses: ../jobs/merge.yml
     workspace: { mode: cwd }
     needs: [verify-a, verify-b, verify-express-a, verify-express-b]
     on: always
+    budget_exempt: true
 
-  # needs: all и on: always — единственная конструкция формата, отрабатывающая
-  # и при отмене, и при остановке по бюджету, в том числе до того, как
-  # запустилась merge.
+  # needs: all и on: always доводят finalize до исполнения и при отмене, и
+  # при остановке по бюджету, в том числе когда до merge заход не дошёл вовсе.
+  # budget_exempt: true — по той же причине, что и у merge: освобождение
+  # объявляется явно, а не следует из отсутствия проверки.
   finalize:
     uses: ../jobs/finalize.yml
     workspace: { mode: cwd }
     needs: all
     on: always
+    budget_exempt: true

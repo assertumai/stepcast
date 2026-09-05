@@ -276,6 +276,30 @@ export function commitAll(dir: string, message: string): boolean {
 }
 
 /**
+ * Закоммитить один путь адресно — в отличие от `commitAll`, не индекс целиком:
+ * посторонние правки рабочего дерева коммита не касаются (`backlog settle`
+ * отвечает за очередь и не должен подметать в коммит чужие правки дерева).
+ *
+ * `false`, если коммитить нечего: правок у пути нет, путь не отслеживается
+ * этим репозиторием (игнорируется либо никогда не был закоммичен — `?？` в
+ * `--porcelain`) либо лежит вне репозитория git вовсе.
+ */
+export function commitPath(dir: string, relPath: string, message: string): boolean {
+  let porcelain: string;
+  try {
+    porcelain = git(dir, ['status', '--porcelain', '--', relPath]);
+  } catch {
+    return false;
+  }
+  const line = porcelain.trim();
+  if (line === '' || line.startsWith('?')) return false;
+
+  git(dir, ['add', '--', relPath]);
+  git(dir, ['commit', '-m', message, '--', relPath]);
+  return true;
+}
+
+/**
  * Ведёт ли репозиторий `dir` объявленный каталог `relDir` записью gitlink
  * (режим `160000` в индексе) — то есть является ли он надпроектом этой части.
  *

@@ -768,6 +768,45 @@ steps:
     assert.throws(() => expand(project), StepcastError);
   });
 
+  // Сценарий: «Освобождение от потолка прогона объявлено на месте подключения»
+  it('разбирает budget_exempt на месте подключения работы', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  finalize:
+    on: always
+    budget_exempt: true
+    steps: [{ id: c, run: [echo, ok] }]
+  other:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+    const { pipeline } = expand(project);
+    assert.equal(pipeline.jobs[0]!.budgetExempt, true);
+    assert.equal(pipeline.jobs[1]!.budgetExempt, undefined);
+  });
+
+  it('отклоняет budget_exempt внутри файла работы, как и прочую обвязку', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: ./jobs/build.yml
+`,
+      'jobs/build.yml': `
+kind: job
+budget_exempt: true
+steps:
+  - id: compile
+    run: [echo, ok]
+`,
+    });
+
+    assert.throws(() => expand(project), StepcastError);
+  });
+
   it('не меняет порядок исполнения графа при объявленной lane', () => {
     const project = makeProject({
       'stepcast.yml': `

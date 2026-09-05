@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { run, type CliIo } from '../src/cli/main.js';
 import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
+import { shortRunId } from '../src/core/journal/paths.js';
+import { gitCommit, gitInit } from './helpers.js';
 
 /**
  * `stepcast backlog` не требует ни `stepcast.yml`, ни `.stepcast/`, ни
@@ -45,6 +48,33 @@ function bed(...items: readonly string[]): string {
   const dir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-cli-'));
   writeFileSync(join(dir, 'backlog.md'), `# Очередь\n\n${items.join('\n')}`);
   return dir;
+}
+
+/** Тот же bed, но репозиторий git с закоммиченной очередью — для проверок settle-коммита. */
+function gitBed(...items: readonly string[]): string {
+  const dir = bed(...items);
+  gitInit(dir);
+  gitCommit(dir, 'начальный');
+  return dir;
+}
+
+function headMessageAt(dir: string): string {
+  return execFileSync('git', ['-C', dir, 'log', '-1', '--format=%s'], { encoding: 'utf8' }).trim();
+}
+
+function headFiles(dir: string): string[] {
+  return execFileSync('git', ['-C', dir, 'show', '--name-only', '--format=', 'HEAD'], { encoding: 'utf8' })
+    .trim()
+    .split('\n')
+    .filter((line) => line !== '');
+}
+
+function commitCountAt(dir: string): number {
+  return Number(execFileSync('git', ['-C', dir, 'rev-list', '--count', 'HEAD'], { encoding: 'utf8' }).trim());
+}
+
+function porcelainAt(dir: string): string {
+  return execFileSync('git', ['-C', dir, 'status', '--porcelain'], { encoding: 'utf8' }).trim();
 }
 
 function fieldOf(text: string, slug: string, name: string): string | undefined {
@@ -415,5 +445,57 @@ describe('CLI: stepcast backlog settle', () => {
     assert.equal(fieldOf(text, 'a-item', 'status'), 'done');
     assert.equal(fieldOf(text, 'a-item', 'reason'), undefined);
     assert.equal(fieldOf(text, 'b-item', 'status'), 'failed');
+  });
+
+  it('коммитит адресно только файл очереди, сообщением с коротким id прогона', async () => {
+    const dir = gitBed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
+    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-42abcd'));
+    itemFile(runDir, 'a', 'a-item');
+    const before = commitCountAt(dir);
+
+    const result = await backlog(dir, ['settle', '--run-dir', runDir]);
+
+    assert.equal(result.code, ExitCode.ok, result.stderr);
+    assert.equal(commitCountAt(dir), before + 1);
+    assert.deepEqual(headFiles(dir), ['backlog.md']);
+    assert.equal(headMessageAt(dir), `backlog: исходы дорожек прогона ${shortRunId(basename(runDir))}`);
+    assert.equal(porcelainAt(dir), '', 'дерево чисто после коммита');
+    assert.match(result.stdout, /закоммичена/);
+  });
+
+  it('без правок коммита нет: уже закрытый пункт ничего не меняет', async () => {
+    const dir = gitBed(item('a-item', { ...COMPLETE, status: 'done' }));
+    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    itemFile(runDir, 'a', 'a-item');
+    const before = commitCountAt(dir);
+
+    const result = await backlog(dir, ['settle', '--run-dir', runDir]);
+
+    assert.equal(result.code, ExitCode.ok, result.stderr);
+    assert.equal(commitCountAt(dir), before, 'коммита нет — settle ничего в очередь не проставил');
+  });
+
+  it('файл очереди вне git-репозитория — коммита нет, вывод это называет', async () => {
+    const dir = bed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
+    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    itemFile(runDir, 'a', 'a-item');
+
+    const result = await backlog(dir, ['settle', '--run-dir', runDir]);
+
+    assert.equal(result.code, ExitCode.ok, result.stderr);
+    assert.match(result.stdout, /не закоммичена/);
+  });
+
+  it('посторонняя правка рабочего дерева в коммит не попадает', async () => {
+    const dir = gitBed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
+    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    itemFile(runDir, 'a', 'a-item');
+    writeFileSync(join(dir, 'stray.txt'), 'чужая правка\n');
+
+    const result = await backlog(dir, ['settle', '--run-dir', runDir]);
+
+    assert.equal(result.code, ExitCode.ok, result.stderr);
+    assert.deepEqual(headFiles(dir), ['backlog.md']);
+    assert.match(porcelainAt(dir), /stray\.txt/, 'посторонний файл остаётся незакоммиченным');
   });
 });

@@ -65,6 +65,9 @@ jobs:
     description: Разбор отказа
     needs: all
     on: failure
+    # Освобождена от потолка прогона: подключена как раз ради того, чтобы
+    # отработать и после его остановки по бюджету, а не только по отказу.
+    budget_exempt: true
     steps:
       - id: explain
         run: [sh, -c, 'echo "прогон $STEPCAST_RUN_ID завершился отказом, см. status.json"']

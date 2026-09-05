@@ -77,6 +77,10 @@ export const COMMANDS: Record<string, CommandSpec> = {
     flags: {
       job: { kind: 'string', description: 'наложить только результат этой работы' },
       lane: { kind: 'string', description: 'наложить только результат этой дорожки, одним диффом' },
+      force: {
+        kind: 'boolean',
+        description: 'снять отказ в повторном наложении дорожки, чей записанный исход — «сведена»',
+      },
     },
   },
   config: {

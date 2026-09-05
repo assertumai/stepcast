@@ -3,9 +3,13 @@ import { describePlan, planResume, readSourceRun } from '../../core/run/resumePl
 import type { RunPaths } from '../../core/journal/paths.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { readStatus, resolveRun } from '../../core/journal/reader.js';
+import { describeBudgetAmounts } from '../../core/budget/accumulator.js';
+import type { RunStatus } from '../../core/journal/schema.js';
 import { shortRunId } from '../../core/journal/paths.js';
 import { formatDuration, formatMoney, formatTokens } from '../../core/units.js';
 import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
+import { knownLanes } from '../../core/lanes/lanes.js';
+import { mergedLanes, readLaneMerge, type LaneMergeRecord } from '../../core/lanes/mergeRecord.js';
 import { formatColumns } from '../output.js';
 import type { ParsedArgs } from '../args.js';
 
@@ -60,6 +64,27 @@ export function runStatusCommand(
     write(`цена неполна: ${budget.cost_unreported_attempts} попыток без сообщённой цены`);
   }
 
+  // Причина остановки по бюджету читается из состояния, а не собирается
+  // разбором статусов работ: шаг, перешедший потолок, мог отчитаться успехом,
+  // и тогда среди работ её попросту нет (run-journal, «Причина остановки
+  // читается из состояния»).
+  if (budget.exceeded !== undefined) {
+    write(`потолок перейдён: ${describeExceededState(budget.exceeded)}`);
+  }
+
+  // Исход сведения читается из каталога прогона, а не из git log: это и
+  // требует спека — «остановлен по бюджету, дорожки сведены» и «остановлен
+  // по бюджету, сведение не выполнено» различимы этим выводом одним.
+  //
+  // Перечень — известные прогону дорожки вместе с теми, на которые запись
+  // исхода есть: запись пишет посторонний процесс (`merge-lanes`), и умолчать
+  // о записанном исходе оттого, что состояние про дорожку не знает, значило бы
+  // потерять ровно тот факт, ради которого запись заведена.
+  const lanes = [...new Set([...knownLanes(status.jobs), ...mergedLanes(paths.dir)])].sort();
+  for (const lane of lanes) {
+    write(`дорожка ${lane}: ${describeLaneMerge(readLaneMerge(paths.dir, lane))}`);
+  }
+
   if (status.resume !== undefined) {
     write(`продолжить: ${status.resume.command}`);
   }
@@ -90,6 +115,53 @@ function explainInvalidation(
 
 function label(status: string): string {
   return STATUS_LABEL[status] ?? status;
+}
+
+/**
+ * Перейдённый потолок из состояния прогона: область, величины в единицах
+ * своего измерения и адрес шага, на котором он сработал. Величины печатаются
+ * тем же кодом, что и в журнале (`describeBudgetAmounts`): микродоллары,
+ * миллисекунды и проценты, напечатанные как есть, читались бы как токены.
+ */
+function describeExceededState(exceeded: NonNullable<RunStatus['budget']['exceeded']>): string {
+  const amounts =
+    exceeded.dimension === undefined
+      ? `израсходовано ${exceeded.used} при потолке ${exceeded.limit}`
+      : describeBudgetAmounts(exceeded.dimension, exceeded.used, exceeded.limit);
+  return `${exceeded.scope}: ${amounts} (${exceeded.job}/${exceeded.step})`;
+}
+
+/** Коммиты сведения дорожки, текстом: `репозиторий: sha`, через запятую. */
+function describeCommits(commits: Readonly<Record<string, string>> | undefined): string {
+  const entries = Object.entries(commits ?? {});
+  if (entries.length === 0) return '';
+  return ` (коммиты: ${entries.map(([repo, sha]) => `${repo}: ${sha}`).join(', ')})`;
+}
+
+/**
+ * Исход сведения дорожки для `stepcast status` — та же запись, которую пишет
+ * `stepcast merge-lanes` (`src/core/lanes/mergeRecord.ts`). Дорожка без
+ * записи называется дорожкой, сведение которой не выполнялось: молчание об
+ * этом читалось бы как «неизвестно», а не как факт прогона.
+ */
+function describeLaneMerge(record: LaneMergeRecord | undefined): string {
+  if (record === undefined) return 'сведение не выполнялось';
+  switch (record.kind) {
+    case 'merged':
+      return `сведена, пункт «${record.slug}»${describeCommits(record.commits)}`;
+    case 'already_merged':
+      return `уже сведена ранее${record.slug === undefined ? '' : `, пункт «${record.slug}»`}`;
+    case 'empty':
+      return 'пропущена — слот не заполнен';
+    case 'no_item':
+      return 'пропущена — пункт очереди ей не доставался';
+    case 'check_failed':
+      return `не сведена, откачена${record.reason === undefined ? '' : `: ${record.reason}`}`;
+    case 'not_reached':
+      return `не сведена, не пробована${record.reason === undefined ? '' : `: ${record.reason}`}`;
+    default:
+      return `не сведена${record.reason === undefined ? '' : `: ${record.reason}`}`;
+  }
 }
 
 function failureDetail(job: ReturnType<typeof readStatus>['jobs'][number]): string {

@@ -44,6 +44,8 @@ function describe(result: LaneMergeResult): string {
   switch (result.kind) {
     case 'merged':
       return `сведена, пункт «${result.slug}» помечен done (репозитории: ${result.repos.join(', ')})`;
+    case 'already_merged':
+      return `уже сведена ранее — ${result.reason}`;
     case 'empty':
       return 'пропущена — слот не заполнен, все работы дорожки skipped';
     case 'no_item':
@@ -110,11 +112,18 @@ export async function runMergeLanesCommand(
   });
 
   let merged = 0;
+  let already = 0;
   for (const result of results) {
     write(`дорожка ${result.lane}: ${describe(result)}`);
     if (result.kind === 'merged') merged += 1;
+    if (result.kind === 'already_merged') already += 1;
   }
-  write(`итог: сведено ${merged}, не сведено ${results.length - merged}`);
+  // Уже сведённая дорожка не лежит ни среди сведённых этим обходом, ни среди
+  // несведённых: она в дереве, и назвать её несведённой значило бы отдать
+  // читателю ровно тот ложный сигнал «дорожка потеряна», против которого
+  // запись исхода и заведена. Клаузула появляется, только когда такие есть.
+  const alreadyClause = already === 0 ? '' : `, уже было сведено ${already}`;
+  write(`итог: сведено ${merged}${alreadyClause}, не сведено ${results.length - merged - already}`);
 
   // Была остановка (конфликт наложения) либо был откат (красная проверка):
   // у откачённой дорожки все работы зелёные, и сведение — единственное

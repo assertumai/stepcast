@@ -738,6 +738,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         lane: 'lane' in entry ? entry.lane : undefined,
         display: 'display' in entry ? entry.display : undefined,
         session_group: 'session_group' in entry ? entry.session_group : undefined,
+        budget_exempt: 'budget_exempt' in entry ? entry.budget_exempt : undefined,
       },
       pipelineScope,
       at,
@@ -829,6 +830,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         lane: _lane,
         display: _display,
         session_group: _sessionGroup,
+        budget_exempt: _budgetExempt,
         ...rest
       } = entry;
       const interpolated = interpolateTree(rest as Record<string, unknown>, bodyScope, at);
@@ -903,6 +905,9 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       ...(wiring.value.session_group === undefined
         ? {}
         : { sessionGroup: wiring.value.session_group as string }),
+      ...(wiring.value.budget_exempt === undefined
+        ? {}
+        : { budgetExempt: wiring.value.budget_exempt as boolean }),
       ...(wiring.value.display === undefined
         ? {}
         : { display: wiring.value.display as Readonly<Record<string, string>> }),

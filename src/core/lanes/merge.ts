@@ -11,6 +11,7 @@ import { applyRun, laneAnchorRange, type LaneAnchorRange } from '../run/apply.js
 import { runCheck } from './check.js';
 import { hasLaneItem, readLaneItem } from './item.js';
 import { evaluateLane, knownLanes } from './lanes.js';
+import { readLaneMerge, writeLaneMerge } from './mergeRecord.js';
 import {
   assertCleanTree,
   commitAll,
@@ -60,14 +61,23 @@ export interface MergeLanesOptions {
 }
 
 export type LaneMergeResult =
-  | { readonly lane: string; readonly kind: 'merged'; readonly slug: string; readonly repos: readonly string[] }
+  | {
+      readonly lane: string;
+      readonly kind: 'merged';
+      readonly slug: string;
+      readonly repos: readonly string[];
+      /** Коммит сведения на репозиторий, где он действительно возник. */
+      readonly commits: Readonly<Record<string, string>>;
+    }
   | { readonly lane: string; readonly kind: 'empty' }
   | { readonly lane: string; readonly kind: 'no_item' }
   | { readonly lane: string; readonly kind: 'unfit'; readonly reason: string }
   | { readonly lane: string; readonly kind: 'conflict'; readonly reason: string }
   | { readonly lane: string; readonly kind: 'check_failed'; readonly reason: string }
   | { readonly lane: string; readonly kind: 'no_contribution'; readonly reason: string }
-  | { readonly lane: string; readonly kind: 'not_reached'; readonly reason: string };
+  | { readonly lane: string; readonly kind: 'not_reached'; readonly reason: string }
+  /** Дорожка, чей записанный в каталоге прогона исход уже — «сведена». */
+  | { readonly lane: string; readonly kind: 'already_merged'; readonly reason: string };
 
 /** Причина с хвостом чужого вывода: приставка целиком, вывод — сколько влезло. */
 function reasonWithOutput(prefix: string, output: string): string {
@@ -355,6 +365,26 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
   const results: LaneMergeResult[] = [];
 
   /**
+   * Исход дорожки — и в перечень, возвращаемый вызывающему, и в
+   * `merge-<дорожка>.json` каталога прогона: одна запись на каждую дорожку
+   * перечня, включая несведённые и недостигнутые — «не сведена, не пробована»
+   * и «не сводилась вовсе» различимы только так (lane-merge, design.md,
+   * решение 6).
+   */
+  const record = (result: LaneMergeResult): void => {
+    results.push(result);
+    writeLaneMerge(runDir, {
+      lane: result.lane,
+      kind: result.kind,
+      at: new Date().toISOString(),
+      ...('slug' in result ? { slug: result.slug } : {}),
+      ...('reason' in result ? { reason: result.reason } : {}),
+      ...('repos' in result ? { repos: result.repos } : {}),
+      ...('commits' in result ? { commits: result.commits } : {}),
+    });
+  };
+
+  /**
    * «Дерево в неизвестном состоянии» — единственное основание прекратить
    * обход целиком. Красная проверка сюда не относится: адресный откат уже
    * вернул каждый затронутый репозиторий к записанному коммиту, и как только
@@ -413,6 +443,21 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
   };
 
   for (const lane of lanes) {
+    // Дорожка, уже сведённая в этом или в прежнем обходе, получает свой
+    // исход независимо от остановки: она не сводится заново, и следующая
+    // дорожка перечня — законный повторный вызов после частичного прохода
+    // (lane-merge, «Повторный обход после частичного сведения»).
+    const already = readLaneMerge(runDir, lane);
+    if (already?.kind === 'merged') {
+      const reason = `уже сведена (${
+        Object.entries(already.commits ?? {})
+          .map(([repo, sha]) => `${repo}: ${sha}`)
+          .join(', ') || 'коммиты не записаны'
+      })`;
+      record({ lane, kind: 'already_merged', reason });
+      continue;
+    }
+
     if (stoppedAt !== undefined) {
       const basisLabel = stoppedAt.basis === 'conflict' ? 'конфликт наложения' : 'неподтверждённый откат';
       // Приставка недостигнутой дорожки складывается с приставкой причины
@@ -423,14 +468,14 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
         stoppedAt.output,
       );
       markFailed(lane, reason);
-      results.push({ lane, kind: 'not_reached', reason });
+      record({ lane, kind: 'not_reached', reason });
       continue;
     }
 
     const verdict = evaluateLane(status.jobs, lane);
 
     if (verdict.kind === 'empty') {
-      results.push({ lane, kind: 'empty' });
+      record({ lane, kind: 'empty' });
       continue;
     }
 
@@ -439,7 +484,7 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
         .map((job) => `${job.id}=${job.status}`)
         .join(', ')}`;
       markFailed(lane, reason);
-      results.push({ lane, kind: 'unfit', reason });
+      record({ lane, kind: 'unfit', reason });
       continue;
     }
 
@@ -450,7 +495,7 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
     // иначе её дифф остался бы наложенным и незакоммиченным. По той же
     // причине здесь, а не после проверки, отказывает файл пункта без слага.
     if (!hasLaneItem(runDir, lane)) {
-      results.push({ lane, kind: 'no_item' });
+      record({ lane, kind: 'no_item' });
       continue;
     }
     const item = readLaneItem(runDir, lane);
@@ -476,7 +521,7 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
       const prefix = `наложение дорожки не сошлось с текущим деревом (рабочее дерево: ${workspace ?? 'неизвестно'}): `;
       const reason = reasonWithOutput(prefix, error.message);
       markFailed(lane, reason);
-      results.push({ lane, kind: 'conflict', reason });
+      record({ lane, kind: 'conflict', reason });
       stoppedAt = { lane, basis: 'conflict', prefix, output: error.message };
       continue;
     }
@@ -484,7 +529,7 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
     if (applied.kind !== 'applied') {
       const reason = 'дорожка не изменила дерево';
       markFailed(lane, reason);
-      results.push({ lane, kind: 'no_contribution', reason });
+      record({ lane, kind: 'no_contribution', reason });
       continue;
     }
 
@@ -544,7 +589,7 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
               unconfirmed.output,
             );
       markFailed(lane, reason);
-      results.push({ lane, kind: 'check_failed', reason });
+      record({ lane, kind: 'check_failed', reason });
 
       if (unconfirmed !== undefined) stoppedAt = { lane, basis: 'unconfirmed_rollback', ...unconfirmed };
       continue;
@@ -562,11 +607,14 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
     // дифом дорожка его не задела) пропускается без отказа, и называть его
     // среди сведённых значило бы утверждать коммит, которого нет.
     const committed: string[] = [];
+    const commits: Record<string, string> = {};
     for (const repo of commitOrder(cwd, affected, queueRepo)) {
-      if (commitAll(repoDirOf(cwd, repo), message)) committed.push(repo);
+      if (!commitAll(repoDirOf(cwd, repo), message)) continue;
+      committed.push(repo);
+      commits[repo] = currentCommit(repoDirOf(cwd, repo));
     }
 
-    results.push({ lane, kind: 'merged', slug: item.slug, repos: committed });
+    record({ lane, kind: 'merged', slug: item.slug, repos: committed, commits });
   }
 
   return results;

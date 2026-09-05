@@ -25,6 +25,7 @@ export function runApplyCommand(
     cwd,
     ...(typeof args.flags.job === 'string' ? { job: args.flags.job } : {}),
     ...(typeof args.flags.lane === 'string' ? { lane: args.flags.lane } : {}),
+    ...(args.flags.force === true ? { force: true } : {}),
     ...(config.project.nestedRepos === undefined ? {} : { nestedRepos: config.project.nestedRepos }),
   });
 
