@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 import { evaluatePredicates } from '../src/core/expect/evaluate.js';
 import { UsageAccumulator, describeExceeded } from '../src/core/budget/accumulator.js';
 import type { Predicate } from '../src/core/pipeline/model.js';
-import type { Usage } from '../src/core/journal/schema.js';
+import type { Usage, UsageReport } from '../src/core/journal/schema.js';
 
 function workdir(files: Record<string, string> = {}): string {
   const dir = mkdtempSync(join(tmpdir(), 'stepcast-expect-'));
@@ -200,6 +200,42 @@ describe('run-journal: расход и бюджет', () => {
     ...overrides,
   });
 
+  /**
+   * Сводка, очищенная от всего, чем два вызова `report()` вправе отличаться:
+   * от самого признака незаконченности и от итогового `wallclock_ms` — тот
+   * считается от «сейчас» на каждый вызов.
+   */
+  const comparable = (report: UsageReport): Omit<UsageReport, 'partial'> => {
+    const { partial: _partial, ...rest } = report;
+    return { ...rest, total: { ...rest.total, wallclock_ms: 0 } };
+  };
+
+  /**
+   * Время сборки сводки на накопителе заданной формы, в миллисекундах.
+   * Наполнение в замер не входит. Берётся лучший из трёх замеров: сборка
+   * мусора или чужая нагрузка на машине раздувают отдельный прогон, но не все
+   * три сразу.
+   */
+  const timeReport = (jobCount: number, attemptsPerJob: number): number => {
+    const accumulator = new UsageAccumulator(() => 0);
+    const plain = { tokens_out: 0, cache_read: 0, cache_write: 0 };
+    for (let job = 0; job < jobCount; job += 1) {
+      for (let attempt = 1; attempt <= attemptsPerJob; attempt += 1) {
+        accumulator.record(`job-${job}`, 'test', attempt, usageOf({ tokens_in: attempt, ...plain }));
+      }
+    }
+
+    let best = Infinity;
+    for (let round = 0; round < 3; round += 1) {
+      const startedAt = process.hrtime.bigint();
+      const report = accumulator.report('r1');
+      const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1e6;
+      assert.equal(Object.keys(report.jobs).length, jobCount, 'сводка накрывает все работы накопителя');
+      best = Math.min(best, elapsedMs);
+    }
+    return best;
+  };
+
   // Сценарий: «Чтение кеша учитывается с весом»
   it('засчитывает чтение кеша с весом, а исходное значение сохраняет', async () => {
     const accumulator = new UsageAccumulator(() => 0.1);
@@ -381,6 +417,47 @@ describe('run-journal: расход и бюджет', () => {
     const report = accumulator.report('r1');
     assert.equal(report.jobs.build?.steps.test?.peak_prefix_tokens, undefined, 'прочерк, а не ноль');
     assert.ok(report.unreported.includes('peak_prefix_tokens'));
+  });
+
+  // Спека usage-live-progress: «Незаконченная сводка помечена в самом файле»
+  it('признак незаконченности стоит в сводке только когда поднят, а величины не меняются', async () => {
+    const accumulator = new UsageAccumulator(() => 0);
+    const plain = { tokens_out: 0, cache_read: 0, cache_write: 0 };
+    accumulator.record('build', 'test', 1, usageOf({ tokens_in: 100, ...plain }));
+
+    const partial = accumulator.report('r1', true);
+    const final = accumulator.report('r1', false);
+    const noArg = accumulator.report('r1');
+
+    assert.equal(partial.partial, true);
+    assert.equal(final.partial, undefined, 'признак не поднят — поля в сводке нет вовсе');
+    assert.equal(noArg.partial, undefined);
+    // `wallclock_ms` итога считается от текущего момента на каждый вызов
+    // `report()` и потому вправе отличаться на миллисекунду между тремя
+    // вызовами выше: сравнивать его здесь значило бы ронять тест на
+    // величине, к признаку незаконченности отношения не имеющей.
+    assert.deepEqual(comparable(partial), comparable(final));
+  });
+
+  // Спека run-journal: «Запись сводки не становится заметной статьёй расхода времени на шаге»
+  it('report() обходит записи линейно: время не растёт с числом работ при том же числе записей', async () => {
+    // Две формы одного объёма: записей поровну, а работ — стократно разное
+    // число. Линейный обход не различает их вовсе, обход O(работ × записей)
+    // различает стократно. Проверено на восстановленной прежней реализации:
+    // линейная даёт 9мс на узкой форме и 9мс на широкой, квадратичная — 17мс
+    // и 1021мс. Потолок берётся от замера узкой формы, а не абсолютным числом
+    // миллисекунд, — так тест сравнивает две формы на одной машине и не
+    // превращается в измеритель её скорости. Прежний сторож — один замер
+    // против потолка в 2 секунды — был зелен и на квадратичной реализации.
+    const records = 20_000;
+    const narrowMs = timeReport(20, records / 20);
+    const wideMs = timeReport(2_000, records / 2_000);
+
+    const ceiling = narrowMs * 10 + 100;
+    assert.ok(
+      wideMs <= ceiling,
+      `report() на 2000 работах занял ${wideMs.toFixed(1)}мс при ${narrowMs.toFixed(1)}мс на 20 работах того же объёма — похоже на возврат обхода O(работ × записей)`,
+    );
   });
 
   // Спека run-journal: «Сообщение о превышении говорит о трафике»

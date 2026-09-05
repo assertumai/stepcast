@@ -15,7 +15,7 @@ import {
 } from '../src/core/backend/fake.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { readEvents, readStatus, readUsage, resolveRun } from '../src/core/journal/reader.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
+import { runPipeline, type RunOptions, type RunResult } from '../src/core/run/runner.js';
 import { createWaitState } from '../src/core/run/waitState.js';
 import { ExitCode } from '../src/core/errors.js';
 import type { Config } from '../src/core/config/resolve.js';
@@ -33,9 +33,15 @@ import { makeProject, type Project } from './helpers.js';
 async function run(
   project: Project,
   backends: Readonly<Record<string, FakeBackend>>,
-  options: { readonly configOverride?: Partial<Config['defaults']>; readonly signal?: AbortSignal } = {},
+  options: {
+    readonly configOverride?: Partial<Config['defaults']>;
+    readonly signal?: AbortSignal;
+    readonly onEvent?: RunOptions['onEvent'];
+    /** Заранее известный корень прогонов — нужен тесту, читающему журнал по ходу исполнения. */
+    readonly runsRoot?: string;
+  } = {},
 ): Promise<RunResult> {
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = options.runsRoot ?? mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
   return runPipeline({
     expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
     config: {
@@ -46,6 +52,7 @@ async function run(
     projectRoot: project.root,
     cwd: project.root,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
+    ...(options.onEvent === undefined ? {} : { onEvent: options.onEvent }),
     adapterFor: (name) => {
       const backend = backends[name];
       assert.ok(backend !== undefined, `нет поддельного бэкенда для «${name}»`);
@@ -2043,5 +2050,91 @@ jobs:
       assert.equal(exceeded.job, 'дорогая');
       assert.equal(exceeded.step, 'тратит');
     }
+  });
+});
+
+describe('usage-live-progress: сводка расхода пишется по ходу прогона', () => {
+  const TWO_JOBS = `
+version: 1
+kind: pipeline
+name: usage-live-progress
+jobs:
+  a:
+    steps:
+      - id: only
+        agent: fake
+        prompt: "первая работа"
+        expect: [{ exit_code: 0 }]
+  b:
+    needs: [a]
+    steps:
+      - id: only
+        agent: fake
+        prompt: "вторая работа"
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Спека run-journal: «Сводка доступна до конца прогона»
+  it('usage.json несёт расход завершившейся работы и признак незаконченности, пока прогон идёт', async () => {
+    const project = makeProject({ 'stepcast.yml': TWO_JOBS });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 40, tokensOut: 10 })],
+    });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+
+    let duringRun: ReturnType<typeof readUsage> | undefined;
+    const result = await run(
+      project,
+      { fake },
+      {
+        runsRoot,
+        onEvent: (event) => {
+          // b зависит от a, поэтому на этом поводе b ещё не исполнялась —
+          // первая попытка снять снимок и есть проверяемый момент.
+          if (event.kind !== 'job.finished' || event.job !== 'a' || duringRun !== undefined) return;
+          duringRun = readUsage(resolveRun(runsRoot, project.root));
+        },
+      },
+    );
+
+    assert.ok(duringRun !== undefined, 'событие job.finished для «a» не поймано');
+    assert.equal(duringRun?.partial, true, 'сводка идущего прогона несёт признак незаконченности');
+    assert.equal(duringRun?.jobs.a?.steps.only?.billable_tokens, 50);
+    assert.equal(duringRun?.jobs.b, undefined, 'вторая работа к этому поводу ещё не исполнялась');
+
+    // После завершения прогона сводка подведена и несёт обе работы.
+    const final = readUsage(result.journal.paths);
+    assert.equal(final.partial, undefined);
+    assert.equal(final.jobs.a?.steps.only?.billable_tokens, 50);
+    assert.equal(final.jobs.b?.steps.only?.billable_tokens, 50);
+  });
+
+  // Спека run-journal: «Итог сводки не расходится с состоянием»
+  it('итог сводки расхода совпадает с накопленной величиной состояния', async () => {
+    const project = makeProject({ 'stepcast.yml': TWO_JOBS });
+    const fake = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'готово', tokensIn: 40, tokensOut: 10 })],
+    });
+    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+
+    let snapshot: { readonly billable: number; readonly tokensUsed: number } | undefined;
+    await run(
+      project,
+      { fake },
+      {
+        runsRoot,
+        onEvent: (event) => {
+          if (event.kind !== 'job.finished' || event.job !== 'a' || snapshot !== undefined) return;
+          const paths = resolveRun(runsRoot, project.root);
+          snapshot = {
+            billable: readUsage(paths).total.billable_tokens,
+            tokensUsed: readStatus(paths).budget.tokens_used,
+          };
+        },
+      },
+    );
+
+    assert.ok(snapshot !== undefined, 'событие job.finished для «a» не поймано');
+    assert.equal(snapshot?.billable, snapshot?.tokensUsed);
   });
 });

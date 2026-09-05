@@ -61,9 +61,11 @@ export interface RunOverview {
 }
 
 /**
- * Разрез токенов по видам. Есть только когда сводка прогона уже записана: на
- * идущем прогоне состояние хранит одну оплачиваемую сумму, и раскладывать её
- * по видам было бы выдумкой.
+ * Разрез токенов по видам. Есть только когда сводка прогона уже прочитана —
+ * на идущем прогоне так же, как на завершённом, раз сводка теперь пишется по
+ * ходу (usage-live-progress). Отсутствует, только если сводки ещё нет вовсе
+ * (окно до первой записи, прогон прежней формы) — тогда состояние хранит одну
+ * оплачиваемую сумму, и раскладывать её по видам было бы выдумкой.
  */
 export interface TokenBreakdown {
   readonly tokensIn: number;
@@ -80,6 +82,13 @@ export interface RunUsageOverview {
   readonly costUsd: number | null;
   /** Сводка расхода прочитана: `unreported` достоверен. */
   readonly aggregated: boolean;
+  /**
+   * Сводка прочитана, но прогон ещё не завершён: показанные величины
+   * накоплены на текущий момент, а не подведены. Ложно и когда сводки нет
+   * вовсе (`aggregated: false`), и когда прогон завершился, — читать признак
+   * есть смысл только вместе с `aggregated: true`.
+   */
+  readonly partial: boolean;
   readonly unreported: readonly string[];
 }
 
@@ -124,8 +133,11 @@ function pipelineFileView(projectPath: string | undefined, absolute: string): st
 /**
  * Беда, о которой стоит говорить. Отсутствие `status.json` или `usage.json`
  * при читаемом манифесте — обычное состояние начинающегося прогона: манифест
- * пишется первым, состояние следом, сводка расхода вовсе в конце. Называть
- * это бедой значило бы обвинять здоровый прогон.
+ * пишется первым, а состояние и сводка расхода — следом, первой же записью
+ * прогона (`writeStatus` в `run/runner.ts`), так что окно без них — доли
+ * секунды старта. Тем же выглядит и прогон прежней формы, чья сводка
+ * писалась только в конце и не дождалась его. Называть это бедой значило бы
+ * обвинять здоровый прогон.
  */
 function worthTelling(problem: JournalProblem | undefined): JournalProblem | undefined {
   return problem?.kind === 'missing' ? undefined : problem;
@@ -168,8 +180,11 @@ function readRun(
     if (pipeline === '') pipeline = state.pipeline;
 
     // Расход читается тем же проходом: сводка, если уже записана и проходит
-    // схему, точнее — `status.budget` растёт по ходу прогона и не хранит
-    // `unreported`; на идущем прогоне сводки ещё нет, и берётся состояние.
+    // схему, точнее — она несёт разрез по видам токенов и `unreported`,
+    // которых `status.budget` не хранит. Сводка есть и у идущего прогона:
+    // она пишется по ходу (usage-live-progress) и лишь помечена `partial`.
+    // Состояние остаётся запасным — на окно до первой записи сводки и на
+    // прогон, чья сводка не проходит текущую схему.
     const { summary, problem: usageFailure } = readUsageSoft(paths);
     usageProblem = usageFailure;
     const costUsd = summary?.total.cost_usd ?? state.budget.cost_used_usd;
@@ -188,6 +203,7 @@ function readRun(
           }),
       costUsd: costUsd === undefined ? null : costUsd,
       aggregated: summary !== undefined,
+      partial: summary?.partial === true,
       unreported: summary?.unreported ?? [],
     };
   }

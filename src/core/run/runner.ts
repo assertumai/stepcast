@@ -278,23 +278,34 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
       : { observedInputs: options.resume.plan.observedInputs }),
     beginWait: (wakeAt) => {
       const release = waitState.begin(wakeAt);
-      writeStatus('running');
+      writeStatus('running', true);
       return () => {
         release();
-        writeStatus('running');
+        writeStatus('running', true);
       };
     },
     // Состояние переписывается после каждого шага: это единственный файл, по
     // изменению которого витрина узнаёт о ходе прогона, и данные, записанные
     // работой, доезжают до подписи узла только вместе с ним.
-    refreshStatus: () => writeStatus('running'),
+    refreshStatus: () => writeStatus('running', true),
   };
 
   requireAdapters(context);
   warnAboutDegradedBackends(context);
   requireStrictPermissionsSupport(context);
 
-  const writeStatus = (status: StatusValue): void => {
+  /**
+   * Единственное место, где картина прогона попадает на диск: сводка
+   * расхода, затем состояние. Пятого повода не бывает без обоих файлов —
+   * отдельный вызов на каждом поводе однажды забыли бы (design.md,
+   * Решение 1). `partial` снимается только терминальной записью: сводка
+   * подводится ровно тогда, когда прогон действительно завершён.
+   *
+   * Обе величины читаются из одного `usage` синхронно, без `await` между
+   * ними: писать расход в этом окне некому, поэтому итог прогона в сводке и
+   * в `budget` состояния не расходится (design.md, Решение 8).
+   */
+  const writeStatus = (status: StatusValue, partial: boolean): void => {
     // Перерасход бюджета останавливает прогон так же, как отказ, и точка
     // возобновления нужна ровно так же: без неё прогон, упёршийся в потолок,
     // остался бы единственным законченным исходом без подсказки, как его
@@ -302,6 +313,10 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     const blocked = [...records.values()].find(
       (record) => record.status === 'failed' || record.status === 'budget_exceeded',
     );
+    // Сводка пишется раньше состояния: витрина замечает изменение прогона по
+    // mtime status.json, и к этому моменту лежащая рядом сводка не должна
+    // быть старше него (design.md, Решение 2).
+    journal.writeUsage(usage.report(journal.paths.runId, partial));
     journal.writeStatus({
       run_id: journal.paths.runId,
       pipeline: pipeline.name,
@@ -354,7 +369,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     carryOverRunDir(options.resume, journal);
   }
 
-  writeStatus('running');
+  writeStatus('running', true);
 
   /**
    * Область прогона: ресурсы, живущие столько же, сколько сам прогон.
@@ -398,7 +413,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
           status: outcome.status,
           ...(outcome.reason === undefined ? {} : { reason: outcome.reason }),
         });
-        writeStatus('running');
+        writeStatus('running', true);
       },
       });
   } finally {
@@ -426,8 +441,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
       ? 'budget_exceeded'
       : result.status;
 
-  writeStatus(finalStatus);
-  journal.writeUsage(usage.report(journal.paths.runId));
+  writeStatus(finalStatus, false);
 
   const exitCode = resolveExitCode(finalStatus, result.settled);
   journal.writeManifest({

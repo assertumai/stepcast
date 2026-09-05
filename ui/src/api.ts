@@ -34,6 +34,8 @@ export interface RunUsageOverview {
   readonly breakdown?: TokenBreakdown;
   readonly costUsd: number | null;
   readonly aggregated: boolean;
+  /** Сводка прочитана, но прогон ещё не завершён: величины накоплены, не подведены. */
+  readonly partial: boolean;
   readonly unreported: readonly string[];
 }
 

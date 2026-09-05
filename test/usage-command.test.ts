@@ -303,6 +303,53 @@ describe('CLI: stepcast usage', () => {
     assert.match(text, /#1/);
   });
 
+  // Спека run-journal: «Отчёт по идущему прогону» (usage-live-progress)
+  it('со сводкой идущего прогона показывает разбивку по попыткам и поясняет, что величины накоплены', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, {
+      status: 'running',
+      jobs: RETRIED_STEP,
+      usage: { ...RETRIED_SUMMARY('r'), partial: true },
+      // Живой процесс: обещание «величины ещё вырастут» верно только для него.
+      manifest: { started_at: new Date().toISOString(), pid: process.pid },
+    });
+
+    const { lines, write } = capture();
+    withHome(home, () => runUsageCommand(args([journal.paths.runId]), write, projectRoot));
+
+    const text = lines.join('\n');
+    assert.match(text, /implement/);
+    assert.match(text, /write-code/);
+    assert.match(text, /#1/);
+    assert.match(text, /#2/);
+    assert.match(text, /прогон идёт, величины ещё вырастут/);
+    assert.doesNotMatch(text, /ещё не записана/);
+  });
+
+  // Спека run-journal: «Отчёт по брошенному прогону» (usage-live-progress)
+  it('у прогона с мёртвым процессом не обещает роста величин незаконченной сводки', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, {
+      status: 'running',
+      jobs: RETRIED_STEP,
+      usage: { ...RETRIED_SUMMARY('r'), partial: true },
+      // Состояние осталось идущим, а процесса с таким pid нет: сводка навсегда
+      // помечена незаконченной, но расти ей уже нечем.
+      manifest: { started_at: new Date().toISOString(), pid: 999_999_999 },
+    });
+
+    const { lines, write } = capture();
+    withHome(home, () => runUsageCommand(args([journal.paths.runId]), write, projectRoot));
+
+    const text = lines.join('\n');
+    // Разбивка та же, что у живого прогона: величины незаконченной сводки
+    // читаются наравне с подведёнными.
+    assert.match(text, /write-code/);
+    assert.match(text, /#2/);
+    assert.match(text, /величины остались на момент обрыва/);
+    assert.doesNotMatch(text, /прогон идёт/);
+  });
+
   it('usage.json, не проходящий схему, не роняет команду и помечается непрочитанным', () => {
     const { runsRoot, projectRoot, home } = makeJournalBed();
     const journal = seedRun(runsRoot, projectRoot, { jobs: RETRIED_STEP });

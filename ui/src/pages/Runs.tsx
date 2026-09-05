@@ -95,8 +95,10 @@ function TokenCell({ run }: { readonly run: RunOverview }): JSX.Element {
         disabled={breakdown === undefined}
         title={
           breakdown === undefined
-            ? 'Разрез появится, когда прогон запишет сводку расхода'
-            : 'Разрез по видам токенов'
+            ? 'Разрез по видам токенов появится, когда сводка расхода будет прочитана'
+            : usage.partial
+              ? 'Разрез по видам токенов (накоплено на текущий момент, прогон идёт)'
+              : 'Разрез по видам токенов'
         }
       >
         {fmtTokens(usage.billableTokens)}
@@ -114,6 +116,12 @@ function TokenCell({ run }: { readonly run: RunOverview }): JSX.Element {
             <>
               <br />
               не сообщено: {usage.unreported.length}
+            </>
+          ) : null}
+          {usage.partial ? (
+            <>
+              <br />
+              накоплено на текущий момент — прогон идёт
             </>
           ) : null}
         </div>

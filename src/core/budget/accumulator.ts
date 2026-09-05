@@ -480,8 +480,32 @@ export class UsageAccumulator {
     return total;
   }
 
-  report(runId: string): UsageReport {
+  report(runId: string, partial?: boolean): UsageReport {
     const jobs: UsageReport['jobs'] = {};
+
+    // Разложить записи расхода попыток по работам одним проходом перед
+    // циклом ниже — иначе он обходил бы весь список записей на каждую
+    // работу, то есть работал бы за O(работ × записей): на завершении
+    // прогона это делалось один раз и не замечалось, а на каждом шаге
+    // идущего прогона (usage-live-progress) умножается на число шагов.
+    // Перенесённая попытка синтезирует ключ `<step>#1@carried`: разбор ниже
+    // читает её как попытку номер 1 и складывает с продолженной попыткой
+    // того же номера — ровно то смешение, которого требует перенос расхода
+    // (design.md, решение 8), без отдельной ветки слияния.
+    const stepsByJob = new Map<string, (readonly [string, Counters])[]>();
+    for (const entry of this.steps) {
+      const jobId = entry[0].slice(0, entry[0].indexOf('/'));
+      const bucket = stepsByJob.get(jobId);
+      if (bucket === undefined) stepsByJob.set(jobId, [entry]);
+      else bucket.push(entry);
+    }
+    for (const [address, counters] of this.carried) {
+      const jobId = address.slice(0, address.indexOf('/'));
+      const entry = [`${address}#1@carried`, counters] as const;
+      const bucket = stepsByJob.get(jobId);
+      if (bucket === undefined) stepsByJob.set(jobId, [entry]);
+      else bucket.push(entry);
+    }
 
     for (const [jobId, counters] of this.jobs) {
       const steps: Record<
@@ -502,17 +526,8 @@ export class UsageAccumulator {
           >;
         }
       > = {};
-      // Перенесённая попытка синтезирует ключ `<step>#1@carried`: тот же
-      // разбор ниже читает её как попытку номер 1 и складывает с продолженной
-      // попыткой того же номера — ровно то смешение, которого требует
-      // перенос расхода (design.md, решение 8), без отдельной ветки слияния.
-      const carriedForJob: (readonly [string, Counters])[] = [];
-      for (const [address, counters] of this.carried) {
-        if (address.startsWith(`${jobId}/`)) carriedForJob.push([`${address}#1@carried`, counters]);
-      }
 
-      for (const [key, step] of [...this.steps, ...carriedForJob]) {
-        if (!key.startsWith(`${jobId}/`)) continue;
+      for (const [key, step] of stepsByJob.get(jobId) ?? []) {
         // Разбор `stepId#attempt[@sealN]`: суффикс переисполнения роняется —
         // он лишь развёл ключи разных попыток одного номера во времени.
         const rest = key.slice(jobId.length + 1);
@@ -575,6 +590,7 @@ export class UsageAccumulator {
 
     return {
       run_id: runId,
+      ...(partial ? { partial: true } : {}),
       total: {
         tokens_in: this.run.tokensIn,
         tokens_out: this.run.tokensOut,

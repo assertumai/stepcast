@@ -179,16 +179,18 @@ describe('ui-dashboard: обзор всех проектов и прогонов
         jobs: {},
       },
     });
-    seedRun(runsRoot, projectRoot, { runId: 'going', status: 'running', skipUsage: true });
+    // Не «идущий прогон» — у того сводка уже есть: это окно до первой её
+    // записи или прогон прежней формы, не доживший до конца.
+    seedRun(runsRoot, projectRoot, { runId: 'nosummary', status: 'running', skipUsage: true });
 
     const runs = buildOverview(runsRoot).projects[0]?.runs ?? [];
     const aggregated = runs.find((run) => run.runId === 'aggregated');
-    const going = runs.find((run) => run.runId === 'going');
+    const nosummary = runs.find((run) => run.runId === 'nosummary');
 
     assert.equal(aggregated?.usage?.aggregated, true);
     assert.equal(aggregated?.usage?.billableTokens, 150);
-    assert.equal(going?.usage?.aggregated, false);
-    assert.equal(going?.usage?.billableTokens, 0);
+    assert.equal(nosummary?.usage?.aggregated, false);
+    assert.equal(nosummary?.usage?.billableTokens, 0);
   });
 
   // Требование: «Прогон показывает расход с разрезом по видам токенов»
@@ -210,7 +212,7 @@ describe('ui-dashboard: обзор всех проектов и прогонов
         jobs: {},
       },
     });
-    seedRun(runsRoot, projectRoot, { runId: 'going', status: 'running', skipUsage: true });
+    seedRun(runsRoot, projectRoot, { runId: 'nosummary', status: 'running', skipUsage: true });
 
     const runs = buildOverview(runsRoot).projects[0]?.runs ?? [];
     assert.deepEqual(runs.find((run) => run.runId === 'aggregated')?.usage?.breakdown, {
@@ -219,9 +221,45 @@ describe('ui-dashboard: обзор всех проектов и прогонов
       cacheRead: 900,
       cacheWrite: 30,
     });
-    // На идущем прогоне разреза нет: состояние хранит одну сумму, и
-    // разложить её по видам можно было бы только выдумкой.
-    assert.equal(runs.find((run) => run.runId === 'going')?.usage?.breakdown, undefined);
+    // Разрез отсутствует не у идущего прогона, а у прогона без сводки вовсе:
+    // состояние хранит одну сумму, и разложить её по видам можно было бы
+    // только выдумкой. Идущий прогон со сводкой разрез несёт — тест ниже.
+    assert.equal(runs.find((run) => run.runId === 'nosummary')?.usage?.breakdown, undefined);
+  });
+
+  // Требование: «Незаконченная сводка расхода помечена в самом файле» (usage-live-progress)
+  it('идущий прогон со сводкой несёт разрез по видам токенов и признак незаконченности', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'live',
+      status: 'running',
+      usage: {
+        run_id: 'live',
+        partial: true,
+        total: {
+          tokens_in: 40,
+          tokens_out: 10,
+          cache_read: 0,
+          cache_write: 0,
+          billable_tokens: 50,
+          wallclock_ms: 1_000,
+        },
+        unreported: [],
+        jobs: {},
+      },
+    });
+    seedRun(runsRoot, projectRoot, { runId: 'done' });
+
+    const runs = buildOverview(runsRoot).projects[0]?.runs ?? [];
+    const live = runs.find((run) => run.runId === 'live');
+    const done = runs.find((run) => run.runId === 'done');
+
+    assert.equal(live?.usage?.aggregated, true, 'сводка прочитана, пусть и незаконченная');
+    assert.equal(live?.usage?.partial, true);
+    assert.deepEqual(live?.usage?.breakdown, { tokensIn: 40, tokensOut: 10, cacheRead: 0, cacheWrite: 0 });
+    // Сводка без поля — прежняя форма или сводка, записанная последней:
+    // читается как подведённая.
+    assert.equal(done?.usage?.partial, false);
   });
 
   it('считает продолжительность по отметкам манифеста, а у идущего — до сих пор', () => {

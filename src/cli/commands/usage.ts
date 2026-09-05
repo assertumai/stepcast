@@ -1,6 +1,12 @@
 import { resolveConfig } from '../../core/config/resolve.js';
 import { findProjectRoot, shortRunId } from '../../core/journal/paths.js';
-import { readStatus, readUsageSoft, resolveRun, type UsageSummaryUnavailable } from '../../core/journal/reader.js';
+import {
+  isRunAlive,
+  readStatus,
+  readUsageSoft,
+  resolveRun,
+  type UsageSummaryUnavailable,
+} from '../../core/journal/reader.js';
 import type { AttemptRecord, UsageAttemptReport, UsageReport } from '../../core/journal/schema.js';
 import { formatDuration, formatMoney, formatTokens } from '../../core/units.js';
 import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
@@ -70,9 +76,11 @@ function stepCells(
  * Источники — `status.json` (всегда, переживает `gc`, несёт бэкенд, модель,
  * сырые токены и время каждой попытки) и `usage.json` (взвешенный
  * billable-токен по попытке, шагу, работе и прогону, и список несообщённых
- * измерений — величины, которых `status.json` не считает). Сводки может не
- * быть — прогон ещё идёт или её формат устарел, — тогда отчёт всё равно
- * строится, а недоступное помечается явно, а не молчит нулём.
+ * измерений — величины, которых `status.json` не считает). Сводка идущего
+ * прогона накоплена на текущий момент, а не подведена (`partial: true`), и
+ * строится разбивка по ней так же, как по завершённому прогону. Сводки может
+ * не быть вовсе — окно до первой записи или формат устарел, — тогда отчёт
+ * всё равно строится, а недоступное помечается явно, а не молчит нулём.
  */
 export function runUsageCommand(
   args: ParsedArgs,
@@ -133,7 +141,12 @@ export function runUsageCommand(
   }
   for (const line of formatColumns(rows)) write(line);
 
-  for (const line of incompleteness(summary, unavailable, status.budget.cost_unreported_attempts)) write(line);
+  // Живость спрашивается только у незаконченной сводки: у подведённой она
+  // ничего не меняет, а лишний обход файлов прогона не бесплатен.
+  const alive = summary?.partial === true && isRunAlive(paths);
+  for (const line of incompleteness(summary, unavailable, status.budget.cost_unreported_attempts, alive)) {
+    write(line);
+  }
 
   return ExitCode.ok;
 }
@@ -188,28 +201,49 @@ function costCell(usd: number | undefined): string {
   return usd === undefined ? DASH : formatMoney(Math.round(usd * 1_000_000));
 }
 
+/**
+ * Строки о неполноте отчёта. `alive` — жив ли процесс прогона: сводка с
+ * признаком незаконченности остаётся такой навсегда у прогона, чей процесс
+ * убит, и обещать там, что величины «ещё вырастут», значило бы соврать дважды
+ * — прогон не идёт и ничего к сводке уже не допишет.
+ */
 function incompleteness(
   summary: UsageReport | undefined,
   unavailable: UsageSummaryUnavailable | undefined,
   costUnreportedAttempts: number | undefined,
+  alive: boolean,
 ): string[] {
-  const lines: string[] = [];
+  const notes: string[] = [];
 
   if (unavailable === 'missing') {
-    lines.push('', 'сводка расхода ещё не записана: прогон идёт, агрегат появится по завершении');
+    // Живая запись пишет usage.json сразу при старте прогона (writeStatus в
+    // runner.ts), поэтому это окно — доли секунды между созданием каталога и
+    // первой записью — или прогон прежней формы, чей процесс уже мёртв:
+    // обещать «агрегат появится по завершении» здесь было бы неверно в обоих
+    // случаях.
+    notes.push('сводка расхода ещё не записана');
   } else if (unavailable === 'unreadable') {
-    lines.push('', 'сводка расхода не прочитана: usage.json не проходит текущую схему');
-  } else if (summary !== undefined && summary.unreported.length > 0) {
-    lines.push('', `учёт неполон: не сообщено — ${summary.unreported.join(', ')}`);
+    notes.push('сводка расхода не прочитана: usage.json не проходит текущую схему');
+  } else if (summary !== undefined) {
+    if (summary.partial) {
+      notes.push(
+        alive
+          ? 'сводка накоплена на текущий момент: прогон идёт, величины ещё вырастут'
+          : 'сводка не подведена: прогон оборван, величины остались на момент обрыва',
+      );
+    }
+    if (summary.unreported.length > 0) {
+      notes.push(`учёт неполон: не сообщено — ${summary.unreported.join(', ')}`);
+    }
   }
 
   if (costUnreportedAttempts !== undefined && costUnreportedAttempts > 0) {
-    lines.push(
+    notes.push(
       `цена неполна: ${costUnreportedAttempts} ${pluralAttempts(costUnreportedAttempts)} без сообщённой цены`,
     );
   }
 
-  return lines;
+  return notes.length === 0 ? [] : ['', ...notes];
 }
 
 function pluralAttempts(count: number): string {

@@ -328,6 +328,41 @@ describe('ui-dashboard: детальный снимок прогона', () => {
     assert.deepEqual(consumer?.usage, { billableTokens: null, wallclockMs: null, costUsd: null });
   });
 
+  // Сценарий: «Расход работы и шага до конца прогона» (usage-live-progress)
+  it('показывает расход работы и шага идущего прогона из незаконченной сводки', () => {
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-live',
+      status: 'running',
+      jobs: JOBS,
+      lock: lockText(),
+      usage: {
+        run_id: 'run-live',
+        partial: true,
+        total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 300, wallclock_ms: 60_000 },
+        unreported: [],
+        jobs: {
+          producer: {
+            billable_tokens: 300,
+            wallclock_ms: 60_000,
+            steps: { think: { billable_tokens: 300, wallclock_ms: 60_000, attempts: [{ attempt: 1, backend: 'claude', billable_tokens: 300, wallclock_ms: 60_000 }] } },
+          },
+        },
+      },
+    });
+
+    const snapshot = buildSnapshot(journal.paths, projectKey(bed.projectRoot));
+    const producer = snapshot.jobs.find((job) => job.id === 'producer');
+
+    // Прогон идёт, а расход завершившейся работы и её шага уже показан —
+    // прочерк на этом месте и был бедой, ради которой сводка пишется по ходу.
+    assert.deepEqual(producer?.usage, { billableTokens: 300, wallclockMs: 60_000, costUsd: null });
+    assert.deepEqual(producer?.steps[0]?.usage, { billableTokens: 300, wallclockMs: 60_000, costUsd: null });
+    // Работа, которая ещё не исполнялась, остаётся с прочерком, а не с нулём.
+    const consumer = snapshot.jobs.find((job) => job.id === 'consumer');
+    assert.deepEqual(consumer?.usage, { billableTokens: null, wallclockMs: null, costUsd: null });
+  });
+
   // Сценарий: «Расход убранного прогона»
   it('снимок убранного прогона по-прежнему содержит расход', () => {
     const { journal, key } = seed();

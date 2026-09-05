@@ -289,7 +289,14 @@ describe('ui-dashboard: расход поперёк прогонов', () => {
       seedRun(runsRoot, projectRoot, { runId, manifest: { started_at: '2026-08-01T00:00:00.000Z' } });
     }
 
-    const measure = { billableTokens: 100, wallclockMs: 0, costUsd: 1, aggregated: true, unreported: [] as const };
+    const measure = {
+      billableTokens: 100,
+      wallclockMs: 0,
+      costUsd: 1,
+      aggregated: true,
+      partial: false,
+      unreported: [] as const,
+    };
     const overview: Overview = {
       generatedAt: '2026-08-02T12:00:00.000Z',
       projects: [

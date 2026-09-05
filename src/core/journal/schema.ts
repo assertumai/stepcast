@@ -398,6 +398,13 @@ export const UsageAttemptReportSchema = z
 export const UsageReportSchema = z
   .object({
     run_id: z.string(),
+    /**
+     * Прогон ещё не завершён — величины ниже накоплены на текущий момент, а
+     * не подведены. Ставится каждой записью, кроме последней; отсутствие поля
+     * означает подведённую сводку. Так читаются и все сводки, записанные до
+     * появления поля: их писали ровно один раз, в конце прогона.
+     */
+    partial: z.boolean().optional(),
     total: z
       .object({
         tokens_in: z.number(),
