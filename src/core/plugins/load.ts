@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import type { ResolvedConfig } from '../config/resolve.js';
-import { StepcastError } from '../errors.js';
+import { isStepcastError, StepcastError } from '../errors.js';
 import { builtinRegistry } from './builtin.js';
 import { StepcastPluginSchema, type CommandContribution, type StepcastPlugin } from './contract.js';
 import { addPlugin, type Registry } from './registry.js';
@@ -149,7 +149,25 @@ export async function loadPlugins(resolved: ResolvedConfig, options: LoadOptions
       );
     }
 
-    addPlugin(registry, toPlugin(module, declaration, path), path);
+    const plugin = toPlugin(module, declaration, path);
+    try {
+      addPlugin(registry, plugin, path);
+    } catch (error) {
+      // Конфликт имён вкладов знает вид вклада, имя и обоих претендентов, но
+      // не знает, откуда плагин взялся: реестр про конфигурацию не знает
+      // вовсе. Место объявления дописывается здесь — прочие отказы загрузки
+      // несут `file` и `at: 'plugins'`, и отказ реестра обязан приходить тем
+      // же составом полей: и печать CLI, и карточка витрины показывают
+      // расположение отдельно от текста.
+      if (!isStepcastError(error) || error.file !== undefined) throw error;
+      throw new StepcastError(error.message, {
+        exitCode: error.exitCode,
+        ...(declaration.declaredIn === undefined ? {} : { file: declaration.declaredIn }),
+        at: error.at ?? 'plugins',
+        ...(error.hint === undefined ? {} : { hint: error.hint }),
+        cause: error,
+      });
+    }
   }
 
   return registry;

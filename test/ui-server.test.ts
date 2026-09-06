@@ -4,7 +4,7 @@ import { get, request } from 'node:http';
 import { describe, it, type TestContext } from 'node:test';
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 
 import { dashboardPath } from '../src/ui/assets.js';
 import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
@@ -527,6 +527,97 @@ jobs:
     steps:
       - id: verify
         run: [echo, ok]
+`;
+
+/**
+ * Плагин на диске проекта витрины: `.stepcast/config.yml` с `plugins` и
+ * модуль рядом — тем же образом, каким `withPlugin` заводит плагин для CLI
+ * (`test/cli-plugins.test.ts`), только поверх уже готового `projectRoot`
+ * журнальной завязки (`makeJournalBed`), а не свежего `Project`.
+ */
+function withProjectPlugin(projectRoot: string, body: string, moduleName = 'probe'): void {
+  mkdirSync(join(projectRoot, '.stepcast'), { recursive: true });
+  writeFileSync(join(projectRoot, '.stepcast', 'config.yml'), `plugins: ["./plugins/${moduleName}.mjs"]\n`);
+  const path = join(projectRoot, '.stepcast', 'plugins', `${moduleName}.mjs`);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, body);
+}
+
+/** Плагин с одним предикатом `always_ok`: минимум, достаточный, чтобы пройти схему документа. */
+const PREDICATE_PLUGIN = `
+export default {
+  name: 'probe',
+  predicates: [
+    {
+      name: 'always_ok',
+      schema: { type: 'boolean' },
+      evaluate: () => ({ predicate: 'always_ok', passed: true, hard: true }),
+    },
+  ],
+};
+`;
+
+/** Плагин с бэкендом `probe`, чьё умолчание модели — `probe-model`. */
+const BACKEND_PLUGIN = `
+export default {
+  name: 'probe',
+  backends: {
+    probe: {
+      create: () => ({}),
+      defaults: { default_model: 'probe-model' },
+    },
+  },
+};
+`;
+
+/**
+ * Плагин, отмечающий сам факт своей загрузки: отметка пишется при исполнении
+ * модуля, то есть ровно тогда, когда демон его импортировал. Отсутствие файла
+ * и есть доказательство, что импорта не было, — иного следа загрузка чужого
+ * кода не оставляет.
+ */
+function markerPlugin(marker: string): string {
+  return `
+import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(marker)}, 'загружен');
+export default {
+  name: 'probe',
+  predicates: [
+    {
+      name: 'always_ok',
+      schema: { type: 'boolean' },
+      evaluate: () => ({ predicate: 'always_ok', passed: true, hard: true }),
+    },
+  ],
+};
+`;
+}
+
+/**
+ * Слепок журнала: путь файла относительно корня прогонов и его содержимое.
+ * Сверка двух слепков отвечает на вопрос «журнал остался тем же» — включая
+ * появление и исчезновение файлов, а не только правку существующих.
+ */
+function journalSnapshot(runsRoot: string): Array<readonly [string, string]> {
+  return readdirSync(runsRoot, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => {
+      const path = join(entry.parentPath, entry.name);
+      return [relative(runsRoot, path), readFileSync(path, 'utf8')] as const;
+    })
+    .sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+/** Пайплайн из одного шага с предикатом `always_ok` в `expect`. */
+const PREDICATE_PIPELINE = `version: 1
+kind: pipeline
+name: демо
+jobs:
+  build:
+    steps:
+      - id: check
+        run: [echo, ok]
+        expect: [{ always_ok: true }]
 `;
 
 describe('ui-dashboard: удаление прогона', () => {
@@ -1317,6 +1408,374 @@ jobs:
     const pipelines = await fetchJson(server, '/api/pipelines');
     assert.equal(pick(pipelines.json, 'pipelines', 0, 'file'), 'stepcast.yml');
     assert.match(String(pick(pipelines.json, 'pipelines', 0, 'error')), /схеме/);
+  });
+});
+
+describe('ui-dashboard: пайплайн раскрыт реестром вкладов своего проекта', () => {
+  it('предикат плагина в expect раскрывает пайплайн устройством, а не ошибкой', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    withProjectPlugin(projectRoot, PREDICATE_PLUGIN);
+    writeFileSync(join(projectRoot, 'stepcast.yml'), PREDICATE_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'error'), undefined);
+    assert.deepEqual(
+      (pick(pipelines.json, 'pipelines', 0, 'jobs') as Array<{ id: string }>).map((job) => job.id),
+      ['build'],
+    );
+  });
+
+  it('тот же предикат в until.check работы — тоже раскрыт устройством', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    withProjectPlugin(projectRoot, PREDICATE_PLUGIN);
+    writeFileSync(
+      join(projectRoot, 'stepcast.yml'),
+      `version: 1
+kind: pipeline
+name: с циклом
+jobs:
+  build:
+    until:
+      max_iterations: 2
+      check: [{ always_ok: true }]
+    budget: { tokens: 100k }
+    steps:
+      - id: check
+        run: [echo, ok]
+`,
+    );
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'error'), undefined);
+    assert.deepEqual(
+      (pick(pipelines.json, 'pipelines', 0, 'jobs') as Array<{ id: string }>).map((job) => job.id),
+      ['build'],
+    );
+  });
+
+  it('реестр одного проекта не расширяет разбор пайплайна соседнего', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const other = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    seedRun(runsRoot, other.projectRoot, { runId: 'b' });
+    withProjectPlugin(projectRoot, PREDICATE_PLUGIN);
+    writeFileSync(join(projectRoot, 'stepcast.yml'), PREDICATE_PIPELINE);
+    writeFileSync(join(other.projectRoot, 'stepcast.yml'), PREDICATE_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    const views = pipelines.json.pipelines as Array<{ projectPath: string; error?: string }>;
+    const own = views.find((view) => view.projectPath === projectRoot);
+    const neighbor = views.find((view) => view.projectPath === other.projectRoot);
+    assert.ok(own !== undefined && neighbor !== undefined, JSON.stringify(views));
+    assert.equal(own?.error, undefined);
+    assert.match(neighbor?.error ?? '', /неизвестный ключ always_ok/);
+  });
+
+  it('шаг без своей модели с агентом плагинного бэкенда показывает умолчание плагина, слой backend', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    withProjectPlugin(projectRoot, BACKEND_PLUGIN);
+    writeFileSync(
+      join(projectRoot, 'stepcast.yml'),
+      `version: 1
+kind: pipeline
+name: demo
+jobs:
+  ask:
+    steps:
+      - id: a
+        agent: probe
+        prompt: спроси
+`,
+    );
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    const step = pick(pipelines.json, 'pipelines', 0, 'jobs', 0, 'steps', 0);
+    assert.equal(pick(step, 'model'), 'probe-model');
+    assert.deepEqual(pick(step, 'modelOrigin'), { layer: 'backend', backend: 'probe' });
+  });
+});
+
+describe('ui-dashboard: кеш реестров вкладов у демона', () => {
+  it('плагин, объявленный после старта демона, раскрывает документ следующим запросом без перезапуска', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), PREDICATE_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const before = await fetchJson(server, '/api/pipelines');
+    assert.match(String(pick(before.json, 'pipelines', 0, 'error')), /неизвестный ключ always_ok/);
+
+    // Объявление появляется в конфигурации проекта уже после того, как демон
+    // поднят: ключ кеша — список объявлений, а не только корень проекта, и
+    // расхождение с прежним пустым списком обязано пересобрать реестр.
+    withProjectPlugin(projectRoot, PREDICATE_PLUGIN);
+
+    const after = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(after.json, 'pipelines', 0, 'error'), undefined);
+  });
+
+  it('два проекта с разными плагинами раскрыты каждый своим реестром, повторный запрос даёт тот же ответ', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const other = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    seedRun(runsRoot, other.projectRoot, { runId: 'b' });
+    withProjectPlugin(projectRoot, PREDICATE_PLUGIN);
+    withProjectPlugin(other.projectRoot, BACKEND_PLUGIN);
+    writeFileSync(join(projectRoot, 'stepcast.yml'), PREDICATE_PIPELINE);
+    writeFileSync(
+      join(other.projectRoot, 'stepcast.yml'),
+      `version: 1
+kind: pipeline
+name: demo
+jobs:
+  ask:
+    steps:
+      - id: a
+        agent: probe
+        prompt: спроси
+`,
+    );
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const first = await fetchJson(server, '/api/pipelines');
+    const second = await fetchJson(server, '/api/pipelines');
+    assert.deepEqual(second.json.pipelines, first.json.pipelines);
+
+    const views = first.json.pipelines as Array<{
+      projectPath: string;
+      error?: string;
+      jobs: Array<{ steps: Array<{ model?: string }> }>;
+    }>;
+    const predicateProject = views.find((view) => view.projectPath === projectRoot);
+    const backendProject = views.find((view) => view.projectPath === other.projectRoot);
+    assert.ok(predicateProject !== undefined && backendProject !== undefined, JSON.stringify(views));
+    assert.equal(predicateProject?.error, undefined);
+    assert.equal(backendProject?.jobs[0]?.steps[0]?.model, 'probe-model');
+  });
+
+  it('кешируется реестр, но не конфигурация: правка defaults.model видна следующим запросом', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    withProjectPlugin(projectRoot, PREDICATE_PLUGIN);
+    const projectConfigFile = join(projectRoot, '.stepcast', 'config.yml');
+    writeFileSync(projectConfigFile, 'plugins: ["./plugins/probe.mjs"]\ndefaults:\n  model: opus\n');
+    writeFileSync(
+      join(projectRoot, 'stepcast.yml'),
+      `version: 1
+kind: pipeline
+name: demo
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+        expect: [{ always_ok: true }]
+`,
+    );
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const before = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(before.json, 'pipelines', 0, 'error'), undefined);
+    assert.equal(pick(before.json, 'pipelines', 0, 'jobs', 0, 'steps', 0, 'model'), 'opus');
+
+    // Список объявлений не менялся — значит реестр берётся из кеша. Кешируется
+    // при этом он один: конфигурация разрешается заново на каждый обход, иначе
+    // экран показывал бы значения, которых в проекте уже нет.
+    writeFileSync(projectConfigFile, 'plugins: ["./plugins/probe.mjs"]\ndefaults:\n  model: sonnet\n');
+
+    const after = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(after.json, 'pipelines', 0, 'error'), undefined);
+    assert.equal(pick(after.json, 'pipelines', 0, 'jobs', 0, 'steps', 0, 'model'), 'sonnet');
+    assert.deepEqual(pick(after.json, 'pipelines', 0, 'jobs', 0, 'steps', 0, 'modelOrigin'), {
+      layer: 'config',
+      file: projectConfigFile,
+    });
+  });
+});
+
+describe('ui-daemon: демон загружает только объявленные плагины показываемых проектов', () => {
+  it('проект без файлов пайплайнов не приводит к загрузке своих плагинов', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const other = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    seedRun(runsRoot, other.projectRoot, { runId: 'b' });
+    // Плагин объявлен, но пайплайнов у проекта нет: раскрывать нечего, а
+    // значит и повода исполнять чужой код нет. Порядок проверок в обходе
+    // («нет файлов — дальше» раньше сборки реестра) и есть граница доверия.
+    const marker = join(projectRoot, '.stepcast', 'загружен.txt');
+    withProjectPlugin(projectRoot, markerPlugin(marker));
+    writeFileSync(join(other.projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    const views = pipelines.json.pipelines as Array<{ projectPath: string }>;
+    assert.deepEqual(
+      views.map((view) => view.projectPath),
+      [other.projectRoot],
+    );
+    assert.equal(existsSync(marker), false, 'модуль плагина проекта без пайплайнов был импортирован');
+  });
+
+  it('проект без объявленных плагинов раскрыт, и лежащий рядом модуль не загружен', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    // Модуль на диске есть, но конфигурация его не объявляет: списка «плагинов
+    // витрины» демон не заводит и находкой на диске не пользуется.
+    const marker = join(projectRoot, '.stepcast', 'загружен.txt');
+    mkdirSync(join(projectRoot, '.stepcast', 'plugins'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'plugins', 'probe.mjs'), markerPlugin(marker));
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'error'), undefined);
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'name'), 'demo');
+    assert.equal(existsSync(marker), false, 'необъявленный модуль был импортирован');
+  });
+
+  it('сборка реестров и ответ экрана не трогают файлов журнала', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    withProjectPlugin(projectRoot, PREDICATE_PLUGIN);
+    writeFileSync(join(projectRoot, 'stepcast.yml'), PREDICATE_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    // Слепок снимается после старта демона: проверяется именно раскрытие с
+    // загрузкой плагинов, а не то, что делает подъём сервера.
+    const before = journalSnapshot(runsRoot);
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'error'), undefined);
+
+    assert.deepEqual(journalSnapshot(runsRoot), before);
+  });
+});
+
+describe('ui-dashboard: отказ загрузки плагина — карточка проекта, а не погасший экран', () => {
+  it('несуществующий модуль плагина — карточки с причиной, файлом объявления и спецификатором', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    mkdirSync(join(projectRoot, '.stepcast'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'config.yml'), 'plugins: ["./plugins/нет.mjs"]\n');
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.match(String(pick(pipelines.json, 'pipelines', 0, 'error')), /не загружается/);
+    assert.match(String(pick(pipelines.json, 'pipelines', 0, 'error')), /\.\/plugins\/нет\.mjs/);
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'errorFile'), '.stepcast/config.yml');
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'errorAt'), 'plugins');
+  });
+
+  it('конфликт имён вкладов — карточка с текстом отказа, файлом объявления и местом', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    withProjectPlugin(
+      projectRoot,
+      `
+export default {
+  name: 'impostor',
+  predicates: [
+    {
+      name: 'exit_code',
+      schema: { type: 'number' },
+      evaluate: () => ({ predicate: 'exit_code', passed: true, hard: true }),
+    },
+  ],
+};
+`,
+    );
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.match(String(pick(pipelines.json, 'pipelines', 0, 'error')), /Имя предиката exit_code занято/);
+    // Конфликт имён бросает реестр, который про конфигурацию не знает: без
+    // дописанного загрузчиком места карточка вышла бы без ответа на вопрос
+    // «какой конфиг это объявил» — не тем составом полей, каким показана
+    // нечитаемая конфигурация.
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'errorFile'), '.stepcast/config.yml');
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'errorAt'), 'plugins');
+    assert.match(String(pick(pipelines.json, 'pipelines', 0, 'errorHint')), /снимите один из плагинов/);
+  });
+
+  it('плагин, объявленный глобальным конфигом, назван в карточке абсолютным путём', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    // Файл объявления лежит вне корня проекта: имя относительно него вышло бы
+    // цепочкой `../../..` до домашнего каталога — путём, который ни на что не
+    // указывает и вдобавок врёт про принадлежность файла проекту.
+    const globalConfigFile = join(home, '.stepcast', 'config.yml');
+    writeFileSync(globalConfigFile, `runs:\n  root: ${runsRoot}\nplugins: ["./plugins/нет.mjs"]\n`);
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.match(String(pick(pipelines.json, 'pipelines', 0, 'error')), /не загружается/);
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'errorFile'), globalConfigFile);
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'errorAt'), 'plugins');
+  });
+
+  it('сломанный плагин одного проекта не скрывает пайплайны соседнего исправного', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const other = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    seedRun(runsRoot, other.projectRoot, { runId: 'b' });
+    mkdirSync(join(projectRoot, '.stepcast'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'config.yml'), 'plugins: ["./plugins/нет.mjs"]\n');
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    writeFileSync(join(other.projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    const views = pipelines.json.pipelines as Array<{ projectPath: string; error?: string; name: string }>;
+    const broken = views.find((view) => view.projectPath === projectRoot);
+    const healthy = views.find((view) => view.projectPath === other.projectRoot);
+    assert.ok(broken !== undefined && healthy !== undefined, JSON.stringify(views));
+    assert.match(broken?.error ?? '', /не загружается/);
+    assert.equal(healthy?.error, undefined);
+    assert.equal(healthy?.name, 'demo');
+  });
+
+  it('исправленное объявление плагина действует следующим запросом — отказ не закеширован', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    mkdirSync(join(projectRoot, '.stepcast'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'config.yml'), 'plugins: ["./plugins/нет.mjs"]\n');
+    writeFileSync(join(projectRoot, 'stepcast.yml'), PREDICATE_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const before = await fetchJson(server, '/api/pipelines');
+    assert.match(String(pick(before.json, 'pipelines', 0, 'error')), /не загружается/);
+
+    // Тот же спецификатор, но модуль появляется на диске: ключ кеша (список
+    // объявлений) не менялся, а результат обязан быть другим — отказ
+    // предыдущей попытки закеширован не был.
+    withProjectPlugin(projectRoot, PREDICATE_PLUGIN, 'нет');
+
+    const after = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(after.json, 'pipelines', 0, 'error'), undefined);
   });
 });
 

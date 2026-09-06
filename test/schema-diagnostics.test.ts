@@ -119,7 +119,7 @@ jobs:
 });
 
 describe('ui-dashboard: карточка нечитаемого пайплайна называет место', () => {
-  it('отдаёт экрану место ошибки и подсказку, а не один текст', () => {
+  it('отдаёт экрану место ошибки и подсказку, а не один текст', async () => {
     const { runsRoot, projectRoot, home } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(
@@ -134,7 +134,7 @@ jobs:
     );
     const { config } = resolveConfig({ cwd: home, home, projectPath: null });
 
-    const view = buildPipelines(runsRoot, config, { home }).pipelines[0];
+    const view = (await buildPipelines(runsRoot, config, { home })).pipelines[0];
     assert.ok(view !== undefined);
     assert.match(view.error ?? '', /bogus_key/);
     assert.equal(view.errorAt, 'jobs.propose');
@@ -142,7 +142,7 @@ jobs:
     assert.match(view.errorHint ?? '', /pipeline-format/);
   });
 
-  it('называет файл работы, если отказала она, а не файл пайплайна', () => {
+  it('называет файл работы, если отказала она, а не файл пайплайна', async () => {
     const { runsRoot, projectRoot, home } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(
@@ -165,7 +165,7 @@ steps:
     );
     const { config } = resolveConfig({ cwd: home, home, projectPath: null });
 
-    const view = buildPipelines(runsRoot, config, { home }).pipelines[0];
+    const view = (await buildPipelines(runsRoot, config, { home })).pipelines[0];
     assert.ok(view !== undefined);
     assert.equal(view.file, 'stepcast.yml');
     assert.equal(view.errorFile, 'jobs/x.yml');

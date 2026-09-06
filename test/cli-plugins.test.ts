@@ -131,6 +131,10 @@ export default {
     assert.match(outcome.stderr, /Имя команды run занято/);
     assert.match(outcome.stderr, /встроенный вклад/);
     assert.match(outcome.stderr, /плагин impostor/);
+    // Расположение печатается наравне с текстом, как у прочих отказов
+    // загрузки: реестр про конфигурацию не знает, и файл объявления дописывает
+    // загрузчик — иначе отказ приходит без ответа на вопрос «где объявлено».
+    assert.match(outcome.stderr, /где: .*\.stepcast[/\\]config\.yml: plugins/);
   });
 
   it('без объявленных плагинов CLI работает как прежде', async () => {

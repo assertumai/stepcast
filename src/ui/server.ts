@@ -23,7 +23,7 @@ import { parseDuration } from '../core/units.js';
 import type { Config } from '../core/config/resolve.js';
 import { dashboardHtml } from './assets.js';
 import { readJournalFile } from './file.js';
-import { buildPipelines } from './pipelines.js';
+import { buildPipelines, createRegistryCache, type RegistryCache } from './pipelines.js';
 import { isApiPath, isSafeSegment } from './routes.js';
 import { readSettings, writeSettings, type SettingsPatch } from './settings.js';
 import { buildSnapshot, buildSnapshotFromRecord } from './snapshot.js';
@@ -617,6 +617,37 @@ async function handleSettingsWrite(
   }
 }
 
+/**
+ * Пайплайны проектов: реестр каждого проекта собирается импортом чужого кода
+ * (`buildPipelines` асинхронна), поэтому маршрут обёрнут так же, как запись
+ * настроек, — `void` в диспетчере и отдельный `catch` здесь, а не необработанный
+ * промис.
+ */
+async function handlePipelines(
+  runsRoot: string,
+  config: Config | undefined,
+  home: string | undefined,
+  registryCache: RegistryCache,
+  res: ServerResponse,
+): Promise<void> {
+  if (config === undefined) {
+    sendJson(res, 200, { pipelines: [], generatedAt: new Date().toISOString() });
+    return;
+  }
+
+  try {
+    // `home` доезжает сюда, потому что секцию `project` витрина читает у
+    // каждого проекта своей: команда проверки объявлена в репозитории.
+    const overview = await buildPipelines(runsRoot, config, {
+      ...(home === undefined ? {} : { home }),
+      registryCache,
+    });
+    sendJson(res, 200, overview);
+  } catch (error) {
+    sendJson(res, 500, { error: (error as Error).message });
+  }
+}
+
 function handleEvents(
   runsRoot: string,
   watcher: Watcher,
@@ -677,6 +708,10 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
     options.watcher ??
     createWatcher({ runsRoot, ...(options.log === undefined ? {} : { log: options.log }) });
   const ownsWatcher = options.watcher === undefined;
+  // Один кеш реестров на сервер, не на модуль: тесты поднимают несколько
+  // демонов в одном процессе, и общий кеш связал бы их между собой
+  // (design.md, Решение 3).
+  const registryCache = createRegistryCache();
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', `http://${LOOPBACK}`);
@@ -732,13 +767,7 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
         handleSelectUsageRecords(runsRoot, url, res);
         return;
       case '/api/pipelines':
-        if (config === undefined) {
-          sendJson(res, 200, { pipelines: [], generatedAt: new Date().toISOString() });
-          return;
-        }
-        // `home` доезжает сюда, потому что секцию `project` витрина читает у
-        // каждого проекта своей: команда проверки объявлена в репозитории.
-        sendJson(res, 200, buildPipelines(runsRoot, config, home === undefined ? {} : { home }));
+        void handlePipelines(runsRoot, config, home, registryCache, res);
         return;
       case '/api/settings':
         sendJson(res, 200, home === undefined ? readSettings() : readSettings(home));

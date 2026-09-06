@@ -20,13 +20,41 @@ export interface ResolvedWithPlugins {
   readonly registry: Registry;
 }
 
+/**
+ * Что делать с реестром: собрать его загрузкой либо взять уже собранный.
+ *
+ * Варианты разведены типом, а не необязательным полем рядом с прочими:
+ * готовый реестр отменяет `loadPlugins` целиком, то есть вместе с ним
+ * отменяет и `builtinCommands`, и `importModule`. Пара
+ * `{ builtinCommands, registry }` в одном объекте выглядела бы осмысленно и
+ * молча вернула бы реестр без единой команды — здесь она не компилируется.
+ */
+export type ResolveWithPluginsOptions =
+  | (Omit<LoadOptions, 'projectRoot'> & {
+      readonly projectRoot?: string;
+      readonly registry?: undefined;
+    })
+  | {
+      readonly projectRoot?: string;
+      /**
+       * Реестр, собранный ранее тем же корнем проекта: пропускает
+       * `loadPlugins` (а с ним и повторный импорт модулей), но не второй
+       * проход разрешения — умолчания плагинных бэкендов обязаны лечь слоем и
+       * на кешированном реестре так же, как на свежесобранном. Развилка живёт
+       * здесь, а не рядом с кешом: единственное место, которое обязано знать
+       * оба пути сборки реестра, — то, что решает, нужен ли второй проход.
+       */
+      readonly registry: Registry;
+    };
+
 export async function resolveWithPlugins(
   options: ResolveOptions,
-  loadOptions: Omit<LoadOptions, 'projectRoot'> & { readonly projectRoot?: string },
+  loadOptions: ResolveWithPluginsOptions,
 ): Promise<ResolvedWithPlugins> {
   const first = resolveConfig(options);
   const projectRoot = loadOptions.projectRoot ?? options.cwd;
-  const registry = await loadPlugins(first, { ...loadOptions, projectRoot });
+  const registry =
+    loadOptions.registry ?? (await loadPlugins(first, { ...loadOptions, projectRoot }));
 
   const pluginDefaults = registry.plugins.flatMap((plugin) => {
     const backends: Record<string, unknown> = {};
