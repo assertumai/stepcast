@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -13,6 +12,7 @@ import {
 } from '../src/core/knowledge/types.js';
 import { StepcastError } from '../src/core/errors.js';
 import { gitCommit, gitInit } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -24,7 +24,7 @@ interface Repo {
 }
 
 function repo(files: Readonly<Record<string, string>> = {}): Repo {
-  const root = mkdtempSync(join(tmpdir(), 'stepcast-knowledge-'));
+  const root = tempDir('knowledge-');
   gitInit(root);
 
   const write = (path: string, content: string): void => {
@@ -719,7 +719,7 @@ describe('knowledge-source: контракт внешней команды', () 
   }
 
   function stub(script: string, timeoutMs = 10_000): { box: Box; source: KnowledgeSource } {
-    const root = mkdtempSync(join(tmpdir(), 'stepcast-knowledge-cmd-'));
+    const root = tempDir('knowledge-cmd-');
     const file = join(root, 'source.mjs');
     writeFileSync(file, script);
     const command = `node ${JSON.stringify(file)}`;
@@ -810,7 +810,7 @@ describe('knowledge-source: контракт внешней команды', () 
         staleAfterMs: 14 * DAY,
         timeoutMs: 10_000,
       },
-      root: mkdtempSync(join(tmpdir(), 'stepcast-knowledge-none-')),
+      root: tempDir('knowledge-none-'),
     });
     assert.equal(source, undefined);
   });

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -16,6 +15,7 @@ import { readLaneMerge } from '../src/core/lanes/mergeRecord.js';
 import { applyRun } from '../src/core/run/apply.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { gitCommit, gitInit as gitInitDir, makeProject, withHome, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * Сведение дорожек на настоящих прогонах: временный репозиторий, пайплайн с
@@ -37,6 +37,11 @@ function gitInit(project: Project): void {
 
 function commit(project: Project, message: string): void {
   gitCommit(project.root, message);
+}
+
+/** workspace-anchor, «Наложение не сошлось»/«Наложение сошлось»: `stateDir` наложения не переживает вызова. */
+function leakedApplyDirs(): string[] {
+  return readdirSync(process.env['TMPDIR']!).filter((name) => name.startsWith('stepcast-apply-'));
 }
 
 function commitCountAt(dir: string): number {
@@ -318,7 +323,7 @@ describe('core: mergeLanes — наложение и порядок', () => {
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -363,7 +368,7 @@ describe('core: mergeLanes — наложение и порядок', () => {
     gitInit(project);
     writeFileSync(project.path('общий.txt'), 'исходное\n');
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -398,7 +403,7 @@ describe('core: mergeLanes — --lanes all и отказ на укороченн
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -434,7 +439,7 @@ jobs:
     });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -466,7 +471,7 @@ jobs:
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -503,7 +508,7 @@ jobs:
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -545,7 +550,7 @@ jobs:
     });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -573,7 +578,7 @@ describe('core: mergeLanes — отбор годности', () => {
     });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -621,7 +626,7 @@ jobs:
     });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -662,7 +667,7 @@ jobs:
     });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -687,7 +692,7 @@ jobs:
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
     const backlogFile = project.path('backlog.md');
     writeFileSync(backlogFile, '# Очередь\n');
@@ -733,7 +738,7 @@ jobs:
     });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -759,7 +764,7 @@ describe('core: mergeLanes — красная проверка', () => {
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -795,7 +800,7 @@ describe('core: mergeLanes — красная проверка', () => {
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -835,7 +840,7 @@ describe('core: mergeLanes — красная проверка', () => {
     });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -870,7 +875,7 @@ describe('core: mergeLanes — красная проверка', () => {
     const project = makeProject({ 'stepcast.yml': twoLanePipeline('exit 1', SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -907,7 +912,7 @@ describe('core: mergeLanes — красная проверка', () => {
     });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -966,7 +971,7 @@ describe('core: mergeLanes — дорожка без взятого пункта
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -995,7 +1000,7 @@ describe('core: mergeLanes — дорожка без взятого пункта
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -1033,7 +1038,7 @@ describe('core: mergeLanes — режим файла очереди', () => {
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -1079,7 +1084,7 @@ jobs:
     });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     // Дерево остаётся чистым (предусловие сведения): расхождение вносится
@@ -1114,6 +1119,7 @@ jobs:
     assert.equal(readFileSync(project.path('спорный.txt'), 'utf8'), beforeConflict);
     assert.equal(commitCount(project), beforeCount);
     assert.equal(existsSync(project.path('b.txt')), false, 'вторая дорожка не накладывается вовсе');
+    assert.deepEqual(leakedApplyDirs(), [], 'несошедшееся наложение не должно оставлять stateDir');
   });
 });
 
@@ -1122,7 +1128,7 @@ describe('core: mergeLanes — составной прогон', () => {
 
   it('дорожка правит корень и часть: по коммиту в каждом, одно сообщение, очередь коммитится последней', async () => {
     const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
     assert.equal(result.status, 'success');
 
@@ -1167,7 +1173,7 @@ describe('core: mergeLanes — составной прогон', () => {
 
   it('дорожка правит только часть, очередь в корне: только backend получает коммит вклада', async () => {
     const project = makeCompositeProject(BACKEND_ONLY_LANE_PIPELINE);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
 
     const backlogFile = project.path('backlog.md');
@@ -1196,7 +1202,7 @@ describe('core: mergeLanes — составной прогон', () => {
 
   it('проверка вложенного репозитория исполняется в его каталоге, а не в корне', async () => {
     const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
 
     const backlogFile = project.path('backlog.md');
@@ -1222,7 +1228,7 @@ describe('core: mergeLanes — составной прогон', () => {
 
   it('красная проверка второго затронутого репозитория откатывает оба, третий объявленный не тронут, игнорируемое переживает откат', async () => {
     const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE, ['other']);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend', 'other']));
     assert.equal(result.status, 'success');
 
@@ -1272,7 +1278,7 @@ describe('core: mergeLanes — составной прогон', () => {
 
   it('дорожка, откачённая красной проверкой во вложенном репозитории, не мешает следующей свестись по своим репозиториям', async () => {
     const project = makeCompositeProject(TWO_LANE_COMPOSITE_PIPELINE);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
     assert.equal(result.status, 'success');
 
@@ -1316,7 +1322,7 @@ describe('core: mergeLanes — составной прогон', () => {
 
   it('затронутый репозиторий без объявленной команды проверки отказывает до первого наложения', async () => {
     const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
 
     const backlogFile = project.path('backlog.md');
@@ -1352,7 +1358,7 @@ describe('core: mergeLanes — составной прогон', () => {
 
   it('расхождение состава между прогоном и сведением отказывает, называя расхождение', async () => {
     const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE, ['other']);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     // Прогон снят на составе из одного backend.
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
 
@@ -1386,7 +1392,7 @@ describe('core: mergeLanes — составной прогон', () => {
 
   it('патч дорожки, двигающий gitlink объявленного каталога, отказывает названной причиной', async () => {
     const project = makeCompositeProject(GITLINK_LANE_PIPELINE);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
     assert.equal(result.status, 'success');
 
@@ -1418,7 +1424,7 @@ describe('core: mergeLanes — составной прогон', () => {
 
   it('обрыв между коммитами отказывает, называя репозитории с коммитом и без', async () => {
     const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE, ['other']);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend', 'other']));
 
     const backlogFile = project.path('backlog.md');
@@ -1463,7 +1469,7 @@ describe('core: mergeLanes — составной прогон', () => {
 
   it('пункт со статусом done не даёт ложного срабатывания диагностики обрыва', async () => {
     const project = makeCompositeProject(COMPOSITE_LANE_PIPELINE);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
 
     const backlogFile = project.path('backlog.md');
@@ -1517,7 +1523,7 @@ describe('core: mergeLanes — составной прогон', () => {
     // его коммитом в корне, иначе дерево запуска само окажется нечистым.
     commit(project, 'подхвачен новый коммит queue-repo');
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend', 'queue-repo']));
 
     const backlogFile = join(project.path('queue-repo'), 'backlog.md');
@@ -1557,7 +1563,7 @@ describe('core: mergeLanes — составной прогон', () => {
 
   it('негодная дорожка и дорожка без пункта не роняют обход из-за неназванной проверки', async () => {
     const project = makeCompositeProject(MIXED_LANES_PIPELINE);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend']));
 
     const backlogFile = project.path('backlog.md');
@@ -1588,7 +1594,7 @@ describe('core: mergeLanes — составной прогон', () => {
 describe('core: mergeLanes — откат не подтверждён', () => {
   it('проверка оставляет неотслеживаемый файл в необъявленном к затрагиванию репозитории — обход прекращается', async () => {
     const project = makeCompositeProject(TWO_LANE_COMPOSITE_PIPELINE, ['other']);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend', 'other']));
     assert.equal(result.status, 'success');
 
@@ -1627,7 +1633,7 @@ describe('core: mergeLanes — откат не подтверждён', () => {
 
   it('красная последней дорожки перечня: неподтверждённый откат назван в её же причине', async () => {
     const project = makeCompositeProject(TWO_LANE_COMPOSITE_PIPELINE, ['other']);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend', 'other']));
     assert.equal(result.status, 'success');
 
@@ -1676,7 +1682,7 @@ describe('core: mergeLanes — откат не подтверждён', () => {
     // недостигнутой дорожки, не ужимая, значило бы выйти за него.
     const long = `${'x'.repeat(200)}/${'y'.repeat(200)}`;
     const project = makeCompositeProject(TWO_LANE_COMPOSITE_PIPELINE, [long]);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanesWithConfig(project, runsRoot, withNestedRepos(project, ['backend', long]));
     assert.equal(result.status, 'success');
 
@@ -1765,7 +1771,7 @@ describe('core: mergeLanes — предусловие чистого дерев�
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -1816,7 +1822,7 @@ describe('core: mergeLanes — предусловие чистого дерев�
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -1840,7 +1846,7 @@ describe('core: mergeLanes — предусловие чистого дерев�
   });
 
   it('каталог вне git отказывает, называя причину', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-notgit-'));
+    const dir = tempDir('lanes-notgit-');
 
     await assert.rejects(
       () =>
@@ -1863,7 +1869,7 @@ describe('core: mergeLanes — предусловие чистого дерев�
     // Настоящий прогон, а не bogusPaths: перечень дорожек разрешается по
     // status.json раньше проверки чистоты дерева, и без него команда упала бы
     // на «прогон не найден» вместо дорожки, которую здесь проверяют.
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const nestedDir = project.path('backend');
@@ -1914,7 +1920,7 @@ describe('core: mergeLanes — предусловие чистого дерев�
     writeFileSync(join(nestedDir, 'seed.txt'), 'затравка backend\n');
     gitCommit(nestedDir, 'первый backend');
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = join(nestedDir, 'backlog.md');
@@ -1952,7 +1958,7 @@ describe('core: mergeLanes — предусловие чистого дерев�
     writeFileSync(join(nestedDir, 'seed.txt'), 'затравка backend\n');
     gitCommit(nestedDir, 'первый backend');
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     // Очередь в корне, вложенный чист: исключение `--file` относится к корню
@@ -1985,7 +1991,7 @@ describe('core: mergeLanes — дорожка без вклада', () => {
     });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -2019,7 +2025,7 @@ describe('core: mergeLanes — запись исхода дорожки в ка�
     const project = makeProject({ 'stepcast.yml': oneLanePipeline(SUCCESS_A) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -2045,7 +2051,7 @@ describe('core: mergeLanes — запись исхода дорожки в ка�
     const project = makeProject({ 'stepcast.yml': twoLanePipeline(SUCCESS_A, SUCCESS_B) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -2079,7 +2085,7 @@ describe('core: mergeLanes — запись исхода дорожки в ка�
     gitInit(project);
     writeFileSync(project.path('конфликт.txt'), 'исходное\n');
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -2114,7 +2120,7 @@ describe('core: mergeLanes — already_merged', () => {
     const project = makeProject({ 'stepcast.yml': threeLanePipeline(SUCCESS_A, SUCCESS_B, 'exit 1') });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -2155,7 +2161,7 @@ describe('core: applyRun --lane — отказ повторного наложе
     const project = makeProject({ 'stepcast.yml': oneLanePipeline(SUCCESS_A) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -2187,7 +2193,7 @@ describe('core: applyRun --lane — отказ повторного наложе
     const project = makeProject({ 'stepcast.yml': oneLanePipeline(SUCCESS_A) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -2207,13 +2213,14 @@ describe('core: applyRun --lane — отказ повторного наложе
     // пропуском.
     const outcome = applyRun({ paths: result.journal.paths, cwd: project.root, lane: 'a', force: true });
     assert.equal(outcome.kind, 'applied');
+    assert.deepEqual(leakedApplyDirs(), [], 'сошедшееся наложение не должно оставлять stateDir');
   });
 
   it('дорожка с исходом, отличным от merged, накладывается свободно', async () => {
     const project = makeProject({ 'stepcast.yml': oneLanePipeline(SUCCESS_A) });
     gitInit(project);
     commit(project, 'начальный');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     const result = await runLanes(project, runsRoot);
 
     const backlogFile = project.path('backlog.md');
@@ -2251,7 +2258,7 @@ describe('CLI: stepcast merge-lanes', () => {
 
   /** Прогон, чей runsRoot виден команде через глобальный конфиг в project.home. */
   async function preparedRun(project: Project): Promise<{ result: RunResult; runsRoot: string }> {
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-lanes-runs-'));
+    const runsRoot = tempDir('lanes-runs-');
     writeFileSync(join(project.home, '.stepcast', 'config.yml'), `runs:\n  root: ${runsRoot}\n`);
     const result = await runLanes(project, runsRoot);
     return { result, runsRoot };

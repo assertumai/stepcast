@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { resolveConfig } from '../src/core/config/resolve.js';
 import { resolveItemRepo } from '../src/core/project/repos.js';
 import { StepcastError } from '../src/core/errors.js';
+import { tempDir } from './tmp.js';
 
 /**
  * `resolveItemRepo` — единственное место склейки путей и единственное место
@@ -18,7 +18,7 @@ import { StepcastError } from '../src/core/errors.js';
  */
 
 function config(projectYaml: string) {
-  const root = mkdtempSync(join(tmpdir(), 'stepcast-project-repos-'));
+  const root = tempDir('project-repos-');
   const home = join(root, 'home');
   const cwd = join(root, 'project');
   mkdirSync(join(home, '.stepcast'), { recursive: true });

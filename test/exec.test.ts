@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -14,10 +13,7 @@ import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { makeProject, testBaseEnv } from './helpers.js';
 import type { Attempts, RunStep } from '../src/core/pipeline/model.js';
-
-function workdir(): string {
-  return mkdtempSync(join(tmpdir(), 'stepcast-exec-'));
-}
+import { tempDir } from './tmp.js';
 
 const NO_ATTEMPTS: Attempts = { max: 1, escalation: [] };
 
@@ -114,7 +110,7 @@ describe('step-execution: окружение', () => {
   });
 
   it('читает переменные из env_files', () => {
-    const dir = workdir();
+    const dir = tempDir('exec-');
     writeFileSync(join(dir, '.env.test'), '# комментарий\nAPI_BASE="https://x"\nexport CI=1\nмусор\n');
 
     const { env } = buildStepEnv({
@@ -212,7 +208,7 @@ describe('step-execution: процесс', () => {
   it('исполняет список argv без оболочки', async () => {
     const result = await runProcess({
       command: ['echo', 'a b', '$HOME'],
-      cwd: workdir(),
+      cwd: tempDir('exec-'),
       env: { PATH: process.env.PATH ?? '' },
       timeoutMs: 5_000,
     });
@@ -224,7 +220,7 @@ describe('step-execution: процесс', () => {
   it('исполняет строку через оболочку платформы', async () => {
     const result = await runProcess({
       command: 'echo one && echo two',
-      cwd: workdir(),
+      cwd: tempDir('exec-'),
       env: { PATH: process.env.PATH ?? '' },
       timeoutMs: 5_000,
     });
@@ -234,7 +230,7 @@ describe('step-execution: процесс', () => {
 
   // Сценарий: «Рабочая директория»
   it('запускает процесс в рабочей директории работы', async () => {
-    const dir = workdir();
+    const dir = tempDir('exec-');
     mkdirSync(join(dir, 'inner'));
     const result = await runProcess({
       command: ['pwd'],
@@ -248,7 +244,7 @@ describe('step-execution: процесс', () => {
   it('передаёт окружение и не наследует лишнего', async () => {
     const result = await runProcess({
       command: 'echo "$MARKER-$HOME"',
-      cwd: workdir(),
+      cwd: tempDir('exec-'),
       env: { PATH: process.env.PATH ?? '', MARKER: 'да' },
       timeoutMs: 5_000,
     });
@@ -256,7 +252,7 @@ describe('step-execution: процесс', () => {
   });
 
   it('пишет потоки в файлы построчным текстом', async () => {
-    const dir = workdir();
+    const dir = tempDir('exec-');
     const result = await runProcess({
       command: 'echo вывод; echo ошибка 1>&2',
       cwd: dir,
@@ -275,7 +271,7 @@ describe('step-execution: процесс', () => {
   it('прерывает шаг по таймауту', async () => {
     const result = await runProcess({
       command: ['sleep', '5'],
-      cwd: workdir(),
+      cwd: tempDir('exec-'),
       env: { PATH: process.env.PATH ?? '' },
       timeoutMs: 150,
       graceMs: 200,
@@ -290,7 +286,7 @@ describe('step-execution: процесс', () => {
       // Ловушка на SIGTERM: процесс переживает мягкий сигнал и уходит только
       // по SIGKILL — ровно тот случай, ради которого нужна отсрочка.
       command: "trap '' TERM; sleep 5",
-      cwd: workdir(),
+      cwd: tempDir('exec-'),
       env: { PATH: process.env.PATH ?? '' },
       timeoutMs: 100,
       graceMs: 150,
@@ -300,7 +296,7 @@ describe('step-execution: процесс', () => {
   });
 
   it('убивает всё дерево процессов, а не только потомка', async () => {
-    const dir = workdir();
+    const dir = tempDir('exec-');
     const marker = join(dir, 'внук-жив');
     const result = await runProcess({
       // Внук переживёт смерть родителя, если убивать не группу.
@@ -321,7 +317,7 @@ describe('step-execution: процесс', () => {
     const silences: number[] = [];
     const result = await runProcess({
       command: 'echo начали; sleep 0.4; echo кончили',
-      cwd: workdir(),
+      cwd: tempDir('exec-'),
       env: { PATH: process.env.PATH ?? '' },
       timeoutMs: 5_000,
       stallTimeoutMs: 100,
@@ -339,7 +335,7 @@ describe('step-execution: процесс', () => {
     setTimeout(() => controller.abort(), 100);
     const result = await runProcess({
       command: ['sleep', '5'],
-      cwd: workdir(),
+      cwd: tempDir('exec-'),
       env: { PATH: process.env.PATH ?? '' },
       timeoutMs: 10_000,
       graceMs: 200,
@@ -382,7 +378,7 @@ describe('runner-disposers: запуск процесса не оставляе�
   }
 
   it('снимает таймеры процесса, который не удалось запустить', async () => {
-    const dir = workdir();
+    const dir = tempDir('exec-');
     const { created, leaked } = await timersAfter(() =>
       runProcess({
         command: [join(dir, 'команды-нет')],
@@ -397,7 +393,7 @@ describe('runner-disposers: запуск процесса не оставляе�
   });
 
   it('снимает таймеры после обычного завершения', async () => {
-    const dir = workdir();
+    const dir = tempDir('exec-');
     const { leaked } = await timersAfter(() =>
       runProcess({
         command: ['sh', '-c', 'echo готово'],
@@ -509,7 +505,7 @@ describe('step-execution: попытки', () => {
 
 describe('step-execution: шаг целиком', () => {
   it('успешный шаг завершается с одной попыткой', async () => {
-    const dir = workdir();
+    const dir = tempDir('exec-');
     const result = await executeRunStep({
       step: makeRunStep(),
       cwd: dir,
@@ -524,7 +520,7 @@ describe('step-execution: шаг целиком', () => {
   });
 
   it('повторяет упавший шаг и хранит каждую попытку отдельно', async () => {
-    const dir = workdir();
+    const dir = tempDir('exec-');
     const result = await executeRunStep({
       step: makeRunStep({
         command: ['false'],
@@ -550,7 +546,7 @@ describe('step-execution: шаг целиком', () => {
   });
 
   it('уважает объявленный ожидаемый код возврата', async () => {
-    const dir = workdir();
+    const dir = tempDir('exec-');
     const result = await executeRunStep({
       step: makeRunStep({
         command: 'exit 3',
@@ -564,7 +560,7 @@ describe('step-execution: шаг целиком', () => {
   });
 
   it('таймаут завершает шаг отказом с внятной причиной', async () => {
-    const dir = workdir();
+    const dir = tempDir('exec-');
     const result = await executeRunStep({
       step: makeRunStep({ command: ['sleep', '5'], timeoutMs: 120 }),
       cwd: dir,
@@ -594,7 +590,7 @@ jobs:
         expect: [{ exit_code: 0 }]
 `,
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await runPipeline({
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
@@ -631,7 +627,7 @@ jobs:
         expect: [{ exit_code: 0 }]
 `,
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await runPipeline({
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
@@ -665,7 +661,7 @@ jobs:
         expect: [{ exit_code: 0 }]
 `,
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await runPipeline({
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },

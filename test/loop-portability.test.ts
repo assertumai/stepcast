@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative as relativePath, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
@@ -14,6 +13,7 @@ import { readStatus } from '../src/core/journal/reader.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { asAgent } from './helpers.js';
 import { makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * Корень репозитория. Тесты компилируются в `dist/test/**`, а файлы петли —
@@ -293,7 +293,7 @@ describe('self-improvement-loop: переносимость файлов пет�
  * — expandPipeline отказал бы раньше самих проверок.
  */
 function realProjectConfig(): Config {
-  const home = mkdtempSync(join(tmpdir(), 'stepcast-loop-portability-home-'));
+  const home = tempDir('loop-portability-home-');
   mkdirSync(join(home, '.stepcast'), { recursive: true });
   return resolveConfig({ cwd: ROOT, home }).config;
 }
@@ -853,7 +853,7 @@ jobs:
       lines: (index) => [initLine(), resultLine({ text: 'ок', structured: structuredByInvocation[index] })],
     });
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await runPipeline({
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
@@ -906,7 +906,7 @@ jobs:
       ],
     });
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await runPipeline({
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
@@ -968,7 +968,7 @@ jobs:
       ],
     });
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await runPipeline({
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
@@ -1017,7 +1017,7 @@ jobs:
       lines: () => [initLine(), resultLine({ text: 'ок', structured: { tasks: [] } })],
     });
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await runPipeline({
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
@@ -1106,7 +1106,7 @@ jobs:
   }
 
   async function runVerify(project: Project) {
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     return runPipeline({
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },

@@ -1,14 +1,5 @@
 import assert from 'node:assert/strict';
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
@@ -16,6 +7,7 @@ import { describe, it } from 'node:test';
 import { StepcastError } from '../src/core/errors.js';
 import { judgeVerdictSchemaPath } from '../src/core/expect/verdict.js';
 import { packagedSchemaPath } from '../src/core/package-schema.js';
+import { tempDir } from './tmp.js';
 
 interface PackageSchemaModule {
   readonly packagedSchemaPath: (name: string) => string;
@@ -37,7 +29,7 @@ async function fakeInstall(schemaNames?: readonly string[]): Promise<{
 }> {
   // realpath: на macOS каталог временных файлов — символическая ссылка
   // (`/var` → `/private/var`), а движок возвращает путь уже разрешённым.
-  const root = realpathSync(mkdtempSync(join(tmpdir(), 'stepcast-pkg-')));
+  const root = realpathSync(tempDir('pkg-'));
   writeFileSync(join(root, 'package.json'), '{ "name": "stepcast", "type": "module" }\n');
   cpSync(fileURLToPath(new URL('../src/core', import.meta.url)), join(root, 'src', 'core'), {
     recursive: true,

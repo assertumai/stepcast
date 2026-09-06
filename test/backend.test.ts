@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -28,6 +27,7 @@ import { StepcastError } from '../src/core/errors.js';
 import { makeProject } from './helpers.js';
 import type { BackendConfig, Config } from '../src/core/config/resolve.js';
 import type { AgentStep } from '../src/core/pipeline/model.js';
+import { tempDir } from './tmp.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -43,10 +43,6 @@ const BACKEND: BackendConfig = {
   permissions: undefined,
   env: {},
 };
-
-function workdir(): string {
-  return mkdtempSync(join(tmpdir(), 'stepcast-backend-'));
-}
 
 function makeAgentStep(overrides: Partial<AgentStep> = {}): AgentStep {
   return {
@@ -92,7 +88,7 @@ jobs:
           enforce: strict
 `,
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const backend = createFakeBackend({
       capabilities: { strictPermissions: false },
       lines: [resultLine({ text: 'готово' })],
@@ -152,7 +148,7 @@ jobs:
 
   it('прогон идёт на бэкенде, предоставленном плагином', async () => {
     const project = makeProject({ 'stepcast.yml': PIPELINE });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const backend = createFakeBackend({ lines: [resultLine({ text: 'готово' })] });
     const registry = builtinRegistry();
     const created: string[] = [];
@@ -190,7 +186,7 @@ jobs:
 
   it('настроенный, но не предоставленный бэкенд отказывает до первой работы', async () => {
     const project = makeProject({ 'stepcast.yml': PIPELINE });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const config = withCodex(project.config);
 
     await assert.rejects(
@@ -426,7 +422,7 @@ describe('agent-backend: сборка запуска', () => {
   });
 
   it('передаёт схему вывода бэкенду', () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const schemaPath = join(dir, 'plan.json');
     writeFileSync(schemaPath, '{"type":"object"}');
 
@@ -770,7 +766,7 @@ describe('agent-backend: момент сброса окна лимита', () =>
 describe('agent-backend: исполнение шага', () => {
   // Сценарий: «Второй шаг видит первый»
   it('второй шаг общей сессии продолжает диалог первого', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const backend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'ок' })] });
     const sessions = createSessionRegistry();
 
@@ -794,7 +790,7 @@ describe('agent-backend: исполнение шага', () => {
 
   // Сценарий: «Раздельные сессии»
   it('шаги разных сессий не видят диалог друг друга', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })] });
     const sessions = createSessionRegistry();
 
@@ -816,7 +812,7 @@ describe('agent-backend: исполнение шага', () => {
 
   // Сценарий: «Бэкенд без поддержки сессий»
   it('деградирует до отдельных сессий, когда бэкенд их не умеет', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const backend = createFakeBackend({
       capabilities: { sessions: false },
       lines: [resultLine({ text: 'ок' })],
@@ -840,7 +836,7 @@ describe('agent-backend: исполнение шага', () => {
   });
 
   it('передаёт каталог черновиков в вызов бэкенда', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })] });
 
     await executeAgentStep({
@@ -858,7 +854,7 @@ describe('agent-backend: исполнение шага', () => {
   });
 
   it('сохраняет промпт целиком и снимает расход из потока', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const backend = createFakeBackend({
       lines: [initLine({ mcp_servers: [] }), resultLine({ text: 'готово', tokensIn: 120, tokensOut: 30 })],
     });
@@ -880,7 +876,7 @@ describe('agent-backend: исполнение шага', () => {
   });
 
   it('суммирует уникальные streaming usage и не дублирует один message id', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const assistant = (id: string, tokens: number, tool = false): string =>
       JSON.stringify({
         type: 'assistant',
@@ -925,7 +921,7 @@ describe('agent-backend: исполнение шага', () => {
 
   // Спека run-journal: «Пик виден рядом с трафиком»
   it('пик попытки — наибольшее сообщение потока, а не сумма', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const assistant = (id: string, tokensIn: number, cacheRead: number): string =>
       JSON.stringify({
         type: 'assistant',
@@ -955,7 +951,7 @@ describe('agent-backend: исполнение шага', () => {
   });
 
   it('пик не проставляется, если ни одно сообщение не сообщило слагаемых префикса', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const backend = createFakeBackend({
       lines: [initLine(), resultLine({ text: 'ок' })],
     });
@@ -975,7 +971,7 @@ describe('agent-backend: исполнение шага', () => {
 
   // Сценарий: «Фиксация инициализации»
   it('записывает наблюдённые входы по вызовам инструментов чтения', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const backend = createFakeBackend({
       lines: [
         toolUseLine('Read', { file_path: 'src/b.ts' }),
@@ -999,7 +995,7 @@ describe('agent-backend: исполнение шага', () => {
   });
 
   it('передаёт причину отказа следующей попытке при include_failure', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const backend = createFakeBackend({ lines: [resultLine({ text: 'плохо' })] });
     const seen: Array<string | undefined> = [];
 
@@ -1028,7 +1024,7 @@ describe('agent-backend: исполнение шага', () => {
   });
 
   it('пишет логи каждой попытки отдельно', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })], exitCode: 1 });
 
     await executeAgentStep({
@@ -1122,8 +1118,8 @@ describe('agent-backend: предел одновременных вызовов'
         executeAgentStep({
           step: makeAgentStep({ id, session: id }),
           adapter: backend.adapter,
-          cwd: workdir(),
-          stepDir: workdir(),
+          cwd: tempDir('backend-'),
+          stepDir: tempDir('backend-'),
           sessions: createSessionRegistry(),
           backendSlots: slots,
           buildPrompt: () => 'промпт',
@@ -1162,8 +1158,8 @@ describe('agent-backend: предел одновременных вызовов'
     const step = executeAgentStep({
       step: makeAgentStep({ id: 'b', session: 'b' }),
       adapter: codexAdapter,
-      cwd: workdir(),
-      stepDir: workdir(),
+      cwd: tempDir('backend-'),
+      stepDir: tempDir('backend-'),
       sessions: createSessionRegistry(),
       backendSlots: slots,
       buildPrompt: () => 'промпт',
@@ -1192,8 +1188,8 @@ describe('agent-backend: предел одновременных вызовов'
     const result = await executeAgentStep({
       step: makeAgentStep({ timeoutMs: 400 }),
       adapter: backend.adapter,
-      cwd: workdir(),
-      stepDir: workdir(),
+      cwd: tempDir('backend-'),
+      stepDir: tempDir('backend-'),
       sessions: createSessionRegistry(),
       backendSlots: slots,
       buildPrompt: () => 'промпт',
@@ -1214,8 +1210,8 @@ describe('agent-backend: предел одновременных вызовов'
     const result = await executeAgentStep({
       step: makeAgentStep(),
       adapter: backend.adapter,
-      cwd: workdir(),
-      stepDir: workdir(),
+      cwd: tempDir('backend-'),
+      stepDir: tempDir('backend-'),
       sessions: createSessionRegistry(),
       backendSlots: slots,
       buildPrompt: () => 'промпт',
@@ -1239,7 +1235,7 @@ describe('agent-backend: предел одновременных вызовов'
   it('судья ждёт место и исполняется после освобождения оцениваемым вызовом', async () => {
     const slots = createBackendSlots(() => 1);
     const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })], hangMs: 100 });
-    const dir = workdir();
+    const dir = tempDir('backend-');
 
     const order: string[] = [];
     const stepCall = executeAgentStep({
@@ -1272,8 +1268,8 @@ describe('agent-backend: предел одновременных вызовов'
       defaultAgent: 'fake',
       backendSlots: slots,
       journal: RunJournal.create({
-        runsRoot: mkdtempSync(join(tmpdir(), 'stepcast-slots-runs-')),
-        projectRoot: mkdtempSync(join(tmpdir(), 'stepcast-slots-project-')),
+        runsRoot: tempDir('slots-runs-'),
+        projectRoot: tempDir('slots-project-'),
       }),
       nextCallIndex: () => 1,
       canCall: () => true,
@@ -1290,7 +1286,7 @@ describe('agent-backend: предел одновременных вызовов'
 
 describe('step-execution: отказ бэкенда прекращает попытки', () => {
   it('отказ аутентификации на первой попытке не расходует оставшиеся', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const backend = createFakeBackend({ lines: [authRefusalLine()], exitCode: 1 });
 
     const result = await executeAgentStep({
@@ -1310,7 +1306,7 @@ describe('step-execution: отказ бэкенда прекращает поп�
   });
 
   it('упор в лимит подписки тоже прекращает попытки немедленно', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const backend = createFakeBackend({ lines: [rateLimitRefusalLine()], exitCode: 1 });
 
     const result = await executeAgentStep({
@@ -1330,7 +1326,7 @@ describe('step-execution: отказ бэкенда прекращает поп�
   });
 
   it('нераспознанный отказ бэкенда по-прежнему повторяется по attempts.max', async () => {
-    const dir = workdir();
+    const dir = tempDir('backend-');
     const backend = createFakeBackend({ lines: [resultLine({ text: 'плохо' })], exitCode: 1 });
 
     const result = await executeAgentStep({

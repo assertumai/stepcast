@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -17,6 +16,7 @@ import type { Event, RunStatus } from '../src/core/journal/schema.js';
 import type { UsageSnapshot } from '../src/core/budget/accumulator.js';
 import { ExitCode } from '../src/core/errors.js';
 import { gitCommit, gitInit, makeProject, withHome } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 const BASE = { ts: '2026-08-27T10:00:00.000Z', seq: 0 };
 
@@ -368,7 +368,7 @@ describe('run-progress: расход в снимке растёт от шага 
     const fake = createFakeBackend({
       lines: [initLine(), resultLine({ text: 'готово', tokensIn: 100, tokensOut: 20, costUsd: 0.25 })],
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const snapshots: UsageSnapshot[] = [];
 
     await runPipeline({
@@ -422,7 +422,7 @@ jobs:
 describe('run-progress: состояние на диске знает об идущей работе', () => {
   it('показывает работу running со started_at, пока её шаг ещё идёт', async () => {
     const project = makeProject({ 'stepcast.yml': SLOW_STEP });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     let onStepStart: RunStatus | undefined;
 
     const result = await runPipeline({
@@ -508,7 +508,7 @@ describe('run-progress: событие engine.pinned', () => {
     writeFileSync(entry, 'x');
     chmodSync(entry, 0o755);
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const rendered: string[] = [];
 
     await runPipeline({
@@ -536,13 +536,13 @@ describe('run-progress: событие engine.pinned', () => {
 
   it('движок вне правимого дерева: лента о нём не сообщает', async () => {
     const project = makeProject({ 'stepcast.yml': ONE_STEP_PIPELINE });
-    const outsideRoot = mkdtempSync(join(tmpdir(), 'stepcast-outside-engine-'));
+    const outsideRoot = tempDir('outside-engine-');
     mkdirSync(join(outsideRoot, 'dist'), { recursive: true });
     writeFileSync(join(outsideRoot, 'package.json'), JSON.stringify({ name: 'fake-engine', files: ['dist'] }));
     const entry = join(outsideRoot, 'dist', 'bin.js');
     writeFileSync(entry, 'x');
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const rendered: string[] = [];
 
     await runPipeline({

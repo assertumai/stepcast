@@ -3,8 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { get, request } from 'node:http';
 import { describe, it, type TestContext } from 'node:test';
 
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { dashboardPath } from '../src/ui/assets.js';
@@ -15,6 +14,7 @@ import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { projectKey, runPaths, stepDir } from '../src/core/journal/paths.js';
 import { MAX_FILE_BYTES } from '../src/ui/file.js';
 import { makeJournalBed, seedRun } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * Сервер с закрытием, зарегистрированным сразу. Без этого упавшая проверка
@@ -683,7 +683,7 @@ describe('ui-dashboard: удаление прогона', () => {
   // ядром (`removeRun`), что и `stepcast gc` — не отдельной копией логики.
   it('снимает записи рабочих деревьев корня и части вместе с прогоном', async (t) => {
     const { runsRoot, projectRoot } = makeJournalBed();
-    const partRepo = mkdtempSync(join(tmpdir(), 'stepcast-ui-part-'));
+    const partRepo = tempDir('ui-part-');
     initGitRepo(projectRoot);
     initGitRepo(partRepo);
 

@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { run, type CliIo } from '../src/cli/main.js';
 import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
 import { gitInit, withHome } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * Команда работает в любом каталоге репозитория, объявившего источник, и
@@ -23,7 +23,7 @@ interface Result {
 const CONFIG = 'project:\n  knowledge:\n    provider: fs\n    dir: knowledge\n';
 
 function sandbox(files: Readonly<Record<string, string>> = {}): { root: string; home: string } {
-  const base = mkdtempSync(join(tmpdir(), 'stepcast-cli-knowledge-'));
+  const base = tempDir('cli-knowledge-');
   const root = join(base, 'work');
   const home = join(base, 'home');
   mkdirSync(join(home, '.stepcast'), { recursive: true });
@@ -197,7 +197,7 @@ describe('CLI: stepcast knowledge', () => {
 
   // Задача 5.3: практика не объявлена — внятный отказ, а не пустой вывод.
   it('отказывает, когда практика памяти не объявлена', async () => {
-    const base = mkdtempSync(join(tmpdir(), 'stepcast-cli-knowledge-none-'));
+    const base = tempDir('cli-knowledge-none-');
     const root = join(base, 'work');
     const home = join(base, 'home');
     mkdirSync(join(home, '.stepcast'), { recursive: true });

@@ -1,7 +1,4 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { createFakeBackend, initLine, resultLine } from '../src/core/backend/fake.js';
@@ -9,6 +6,7 @@ import { lintPipeline } from '../src/core/lint.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * `session_group` — объявление обвязки: работы с одинаковым именем продолжают
@@ -59,7 +57,7 @@ ${group}    context_upstream: none
 async function runTwoJobs(source: string) {
   const project = makeProject({ 'stepcast.yml': source });
   const backend = createFakeBackend({ lines: () => [initLine(), resultLine({ text: 'ок' })] });
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
 
   const result = await runPipeline({
     expanded: expand(project),

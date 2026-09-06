@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -8,9 +7,10 @@ import { evaluatePredicates } from '../src/core/expect/evaluate.js';
 import { UsageAccumulator, describeExceeded } from '../src/core/budget/accumulator.js';
 import type { Predicate } from '../src/core/pipeline/model.js';
 import type { Usage, UsageReport } from '../src/core/journal/schema.js';
+import { tempDir } from './tmp.js';
 
 function workdir(files: Record<string, string> = {}): string {
-  const dir = mkdtempSync(join(tmpdir(), 'stepcast-expect-'));
+  const dir = tempDir('expect-');
   for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
   return dir;
 }

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -11,9 +10,10 @@ import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { HaltCause } from '../src/core/run/halt.js';
 import { StepcastError } from '../src/core/errors.js';
 import { makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 async function run(project: Project): Promise<RunResult> {
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
   return runPipeline({
     expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
     config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },

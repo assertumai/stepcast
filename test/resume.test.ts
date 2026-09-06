@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -25,10 +24,16 @@ import type { BackendAdapter } from '../src/core/backend/types.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import type { StepRecord } from '../src/core/journal/schema.js';
 import { makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 interface Bed {
   readonly project: Project;
   readonly runsRoot: string;
+}
+
+/** workspace-anchor, «План возобновления»: `stateDir` якоря плана/усыновления не переживает построения плана. */
+function leakedTempDirs(prefix: string): string[] {
+  return readdirSync(process.env['TMPDIR']!).filter((name) => name.startsWith(prefix));
 }
 
 function bed(
@@ -65,7 +70,7 @@ function bed(
       ? project.config
       : { ...project.config, project: { ...project.config.project, nestedRepos: options.nestedRepos } };
 
-  return { project: { ...project, config }, runsRoot: mkdtempSync(join(tmpdir(), 'stepcast-runs-')) };
+  return { project: { ...project, config }, runsRoot: tempDir('runs-') };
 }
 
 function configOf(b: Bed) {
@@ -93,7 +98,7 @@ function planFor(b: Bed, source: RunResult, from?: string): ResumePlan {
   });
   const nested = b.project.config.project.nestedRepos;
   const anchorKind = detectAnchorKind(b.project.root, nested);
-  const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-plan-'));
+  const stateDir = tempDir('plan-');
   const anchorer = createAnchorer({
     dir: b.project.root,
     stateDir,
@@ -777,7 +782,7 @@ function planWithInputs(
     inputs,
   });
   const anchorKind = detectAnchorKind(b.project.root);
-  const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-plan-'));
+  const stateDir = tempDir('plan-');
   const anchorer = createAnchorer({
     dir: b.project.root,
     stateDir,
@@ -2600,6 +2605,8 @@ jobs:
 
     const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
     assert.deepEqual(decisions(plan), { 'работа/первый': 'reuse', 'работа/второй': 'continue' });
+    assert.deepEqual(leakedTempDirs('stepcast-plan-'), [], 'построение плана не должно оставлять stateDir');
+    assert.deepEqual(leakedTempDirs('stepcast-adopt-'), [], 'проверка перенятия каталога не должна оставлять stateDir');
 
     const secondBackend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'готово' })] });
     const second = await runPipeline({

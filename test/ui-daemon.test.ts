@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -17,9 +16,10 @@ import {
   writeRecord,
 } from '../src/ui/daemon.js';
 import { StepcastError } from '../src/core/errors.js';
+import { tempDir } from './tmp.js';
 
 function bed(): ReturnType<typeof daemonPaths> {
-  const home = mkdtempSync(join(tmpdir(), 'stepcast-daemon-'));
+  const home = tempDir('daemon-');
   mkdirSync(join(home, '.stepcast'), { recursive: true });
   return daemonPaths(home);
 }

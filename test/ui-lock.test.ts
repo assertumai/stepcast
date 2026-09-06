@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -8,6 +7,7 @@ import { readLockJobs } from '../src/ui/lock.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { serializeLock } from '../src/core/pipeline/lock.js';
 import { makeProject } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 const PIPELINE = `
 version: 1
@@ -90,7 +90,7 @@ describe('ui: мягкий разбор pipeline.lock.yml', () => {
   });
 
   it('на отсутствующем и негодном файле отдаёт пустой список, а не падает', () => {
-    const base = mkdtempSync(join(tmpdir(), 'stepcast-lock-'));
+    const base = tempDir('lock-');
 
     assert.deepEqual(readLockJobs(join(base, 'нет-такого.yml')), []);
 

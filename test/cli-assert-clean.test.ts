@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { run as runCli, type CliIo } from '../src/cli/main.js';
 import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
 import { gitCommit, gitInit, withHome } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * `stepcast assert-clean` не зависит от каталога прогона и ничего не
@@ -35,13 +35,13 @@ async function assertClean(cwd: string, home: string, argv: readonly string[] = 
 }
 
 function makeHome(): string {
-  const home = mkdtempSync(join(tmpdir(), 'stepcast-assert-clean-home-'));
+  const home = tempDir('assert-clean-home-');
   mkdirSync(join(home, '.stepcast'), { recursive: true });
   return home;
 }
 
 function makeRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'stepcast-assert-clean-'));
+  const dir = tempDir('assert-clean-');
   gitInit(dir);
   writeFileSync(join(dir, 'seed.txt'), 'затравка\n');
   gitCommit(dir, 'первый');
@@ -55,7 +55,7 @@ function makeRepo(): string {
  * грязь наводит каждый тест свою, и она не смешивается с шумом стенда.
  */
 function makeNestedProject(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'stepcast-assert-clean-nested-'));
+  const dir = tempDir('assert-clean-nested-');
   gitInit(dir);
   writeFileSync(join(dir, '.gitignore'), 'backend/\n');
   writeFileSync(join(dir, 'seed.txt'), 'затравка\n');
@@ -173,7 +173,7 @@ describe('CLI: stepcast assert-clean', () => {
   });
 
   it('вне репозитория git — код 2, называя причину', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-assert-clean-notgit-'));
+    const dir = tempDir('assert-clean-notgit-');
     const out = await assertClean(dir, makeHome());
     assert.equal(out.code, ExitCode.configError);
     assert.match(out.stderr, /не является репозиторием git/);

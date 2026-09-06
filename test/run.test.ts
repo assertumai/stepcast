@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { getEventListeners } from 'node:events';
@@ -17,6 +16,7 @@ import { ExitCode } from '../src/core/errors.js';
 import type { Event, StatusValue, StepRecord } from '../src/core/journal/schema.js';
 import type { UsageSnapshot } from '../src/core/budget/accumulator.js';
 import { gitCommit, gitInit, makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /** Прогнать пайплайн проекта целиком, сложив журнал во временный корень. */
 async function run(
@@ -32,7 +32,7 @@ async function runWithConfig(
   config: Config,
   options: { readonly signal?: AbortSignal; readonly breakAnchor?: boolean } = {},
 ): Promise<RunResult> {
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
   const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config });
 
   return runPipeline({
@@ -550,7 +550,7 @@ jobs:
         expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
         config: {
           ...project.config,
-          runs: { ...project.config.runs, root: mkdtempSync(join(tmpdir(), 'stepcast-runs-')) },
+          runs: { ...project.config.runs, root: tempDir('runs-') },
           limits: { ...project.config.limits, concurrency },
         },
         projectRoot: project.root,
@@ -612,7 +612,7 @@ jobs:
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: {
         ...project.config,
-        runs: { ...project.config.runs, root: mkdtempSync(join(tmpdir(), 'stepcast-runs-')) },
+        runs: { ...project.config.runs, root: tempDir('runs-') },
       },
       projectRoot: project.root,
       cwd: project.root,
@@ -973,7 +973,7 @@ jobs:
     const project = makeProject({ 'stepcast.yml': ONE_STEP });
     gitInit(project.root);
     gitCommit(project.root, 'первый');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
 
     const result = await runPipeline({
@@ -1022,7 +1022,7 @@ jobs:
     });
     gitInit(project.root);
     gitCommit(project.root, 'первый');
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
     const controller = new AbortController();
     setTimeout(() => controller.abort(), 200).unref();
@@ -1064,7 +1064,7 @@ describe('run-progress: наблюдение onEvent в runPipeline', () => {
     project: Project,
     onEvent: (event: Event, usage: UsageSnapshot) => void,
   ): Promise<RunResult> {
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
     return runPipeline({
       expanded,

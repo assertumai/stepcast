@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -10,6 +9,7 @@ import { jobDir, jobScratchDir, runPaths } from '../src/core/journal/paths.js';
 import { readEvents, readStatus, resolveRun } from '../src/core/journal/reader.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 function gitInit(project: Project): void {
   const git = (...args: string[]): void => {
@@ -58,7 +58,7 @@ jobs:
       });
       if (mode === 'worktree') gitInit(project);
 
-      const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+      const runsRoot = tempDir('runs-');
       const result = await run(project, runsRoot);
       assert.equal(result.status, 'success');
 
@@ -90,7 +90,7 @@ jobs:
         expect: [{ exit_code: 0 }]
 `,
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await run(project, runsRoot);
 
     assert.equal(result.status, 'success', 'каталог должен существовать уже к первому шагу');
@@ -112,7 +112,7 @@ jobs:
         expect: [{ exit_code: 0 }]
 `,
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await run(project, runsRoot);
 
     assert.equal(result.status, 'success');
@@ -134,7 +134,7 @@ jobs:
         expect: [{ exit_code: 0 }]
 `,
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await run(project, runsRoot);
 
     assert.equal(result.status, 'success');
@@ -160,7 +160,7 @@ jobs:
         expect: [{ exit_code: 0 }]
 `,
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await run(project, runsRoot);
 
     assert.equal(result.status, 'success');
@@ -186,7 +186,7 @@ jobs:
         expect: [{ exit_code: 0 }]
 `,
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
 
     const pending = run(project, runsRoot);
 
@@ -253,7 +253,7 @@ jobs:
     execFileSync('git', ['-C', project.root, 'init', '--quiet', '--initial-branch=main'], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await run(project, runsRoot);
 
     assert.notEqual(result.status, 'success');
@@ -275,7 +275,7 @@ jobs:
         expect: [{ exit_code: 0 }]
 `,
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await run(project, runsRoot);
 
     assert.notEqual(result.status, 'success');

@@ -1,7 +1,4 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { UsageAccumulator } from '../src/core/budget/accumulator.js';
@@ -28,6 +25,7 @@ import {
   type Usage,
 } from '../src/core/journal/schema.js';
 import { makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /** См. test/judge-attempt.test.ts: один поддельный бэкенд на объявленное имя. */
 async function run(
@@ -41,7 +39,7 @@ async function run(
     readonly runsRoot?: string;
   } = {},
 ): Promise<RunResult> {
-  const runsRoot = options.runsRoot ?? mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = options.runsRoot ?? tempDir('runs-');
   return runPipeline({
     expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
     config: {
@@ -337,7 +335,7 @@ jobs:
     // зависании прогон и застаёт отмена.
     const cleaner = createFakeBackend({ hangMs: 30_000, lines: [initLine()] });
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const promise = runPipeline({
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
@@ -1150,7 +1148,7 @@ jobs:
       ],
     });
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const promise = runPipeline({
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: {
@@ -1204,7 +1202,7 @@ jobs:
       ],
     });
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const promise = runPipeline({
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: {
@@ -1413,7 +1411,7 @@ jobs:
       lines: [initLine(), rateLimitRefusalLine({ resetText: `resets ${new Date(resetAt).toISOString()}` })],
     });
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const promise = runPipeline({
       expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
       config: {
@@ -2080,7 +2078,7 @@ jobs:
     const fake = createFakeBackend({
       lines: [initLine(), resultLine({ text: 'готово', tokensIn: 40, tokensOut: 10 })],
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
 
     let duringRun: ReturnType<typeof readUsage> | undefined;
     const result = await run(
@@ -2115,7 +2113,7 @@ jobs:
     const fake = createFakeBackend({
       lines: [initLine(), resultLine({ text: 'готово', tokensIn: 40, tokensOut: 10 })],
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
 
     let snapshot: { readonly billable: number; readonly tokensUsed: number } | undefined;
     await run(

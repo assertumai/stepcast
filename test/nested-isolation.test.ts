@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -13,6 +12,7 @@ import { removeRun } from '../src/core/run/cleanup.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { projectKey } from '../src/core/journal/paths.js';
 import { gitCommit, gitInit, makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * Сквозной сценарий составного изолированного дерева (задача 8, план
@@ -76,7 +76,7 @@ function withNestedRepos(project: Project, nestedRepos: readonly string[]): Conf
 }
 
 async function runWithConfig(project: Project, config: Config): Promise<RunResult> {
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
   const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config });
   return runPipeline({
     expanded,
@@ -178,7 +178,7 @@ describe('nested-repo-isolation: сквозной сценарий состав�
     // propose, приведение путей одной части не задевает остальные.
     const dir = readStatus(result.journal.paths).jobs.find((job) => job.id === 'propose')?.workspace?.path;
     assert.ok(dir !== undefined);
-    const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-nested-anchor-'));
+    const stateDir = tempDir('nested-anchor-');
     const anchorer = createAnchorer({
       dir,
       stateDir,
@@ -226,7 +226,7 @@ describe('nested-repo-isolation: сквозной сценарий состав�
 
     // Постороннее рабочее дерево того же корневого репозитория — не заведено
     // этим прогоном, и уборка не должна его знать.
-    const foreignDir = mkdtempSync(join(tmpdir(), 'stepcast-nested-foreign-'));
+    const foreignDir = tempDir('nested-foreign-');
     const foreignPath = join(foreignDir, 'foreign');
     execFileSync('git', ['-C', project.root, 'worktree', 'add', '--quiet', '--detach', foreignPath, 'HEAD']);
     assert.equal(worktreeRecords(project.root).length, 3, 'записи прогона (2) и постороннего дерева (1)');

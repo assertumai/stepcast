@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -13,6 +12,7 @@ import { hasErrors, lintPipeline } from '../src/core/lint.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { ExitCode, StepcastError } from '../src/core/errors.js';
 import { makeProject } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 function args(flags: ParsedArgs['flags'] = {}): ParsedArgs {
   return { command: 'init', positional: [], flags };
@@ -62,7 +62,7 @@ describe('CLI: stepcast init', () => {
     const diagnostics = lintPipeline(expanded, { config: project.config });
     assert.equal(hasErrors(diagnostics), false);
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const result = await runPipeline({
       expanded,
       config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -9,6 +8,7 @@ import { describeSource, matchesKeyPattern } from '../src/core/config/merge.js';
 import { RawSpecSchema, RelativeRepoPathSchema } from '../src/core/config/schema.js';
 import { StepcastError } from '../src/core/errors.js';
 import { renderConfigReport } from '../src/cli/commands/config.js';
+import { tempDir } from './tmp.js';
 
 interface Sandbox {
   readonly home: string;
@@ -18,7 +18,7 @@ interface Sandbox {
 }
 
 function sandbox(files: { global?: string; project?: string }): Sandbox {
-  const root = mkdtempSync(join(tmpdir(), 'stepcast-config-'));
+  const root = tempDir('config-');
   const home = join(root, 'home');
   const cwd = join(root, 'project');
   mkdirSync(join(home, '.stepcast'), { recursive: true });

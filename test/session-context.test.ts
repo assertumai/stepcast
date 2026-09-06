@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -12,10 +11,11 @@ import { planResume, readSourceRun } from '../src/core/run/resumePlan.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import type { ContextReport } from '../src/core/journal/schema.js';
 import { gitInit, makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /** Прогон с поддельным бэкендом: важен контекст, а не настоящая модель. */
 async function run(project: Project): Promise<RunResult> {
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
   const backend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'ок' })] });
 
   return runPipeline({
@@ -141,7 +141,7 @@ describe('step-context: блок выходов предшественников
   // Сценарий: продолжение «Второго шага общей сессии» блоком выходов
   it('первый шаг consumer получает блок выходов, второй — нет', async () => {
     const project = makeProject({ 'stepcast.yml': UPSTREAM_SHARED });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     // Первый запуск бэкенда — агентский шаг producer, отдающий структурный
     // выход; остальные — шаги consumer, которым структура не нужна.
     const backend = createFakeBackend({
@@ -311,7 +311,7 @@ jobs:
   // Сценарий: «Повторная попытка шага»
   it('повторная попытка внутри шага унаследованный контекст заново не получает', async () => {
     const project = makeProject({ 'stepcast.yml': RETRY_BOUNDARY });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const backend = createFakeBackend({
       lines: (index) => [initLine(), resultLine({ text: index === 0 ? 'мимо' : 'готово' })],
     });
@@ -409,7 +409,7 @@ jobs:
   it('промпт продолженной попытки содержит промпт шага и запись о прерывании, но не контекст пайплайна и не выходы предшественников', async () => {
     const project = makeProject({ 'stepcast.yml': CONTINUATION_PIPELINE });
     gitInit(project.root);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const config: Project['config'] = {
       ...project.config,
       runs: { ...project.config.runs, root: runsRoot },
@@ -482,7 +482,7 @@ jobs:
   it('попытка после неудавшегося продолжения получает полный контекст и записи о прерывании не получает', async () => {
     const project = makeProject({ 'stepcast.yml': CONTINUATION_RETRY_PIPELINE });
     gitInit(project.root);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const config: Project['config'] = {
       ...project.config,
       runs: { ...project.config.runs, root: runsRoot },

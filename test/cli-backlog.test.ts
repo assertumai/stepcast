@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -9,6 +8,7 @@ import { run, type CliIo } from '../src/cli/main.js';
 import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
 import { shortRunId } from '../src/core/journal/paths.js';
 import { gitCommit, gitInit } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * `stepcast backlog` не требует ни `stepcast.yml`, ни `.stepcast/`, ни
@@ -45,7 +45,7 @@ function item(slug: string, fields: Readonly<Record<string, string>>): string {
 const COMPLETE = { status: 'pending', title: 'т', why: 'з', done_when: 'к' } as const;
 
 function bed(...items: readonly string[]): string {
-  const dir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-cli-'));
+  const dir = tempDir('backlog-cli-');
   writeFileSync(join(dir, 'backlog.md'), `# Очередь\n\n${items.join('\n')}`);
   return dir;
 }
@@ -96,7 +96,7 @@ describe('CLI: stepcast backlog list', () => {
   });
 
   it('отказывает ошибкой конфигурации, если файла нет', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-cli-'));
+    const dir = tempDir('backlog-cli-');
     const result = await backlog(dir, ['list']);
 
     assert.equal(result.code, ExitCode.configError);
@@ -146,7 +146,7 @@ describe('CLI: stepcast backlog pick', () => {
 
   it('--lanes раздаёт дорожки, незаполненная присутствует с filled: false', async () => {
     const dir = bed(item('a', { ...COMPLETE, group: 'a' }));
-    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    const runDir = tempDir('backlog-rundir-');
 
     const result = await backlog(dir, ['pick', '--lanes', 'a-lane,b-lane', '--run-dir', runDir]);
 
@@ -167,7 +167,7 @@ describe('CLI: stepcast backlog pick', () => {
     // Плоским полем — потому что условие `if` пайплайна читает его прямо у
     // дорожки, не заходя внутрь item; у незаполненной — пусто, как слаг.
     const dir = bed(item('a', { ...COMPLETE, track: 'express' }));
-    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    const runDir = tempDir('backlog-rundir-');
 
     const result = await backlog(dir, ['pick', '--lanes', 'a-lane,b-lane', '--run-dir', runDir]);
 
@@ -218,8 +218,8 @@ describe('CLI: stepcast backlog pick', () => {
   });
 
   it('--file вне текущего каталога правит именно этот файл', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-cli-'));
-    const elsewhere = mkdtempSync(join(tmpdir(), 'stepcast-backlog-elsewhere-'));
+    const dir = tempDir('backlog-cli-');
+    const elsewhere = tempDir('backlog-elsewhere-');
     const file = join(elsewhere, 'queue.md');
     writeFileSync(file, `# Очередь\n\n${item('an-item', COMPLETE)}`);
 
@@ -276,7 +276,7 @@ describe('CLI: stepcast backlog pick', () => {
 describe('CLI: stepcast backlog pick публикует данные работы', () => {
   /** Каталог работы с объявлением — тот же вид, что заводит движок до первого шага. */
   function jobDirWithDeclaration(declared: readonly string[]): string {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-jobdir-'));
+    const dir = tempDir('backlog-jobdir-');
     writeFileSync(join(dir, 'resolved.json'), JSON.stringify({ id: 'slots', data: declared }));
     return dir;
   }
@@ -436,7 +436,7 @@ describe('CLI: stepcast backlog settle', () => {
 
   it('незакрытый пункт помечается failed с причиной', async () => {
     const dir = bed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
-    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    const runDir = tempDir('backlog-rundir-');
     itemFile(runDir, 'a', 'a-item');
 
     const result = await backlog(dir, ['settle', '--run-dir', runDir]);
@@ -451,7 +451,7 @@ describe('CLI: stepcast backlog settle', () => {
   it('уже закрытый пункт остаётся нетронутым', async () => {
     const dir = bed(item('a-item', { ...COMPLETE, status: 'done' }));
     const before = readFileSync(join(dir, 'backlog.md'), 'utf8');
-    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    const runDir = tempDir('backlog-rundir-');
     itemFile(runDir, 'a', 'a-item');
 
     const result = await backlog(dir, ['settle', '--run-dir', runDir]);
@@ -463,7 +463,7 @@ describe('CLI: stepcast backlog settle', () => {
   it('пустой каталог прогона (без item-*.json) даёт код 0 и не правит очередь', async () => {
     const dir = bed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
     const before = readFileSync(join(dir, 'backlog.md'), 'utf8');
-    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    const runDir = tempDir('backlog-rundir-');
 
     const result = await backlog(dir, ['settle', '--run-dir', runDir]);
 
@@ -486,7 +486,7 @@ describe('CLI: stepcast backlog settle', () => {
 
   it('файл дорожки без слага отказывает кодом 2', async () => {
     const dir = bed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
-    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    const runDir = tempDir('backlog-rundir-');
     writeFileSync(join(runDir, 'item-a.json'), JSON.stringify({ title: 'без слага' }));
 
     const result = await backlog(dir, ['settle', '--run-dir', runDir]);
@@ -499,7 +499,7 @@ describe('CLI: stepcast backlog settle', () => {
       item('a-item', { ...COMPLETE, status: 'done' }),
       item('b-item', { ...COMPLETE, status: 'in_progress' }),
     );
-    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    const runDir = tempDir('backlog-rundir-');
     itemFile(runDir, 'a', 'a-item');
     itemFile(runDir, 'b', 'b-item');
 
@@ -514,7 +514,7 @@ describe('CLI: stepcast backlog settle', () => {
 
   it('коммитит адресно только файл очереди, сообщением с коротким id прогона', async () => {
     const dir = gitBed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
-    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-42abcd'));
+    const runDir = tempDir('backlog-rundir-42abcd');
     itemFile(runDir, 'a', 'a-item');
     const before = commitCountAt(dir);
 
@@ -530,7 +530,7 @@ describe('CLI: stepcast backlog settle', () => {
 
   it('без правок коммита нет: уже закрытый пункт ничего не меняет', async () => {
     const dir = gitBed(item('a-item', { ...COMPLETE, status: 'done' }));
-    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    const runDir = tempDir('backlog-rundir-');
     itemFile(runDir, 'a', 'a-item');
     const before = commitCountAt(dir);
 
@@ -542,7 +542,7 @@ describe('CLI: stepcast backlog settle', () => {
 
   it('файл очереди вне git-репозитория — коммита нет, вывод это называет', async () => {
     const dir = bed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
-    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    const runDir = tempDir('backlog-rundir-');
     itemFile(runDir, 'a', 'a-item');
 
     const result = await backlog(dir, ['settle', '--run-dir', runDir]);
@@ -553,7 +553,7 @@ describe('CLI: stepcast backlog settle', () => {
 
   it('посторонняя правка рабочего дерева в коммит не попадает', async () => {
     const dir = gitBed(item('a-item', { ...COMPLETE, status: 'in_progress' }));
-    const runDir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-rundir-'));
+    const runDir = tempDir('backlog-rundir-');
     itemFile(runDir, 'a', 'a-item');
     writeFileSync(join(dir, 'stray.txt'), 'чужая правка\n');
 

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -10,9 +9,10 @@ import { runJudgePass } from '../src/core/exec/judgePass.js';
 import { RunJournal } from '../src/core/journal/writer.js';
 import type { Predicate } from '../src/core/pipeline/model.js';
 import type { PredicateResult, Usage } from '../src/core/journal/schema.js';
+import { tempDir } from './tmp.js';
 
 function bed(): { runsRoot: string; projectRoot: string; stepDir: string } {
-  const base = mkdtempSync(join(tmpdir(), 'stepcast-judge-'));
+  const base = tempDir('judge-');
   const runsRoot = join(base, 'runs');
   const projectRoot = join(base, 'project');
   mkdirSync(runsRoot, { recursive: true });
@@ -58,8 +58,8 @@ function baseOptions(overrides: {
   readonly budgetExhausted?: boolean;
 }) {
   const journal = RunJournal.create({
-    runsRoot: mkdtempSync(join(tmpdir(), 'stepcast-judge-runs-')),
-    projectRoot: mkdtempSync(join(tmpdir(), 'stepcast-judge-project-')),
+    runsRoot: tempDir('judge-runs-'),
+    projectRoot: tempDir('judge-project-'),
   });
   return {
     predicates: [...STRUCTURAL, CLAIM],

@@ -1,10 +1,7 @@
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import { createAnchorer, detectAnchorKind, manifestStore } from '../../core/anchor/index.js';
 import { resolveConfig } from '../../core/config/resolve.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
+import { withTempDir } from '../../core/fs/tempDir.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { resolveRun } from '../../core/journal/reader.js';
 import { describeComparison, diffRuns } from '../../core/run/diff.js';
@@ -28,21 +25,22 @@ export function runDiffCommand(
   // Якорь нужен только для сравнения деревьев и читает тела манифестов обоих
   // прогонов: сам он ничего не фиксирует.
   const anchorKind = detectAnchorKind(cwd, config.project.nestedRepos);
-  const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-diff-'));
-  const anchorer = createAnchorer({
-    dir: cwd,
-    stateDir,
-    kind: anchorKind,
-    scope: 'diff',
-    ...(config.project.nestedRepos === undefined ? {} : { nested: config.project.nestedRepos }),
-    readStores: [manifestStore(a.anchors), manifestStore(b.anchors)],
-  });
+  return withTempDir('stepcast-diff-', (stateDir) => {
+    const anchorer = createAnchorer({
+      dir: cwd,
+      stateDir,
+      kind: anchorKind,
+      scope: 'diff',
+      ...(config.project.nestedRepos === undefined ? {} : { nested: config.project.nestedRepos }),
+      readStores: [manifestStore(a.anchors), manifestStore(b.anchors)],
+    });
 
-  try {
-    const comparison = diffRuns({ a, b, anchorer });
-    for (const line of describeComparison(comparison)) write(line);
-    return ExitCode.ok;
-  } finally {
-    anchorer.dispose();
-  }
+    try {
+      const comparison = diffRuns({ a, b, anchorer });
+      for (const line of describeComparison(comparison)) write(line);
+      return ExitCode.ok;
+    } finally {
+      anchorer.dispose();
+    }
+  });
 }

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -13,10 +12,11 @@ import { buildPreviousFailure } from '../src/core/run/previousFailure.js';
 import { buildIterationNote } from '../src/core/run/iterationNote.js';
 import type { PredicateResult } from '../src/core/journal/schema.js';
 import { makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /** Прогон с поддельным бэкендом: важен контекст, а не настоящая модель. */
 async function run(project: Project): Promise<RunResult> {
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
   const backend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'ок' })] });
 
   return runPipeline({
@@ -122,7 +122,7 @@ jobs:
 describe('step-context: событие об усечении не двоится по попыткам', () => {
   it('пишет одно событие на шаг, сколько бы попыток он ни сделал', async () => {
     const project = makeProject({ 'stepcast.yml': RETRYING_VERBOSE });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     // Вторая итерация с первой попытки не проходит предикат: промпт с
     // выдержкой собирается дважды, а усечение у него одно.
     const backend = createFakeBackend({
@@ -324,7 +324,7 @@ jobs:
     const note = buildPreviousFailure(source.paths, source.status);
     assert.ok(note !== undefined);
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const backend = createFakeBackend({ lines: [initLine(), resultLine({ text: 'ок' })] });
     const second = await runPipeline({
       expanded: expandPipeline({

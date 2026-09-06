@@ -1,17 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  readlinkSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -31,9 +20,10 @@ import { listRunsByKey } from '../src/core/journal/reader.js';
 import { ensureUsageRecord, readUsageStore } from '../src/core/journal/usageStore.js';
 import { RunJournal } from '../src/core/journal/writer.js';
 import type { RunManifest, StatusValue } from '../src/core/journal/schema.js';
+import { tempDir } from './tmp.js';
 
 function bed(): { runsRoot: string; projectRoot: string } {
-  const base = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-'));
+  const base = tempDir('cleanup-');
   const runsRoot = join(base, 'runs');
   const projectRoot = join(base, 'project');
   mkdirSync(runsRoot, { recursive: true });
@@ -43,7 +33,7 @@ function bed(): { runsRoot: string; projectRoot: string } {
 
 /** Второй проект в том же корне прогонов: отбор идёт по всем проектам сразу. */
 function otherProject(): string {
-  const base = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-other-'));
+  const base = tempDir('cleanup-other-');
   const projectRoot = join(base, 'project');
   mkdirSync(projectRoot, { recursive: true });
   return projectRoot;
@@ -150,7 +140,7 @@ function makeStatusRun(
 describe('run-cleanup: подсчёт размера', () => {
   // Спека run-cleanup: подсчёт размера директории рекурсивным обходом
   it('считает размер дерева с известным числом байт', () => {
-    const base = mkdtempSync(join(tmpdir(), 'stepcast-dirsize-'));
+    const base = tempDir('dirsize-');
     writeFileSync(join(base, 'a.txt'), 'x'.repeat(100));
     mkdirSync(join(base, 'nested'));
     writeFileSync(join(base, 'nested', 'b.txt'), 'y'.repeat(50));
@@ -619,7 +609,7 @@ describe('run-cleanup: снятие учётных записей рабочих
 
   it('cleanupRun снимает записи корня и части перед удалением каталогов прогона', () => {
     const { runsRoot, projectRoot } = bed();
-    const partRepo = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-part-'));
+    const partRepo = tempDir('cleanup-part-');
     initGitRepo(projectRoot);
     initGitRepo(partRepo);
 
@@ -638,14 +628,14 @@ describe('run-cleanup: снятие учётных записей рабочих
 
   it('removeRun снимает записи, а посторонняя запись того же репозитория цела', () => {
     const { runsRoot, projectRoot } = bed();
-    const partRepo = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-part-'));
+    const partRepo = tempDir('cleanup-part-');
     initGitRepo(projectRoot);
     initGitRepo(partRepo);
 
     const journal = makeWorktreeRun(runsRoot, projectRoot, partRepo, 'run-a');
     // Постороннее рабочее дерево того же корневого репозитория — заведено не
     // этим прогоном, и уборка не должна его знать.
-    const foreignDir = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-foreign-'));
+    const foreignDir = tempDir('cleanup-foreign-');
     const foreignPath = join(foreignDir, 'foreign');
     addWorktreeFor(projectRoot, foreignPath);
     assert.equal(worktreeRecords(projectRoot).length, 2);
@@ -662,7 +652,7 @@ describe('run-cleanup: снятие учётных записей рабочих
   // быть полной и для прогона, ещё идущего или остановленного до конца.
   it('уборка прогона, остановленного до конца работы, полна', () => {
     const { runsRoot, projectRoot } = bed();
-    const partRepo = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-part-'));
+    const partRepo = tempDir('cleanup-part-');
     initGitRepo(projectRoot);
     initGitRepo(partRepo);
 
@@ -681,7 +671,7 @@ describe('run-cleanup: снятие учётных записей рабочих
   // записью» нельзя: канал обязан называть настоящие утечки.
   it('повторная уборка того же прогона не выдумывает неснятых записей', () => {
     const { runsRoot, projectRoot } = bed();
-    const partRepo = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-part-'));
+    const partRepo = tempDir('cleanup-part-');
     initGitRepo(projectRoot);
     initGitRepo(partRepo);
 
@@ -698,8 +688,8 @@ describe('run-cleanup: снятие учётных записей рабочих
   // запись не остаётся в чужом репозитории ни при каком порядке.
   it('снимает записи частей, объявленных друг в друге', () => {
     const { runsRoot, projectRoot } = bed();
-    const outerRepo = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-outer-'));
-    const innerRepo = mkdtempSync(join(tmpdir(), 'stepcast-cleanup-inner-'));
+    const outerRepo = tempDir('cleanup-outer-');
+    const innerRepo = tempDir('cleanup-inner-');
     initGitRepo(projectRoot);
     initGitRepo(outerRepo);
     initGitRepo(innerRepo);
@@ -763,7 +753,7 @@ describe('run-cleanup: снятие учётных записей рабочих
     const workDir = join(journal.paths.dir, 'workspace', 'build');
     addWorktreeFor(projectRoot, workDir);
     // Репозиторий части никогда не существовал — снять запись по её пути нечем.
-    const missingPartRepo = join(mkdtempSync(join(tmpdir(), 'stepcast-cleanup-missing-')), 'gone');
+    const missingPartRepo = join(tempDir('cleanup-missing-'), 'gone');
 
     journal.writeManifest({ ...baseManifest(journal.paths.runId), project_root: projectRoot });
     journal.writeStatus({

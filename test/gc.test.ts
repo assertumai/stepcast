@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -11,6 +10,7 @@ import { projectKey } from '../src/core/journal/paths.js';
 import { readUsageStore } from '../src/core/journal/usageStore.js';
 import { RunJournal } from '../src/core/journal/writer.js';
 import type { RunManifest } from '../src/core/journal/schema.js';
+import { tempDir } from './tmp.js';
 
 function args(flags: ParsedArgs['flags'] = {}): ParsedArgs {
   return { command: 'gc', positional: [], flags };
@@ -26,7 +26,7 @@ interface Bed {
  * конфига (это GLOBAL_ONLY-ключ), поэтому изоляция теста идёт через
  * подменённый HOME, а не через .stepcast/config.yml в проекте. */
 function bed(): Bed {
-  const base = mkdtempSync(join(tmpdir(), 'stepcast-gc-'));
+  const base = tempDir('gc-');
   const runsRoot = join(base, 'runs');
   const projectRoot = join(base, 'project');
   const home = join(base, 'home');
@@ -150,7 +150,7 @@ describe('CLI: stepcast gc', () => {
     const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'old' });
     const workDir = join(journal.paths.dir, 'workspace', 'build');
     // Репозиторий части не существует — снять её запись нечем.
-    const missingPartRepo = join(mkdtempSync(join(tmpdir(), 'stepcast-gc-missing-')), 'gone');
+    const missingPartRepo = join(tempDir('gc-missing-'), 'gone');
 
     journal.writeManifest({
       run_id: journal.paths.runId,

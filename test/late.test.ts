@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -11,6 +10,7 @@ import { jobScratchDir } from '../src/core/journal/paths.js';
 import { readStatus } from '../src/core/journal/reader.js';
 import { asAgent, asRun, makeProject, type Project } from './helpers.js';
 import type { Job } from '../src/core/pipeline/model.js';
+import { tempDir } from './tmp.js';
 
 const SCOPE: LateScope = {
   jobs: {
@@ -308,7 +308,7 @@ jobs:
 });
 
 async function run(project: Project): Promise<RunResult> {
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
   return runPipeline({
     expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
     config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },

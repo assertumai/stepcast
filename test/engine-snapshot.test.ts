@@ -1,17 +1,5 @@
 import assert from 'node:assert/strict';
-import {
-  chmodSync,
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  statSync,
-  symlinkSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join, relative as relativePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
@@ -24,10 +12,7 @@ import { planResume, readSourceRun } from '../src/core/run/resumePlan.js';
 import { readEvents, readManifest } from '../src/core/journal/reader.js';
 import type { Event } from '../src/core/journal/schema.js';
 import { makeProject, testBaseEnv, type Project } from './helpers.js';
-
-function tempDir(prefix: string): string {
-  return mkdtempSync(join(tmpdir(), prefix));
-}
+import { tempDir } from './tmp.js';
 
 describe('run-engine-snapshot: locateEngine — расположение исполняющего движка', () => {
   it('возвращает существующий корень пакета и существующую точку входа', () => {
@@ -334,7 +319,7 @@ async function run(
   engineLocator: () => EngineLocation,
   onEvent?: (event: Event) => void,
 ): Promise<RunResult> {
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
   return runPipeline({
     expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
     config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
@@ -539,7 +524,7 @@ jobs:
     writeFileSync(entry, 'ORIGINAL');
     chmodSync(entry, 0o755);
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const config = { ...project.config, runs: { ...project.config.runs, root: runsRoot } };
     const engineLocator = (): EngineLocation => ({ root: engineRoot, entry });
     const start = (extra: Partial<Parameters<typeof runPipeline>[0]> = {}): Promise<RunResult> =>

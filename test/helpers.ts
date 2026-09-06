@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import assert from 'node:assert/strict';
@@ -9,6 +8,7 @@ import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { RunJournal } from '../src/core/journal/writer.js';
 import type { RunManifest, RunStatus, StatusValue, UsageReport } from '../src/core/journal/schema.js';
 import type { AgentStep, RunStep, Step } from '../src/core/pipeline/model.js';
+import { tempDir } from './tmp.js';
 
 export interface Project {
   readonly root: string;
@@ -21,7 +21,7 @@ export interface Project {
 
 /** Временный проект на диске: общий каркас для тестов раскрытия и линта. */
 export function makeProject(files: Readonly<Record<string, string>> = {}): Project {
-  const base = mkdtempSync(join(tmpdir(), 'stepcast-project-'));
+  const base = tempDir('project-');
   const root = join(base, 'work');
   const home = join(base, 'home');
   mkdirSync(root, { recursive: true });
@@ -110,7 +110,7 @@ export interface JournalBed {
 
 /** Временный корень прогонов и проект к нему: каркас тестов журнала и UI. */
 export function makeJournalBed(): JournalBed {
-  const base = mkdtempSync(join(tmpdir(), 'stepcast-bed-'));
+  const base = tempDir('bed-');
   const runsRoot = join(base, 'runs');
   const projectRoot = join(base, 'project');
   const home = join(base, 'home');

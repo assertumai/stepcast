@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -14,6 +13,7 @@ import {
 } from '../src/core/anchor/index.js';
 import { loadIgnoreRules } from '../src/core/anchor/ignore.js';
 import { StepcastError } from '../src/core/errors.js';
+import { tempDir } from './tmp.js';
 
 interface Bed {
   readonly dir: string;
@@ -31,7 +31,7 @@ function initGitRepo(dir: string): void {
 }
 
 function bed(options: { readonly git: boolean }): Bed {
-  const base = mkdtempSync(join(tmpdir(), 'stepcast-anchor-'));
+  const base = tempDir('anchor-');
   const dir = join(base, 'work');
   const stateDir = join(base, 'state');
   mkdirSync(dir, { recursive: true });

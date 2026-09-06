@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -26,6 +25,7 @@ import {
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { buildSnapshot } from '../src/ui/snapshot.js';
 import { makeJournalBed, makeProject, seedRun, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * Каталог работы на диске: тот же вид, что заводит журнал прогона —
@@ -34,7 +34,7 @@ import { makeJournalBed, makeProject, seedRun, type Project } from './helpers.js
  * отказывает, как и без файла вовсе (`jobDirWithoutDeclaration`).
  */
 function jobDir(declared: readonly string[] = []): string {
-  const dir = join(mkdtempSync(join(tmpdir(), 'stepcast-jobdata-')), 'jobs', 'работа');
+  const dir = join(tempDir('jobdata-'), 'jobs', 'работа');
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'resolved.json'), JSON.stringify({ data: declared }));
   return dir;
@@ -42,7 +42,7 @@ function jobDir(declared: readonly string[] = []): string {
 
 /** Каталог работы без `resolved.json` вовсе — определение работы недоступно. */
 function jobDirWithoutDeclaration(): string {
-  const dir = join(mkdtempSync(join(tmpdir(), 'stepcast-jobdata-')), 'jobs', 'работа');
+  const dir = join(tempDir('jobdata-'), 'jobs', 'работа');
   mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -351,7 +351,7 @@ jobs:
 `;
 
 async function runProject(project: Project): Promise<RunResult> {
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
   return runPipeline({
     expanded: expandPipeline({
       pipelinePath: project.path('stepcast.yml'),
@@ -910,7 +910,7 @@ jobs:
         expect: [{ exit_code: 0 }]
 `,
     });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     execFileSync('git', ['-C', project.root, 'init', '--quiet', '--initial-branch=main']);
     execFileSync('git', ['-C', project.root, 'config', 'user.email', 'test@example.com']);
     execFileSync('git', ['-C', project.root, 'config', 'user.name', 'Тест']);
@@ -980,7 +980,7 @@ jobs:
         expect: [{ exit_code: 0 }]
 `;
     const project = makeProject({ 'stepcast.yml': `${ЗАГОЛОВОК}\n    data: [slug]${ХВОСТ}` });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     execFileSync('git', ['-C', project.root, 'init', '--quiet', '--initial-branch=main']);
     execFileSync('git', ['-C', project.root, 'config', 'user.email', 'test@example.com']);
     execFileSync('git', ['-C', project.root, 'config', 'user.name', 'Тест']);

@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -8,6 +7,7 @@ import { run as runCli, type CliIo } from '../src/cli/main.js';
 import { BacklogSlotsResponseSchema } from '../src/core/backlog/schema.js';
 import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
 import { gitCommit, gitInit, withHome } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * `stepcast project repos` — как `assert-clean` (`test/cli-assert-clean.test.ts`):
@@ -40,13 +40,13 @@ async function projectRepos(
 }
 
 function makeHome(): string {
-  const home = mkdtempSync(join(tmpdir(), 'stepcast-project-repos-home-'));
+  const home = tempDir('project-repos-home-');
   mkdirSync(join(home, '.stepcast'), { recursive: true });
   return home;
 }
 
 function makeRepo(configYaml?: string): string {
-  const dir = mkdtempSync(join(tmpdir(), 'stepcast-project-repos-'));
+  const dir = tempDir('project-repos-');
   gitInit(dir);
   if (configYaml !== undefined) {
     mkdirSync(join(dir, '.stepcast'), { recursive: true });

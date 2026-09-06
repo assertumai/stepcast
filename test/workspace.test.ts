@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -18,6 +17,7 @@ import { HaltCause } from '../src/core/run/halt.js';
 import { prepareWorkspace } from '../src/core/run/workspace.js';
 import { RunJournal } from '../src/core/journal/writer.js';
 import { gitCommit, gitInit as gitInitDir, makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 // Переходники к общим помощникам (`test/helpers.ts`): здесь репозиторий
 // всегда корень проекта, и звать их проектом короче, чем путём.
@@ -35,7 +35,7 @@ async function run(project: Project): Promise<RunResult> {
 
 /** То же, что `run`, но с конфигурацией, объявляющей состав вложенных репозиториев. */
 async function runWithConfig(project: Project, config: Config): Promise<RunResult> {
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
   const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config });
   return runPipeline({
     expanded,
@@ -369,7 +369,7 @@ describe('workspace-modes: режим copy', () => {
 
   // Сценарий: «Явный путь размещения копий»
   it('размещает копии по объявленному пути', async () => {
-    const base = mkdtempSync(join(tmpdir(), 'stepcast-копии-'));
+    const base = tempDir('копии-');
     const project = makeProject({ 'stepcast.yml': pipelineWriting('copy', `, path: ${base}`) });
 
     const result = await run(project);
@@ -577,7 +577,7 @@ describe('workspace-modes: материализация объявленных �
 
     const { pipeline } = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
     const job = pipeline.jobs.find((item) => item.id === 'build')!;
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
 
     const journal = RunJournal.create({ runsRoot, projectRoot: project.root });
 
@@ -621,7 +621,7 @@ describe('workspace-modes: материализация объявленных �
 
     const { pipeline } = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
     const job = pipeline.jobs.find((item) => item.id === 'build')!;
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
 
     // Перечень намеренно перевёрнут: вложенная часть названа первой.
     const prepared = await prepareWorkspace({
@@ -845,7 +845,7 @@ jobs:
     gitInit(project);
     commit(project, 'первый');
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const expanded = expandPipeline({
       pipelinePath: project.path('stepcast.yml'),
       config: project.config,
@@ -926,7 +926,7 @@ jobs:
     gitInit(project);
     commit(project, 'первый');
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const expanded = expandPipeline({
       pipelinePath: project.path('stepcast.yml'),
       config: project.config,
@@ -1294,12 +1294,12 @@ describe('runner-disposers: откат подготовки рабочей ди�
 
     const { pipeline } = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
     const job = pipeline.jobs.find((item) => item.id === 'build')!;
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const journal = RunJournal.create({ runsRoot, projectRoot: project.root });
     // Каталог дерева намеренно уводится за пределы директории прогона:
     // `removeWorktree` отказывает на таком пути своим инвариантом, и обе
     // обратные операции отката гарантированно падают.
-    const outside = mkdtempSync(join(tmpdir(), 'stepcast-outside-'));
+    const outside = tempDir('outside-');
 
     await assert.rejects(
       () =>
@@ -1354,6 +1354,16 @@ jobs:
   });
 });
 
+/**
+ * workspace-anchor, «Наложение не сошлось»/«Наложение сошлось»: `stateDir`
+ * наложения не переживает вызова. Здесь замеряется ветка наложения работ
+ * (`applyRun` без дорожки) — у неё свой временный каталог, живущий по всему
+ * циклу работ, отдельно от ветки дорожки.
+ */
+function leakedApplyDirs(): string[] {
+  return readdirSync(process.env['TMPDIR']!).filter((name) => name.startsWith('stepcast-apply-'));
+}
+
 describe('workspace-modes: возврат результата', () => {
   // Сценарий: «Наложение результата прогона»
   it('переносит изменения изолированного прогона в текущее дерево', async () => {
@@ -1384,6 +1394,7 @@ jobs:
 
     assert.equal(readFileSync(project.path('исходный.txt'), 'utf8'), 'изменено\n');
     assert.equal(readFileSync(project.path('добавленный.txt'), 'utf8'), 'новый\n');
+    assert.deepEqual(leakedApplyDirs(), [], 'сошедшееся наложение работ не должно оставлять stateDir');
   });
 
   // Сценарий: «Наложение одной работы»
@@ -1460,6 +1471,7 @@ jobs:
       beforeApply,
       'дерево должно остаться ровно таким, каким было до попытки',
     );
+    assert.deepEqual(leakedApplyDirs(), [], 'несошедшееся наложение работ не должно оставлять stateDir');
   });
 
   // Сценарий: «Наложение в режиме cwd»
@@ -1877,7 +1889,7 @@ jobs:
     gitInit(project);
     commit(project, 'первый');
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
     const pending = runPipeline({
       expanded,
@@ -2030,7 +2042,7 @@ jobs:
 
     // linkedRoot литерально не совпадает с project.root, но физически ведёт
     // туда же — так на macOS ведёт себя /tmp → /private/tmp.
-    const linkBase = mkdtempSync(join(tmpdir(), 'stepcast-link-'));
+    const linkBase = tempDir('link-');
     const linkedRoot = join(linkBase, 'alias');
     symlinkSync(project.root, linkedRoot, 'dir');
 

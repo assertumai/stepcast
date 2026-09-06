@@ -1,10 +1,10 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { checkCompositeComposition, createAnchorer, type AnchorKind } from '../anchor/index.js';
 import { StepcastError } from '../errors.js';
+import { withTempDir } from '../fs/tempDir.js';
 import { readManifest, readStatus } from '../journal/reader.js';
 import type { RunPaths } from '../journal/paths.js';
 import type { JobRecord, RunManifest } from '../journal/schema.js';
@@ -323,37 +323,42 @@ function applyLane(
       hint: 'Объектов деревьев нет, поэтому дифф не вычислить.',
     });
   }
+  // Узость типа не переживает границы замыкания `withTempDir`, поэтому
+  // фиксируется здесь же, отдельной константой.
+  const anchorKind = manifest.anchor_kind;
 
   if (from === to) return { kind: 'nothing-to-apply' };
 
-  const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-apply-'));
-  const anchorer = createAnchorer({
-    dir: cwd,
-    stateDir,
-    kind: manifest.anchor_kind,
-    scope: 'apply',
-    ...(manifest.anchor_kind === 'composite' ? { nested: nestedRepos } : {}),
-  });
-  const before = anchorer.capture();
-
-  let applied: boolean;
-  try {
-    applied = applyDiffByRepo({
-      cwd,
-      kind: manifest.anchor_kind,
-      nestedRepos,
-      from,
-      to,
+  const applied = withTempDir('stepcast-apply-', (stateDir) => {
+    const anchorer = createAnchorer({
+      dir: cwd,
       stateDir,
-      patchLabel: `lane-${lane}`,
-      subject: `дорожки ${lane}`,
+      kind: anchorKind,
+      scope: 'apply',
+      ...(anchorKind === 'composite' ? { nested: nestedRepos } : {}),
     });
-  } catch (error) {
-    anchorer.restore(before);
-    throw error;
-  } finally {
-    anchorer.dispose();
-  }
+    const before = anchorer.capture();
+
+    try {
+      // Файлы патчей (`applyDiffByRepo`) пишутся в `stateDir` — снятие
+      // каталога не раньше, чем они дочитаны внутри этого вызова.
+      return applyDiffByRepo({
+        cwd,
+        kind: anchorKind,
+        nestedRepos,
+        from,
+        to,
+        stateDir,
+        patchLabel: `lane-${lane}`,
+        subject: `дорожки ${lane}`,
+      });
+    } catch (error) {
+      anchorer.restore(before);
+      throw error;
+    } finally {
+      anchorer.dispose();
+    }
+  });
 
   if (!applied) return { kind: 'nothing-to-apply' };
   return { kind: 'applied', jobs: jobs.map((job) => job.id) };
@@ -378,53 +383,61 @@ export function applyRun(options: ApplyOptions): ApplyOutcome {
       hint: `Объектов деревьев нет, поэтому дифф не вычислить. Результат лежит здесь:\n${where}`,
     });
   }
+  // Узость типа не переживает границы замыкания `withTempDir`, поэтому
+  // фиксируется здесь же, отдельной константой.
+  const anchorKind = manifest.anchor_kind;
 
   // Состояние текущего дерева до наложения: если наложение не сойдётся, дерево
   // возвращается ровно в него. Частично наложенный результат недопустим.
-  const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-apply-'));
-  const anchorer = createAnchorer({
-    dir: cwd,
-    stateDir,
-    kind: manifest.anchor_kind,
-    scope: 'apply',
-    ...(manifest.anchor_kind === 'composite' ? { nested: nestedRepos } : {}),
-  });
-  const before = anchorer.capture();
+  const applied = withTempDir('stepcast-apply-', (stateDir) => {
+    const anchorer = createAnchorer({
+      dir: cwd,
+      stateDir,
+      kind: anchorKind,
+      scope: 'apply',
+      ...(anchorKind === 'composite' ? { nested: nestedRepos } : {}),
+    });
+    const before = anchorer.capture();
 
-  const applied: string[] = [];
+    const result: string[] = [];
 
-  try {
-    for (const job of jobs) {
-      const steps = job.steps;
-      const from = steps[0]?.tree_before;
-      const to = [...steps].reverse().find((step) => step.tree_id !== undefined)?.tree_id;
+    try {
+      for (const job of jobs) {
+        const steps = job.steps;
+        const from = steps[0]?.tree_before;
+        const to = [...steps].reverse().find((step) => step.tree_id !== undefined)?.tree_id;
 
-      if (from === undefined || to === undefined) {
-        throw new StepcastError(`У работы ${job.id} нет якорей состояния`, {
-          hint: 'Прогон снят до введения якоря либо фиксация не удалась — см. events.ndjson',
+        if (from === undefined || to === undefined) {
+          throw new StepcastError(`У работы ${job.id} нет якорей состояния`, {
+            hint: 'Прогон снят до введения якоря либо фиксация не удалась — см. events.ndjson',
+          });
+        }
+
+        // Файлы патчей (`applyDiffByRepo`) пишутся в `stateDir` — снятие
+        // каталога не раньше, чем они дочитаны внутри этого вызова.
+        const jobApplied = applyDiffByRepo({
+          cwd,
+          kind: anchorKind,
+          nestedRepos,
+          from,
+          to,
+          stateDir,
+          patchLabel: job.id,
+          subject: `работы ${job.id}`,
         });
+        if (jobApplied) result.push(job.id);
       }
-
-      const jobApplied = applyDiffByRepo({
-        cwd,
-        kind: manifest.anchor_kind,
-        nestedRepos,
-        from,
-        to,
-        stateDir,
-        patchLabel: job.id,
-        subject: `работы ${job.id}`,
-      });
-      if (jobApplied) applied.push(job.id);
+    } catch (error) {
+      // Возврат к исходному состоянию: пользователь получает вопрос, а не
+      // наполовину наложенный результат.
+      anchorer.restore(before);
+      throw error;
+    } finally {
+      anchorer.dispose();
     }
-  } catch (error) {
-    // Возврат к исходному состоянию: пользователь получает вопрос, а не
-    // наполовину наложенный результат.
-    anchorer.restore(before);
-    throw error;
-  } finally {
-    anchorer.dispose();
-  }
+
+    return result;
+  });
 
   return applied.length === 0 ? { kind: 'nothing-to-apply' } : { kind: 'applied', jobs: applied };
 }

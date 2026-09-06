@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -13,6 +12,7 @@ import { mergedLanes, readLaneMerge, writeLaneMerge } from '../src/core/lanes/me
 import { StepcastError } from '../src/core/errors.js';
 import type { JobRecord } from '../src/core/journal/schema.js';
 import { gitCommit, gitInit } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * Юнит-тесты примитивов `src/core/lanes/`: годность дорожки (`lanes.ts`),
@@ -97,7 +97,7 @@ describe('lanes: evaluateLane', () => {
 });
 
 function makeRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-tree-'));
+  const dir = tempDir('lanes-tree-');
   gitInit(dir);
   writeFileSync(join(dir, 'seed.txt'), 'затравка\n');
   gitCommit(dir, 'первый');
@@ -114,7 +114,7 @@ function makeNestedRepo(
   options: { ignoredByRoot?: boolean } = {},
 ): { root: string; nestedName: string } {
   const ignoredByRoot = options.ignoredByRoot ?? true;
-  const root = mkdtempSync(join(tmpdir(), 'stepcast-lanes-tree-nested-'));
+  const root = tempDir('lanes-tree-nested-');
   gitInit(root);
   if (ignoredByRoot) writeFileSync(join(root, '.gitignore'), `${nestedName}/\n`);
   writeFileSync(join(root, 'seed.txt'), 'затравка корня\n');
@@ -177,7 +177,7 @@ describe('lanes: tree', () => {
   });
 
   it('assertCleanTree отказывает вне репозитория git', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-notgit-'));
+    const dir = tempDir('lanes-notgit-');
     assert.throws(() => assertCleanTree(dir), StepcastError);
   });
 
@@ -206,7 +206,7 @@ describe('lanes: tree', () => {
   });
 
   it('сообщение называет все нечистые репозитории разом — корень и оба вложенных', () => {
-    const root = mkdtempSync(join(tmpdir(), 'stepcast-lanes-tree-nested-'));
+    const root = tempDir('lanes-tree-nested-');
     gitInit(root);
     writeFileSync(join(root, '.gitignore'), 'backend/\npublic-site/\n');
     writeFileSync(join(root, 'seed.txt'), 'затравка корня\n');
@@ -458,7 +458,7 @@ describe('lanes: tree', () => {
     commitAll(dir, 'a-item: заголовок');
     assert.equal(headMessage(dir), 'a-item: заголовок');
 
-    const empty = mkdtempSync(join(tmpdir(), 'stepcast-lanes-tree-empty-'));
+    const empty = tempDir('lanes-tree-empty-');
     gitInit(empty);
     assert.equal(headMessage(empty), undefined);
   });
@@ -482,13 +482,13 @@ describe('lanes: check', () => {
 
 describe('lanes: item', () => {
   it('readLaneItem читает слаг и заголовок', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-item-'));
+    const dir = tempDir('lanes-item-');
     writeFileSync(join(dir, 'item-a.json'), JSON.stringify({ slug: 'a-item', title: 'Заголовок' }));
     assert.deepEqual(readLaneItem(dir, 'a'), { lane: 'a', slug: 'a-item', title: 'Заголовок' });
   });
 
   it('файл без слага — StepcastError с кодом ошибки конфигурации, называющий файл', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-item-'));
+    const dir = tempDir('lanes-item-');
     const path = join(dir, 'item-a.json');
     writeFileSync(path, JSON.stringify({ title: 'без слага' }));
     assert.throws(() => readLaneItem(dir, 'a'), (error: unknown) => {
@@ -500,7 +500,7 @@ describe('lanes: item', () => {
   });
 
   it('hasLaneItem и takenLanes отражают реально существующие файлы', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-item-'));
+    const dir = tempDir('lanes-item-');
     writeFileSync(join(dir, 'item-a.json'), JSON.stringify({ slug: 'a-item' }));
     assert.equal(hasLaneItem(dir, 'a'), true);
     assert.equal(hasLaneItem(dir, 'b'), false);
@@ -508,13 +508,13 @@ describe('lanes: item', () => {
   });
 
   it('takenLanes на несуществующем каталоге — пустой перечень', () => {
-    assert.deepEqual(takenLanes(join(tmpdir(), 'stepcast-lanes-item-нет-такого')), []);
+    assert.deepEqual(takenLanes(join(tempDir('lanes-item-'), 'нет-такого')), []);
   });
 });
 
 describe('lanes: mergeRecord', () => {
   it('writeLaneMerge и readLaneMerge — круг записи-чтения', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    const dir = tempDir('lanes-merge-');
     writeLaneMerge(dir, {
       lane: 'a',
       kind: 'merged',
@@ -534,12 +534,12 @@ describe('lanes: mergeRecord', () => {
   });
 
   it('readLaneMerge на отсутствующем файле — undefined', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    const dir = tempDir('lanes-merge-');
     assert.equal(readLaneMerge(dir, 'a'), undefined);
   });
 
   it('readLaneMerge на битом файле — StepcastError с именем файла', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    const dir = tempDir('lanes-merge-');
     const path = join(dir, 'merge-a.json');
     writeFileSync(path, 'не json{{{');
     assert.throws(() => readLaneMerge(dir, 'a'), (error: unknown) => {
@@ -553,7 +553,7 @@ describe('lanes: mergeRecord', () => {
     // Тихая деградация здесь опаснее отказа: на этой записи держится отказ от
     // повторного наложения сведённой дорожки, и запись другой версии движка
     // выключала бы щит вместо того, чтобы назвать себя.
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    const dir = tempDir('lanes-merge-');
     const path = join(dir, 'merge-a.json');
     writeFileSync(path, JSON.stringify({ lane: 'a', kind: 'слито', at: '2026-09-05T00:00:00.000Z' }));
     assert.throws(() => readLaneMerge(dir, 'a'), (error: unknown) => {
@@ -565,25 +565,25 @@ describe('lanes: mergeRecord', () => {
   });
 
   it('readLaneMerge на записи без исхода — StepcastError', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    const dir = tempDir('lanes-merge-');
     writeFileSync(join(dir, 'merge-a.json'), JSON.stringify({ lane: 'a', at: '2026-09-05T00:00:00.000Z' }));
     assert.throws(() => readLaneMerge(dir, 'a'), StepcastError);
   });
 
   it('readLaneMerge на записи без момента — StepcastError', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    const dir = tempDir('lanes-merge-');
     writeFileSync(join(dir, 'merge-a.json'), JSON.stringify({ lane: 'a', kind: 'merged' }));
     assert.throws(() => readLaneMerge(dir, 'a'), StepcastError);
   });
 
   it('mergedLanes перечисляет дорожки с записью исхода, как takenLanes — item', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'stepcast-lanes-merge-'));
+    const dir = tempDir('lanes-merge-');
     writeLaneMerge(dir, { lane: 'a', kind: 'merged', slug: 'a-item', at: '2026-09-05T00:00:00.000Z' });
     writeLaneMerge(dir, { lane: 'b', kind: 'not_reached', at: '2026-09-05T00:00:00.000Z' });
     assert.deepEqual([...mergedLanes(dir)].sort(), ['a', 'b']);
   });
 
   it('mergedLanes на несуществующем каталоге — пустой перечень', () => {
-    assert.deepEqual(mergedLanes(join(tmpdir(), 'stepcast-lanes-merge-нет-такого')), []);
+    assert.deepEqual(mergedLanes(join(tempDir('lanes-merge-'), 'нет-такого')), []);
   });
 });

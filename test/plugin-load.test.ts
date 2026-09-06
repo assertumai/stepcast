@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -11,6 +10,7 @@ import { StepcastError } from '../src/core/errors.js';
 import { loadPlugins, pluginDeclarations } from '../src/core/plugins/load.js';
 import { availableNames, predicateNames } from '../src/core/plugins/registry.js';
 import { resolveWithPlugins, type ResolvedWithPlugins } from '../src/core/plugins/resolve.js';
+import { tempDir } from './tmp.js';
 
 interface Bed {
   readonly root: string;
@@ -20,7 +20,7 @@ interface Bed {
 }
 
 function bed(): Bed {
-  const base = mkdtempSync(join(tmpdir(), 'stepcast-plugins-'));
+  const base = tempDir('plugins-');
   const root = join(base, 'work');
   const home = join(base, 'home');
   mkdirSync(join(root, '.stepcast'), { recursive: true });
@@ -296,7 +296,7 @@ describe('plugin-contributions: подпуть stepcast/plugin', () => {
    * подпуть у того, кто поставил `stepcast` пакетом.
    */
   it('разрешается у того, кто поставил пакет, и отдаёт контракт', async () => {
-    const root = realpathSync(mkdtempSync(join(tmpdir(), 'stepcast-pkg-plugin-')));
+    const root = realpathSync(tempDir('pkg-plugin-'));
     const engine = join(root, 'node_modules', 'stepcast');
     mkdirSync(engine, { recursive: true });
     // Пути считаются от скомпилированного теста (`dist/test/`): корневой

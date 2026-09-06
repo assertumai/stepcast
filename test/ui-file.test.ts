@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { MAX_FILE_BYTES, readJournalFile, resolveJournalPath } from '../src/ui/file.js';
 import { StepcastError } from '../src/core/errors.js';
+import { tempDir } from './tmp.js';
 
 function bed(): string {
-  const base = mkdtempSync(join(tmpdir(), 'stepcast-uifile-'));
+  const base = tempDir('uifile-');
   const runDir = join(base, 'run');
   mkdirSync(join(runDir, 'jobs'), { recursive: true });
   writeFileSync(join(runDir, 'jobs', 'stdout.log'), 'строка журнала\n');

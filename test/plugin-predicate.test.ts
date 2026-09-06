@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -15,6 +14,7 @@ import { runPipeline } from '../src/core/run/runner.js';
 import { computeStepKey } from '../src/core/run/stepKey.js';
 import { lintPipeline } from '../src/core/lint.js';
 import { makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * Плагин с одним предикатом: значение — строка, проверка проходит, если
@@ -63,7 +63,7 @@ jobs:
 }
 
 async function run(project: Project, registry: Registry): Promise<ReturnType<typeof runPipeline>> {
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
   const config = project.config;
   return runPipeline({
     expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config, registry }),

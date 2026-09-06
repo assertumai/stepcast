@@ -1,6 +1,5 @@
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { relative } from 'node:path';
 
 import {
   createAnchorer,
@@ -12,6 +11,7 @@ import {
 } from '../anchor/index.js';
 import type { Config } from '../config/resolve.js';
 import { StepcastError } from '../errors.js';
+import { withTempDir } from '../fs/tempDir.js';
 import type { RunPaths } from '../journal/paths.js';
 import { readManifest, readStatus } from '../journal/reader.js';
 import type { JobRecord, RunManifest, RunStatus, StepRecord } from '../journal/schema.js';
@@ -840,23 +840,24 @@ function canAdoptWorkspace(
   if (dir === undefined || step.tree_id === undefined || !existsSync(dir)) return false;
 
   const nested = request.config.project.nestedRepos;
-  const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-adopt-'));
   try {
-    const anchorer = createAnchorer({
-      dir,
-      stateDir,
-      kind: step.anchor_kind ?? 'git',
-      scope: 'adopt',
-      repoDir: request.cwd,
-      ...(nested === undefined ? {} : { nested }),
-      readStores: [manifestStore(source.paths.anchors)],
+    return withTempDir('stepcast-adopt-', (stateDir) => {
+      const anchorer = createAnchorer({
+        dir,
+        stateDir,
+        kind: step.anchor_kind ?? 'git',
+        scope: 'adopt',
+        repoDir: request.cwd,
+        ...(nested === undefined ? {} : { nested }),
+        readStores: [manifestStore(source.paths.anchors)],
+      });
+      try {
+        const current = anchorer.capture();
+        return current !== undefined && current.id === step.tree_id;
+      } finally {
+        anchorer.dispose();
+      }
     });
-    try {
-      const current = anchorer.capture();
-      return current !== undefined && current.id === step.tree_id;
-    } finally {
-      anchorer.dispose();
-    }
   } catch {
     return false;
   }
@@ -976,53 +977,56 @@ export function planResume(request: ResumeRequest): ResumePlanResult {
     declaredToday.every((relDir, index) => relDir === declaredBefore[index]);
 
   const anchorKind = detectAnchorKind(cwd, config.project.nestedRepos);
-  const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-plan-'));
-  const anchorer = createAnchorer({
-    dir: cwd,
-    stateDir,
-    kind: anchorKind,
-    scope: 'plan',
-    ...(config.project.nestedRepos === undefined ? {} : { nested: config.project.nestedRepos }),
-    readStores: [manifestStore(source.paths.anchors)],
-  });
+  const plan = withTempDir('stepcast-plan-', (stateDir) => {
+    const anchorer = createAnchorer({
+      dir: cwd,
+      stateDir,
+      kind: anchorKind,
+      scope: 'plan',
+      ...(config.project.nestedRepos === undefined ? {} : { nested: config.project.nestedRepos }),
+      readStores: [manifestStore(source.paths.anchors)],
+    });
 
-  let changed: ChangedSince;
-  let allReason: string | undefined;
-  if (!compositionMatches) {
-    changed = 'all';
-    allReason = `состав вложенных репозиториев не совпадает: сегодня — ${describeComposition(declaredToday)}, в прошлом прогоне — ${describeComposition(declaredBefore)}`;
-  } else {
-    try {
-      changed = changedSince(anchorer, finalAnchorOf(source.status, anchorKind), anchorer.capture());
-    } catch {
+    let changed: ChangedSince;
+    let allReason: string | undefined;
+    if (!compositionMatches) {
       changed = 'all';
+      allReason = `состав вложенных репозиториев не совпадает: сегодня — ${describeComposition(declaredToday)}, в прошлом прогоне — ${describeComposition(declaredBefore)}`;
+    } else {
+      try {
+        changed = changedSince(anchorer, finalAnchorOf(source.status, anchorKind), anchorer.capture());
+      } catch {
+        changed = 'all';
+      }
     }
-  }
 
-  // При несовпавшем составе якоря исходного прогона сегодняшнему не значат
-  // ничего: разбирать их — значит спрашивать у якоря чужого состава, что
-  // произвёл каждый шаг. Ответ всё равно не пригодится (переиспользовать
-  // нечего, восстанавливать нечего), а цена — обход всего прогона git-ом
-  // ради заведомо несравнимых пар.
-  const producedPaths = compositionMatches
-    ? (step: StepRecord): readonly string[] | undefined => producedBy(anchorer, step)
-    : undefined;
+    // При несовпавшем составе якоря исходного прогона сегодняшнему не значат
+    // ничего: разбирать их — значит спрашивать у якоря чужого состава, что
+    // произвёл каждый шаг. Ответ всё равно не пригодится (переиспользовать
+    // нечего, восстанавливать нечего), а цена — обход всего прогона git-ом
+    // ради заведомо несравнимых пар.
+    const producedPaths = compositionMatches
+      ? (step: StepRecord): readonly string[] | undefined => producedBy(anchorer, step)
+      : undefined;
 
-  const plan = buildResumePlan({
-    expanded,
-    config,
-    source,
-    changed,
-    cwd,
-    ...(producedPaths === undefined ? {} : { producedPaths }),
-    ...(from === undefined ? {} : { from }),
-    ...(allReason === undefined ? {} : { allReason }),
-    canAdoptWorkspace: (job, step) => canAdoptWorkspace(source, request, job, step),
+    const builtPlan = buildResumePlan({
+      expanded,
+      config,
+      source,
+      changed,
+      cwd,
+      ...(producedPaths === undefined ? {} : { producedPaths }),
+      ...(from === undefined ? {} : { from }),
+      ...(allReason === undefined ? {} : { allReason }),
+      canAdoptWorkspace: (job, step) => canAdoptWorkspace(source, request, job, step),
+    });
+
+    // Якорь нужен плану для вычисления произведённых путей, поэтому
+    // освобождается только теперь — снятие каталога охватывает и его.
+    anchorer.dispose();
+
+    return builtPlan;
   });
-
-  // Якорь нужен плану для вычисления произведённых путей, поэтому
-  // освобождается только теперь.
-  anchorer.dispose();
 
   return { expanded, plan };
 }

@@ -1,15 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import {
-  existsSync,
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -60,6 +51,7 @@ import {
   MINIMAL_PIPELINE,
   type Project,
 } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 function gitInit(project: Project): void {
   const run = (...args: string[]): void => {
@@ -78,7 +70,7 @@ interface Bed {
 }
 
 function bed(): Bed {
-  const base = mkdtempSync(join(tmpdir(), 'stepcast-journal-'));
+  const base = tempDir('journal-');
   const runsRoot = join(base, 'runs');
   const projectRoot = join(base, 'project');
   mkdirSync(runsRoot, { recursive: true });
@@ -635,7 +627,7 @@ describe('run-journal: идентификатор процесса прогон�
   // Сценарий: «Идущий прогон отличим от брошенного»
   it('пишет pid в манифест до запуска первой работы и переживает завершение прогона', async () => {
     const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
 
     const result = await runPipeline({
@@ -896,7 +888,7 @@ jobs:
 `,
     });
     gitInit(project);
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
     return runPipeline({
       expanded,
@@ -965,7 +957,7 @@ jobs:
     execFileSync('git', ['-C', project.root, 'add', '-A']);
     execFileSync('git', ['-C', project.root, 'commit', '--quiet', '-m', 'первый']);
 
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const config = withNestedRepos(project, ['public-site']);
     const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config });
     return runPipeline({
@@ -1008,7 +1000,7 @@ jobs:
 
   it('запись работы без объявленного состава поля nested не имеет', async () => {
     const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
     const result = await runPipeline({
       expanded,
@@ -1257,7 +1249,7 @@ jobs:
   // Сценарий: «Запись об отказе в разрешении»
   it('пишет событие permission.denied с работой, шагом и именем инструмента', async () => {
     const project = makeProject({ 'stepcast.yml': AGENT_PIPELINE });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const backend = createFakeBackend({
       lines: [
         resultLine({
@@ -1289,7 +1281,7 @@ jobs:
   // Сценарий: «Деталь отказа обезврежена»
   it('сводит многострочную деталь отказа с управляющими последовательностями к одной строке', async () => {
     const project = makeProject({ 'stepcast.yml': AGENT_PIPELINE });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const esc = String.fromCharCode(0x1b);
     const backend = createFakeBackend({
       lines: [
@@ -1322,7 +1314,7 @@ jobs:
   // Сценарий: «Отказы посчитаны»
   it('считает число отказов попытки в записи попытки', async () => {
     const project = makeProject({ 'stepcast.yml': AGENT_PIPELINE });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const backend = createFakeBackend({
       lines: [
         resultLine({
@@ -1351,7 +1343,7 @@ jobs:
   // Сценарий: «Отказ не проваливает попытку»
   it('успешный результат с отказами и без предикатов даёт успешный шаг', async () => {
     const project = makeProject({ 'stepcast.yml': AGENT_PIPELINE });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const backend = createFakeBackend({
       lines: [
         resultLine({

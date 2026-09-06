@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -10,6 +9,7 @@ import { findStepDir, readStatus } from '../src/core/journal/reader.js';
 import { evaluatePredicates } from '../src/core/expect/evaluate.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { gitCommit, gitInit, makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 async function run(project: Project): Promise<RunResult> {
   return runWithConfig(project, project.config);
@@ -17,7 +17,7 @@ async function run(project: Project): Promise<RunResult> {
 
 /** То же, что `run`, но с конфигурацией, объявляющей состав вложенных репозиториев. */
 async function runWithConfig(project: Project, config: Config): Promise<RunResult> {
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
   return runPipeline({
     expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
     config: { ...config, runs: { ...config.runs, root: runsRoot } },

@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
-import { chmodSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { StepcastError } from '../src/core/errors.js';
 import { finishItem, oneLine, readBacklogFile, tailLine, REASON_LIMIT } from '../src/core/backlog/file.js';
+import { tempDir } from './tmp.js';
 
 /**
  * Файловая сторона очереди (`src/core/backlog/file.ts`): её пользуются и
@@ -18,7 +18,7 @@ function backlog(status: string): string {
 }
 
 function makeFile(text: string): string {
-  const dir = mkdtempSync(join(tmpdir(), 'stepcast-backlog-file-'));
+  const dir = tempDir('backlog-file-');
   const path = join(dir, 'backlog.md');
   writeFileSync(path, text);
   return path;
@@ -86,7 +86,7 @@ describe('backlog file: сведение причины', () => {
 
 describe('backlog file: readBacklogFile', () => {
   it('отсутствующий файл — отказ, называющий путь', () => {
-    const path = join(tmpdir(), 'stepcast-нет-такой-очереди.md');
+    const path = join(tempDir('backlog-file-'), 'нет-такой-очереди.md');
     assert.throws(() => readBacklogFile(path), (error: unknown) => {
       assert.ok(error instanceof StepcastError);
       assert.equal(error.file, path);

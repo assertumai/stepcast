@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import { appendFileSync, existsSync, mkdtempSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { appendFileSync, existsSync, statSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import { projectKey, usageStorePath } from '../src/core/journal/paths.js';
@@ -22,6 +20,7 @@ import { USAGE_STORE_FORMAT } from '../src/core/journal/format.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { makeJournalBed, makeProject, MINIMAL_PIPELINE, seedRun } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 function manifestOf(runId: string, projectRoot: string, overrides: Partial<RunManifest> = {}): RunManifest {
   return {
@@ -424,7 +423,7 @@ describe('usage-store: хранилище расхода', () => {
 describe('usage-store: движок дописывает запись по завершении прогона', () => {
   it('прогон, завершившийся любым исходом, получает строку в хранилище с величинами своего usage.json', async () => {
     const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
 
     const result = await runPipeline({
@@ -447,7 +446,7 @@ describe('usage-store: движок дописывает запись по за�
 
   it('у идущего прогона записи в хранилище нет', async () => {
     const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
-    const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+    const runsRoot = tempDir('runs-');
     const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
     const key = projectKey(project.root);
 

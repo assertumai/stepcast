@@ -1,19 +1,21 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { createAnchorer, detectAnchorKind, manifestStore } from '../src/core/anchor/index.js';
+import { runDiffCommand } from '../src/cli/commands/diff.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { resolveRun } from '../src/core/journal/reader.js';
 import { describeComparison, diffRuns, lineDiff } from '../src/core/run/diff.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
-import { StepcastError } from '../src/core/errors.js';
+import { ExitCode, StepcastError } from '../src/core/errors.js';
 import { builtinRegistry } from '../src/core/plugins/builtin.js';
 import { addPlugin, type Registry } from '../src/core/plugins/registry.js';
-import { makeProject, type Project } from './helpers.js';
+import type { ParsedArgs } from '../src/cli/args.js';
+import { makeProject, withHome, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 interface Bed {
   readonly project: Project;
@@ -21,7 +23,7 @@ interface Bed {
 }
 
 function bed(files: Readonly<Record<string, string>>): Bed {
-  return { project: makeProject(files), runsRoot: mkdtempSync(join(tmpdir(), 'stepcast-runs-')) };
+  return { project: makeProject(files), runsRoot: tempDir('runs-') };
 }
 
 async function run(b: Bed): Promise<RunResult> {
@@ -35,7 +37,7 @@ async function run(b: Bed): Promise<RunResult> {
 
 function compare(b: Bed, a: RunResult, c: RunResult) {
   const anchorKind = detectAnchorKind(b.project.root);
-  const stateDir = mkdtempSync(join(tmpdir(), 'stepcast-diff-'));
+  const stateDir = tempDir('diff-');
   const anchorer = createAnchorer({
     dir: b.project.root,
     stateDir,
@@ -463,5 +465,28 @@ jobs:
 
     const note = comparison.notes.find((item) => item.includes('состав плагинов'));
     assert.match(note ?? '', /example@1\.0\.0 и example@2\.0\.0/);
+  });
+});
+
+describe('run-diff: временный каталог якоря сравнения', () => {
+  // workspace-anchor, «Сравнение прогонов»: каталог состояния якоря
+  // (`stepcast-diff-*`), заведённый командой, не переживает её вызова.
+  it('после stepcast diff записей stepcast-diff-* в системном временном каталоге не остаётся', async () => {
+    const b = bed({ 'сырьё.txt': 'вход', 'stepcast.yml': PIPELINE });
+    writeFileSync(join(b.project.home, '.stepcast', 'config.yml'), `runs:\n  root: ${b.runsRoot}\n`);
+    const first = await run(b);
+    const second = await run(b);
+
+    const args: ParsedArgs = {
+      command: 'diff',
+      positional: [first.journal.paths.runId, second.journal.paths.runId],
+      flags: {},
+    };
+    const exitCode = withHome(b.project.home, () => runDiffCommand(args, () => {}, b.project.root));
+    assert.equal(exitCode, ExitCode.ok);
+
+    const root = process.env['TMPDIR']!;
+    const leaked = readdirSync(root).filter((name) => name.startsWith('stepcast-diff-'));
+    assert.deepEqual(leaked, [], `остались каталоги: ${leaked.join(', ')}`);
   });
 });

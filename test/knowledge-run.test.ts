@@ -1,14 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import type { Config } from '../src/core/config/resolve.js';
 import { makeProject, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /**
  * Источник знания заводится по рабочей директории **работы**, а не по каталогу
@@ -72,7 +70,7 @@ async function runWith(pipeline: string): Promise<Awaited<ReturnType<typeof runP
   gitInit(project);
 
   const config = withKnowledge(project);
-  const runsRoot = mkdtempSync(join(tmpdir(), 'stepcast-runs-'));
+  const runsRoot = tempDir('runs-');
   const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config });
 
   return runPipeline({

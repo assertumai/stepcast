@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { StepcastError } from '../src/core/errors.js';
 import { addWorktree, removeWorktree } from '../src/core/run/worktrees.js';
+import { tempDir } from './tmp.js';
 
 /**
  * Стенд: репозиторий с одним коммитом и каталог прогона рядом с ним — вне
@@ -14,7 +14,7 @@ import { addWorktree, removeWorktree } from '../src/core/run/worktrees.js';
  * рабочего дерева». Рабочие деревья заводятся внутрь этого каталога.
  */
 function bed(): { readonly repoDir: string; readonly runDir: string } {
-  const base = mkdtempSync(join(tmpdir(), 'stepcast-worktrees-'));
+  const base = tempDir('worktrees-');
   const repoDir = join(base, 'repo');
   const runDir = join(base, 'run');
   mkdirSync(repoDir, { recursive: true });
