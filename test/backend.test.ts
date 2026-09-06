@@ -40,6 +40,7 @@ const BACKEND: BackendConfig = {
   sessions: true,
   structuredOutput: true,
   strictPermissions: true,
+  mcp: true,
   permissions: undefined,
   env: {},
 };
@@ -120,6 +121,125 @@ jobs:
         .strictPermissions,
       false,
     );
+  });
+});
+
+describe('agent-backend: возможность работать с MCP', () => {
+  it('адаптер Claude читает возможность из конфигурации бэкенда', () => {
+    assert.equal(createClaudeAdapter(BACKEND).capabilities.mcp, true);
+    assert.equal(createClaudeAdapter({ ...BACKEND, mcp: false }).capabilities.mcp, false);
+  });
+
+  it('фейковый бэкенд умеет объявлять возможность выключенной', () => {
+    assert.equal(createFakeBackend({ lines: [] }).adapter.capabilities.mcp, true);
+    assert.equal(
+      createFakeBackend({ capabilities: { mcp: false }, lines: [] }).adapter.capabilities.mcp,
+      false,
+    );
+  });
+
+  // Сценарий: «Бэкенд без поддержки MCP»
+  it('прогон не начинается, если для шага действует объявление, а адаптер возможности не объявляет', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          assertum: { command: [node, a.js] }
+`,
+    });
+    const runsRoot = tempDir('runs-');
+    const backend = createFakeBackend({
+      capabilities: { mcp: false },
+      lines: [resultLine({ text: 'готово' })],
+    });
+
+    await assert.rejects(
+      runPipeline({
+        expanded: expandPipeline({
+          pipelinePath: project.path('stepcast.yml'),
+          config: project.config,
+        }),
+        config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+        projectRoot: project.root,
+        cwd: project.root,
+        adapterFor: () => backend.adapter,
+      }),
+      (error: Error) =>
+        /не объявляет возможность работать с MCP/.test(error.message) && /build\/ask/.test(error.message),
+    );
+  });
+
+  // Сценарий: «Бэкенд с поддержкой MCP»
+  it('прогон идёт обычным порядком, когда адаптер возможность объявляет', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          assertum: { command: [node, a.js] }
+`,
+    });
+    const runsRoot = tempDir('runs-');
+    const backend = createFakeBackend({
+      capabilities: { mcp: true },
+      lines: [resultLine({ text: 'готово' })],
+    });
+
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: () => backend.adapter,
+    });
+
+    assert.equal(result.status, 'success');
+  });
+
+  // Пустой блок — не объявление серверов, а отказ от унаследованных: требовать
+  // под него возможность значило бы запретить снимать то, чего у шага и так не
+  // будет ни при каком бэкенде.
+  it('пустое объявление на бэкенде без возможности прогон не останавливает', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+mcp:
+  assertum: { command: [node, a.js] }
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp: {}
+`,
+    });
+    const runsRoot = tempDir('runs-');
+    const backend = createFakeBackend({
+      capabilities: { mcp: false },
+      lines: [resultLine({ text: 'готово' })],
+    });
+
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: () => backend.adapter,
+    });
+
+    assert.equal(result.status, 'success');
   });
 });
 
@@ -433,6 +553,122 @@ describe('agent-backend: сборка запуска', () => {
       outputSchemaPath: schemaPath,
     });
     assert.equal(spec.command[spec.command.indexOf('--json-schema') + 1], '{"type":"object"}');
+  });
+});
+
+describe('agent-backend: трансляция объявленных MCP-серверов', () => {
+  // Сценарий: «Объявленные серверы доходят до бэкенда»
+  it('несёт оба объявленных сервера одним аргументом --mcp-config', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      mcpServers: {
+        assertum: { command: ['node', './mcp/assertum-server.js'], env: { A: '1' } },
+        docs: { url: 'https://mcp.example.com/mcp', headers: { 'X-Client': 'stepcast' } },
+      },
+    });
+
+    assert.ok(spec.command.includes('--mcp-config'));
+    const occurrences = spec.command.filter((token) => token === '--mcp-config').length;
+    assert.equal(occurrences, 1, 'одним аргументом, не по серверу');
+    const payload = JSON.parse(spec.command[spec.command.indexOf('--mcp-config') + 1]!) as {
+      mcpServers: Record<string, unknown>;
+    };
+    assert.deepEqual(payload.mcpServers.assertum, {
+      command: 'node',
+      args: ['./mcp/assertum-server.js'],
+      env: { A: '1' },
+    });
+    assert.deepEqual(payload.mcpServers.docs, {
+      type: 'http',
+      url: 'https://mcp.example.com/mcp',
+      headers: { 'X-Client': 'stepcast' },
+    });
+  });
+
+  // Сценарий: «Шаг без объявления»
+  it('шаг без объявления не получает ни одного параметра MCP', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({ prompt: 'p', cwd: '/tmp', resumeSession: false });
+    assert.ok(!spec.command.includes('--mcp-config'));
+    assert.ok(!spec.command.includes('--strict-mcp-config'));
+  });
+
+  // Сценарий: «Жёсткий режим делает объявление полным списком»
+  it('enforce: strict добавляет --strict-mcp-config рядом с --mcp-config', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      mcpServers: { a: { command: ['node', 'a.js'] } },
+      permissions: { allow: ['mcp__a'], enforce: 'strict' },
+    });
+    assert.ok(spec.command.includes('--mcp-config'));
+    assert.ok(spec.command.includes('--strict-mcp-config'));
+  });
+
+  // Сценарий: «Мягкий режим добавляет к своим»
+  it('enforce: inherit не добавляет --strict-mcp-config', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      mcpServers: { a: { command: ['node', 'a.js'] } },
+      permissions: { allow: ['mcp__a'], enforce: 'inherit' },
+    });
+    assert.ok(spec.command.includes('--mcp-config'));
+    assert.ok(!spec.command.includes('--strict-mcp-config'));
+  });
+
+  // Design.md, решение 4: strict без собственного объявления серверов
+  // обязан всё равно отсечь `.mcp.json` и прочие источники вне репозитория.
+  it('strict без объявления серверов всё равно добавляет --strict-mcp-config', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      permissions: { allow: ['Read'], enforce: 'strict' },
+    });
+    assert.ok(spec.command.includes('--strict-mcp-config'));
+    assert.ok(!spec.command.includes('--mcp-config'));
+  });
+
+  // Сценарий: «Бэкенд без объявленной возможности MCP». Флаг возможности
+  // прикрывает оба параметра, как `config.sessions` прикрывает `--session-id`:
+  // CLI, о котором объявлено, что он MCP не умеет, не должен получать даже
+  // отсечения — шаг со strict объявления не несёт, и ни линт, ни ворота
+  // прогона тут не заступятся.
+  it('бэкенд без возможности не получает ни отсечения, ни объявления', () => {
+    const withoutMcp = createClaudeAdapter({ ...BACKEND, mcp: false });
+
+    const strict = withoutMcp.launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      permissions: { allow: ['Read'], enforce: 'strict' },
+    });
+    assert.ok(!strict.command.includes('--strict-mcp-config'));
+
+    const declared = withoutMcp.launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      mcpServers: { a: { command: ['node', 'a.js'] } },
+    });
+    assert.ok(!declared.command.includes('--mcp-config'));
+  });
+
+  // Сценарий: «Права не выдаются объявлением»
+  it('strict не добавляет разрешений на инструменты объявленного сервера', () => {
+    const spec = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p',
+      cwd: '/tmp',
+      resumeSession: false,
+      mcpServers: { assertum: { command: ['node', 'assertum.js'] } },
+      permissions: { allow: ['Read'], enforce: 'strict' },
+    });
+    const allowed = spec.command[spec.command.indexOf('--allowedTools') + 1] ?? '';
+    assert.ok(!allowed.includes('assertum'), 'объявление сервера не должно попадать в allow само собой');
   });
 });
 
@@ -1040,6 +1276,191 @@ describe('agent-backend: исполнение шага', () => {
     assert.ok(existsSync(join(dir, 'prompt.txt')));
     assert.ok(existsSync(join(dir, 'prompt.2.txt')));
     assert.ok(existsSync(join(dir, 'stdout.2.log')));
+  });
+});
+
+describe('agent-backend: сличение поднятых MCP-серверов', () => {
+  // Сценарий: «Объявленные серверы доходят до бэкенда» — сквозным путём, а не
+  // только сборкой команды: тесты трансляции зовут `launch` с готовым
+  // `mcpServers`, и без этой проверки потеря объявления по дороге от шага к
+  // адаптеру осталась бы незамеченной.
+  it('объявление шага доходит до launch адаптера', async () => {
+    const dir = tempDir('backend-');
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })] });
+    const declared = { assertum: { command: ['node', 'a.js'] } };
+
+    await executeAgentStep({
+      step: makeAgentStep({ mcp: declared }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.deepEqual(backend.invocations[0]?.mcpServers, declared);
+  });
+
+  it('шаг без объявления не несёт серверов в launch', async () => {
+    const dir = tempDir('backend-');
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })] });
+
+    await executeAgentStep({
+      step: makeAgentStep(),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(backend.invocations[0]?.mcpServers, undefined);
+  });
+
+  // Сценарий: «Объявленный сервер не поднялся»
+  it('попытка отказывает, когда объявленный сервер не подключён, и называет его', async () => {
+    const dir = tempDir('backend-');
+    const backend = createFakeBackend({
+      lines: [initLine({ mcp_servers: [{ name: 'assertum', status: 'failed' }] }), resultLine({ text: 'ок' })],
+    });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep({ mcp: { assertum: { command: ['node', 'a.js'] } } }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(result.status, 'failed');
+    assert.match(result.reason ?? '', /assertum/);
+  });
+
+  // Сценарий: «Все объявленные серверы поднялись»
+  it('попытка исполняется обычным порядком, когда все объявленные подняты', async () => {
+    const dir = tempDir('backend-');
+    const backend = createFakeBackend({
+      lines: [initLine({ mcp_servers: [{ name: 'assertum', status: 'connected' }] }), resultLine({ text: 'ок' })],
+    });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep({ mcp: { assertum: { command: ['node', 'a.js'] } } }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(result.status, 'success');
+  });
+
+  // Сценарий: «Бэкенд состава не сообщает»
+  it('состава в записи init нет вовсе — сличение не выполняется', async () => {
+    const dir = tempDir('backend-');
+    const backend = createFakeBackend({
+      lines: [initLine(), resultLine({ text: 'ок' })],
+    });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep({ mcp: { assertum: { command: ['node', 'a.js'] } } }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(result.status, 'success');
+  });
+
+  // Design.md, риски: форма `mcp_servers` не документирована. Запись, в
+  // которой поля `status` нет (переименовали, убрали, изменили форму), —
+  // «состав не сообщён», а не «сервер не поднялся»: иначе смена формы уронила
+  // бы каждую попытку каждого шага с объявлением, назвав ложную причину.
+  it('запись состава неожиданного вида означает несообщённый состав, а не отказ', async () => {
+    const adapter = createClaudeAdapter(BACKEND);
+    const withoutStatus = adapter.parseLine(
+      initLine({ mcp_servers: [{ name: 'assertum', state: 'connected' }] }),
+    ) as unknown as { readonly mcpServers?: unknown };
+    assert.equal(withoutStatus.mcpServers, undefined, 'поле status не строкой — состав не сообщён');
+
+    const notObjects = adapter.parseLine(initLine({ mcp_servers: ['assertum'] })) as unknown as {
+      readonly mcpServers?: unknown;
+    };
+    assert.equal(notObjects.mcpServers, undefined);
+
+    const dir = tempDir('backend-');
+    const backend = createFakeBackend({
+      lines: [initLine({ mcp_servers: [{ name: 'assertum', state: 'connected' }] }), resultLine({ text: 'ок' })],
+    });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep({ mcp: { assertum: { command: ['node', 'a.js'] } } }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(result.status, 'success');
+  });
+
+  // Сценарий: «Неподнявшийся сервер, шагом не объявленный»
+  it('не поднявшийся сервер вне объявления шага попытку не роняет', async () => {
+    const dir = tempDir('backend-');
+    const backend = createFakeBackend({
+      lines: [
+        initLine({ mcp_servers: [{ name: 'other', status: 'failed' }, { name: 'assertum', status: 'connected' }] }),
+        resultLine({ text: 'ок' }),
+      ],
+    });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep({ mcp: { assertum: { command: ['node', 'a.js'] } } }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(result.status, 'success');
+  });
+
+  // Сценарий: «Вызов инструмента сервера в журнале» и его расход
+  it('вызов инструмента MCP попадает в stdout.log и его расход входит в расход попытки', async () => {
+    const dir = tempDir('backend-');
+    const backend = createFakeBackend({
+      lines: [
+        toolUseLine('mcp__assertum__run_case', { case: '1' }),
+        resultLine({ text: 'ок', tokensIn: 42, tokensOut: 7 }),
+      ],
+    });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep({ mcp: { assertum: { command: ['node', 'a.js'] } } }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(result.status, 'success');
+    assert.match(readFileSync(join(dir, 'stdout.log'), 'utf8'), /mcp__assertum__run_case/);
+    assert.equal(result.last?.usage.tokens_in, 42);
+    assert.equal(result.last?.usage.tokens_out, 7);
   });
 });
 

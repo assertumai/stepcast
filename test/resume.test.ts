@@ -2067,6 +2067,7 @@ const FAKE_BACKEND_CONFIG: BackendConfig = {
   sessions: true,
   structuredOutput: true,
   strictPermissions: true,
+  mcp: true,
   permissions: undefined,
   env: {},
 };

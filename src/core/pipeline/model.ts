@@ -124,6 +124,24 @@ export interface StepCommon {
   readonly attempts: Attempts;
 }
 
+/**
+ * Именованный MCP-сервер: процесс, поднимаемый бэкендом, либо конечная точка.
+ * Вид определяется тем, какой из двух ключей объявлен — не третьим полем,
+ * которое можно рассогласовать с остальными (design.md, решение 3).
+ */
+export type McpServer =
+  | {
+      readonly command: readonly string[];
+      readonly env?: Readonly<Record<string, string>>;
+    }
+  | {
+      readonly url: string;
+      readonly headers?: Readonly<Record<string, string>>;
+    };
+
+/** Объявление серверов одного уровня: имя сервера → его описание. */
+export type McpServers = Readonly<Record<string, McpServer>>;
+
 export interface Permissions {
   readonly mode?: string;
   readonly allow?: readonly string[];
@@ -148,6 +166,8 @@ export interface AgentStep extends StepCommon {
   readonly promptSource?: string;
   readonly outputSchemaPath?: string;
   readonly permissions?: Permissions;
+  /** Действующее для шага объявление MCP-серверов — своё либо унаследованное. */
+  readonly mcp?: McpServers;
 }
 
 export interface RunStep extends StepCommon {
@@ -234,6 +254,13 @@ export interface Job {
   readonly until?: Until;
   /** Политика доступа агентских шагов работы, объявленная на её уровне. */
   readonly permissions?: Permissions;
+  /**
+   * Объявление MCP-серверов, сделанное самой работой — не унаследованное от
+   * пайплайна. Отдельно от эффективного значения шага по той же причине, что
+   * и `permissions`: замок обязан показывать то, что написано на этом уровне,
+   * а не то, что до него дошло раскрытием.
+   */
+  readonly mcp?: McpServers;
   readonly steps: readonly Step[];
 }
 
@@ -290,6 +317,8 @@ export interface Pipeline {
   readonly context: readonly ContextEntry[];
   readonly contextUpstream: ContextUpstream;
   readonly budget?: Budget;
+  /** Объявление MCP-серверов, сделанное документом пайплайна. */
+  readonly mcp?: McpServers;
   readonly concurrency: number;
   readonly failFast: boolean;
   readonly triggers?: Triggers;

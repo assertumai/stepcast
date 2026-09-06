@@ -4,7 +4,7 @@ import { parse as parseYaml } from 'yaml';
 
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { interpolate, interpolateTree, type Scope } from '../src/core/pipeline/interpolate.js';
-import { serializeLock } from '../src/core/pipeline/lock.js';
+import { jobLockHash, serializeLock } from '../src/core/pipeline/lock.js';
 import { computeStepKey } from '../src/core/run/stepKey.js';
 import { StepcastError } from '../src/core/errors.js';
 import type { BackendConfig, Config } from '../src/core/config/resolve.js';
@@ -20,6 +20,7 @@ const BACKEND_WITH_DEFAULT_MODEL: BackendConfig = {
   sessions: true,
   structuredOutput: true,
   strictPermissions: true,
+  mcp: true,
   permissions: undefined,
   env: {},
 };
@@ -1821,6 +1822,391 @@ jobs:
       assert.match(error.message, /github/);
       return true;
     });
+  });
+});
+
+describe('pipeline-definition: объявление MCP-серверов', () => {
+  // Сценарий: «Объявление на шаге»
+  it('шаг с объявленным сервером-процессом несёт его в раскрытой модели', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          assertum:
+            command: [node, ./mcp/assertum-server.js]
+            env: { ASSERTUM_PROJECT: demo }
+`,
+    });
+    const { pipeline } = expand(project);
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.mcp, {
+      assertum: { command: ['node', './mcp/assertum-server.js'], env: { ASSERTUM_PROJECT: 'demo' } },
+    });
+  });
+
+  it('сервер конечной точкой несёт url и headers', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          docs:
+            url: https://mcp.example.com/mcp
+            headers: { X-Client: stepcast }
+`,
+    });
+    const { pipeline } = expand(project);
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.mcp, {
+      docs: { url: 'https://mcp.example.com/mcp', headers: { 'X-Client': 'stepcast' } },
+    });
+  });
+
+  // Сценарий: «Наследование от работы и от пайплайна»
+  it('сервер, объявленный пайплайном, доходит до шага без своего объявления', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+mcp:
+  a: { command: [node, a.js] }
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+`,
+    });
+    const { pipeline } = expand(project);
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.mcp, { a: { command: ['node', 'a.js'] } });
+  });
+
+  it('объявление работы перекрывает объявление пайплайна целиком', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+mcp:
+  a: { command: [node, a.js] }
+jobs:
+  build:
+    mcp:
+      b: { command: [node, b.js] }
+    steps:
+      - id: ask
+        prompt: сделай
+`,
+    });
+    const { pipeline } = expand(project);
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.mcp, { b: { command: ['node', 'b.js'] } });
+  });
+
+  // Сценарий: «Ближайшее объявление побеждает целиком»
+  it('объявление шага перекрывает и пайплайн, и работу', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+mcp:
+  a: { command: [node, a.js] }
+jobs:
+  build:
+    mcp:
+      b: { command: [node, b.js] }
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          c: { command: [node, c.js] }
+`,
+    });
+    const { pipeline } = expand(project);
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.mcp, { c: { command: ['node', 'c.js'] } });
+  });
+
+  // Сценарий: «Снятие унаследованных серверов»
+  it('mcp: {} на шаге снимает унаследованное от работы', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    mcp:
+      b: { command: [node, b.js] }
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp: {}
+`,
+    });
+    const { pipeline } = expand(project);
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.mcp, {});
+  });
+
+  // Сценарий: «Шаг без объявления»
+  it('ни один уровень не объявляет — раскрытие не несёт mcp', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+`,
+    });
+    const { pipeline } = expand(project);
+    const step = asAgent(pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.mcp, undefined);
+  });
+
+  // Сценарий: «Сервер без транспорта»
+  it('отказывает на сервере без command и без url, называя место объявления', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          empty: {}
+`,
+    });
+    const error = thrown(() => expand(project));
+    assert.match(error.at ?? '', /mcp\.empty/);
+  });
+
+  // Сценарий: «Сервер с двумя транспортами»
+  it('отказывает на сервере с command и url разом, называя место объявления', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          both:
+            command: [node, x.js]
+            url: https://example.com
+`,
+    });
+    const error = thrown(() => expand(project));
+    assert.match(error.at ?? '', /mcp\.both/);
+  });
+
+  // Сценарий: «Недопустимое имя сервера»
+  it('отказывает на имени сервера с пробелом', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          "bad name": { command: [node, x.js] }
+`,
+    });
+    const error = thrown(() => expand(project));
+    assert.match(error.at ?? '', /mcp/);
+  });
+
+  it('отказывает на имени сервера с точкой', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          "bad.name": { command: [node, x.js] }
+`,
+    });
+    const error = thrown(() => expand(project));
+    assert.match(error.at ?? '', /mcp/);
+  });
+
+  // Сценарий: «Команда строкой»
+  it('отказывает, когда command объявлена строкой, а не списком argv', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          a:
+            command: "node x.js"
+`,
+    });
+    const error = thrown(() => expand(project));
+    assert.match(error.at ?? '', /mcp\.a\.command/);
+  });
+});
+
+describe('pipeline.lock.yml: объявление MCP-серверов', () => {
+  it('записи шага и работы несут своё объявление', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    mcp:
+      b: { command: [node, b.js] }
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          c: { command: [node, c.js] }
+`,
+    });
+    const lock = serializeLock(expand(project).pipeline);
+    const parsed = parseYaml(lock) as {
+      jobs: Array<{ mcp?: Record<string, unknown>; steps: Array<{ mcp?: Record<string, unknown> }> }>;
+    };
+    assert.deepEqual(Object.keys(parsed.jobs[0]!.mcp ?? {}), ['b']);
+    assert.deepEqual(Object.keys(parsed.jobs[0]!.steps[0]!.mcp ?? {}), ['c']);
+  });
+
+  it('шаг без объявления не несёт ключа mcp в записи', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+`,
+    });
+    const lock = serializeLock(expand(project).pipeline);
+    const parsed = parseYaml(lock) as { jobs: Array<{ steps: Array<{ mcp?: unknown }> }> };
+    assert.equal('mcp' in parsed.jobs[0]!.steps[0]!, false);
+  });
+
+  const PIPELINE_WITHOUT_MCP = `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+`;
+
+  const PIPELINE_WITH_MCP = `
+kind: pipeline
+mcp:
+  a: { command: [node, a.js] }
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+`;
+
+  /** Состав замка для `PIPELINE_WITHOUT_MCP` — тот же, что до этого изменения. */
+  const EXPECTED_LOCK_WITHOUT_MCP = `version: 1
+kind: pipeline.lock
+name: pipeline
+file: <root>/stepcast.yml
+inputs: {}
+workspace: &a1
+  mode: cwd
+env_deny:
+  - "*_TOKEN"
+  - "*_SECRET"
+  - "*_PASSWORD"
+  - "*_KEY"
+  - "*_CREDENTIALS"
+  - AWS_*
+  - KUBECONFIG
+context_upstream: all
+concurrency: 1
+fail_fast: true
+jobs:
+  - id: build
+    source: <root>/stepcast.yml
+    needs: []
+    on: success
+    session: shared
+    workspace: *a1
+    context_upstream: all
+    steps:
+      - id: ask
+        index: 1
+        timeout: 30m
+        attempts:
+          max: 1
+        agent: claude
+        session: default
+        prompt: сделай
+`;
+
+  function keyOf(project: Project): { readonly lockHash: string; readonly stepKey: string } {
+    const { pipeline } = expand(project);
+    const job = pipeline.jobs[0]!;
+    const lockHash = jobLockHash(pipeline, job);
+    const stepKey = computeStepKey({
+      lockHash,
+      jobId: job.id,
+      step: job.steps[0]!,
+      inputsFingerprint: undefined,
+      backendCommand: undefined,
+      upstream: [],
+    });
+    return { lockHash, stepKey };
+  }
+
+  it('объявление серверов меняет jobLockHash и ключ шага', () => {
+    const without = keyOf(makeProject({ 'stepcast.yml': PIPELINE_WITHOUT_MCP }));
+    const withMcp = keyOf(makeProject({ 'stepcast.yml': PIPELINE_WITH_MCP }));
+    assert.notEqual(without.lockHash, withMcp.lockHash);
+    assert.notEqual(without.stepKey, withMcp.stepKey);
+  });
+
+  // Сценарий: «Пайплайн без объявлений не задет». Эталон — состав замка, а не
+  // его хеш: в замок входят абсолютные пути (`file`, `source`), и литеральный
+  // хеш был бы привязан к временному каталогу машины. Состав же определяет
+  // хеш целиком, и запись вида `mcp: null` у шага или работы — единственный
+  // способ развести ключи документа без объявлений — здесь видна глазом.
+  it('замок пайплайна без объявлений сохраняет прежний состав, без единого ключа mcp', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE_WITHOUT_MCP });
+    const { pipeline } = expand(project);
+    const lock = serializeLock(pipeline)
+      .replaceAll(project.root, '<root>')
+      .replaceAll(project.home, '<home>');
+
+    assert.equal(lock, EXPECTED_LOCK_WITHOUT_MCP);
+  });
+
+  it('пайплайн без объявлений даёт устойчивый результат при повторном раскрытии', () => {
+    // Тот же путь документа при обоих раскрытиях: иначе `pipeline.file`,
+    // входящий в замок, сам по себе развёл бы хеши — это проверка
+    // устойчивости к mcp, а не к расположению временного проекта.
+    const project = makeProject({ 'stepcast.yml': PIPELINE_WITHOUT_MCP });
+    const first = keyOf(project);
+    const second = keyOf(project);
+    assert.equal(first.lockHash, second.lockHash);
+    assert.equal(first.stepKey, second.stepKey);
   });
 });
 

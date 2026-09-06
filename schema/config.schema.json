@@ -247,6 +247,9 @@
           "strict_permissions": {
             "type": "boolean"
           },
+          "mcp": {
+            "type": "boolean"
+          },
           "permissions": {
             "type": "object",
             "properties": {

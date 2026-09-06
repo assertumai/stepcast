@@ -332,6 +332,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   requireAdapters(context);
   warnAboutDegradedBackends(context);
   requireStrictPermissionsSupport(context);
+  requireMcpSupport(context);
 
   /**
    * Единственное место, где картина прогона попадает на диск: сводка
@@ -674,6 +675,31 @@ function requireStrictPermissionsSupport(context: RunContext): void {
         {
           file: job.source,
           hint: 'Снимите enforce: strict либо переведите шаг на бэкенд, объявляющий эту возможность',
+        },
+      );
+    }
+  }
+}
+
+/**
+ * Отсутствие поддержки MCP не деградирует, а останавливает прогон до первого
+ * шага, тем же приёмом, что и `requireStrictPermissionsSupport`: молча
+ * исполнить объявление бэкендом, который его не умеет, значило бы оставить
+ * пайплайн с инструментами, которых нет.
+ */
+function requireMcpSupport(context: RunContext): void {
+  for (const job of context.expanded.pipeline.jobs) {
+    for (const step of job.steps) {
+      // Пустое объявление (`mcp: {}`) — снятие унаследованного: серверов у
+      // шага не будет ни при какой возможности бэкенда, и требовать её от него
+      // не за что.
+      if (step.kind !== 'agent' || step.mcp === undefined || Object.keys(step.mcp).length === 0) continue;
+      if (adapterOf(step.agent, context).capabilities.mcp) continue;
+      throw new StepcastError(
+        `Бэкенд ${step.agent} не объявляет возможность работать с MCP-серверами, объявленными у шага ${job.id}/${step.id}`,
+        {
+          file: job.source,
+          hint: `Включите backends.${step.agent}.mcp в конфигурации либо снимите объявление mcp`,
         },
       );
     }
@@ -2344,6 +2370,15 @@ async function runAgentStep(
           attempt: plan.attempt,
           tool,
           ...(detail === undefined ? {} : { detail: inline(detail) }),
+        });
+      },
+      onMcpServerUnavailable: (plan, server) => {
+        journal.event({
+          kind: 'mcp_server.unavailable',
+          job: job.id,
+          step: step.id,
+          attempt: plan.attempt,
+          server,
         });
       },
       onStall,

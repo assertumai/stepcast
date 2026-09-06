@@ -21,7 +21,15 @@ import {
 } from './run/workspace.js';
 import { isKnownTimeZone, isSatisfiable, parseCron } from './trigger/cron.js';
 import { formatDuration, formatMoney, formatTokens } from './units.js';
-import type { ContextEntry, ExpandedPipeline, Job, Predicate, Step, Substitution } from './pipeline/model.js';
+import type {
+  ContextEntry,
+  ExpandedPipeline,
+  Job,
+  McpServers,
+  Predicate,
+  Step,
+  Substitution,
+} from './pipeline/model.js';
 
 /**
  * Статическая проверка раскрытого пайплайна.
@@ -566,6 +574,8 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
         pipeline.envDeny,
         push,
         knowledgeDeclared,
+        pipeline.mcp,
+        pipeline.file,
       );
     }
   }
@@ -1182,6 +1192,8 @@ function checkStep(
   envDenyPatterns: readonly string[],
   push: (diagnostic: Diagnostic) => void,
   knowledgeDeclared = false,
+  pipelineMcp?: McpServers,
+  pipelineFile?: string,
 ): void {
   const at = `jobs.${job.id}.steps.${step.index - 1}`;
 
@@ -1222,6 +1234,7 @@ function checkStep(
       });
     } else {
       checkPermissionsEnforce(job, step, step.agent, backend, at, push);
+      checkMcp(job, step, step.agent, backend, at, pipelineMcp, pipelineFile, push);
     }
   }
 
@@ -1399,6 +1412,77 @@ function enforceOrigin(
     return { at: `jobs.${job.id}.permissions.enforce`, file: job.source };
   }
   return { at: `${at}.permissions.enforce`, file: job.source };
+}
+
+/**
+ * Ошибка на объявлении серверов для бэкенда без возможности, и предупреждение
+ * о сервере, чьё имя не встречается ни в одной записи `allow` под `strict`.
+ * Место обеих диагностик — там, где объявление сделано на самом деле, тем же
+ * приёмом тождества ссылки, что `enforceOrigin`.
+ */
+function checkMcp(
+  job: Job,
+  step: Step,
+  backendName: string,
+  backend: BackendConfig,
+  at: string,
+  pipelineMcp: McpServers | undefined,
+  pipelineFile: string | undefined,
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  if (step.kind !== 'agent' || step.mcp === undefined) return;
+
+  const { at: mcpAt, file: mcpFile } = mcpOrigin(job, step, pipelineMcp, pipelineFile, at);
+
+  // Пустое объявление (`mcp: {}`) — снятие унаследованного, и от бэкенда оно
+  // не требует ничего: серверов у шага не будет ни при какой возможности.
+  // Отклонять его значило бы запретить снимать серверы там, где их и так нет.
+  if (!backend.mcp && Object.keys(step.mcp).length > 0) {
+    push({
+      severity: 'error',
+      message: `Шаг ${job.id}/${step.id}: бэкенд ${backendName} не объявляет возможность работать с MCP-серверами`,
+      ...(mcpFile === undefined ? {} : { file: mcpFile }),
+      at: mcpAt,
+      hint: `Включите backends.${backendName}.mcp в конфигурации либо снимите объявление mcp`,
+    });
+  }
+
+  const effective = effectivePermissions(step.permissions, backend.permissions);
+  if ((effective?.enforce ?? 'inherit') !== 'strict') return;
+
+  const allow = effective?.allow ?? [];
+  for (const name of Object.keys(step.mcp)) {
+    if (allow.some((entry) => entry.includes(name))) continue;
+    push({
+      severity: 'warning',
+      message: `Шаг ${job.id}/${step.id}: инструменты сервера ${name} будут отклонены под enforce: strict — имя не встречается ни в одной записи allow`,
+      ...(mcpFile === undefined ? {} : { file: mcpFile }),
+      at: mcpAt,
+      hint: `Назовите сервер в allow, например mcp__${name}`,
+    });
+  }
+}
+
+/**
+ * Место, где объявление `mcp` сделано на самом деле — пайплайн, работа или
+ * шаг. `expand.ts` копирует объявление вышестоящего уровня в шаг тем же
+ * объектом (design.md, решение 2), и тождество ссылки отличает копию от
+ * собственного объявления — тем же приёмом, что `enforceOrigin`.
+ */
+function mcpOrigin(
+  job: Job,
+  step: Extract<Step, { kind: 'agent' }>,
+  pipelineMcp: McpServers | undefined,
+  pipelineFile: string | undefined,
+  at: string,
+): { readonly at: string; readonly file?: string } {
+  if (job.mcp !== undefined && step.mcp === job.mcp) {
+    return { at: `jobs.${job.id}.mcp`, file: job.source };
+  }
+  if (pipelineMcp !== undefined && step.mcp === pipelineMcp) {
+    return { at: 'mcp', ...(pipelineFile === undefined ? {} : { file: pipelineFile }) };
+  }
+  return { at: `${at}.mcp`, file: job.source };
 }
 
 function checkEnv(

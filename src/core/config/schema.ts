@@ -84,6 +84,10 @@ export const RawBackendSchema = z
     // желание: выключенный превращает `enforce: strict` в ошибку конфигурации,
     // не в послабление.
     strict_permissions: z.boolean().optional(),
+    // Возможность работать с MCP-серверами — то же устройство, что у
+    // strict_permissions: флаг говорит, что о бэкенде объявили, возможность
+    // адаптера — что он умеет, и расходиться они могут (design.md, решение 6).
+    mcp: z.boolean().optional(),
     permissions: RawPermissionsSchema.optional(),
     env: z.record(z.string(), z.string()).optional(),
   })

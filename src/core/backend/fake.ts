@@ -53,6 +53,7 @@ export function createFakeBackend(options: FakeBackendOptions): FakeBackend {
     sessions: true,
     structuredOutput: true,
     strictPermissions: true,
+    mcp: true,
     permissions: undefined,
     env: {},
   });
@@ -63,6 +64,7 @@ export function createFakeBackend(options: FakeBackendOptions): FakeBackend {
       sessions: options.capabilities?.sessions ?? true,
       structuredOutput: options.capabilities?.structuredOutput ?? true,
       strictPermissions: options.capabilities?.strictPermissions ?? true,
+      mcp: options.capabilities?.mcp ?? true,
     },
     launch(invocation): LaunchSpec {
       const index = invocations.length;

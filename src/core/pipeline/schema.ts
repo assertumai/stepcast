@@ -137,6 +137,37 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
     inherit: z.string().optional(),
   });
 
+  /**
+   * Имя сервера — слаг: из него бэкенд строит имена инструментов
+   * (`mcp__<сервер>__<инструмент>` у Claude Code), и пробел или точка в имени
+   * дали бы инструмент, который нельзя назвать в `allow` (design.md, решение 3).
+   */
+  const McpServerNameSchema = z
+    .string()
+    .regex(/^[A-Za-z0-9_-]+$/, 'имя сервера должно состоять из букв, цифр, дефиса и подчёркивания');
+
+  /**
+   * Сервер объявляется процессом либо конечной точкой — ровно один транспорт.
+   * `command` только списком argv: сервер поднимается без оболочки, и правила
+   * разбиения строки на слова у движка нет (design.md, решение 3).
+   */
+  const McpServerSchema = z.union([
+    z
+      .object({
+        command: z.array(z.string()).min(1),
+        env: z.record(z.string(), z.string()).optional(),
+      })
+      .strict(),
+    z
+      .object({
+        url: z.string(),
+        headers: z.record(z.string(), z.string()).optional(),
+      })
+      .strict(),
+  ]);
+
+  const McpSchema = z.record(McpServerNameSchema, McpServerSchema);
+
   const PermissionsSchema = z
     .object({
       mode: z.string().optional(),
@@ -181,6 +212,7 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
       prompt: z.string(),
       output_schema: z.string().optional(),
       permissions: PermissionsSchema.optional(),
+      mcp: McpSchema.optional(),
     })
     .strict();
 
@@ -235,6 +267,7 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
     budget: BudgetSchema.optional(),
     until: UntilSchema.optional(),
     permissions: PermissionsSchema.optional(),
+    mcp: McpSchema.optional(),
     steps: z.array(StepSchema).min(1),
   };
 
@@ -361,6 +394,7 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
         .strict()
         .optional(),
       budget: BudgetSchema.optional(),
+      mcp: McpSchema.optional(),
       concurrency: count.optional(),
       fail_fast: z.boolean().optional(),
       jobs: z.record(z.string(), JobEntrySchema),
@@ -371,6 +405,7 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
     AgentStepSchema,
     StepSchema,
     BudgetSchema,
+    McpSchema,
     ParamSchema,
     ScheduleTriggerEntrySchema,
     TriggersSchema,
@@ -406,6 +441,7 @@ export type RawBuiltinPredicate = z.infer<typeof BuiltinPredicateSchema>;
 export type RawPredicate = RawBuiltinPredicate | Readonly<Record<string, unknown>>;
 export type RawContextEntry = z.infer<typeof ContextEntrySchema>;
 export type RawBudget = z.infer<BuiltinSchemas['BudgetSchema']>;
+export type RawMcp = z.infer<BuiltinSchemas['McpSchema']>;
 export type RawParam = z.infer<BuiltinSchemas['ParamSchema']>;
 export type RawScheduleTrigger = z.infer<BuiltinSchemas['ScheduleTriggerEntrySchema']>;
 export type RawTriggers = z.infer<BuiltinSchemas['TriggersSchema']>;

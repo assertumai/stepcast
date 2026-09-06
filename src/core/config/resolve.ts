@@ -47,6 +47,8 @@ export interface BackendConfig {
   readonly structuredOutput: boolean;
   /** Умеет применять `enforce: strict` — отсекать настройки вне репозитория и запрещать неназванное. */
   readonly strictPermissions: boolean;
+  /** Объявлена возможность работать с MCP-серверами (`backends.<name>.mcp`). */
+  readonly mcp: boolean;
   readonly permissions:
     | {
         readonly mode?: string;
@@ -372,6 +374,7 @@ function buildBackends(
       sessions: raw.sessions === true,
       structuredOutput: raw.structured_output === true,
       strictPermissions: raw.strict_permissions === true,
+      mcp: raw.mcp === true,
       permissions: (raw.permissions as BackendConfig['permissions']) ?? undefined,
       env: (raw.env as Record<string, string> | undefined) ?? {},
     };

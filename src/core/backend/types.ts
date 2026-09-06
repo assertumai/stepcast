@@ -1,4 +1,4 @@
-import type { Permissions } from '../pipeline/model.js';
+import type { McpServers, Permissions } from '../pipeline/model.js';
 import type { Usage } from '../journal/schema.js';
 
 /**
@@ -16,6 +16,13 @@ export interface BackendCapabilities {
   readonly structuredOutput: boolean;
   /** Умеет применять `enforce: strict` — отсекать настройки вне репозитория и запрещать неназванное. */
   readonly strictPermissions: boolean;
+  /**
+   * Умеет транслировать объявление MCP-серверов в параметры запуска.
+   * Обязательное поле, а не необязательное с умолчанием: адаптер плагина,
+   * написанный до появления этой возможности, обязан объявить её явно —
+   * молчаливое «нет» для чужого адаптера неотличимо от забытого поля.
+   */
+  readonly mcp: boolean;
 }
 
 export interface AgentInvocation {
@@ -27,6 +34,8 @@ export interface AgentInvocation {
   readonly resumeSession: boolean;
   readonly outputSchemaPath?: string;
   readonly permissions?: Permissions;
+  /** Действующее для шага объявление MCP-серверов — своё либо унаследованное. */
+  readonly mcpServers?: McpServers;
   /** Каталог черновиков работы: доступен бэкенду, только когда права заявлены жёстким режимом. */
   readonly scratchDir?: string;
 }
@@ -55,8 +64,27 @@ export interface BackendRefusal {
   readonly resetAt?: number;
 }
 
+/**
+ * Один поднятый бэкендом MCP-сервер, как его сообщила запись `init`.
+ * `connected: false` — сервер объявлен настройками бэкенда, но не подключён.
+ */
+export interface McpServerStatus {
+  readonly name: string;
+  readonly connected: boolean;
+}
+
 export type BackendEvent =
-  | { readonly kind: 'init'; readonly data: Record<string, unknown> }
+  | {
+      readonly kind: 'init';
+      readonly data: Record<string, unknown>;
+      /**
+       * Разобранный состав серверов рядом с сырыми данными — `undefined`,
+       * когда запись состава не несёт вовсе (старый CLI, чужой адаптер):
+       * несообщённое не значит «серверов нет», и сверять с объявленным
+       * тогда нечего (design.md, решение 7).
+       */
+      readonly mcpServers?: readonly McpServerStatus[];
+    }
   | {
       readonly kind: 'tool_use';
       readonly name: string;

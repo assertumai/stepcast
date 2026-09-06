@@ -614,6 +614,17 @@ export const EventSchema = z.discriminatedUnion('kind', [
     tool: z.string(),
     detail: z.string().optional(),
   }).strict(),
+  // Объявленный сервер, о котором бэкенд сообщил, что тот не подключён.
+  // Валит попытку (см. `MCP_SERVER_UNAVAILABLE_PREDICATE`), а не шаг: повтор
+  // может застать сервер поднявшимся.
+  z.object({
+    ...eventBase,
+    kind: z.literal('mcp_server.unavailable'),
+    job: z.string(),
+    step: z.string(),
+    attempt: z.number().int().positive(),
+    server: z.string(),
+  }).strict(),
   // Неудача внутреннего учёта. Статусов не меняет: см. core/run/bookkeeping.ts.
   z.object({ ...eventBase, kind: z.literal('iteration.started'), job: z.string(), iteration: z.number().int().positive() }).strict(),
   z.object({ ...eventBase, kind: z.literal('iteration.finished'), job: z.string(), iteration: z.number().int().positive(), passed: z.boolean(), reason: z.string().optional() }).strict(),

@@ -73,6 +73,7 @@ export const BUILTIN_CONFIG: RawConfig = {
       sessions: true,
       structured_output: true,
       strict_permissions: true,
+      mcp: true,
       // Агентские CLI обновляются сами и могут обновиться посреди прогона.
       env: { DISABLE_AUTOUPDATER: '1' },
     },

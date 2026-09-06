@@ -258,6 +258,24 @@ describe('stepcast-configuration', () => {
     assert.equal(config.backends.claude?.strictPermissions, false);
   });
 
+  // Флаг возможности работать с MCP — то же устройство, что у strict_permissions.
+  it('claude объявляет mcp по умолчанию', () => {
+    const { config } = resolveIn(sandbox({}));
+    assert.equal(config.backends.claude?.mcp, true);
+  });
+
+  it('mcp разрешается в конфигурацию бэкенда без встроенного умолчания', () => {
+    const box = sandbox({ project: 'backends:\n  other:\n    mcp: true\n' });
+    const { config } = resolveIn(box);
+    assert.equal(config.backends.other?.mcp, true);
+  });
+
+  it('бэкенд без объявленного флага несёт mcp выключенным', () => {
+    const box = sandbox({ project: 'backends:\n  other:\n    enabled: true\n' });
+    const { config } = resolveIn(box);
+    assert.equal(config.backends.other?.mcp, false);
+  });
+
   // Сценарий: «Происхождение режима наблюдаемо»
   it('источник permissions.enforce виден в разрешённой конфигурации', () => {
     const box = sandbox({ project: 'backends:\n  claude:\n    permissions:\n      enforce: strict\n' });

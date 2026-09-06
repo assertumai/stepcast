@@ -1352,6 +1352,7 @@ jobs:
           sessions: true,
           structuredOutput: false,
           strictPermissions: false,
+          mcp: false,
           permissions: undefined,
           env: {},
         },
@@ -1486,6 +1487,7 @@ jobs:
           sessions: true,
           structuredOutput: true,
           strictPermissions: false,
+          mcp: false,
           permissions: undefined,
           env: {},
         },
@@ -1573,6 +1575,7 @@ jobs:
           sessions: true,
           structuredOutput: true,
           strictPermissions: false,
+          mcp: false,
           permissions: { enforce: 'strict' as const },
           env: {},
         },
@@ -1585,6 +1588,187 @@ jobs:
 
     assert.ok(found.some((item) => /не объявляет возможность/.test(item.message)));
     assert.equal(found[0]?.at, 'backends.no_strict.permissions.enforce');
+  });
+
+  // Сценарий: «Серверы на бэкенде без такой возможности»
+  it('отклоняет объявление mcp на бэкенде без флага, называя шаг, бэкенд и флаг', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: ask
+        agent: no_mcp
+        prompt: сделай
+        mcp:
+          assertum: { command: [node, a.js] }
+`,
+    });
+    const config = {
+      ...project.config,
+      backends: {
+        ...project.config.backends,
+        no_mcp: {
+          command: 'no-mcp',
+          enabled: true,
+          defaultModel: undefined,
+          concurrency: 1,
+          cacheReadWeight: 0.1,
+          sessions: true,
+          structuredOutput: true,
+          strictPermissions: true,
+          mcp: false,
+          permissions: undefined,
+          env: {},
+        },
+      },
+    };
+    const messages = errors(
+      lintPipeline(expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }), { config }),
+    );
+    assert.ok(
+      messages.some(
+        (message) =>
+          /no_mcp/.test(message) &&
+          /build\/ask/.test(message) &&
+          /возможность работать с MCP/.test(message),
+      ),
+    );
+  });
+
+  // Сценарий: «Диагностика называет уровень объявления»
+  it('объявление работы указывает диагностику на работу, а не на поле шага', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    mcp:
+      assertum: { command: [node, a.js] }
+    steps:
+      - id: ask
+        agent: no_mcp
+        prompt: сделай
+`,
+    });
+    const config = {
+      ...project.config,
+      backends: {
+        ...project.config.backends,
+        no_mcp: {
+          command: 'no-mcp',
+          enabled: true,
+          defaultModel: undefined,
+          concurrency: 1,
+          cacheReadWeight: 0.1,
+          sessions: true,
+          structuredOutput: true,
+          strictPermissions: true,
+          mcp: false,
+          permissions: undefined,
+          env: {},
+        },
+      },
+    };
+    const found = errors(
+      lintPipeline(expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }), { config }),
+    );
+    assert.ok(found.some((message) => /возможность работать с MCP/.test(message)));
+    const diagnostics = lintPipeline(expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }), {
+      config,
+    }).filter((item) => item.severity === 'error');
+    assert.equal(diagnostics[0]?.at, 'jobs.build.mcp');
+  });
+
+  // Пустой блок снимает унаследованное и серверов не объявляет: требовать под
+  // него возможность бэкенда значило бы запретить отказ от серверов там, где
+  // их всё равно не будет.
+  it('пустое объявление на бэкенде без флага ошибкой не считается', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+mcp:
+  assertum: { command: [node, a.js] }
+jobs:
+  build:
+    steps:
+      - id: ask
+        agent: no_mcp
+        prompt: сделай
+        mcp: {}
+`,
+    });
+    const config = {
+      ...project.config,
+      backends: {
+        ...project.config.backends,
+        no_mcp: {
+          command: 'no-mcp',
+          enabled: true,
+          defaultModel: undefined,
+          concurrency: 1,
+          cacheReadWeight: 0.1,
+          sessions: true,
+          structuredOutput: true,
+          strictPermissions: true,
+          mcp: false,
+          permissions: undefined,
+          env: {},
+        },
+      },
+    };
+    const messages = errors(
+      lintPipeline(expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }), { config }),
+    );
+    assert.ok(!messages.some((message) => /возможность работать с MCP/.test(message)));
+  });
+
+  // Сценарий: «Объявленный сервер не назван в правах»
+  it('предупреждает о сервере, не названном ни в одной записи allow под strict', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          assertum: { command: [node, a.js] }
+        permissions:
+          allow: [Read]
+          enforce: strict
+`,
+    });
+    const found = warnings(lint(project));
+    assert.ok(found.some((message) => /assertum/.test(message)));
+  });
+
+  // Сценарий: «Сервер назван в правах»
+  it('называет mcp__assertum__run_case в allow — предупреждения нет', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          assertum: { command: [node, a.js] }
+        permissions:
+          allow: [Read, mcp__assertum__run_case]
+          enforce: strict
+`,
+    });
+    const found = warnings(lint(project));
+    assert.ok(!found.some((message) => /assertum/.test(message)));
   });
 
   it('предупреждает о контексте у работы без агентских шагов', () => {

@@ -1278,6 +1278,54 @@ jobs:
     assert.match(denied.detail ?? '', /touch marker\.txt/);
   });
 
+  // Сценарий: «Отказ в разрешении на инструмент сервера» (изменение
+  // agent-step-mcp): особого пути у инструментов MCP нет — отказ на
+  // `mcp__<сервер>__<инструмент>` попадает в поток событий наравне с отказом
+  // на встроенном инструменте и называет инструмент целиком.
+  it('пишет permission.denied на инструмент объявленного MCP-сервера', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+        mcp:
+          assertum: { command: [node, a.js] }
+        permissions:
+          enforce: strict
+          allow: [Read]
+`,
+    });
+    const runsRoot = tempDir('runs-');
+    const backend = createFakeBackend({
+      lines: [
+        resultLine({
+          text: 'готово',
+          permissionDenials: [{ tool: 'mcp__assertum__run_case', input: { case: '1' } }],
+        }),
+      ],
+    });
+
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: () => backend.adapter,
+    });
+
+    const events = readEvents(result.journal.paths);
+    const denied = events.find((event) => event.kind === 'permission.denied') as
+      | { job: string; step: string; tool: string; detail?: string }
+      | undefined;
+    assert.ok(denied !== undefined, 'событие permission.denied должно быть в журнале');
+    assert.equal(denied.tool, 'mcp__assertum__run_case');
+    assert.match(denied.detail ?? '', /case/);
+  });
+
   // Сценарий: «Деталь отказа обезврежена»
   it('сводит многострочную деталь отказа с управляющими последовательностями к одной строке', async () => {
     const project = makeProject({ 'stepcast.yml': AGENT_PIPELINE });

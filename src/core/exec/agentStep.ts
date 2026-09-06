@@ -12,8 +12,9 @@ import {
   mergeUsage,
   messagePrefix,
   sumUsage,
+  type McpServerStatus,
 } from '../backend/types.js';
-import type { AgentStep } from '../pipeline/model.js';
+import type { AgentStep, McpServers } from '../pipeline/model.js';
 import type { AttemptRecord, PredicateResult, StatusValue, Usage } from '../journal/schema.js';
 import { runAttempts, type AttemptPlan } from './attempts.js';
 import { runProcess, type ProcessResult } from './process.js';
@@ -101,6 +102,8 @@ export interface AgentStepOptions {
   readonly onUnparsed?: (line: string) => void;
   /** Один вызов на каждый отказ бэкенда в разрешении на вызов инструмента. */
   readonly onPermissionDenied?: (plan: AttemptPlan, tool: string, input: unknown) => void;
+  /** Один вызов на каждый объявленный сервер, который бэкенд не поднял. */
+  readonly onMcpServerUnavailable?: (plan: AttemptPlan, server: string) => void;
   readonly onExpectFailed?: (plan: AttemptPlan, result: PredicateResult) => void;
   /**
    * Первая попытка продолжает засеянную сессию (см. `SessionRegistry.seed`)
@@ -143,6 +146,23 @@ export interface AgentStepResult {
 /** Инструменты чтения: по ним уточняется инвалидация на следующем прогоне. */
 const READING_TOOLS = new Set(['Read', 'Grep', 'Glob', 'NotebookRead']);
 
+/** Имя предиката, которым отказ из-за неподнявшегося MCP-сервера попадает в результаты. */
+export const MCP_SERVER_UNAVAILABLE_PREDICATE = 'mcp_server_unavailable';
+
+/**
+ * Объявленные серверы, о которых бэкенд сообщил, что они не подключены.
+ * Несообщённый состав (`status === undefined`) проверки не запускает —
+ * несообщённое не значит «сервера нет» (design.md, решение 7).
+ */
+function unavailableMcpServers(
+  declared: McpServers | undefined,
+  status: readonly McpServerStatus[] | undefined,
+): readonly string[] {
+  if (declared === undefined || status === undefined) return [];
+  const connected = new Set(status.filter((entry) => entry.connected).map((entry) => entry.name));
+  return Object.keys(declared).filter((name) => !connected.has(name));
+}
+
 export async function executeAgentStep(options: AgentStepOptions): Promise<AgentStepResult> {
   const { step, adapter } = options;
   const evaluate = options.evaluate ?? evaluateDefault;
@@ -180,6 +200,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
           ? {}
           : { outputSchemaPath: step.outputSchemaPath }),
         ...(step.permissions === undefined ? {} : { permissions: step.permissions }),
+        ...(step.mcp === undefined ? {} : { mcpServers: step.mcp }),
         ...(options.scratchDir === undefined ? {} : { scratchDir: options.scratchDir }),
       });
 
@@ -191,6 +212,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
       let text: string | undefined;
       let structured: unknown;
       let backendInit: Record<string, unknown> | undefined;
+      let mcpServerStatus: readonly McpServerStatus[] | undefined;
       let failedByBackend = false;
       let refusal: BackendRefusal | undefined;
       let permissionDenials = 0;
@@ -209,6 +231,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
         switch (event.kind) {
           case 'init':
             backendInit = event.data;
+            mcpServerStatus = event.mcpServers;
             break;
           case 'tool_use':
             if (READING_TOOLS.has(event.name)) {
@@ -309,10 +332,13 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
         options.onFailedContinuation?.();
       }
 
+      const missingMcpServers =
+        process_.outcome === 'exited' ? unavailableMcpServers(step.mcp, mcpServerStatus) : [];
+      for (const server of missingMcpServers) options.onMcpServerUnavailable?.(plan, server);
+
       const results =
-        process_.outcome === 'exited'
-          ? await evaluate(step, outcome, plan)
-          : [
+        process_.outcome !== 'exited'
+          ? [
               {
                 predicate: process_.outcome === 'timeout' ? 'timeout' : 'canceled',
                 passed: false,
@@ -322,7 +348,23 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
                     ? `Шаг не завершился за ${step.timeoutMs} мс`
                     : 'Прогон отменён',
               } satisfies PredicateResult,
-            ];
+            ]
+          : missingMcpServers.length > 0
+            ? // Объявленный сервер не поднялся — попытка отказывает этим одним,
+              // не доходя до `evaluate`: агент, оставшийся без обещанного
+              // инструмента, мог ответить чем-то похожим на успех, а это
+              // хуже честного отказа (design.md, решение 7).
+              missingMcpServers.map(
+                (server) =>
+                  ({
+                    predicate: MCP_SERVER_UNAVAILABLE_PREDICATE,
+                    passed: false,
+                    hard: true,
+                    detail: `MCP-сервер ${server} не поднялся`,
+                    actual: { server },
+                  }) satisfies PredicateResult,
+              )
+            : await evaluate(step, outcome, plan);
 
       // Отказ судьи внутри `evaluate` классифицируется тем же путём, что и
       // отказ самого шага, и кладёт себя в результаты предикатов тем же

@@ -79,6 +79,7 @@ function stepToPlain(step: Step): Record<string, unknown> {
     ...(step.promptSource === undefined ? {} : { prompt_source: step.promptSource }),
     ...(step.outputSchemaPath === undefined ? {} : { output_schema: step.outputSchemaPath }),
     ...(step.permissions === undefined ? {} : { permissions: step.permissions }),
+    ...(step.mcp === undefined ? {} : { mcp: step.mcp }),
   };
 }
 
@@ -104,6 +105,7 @@ export function jobToPlain(job: Job): Record<string, unknown> {
     ...(job.data.length === 0 ? {} : { data: job.data }),
     ...(job.budget === undefined ? {} : { budget: budgetToPlain(job.budget) }),
     ...(job.permissions === undefined ? {} : { permissions: job.permissions }),
+    ...(job.mcp === undefined ? {} : { mcp: job.mcp }),
     steps: job.steps.map(stepToPlain),
   };
 }
@@ -122,6 +124,7 @@ export function pipelineToPlain(pipeline: Pipeline): Record<string, unknown> {
     ...(pipeline.context.length === 0 ? {} : { context: pipeline.context }),
     context_upstream: pipeline.contextUpstream,
     ...(pipeline.budget === undefined ? {} : { budget: budgetToPlain(pipeline.budget) }),
+    ...(pipeline.mcp === undefined ? {} : { mcp: pipeline.mcp }),
     concurrency: pipeline.concurrency,
     fail_fast: pipeline.failFast,
     ...(pipeline.triggers === undefined ? {} : { triggers: triggersToPlain(pipeline.triggers) }),

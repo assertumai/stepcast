@@ -84,6 +84,41 @@ describe('ui-transcript: разбор потока в ход шага', () => {
     if (result?.kind === 'result') assert.equal(result.text, 'Готово.');
   });
 
+  // Сценарий «Вызов инструмента сервера в журнале» (изменение agent-step-mcp):
+  // имя вида `mcp__<сервер>__<инструмент>` витрина обязана толковать как всякое
+  // другое — особого пути для инструментов MCP нет ни здесь, ни в движке.
+  it('вызов инструмента MCP-сервера разбирается тем же ходом, что встроенный', () => {
+    const mcpToolLine = JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: 'msg-4',
+        content: [
+          { type: 'tool_use', id: 'call-9', name: 'mcp__assertum__run_case', input: { case: '1' } },
+        ],
+      },
+    });
+    const mcpResultLine = JSON.stringify({
+      type: 'user',
+      message: {
+        content: [{ type: 'tool_result', tool_use_id: 'call-9', content: 'сценарий пройден', is_error: false }],
+      },
+    });
+
+    const merged = mergeToolOutcomes(parseTranscript(stream([mcpToolLine, mcpResultLine])).entries);
+
+    assert.deepEqual(
+      merged.map((entry) => entry.kind),
+      ['tool_call'],
+    );
+    const call = merged[0];
+    assert.equal(call?.kind, 'tool_call');
+    if (call?.kind === 'tool_call') {
+      assert.equal(call.name, 'mcp__assertum__run_case');
+      assert.deepEqual(call.input, { case: '1' });
+      assert.equal(call.outcome?.content, 'сценарий пройден');
+    }
+  });
+
   it('размышление разбирается отдельной репликой, помеченной как размышление', () => {
     const { entries } = parseTranscript(stream([THINKING_LINE, REPLY_LINE]));
 

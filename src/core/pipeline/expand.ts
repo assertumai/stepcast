@@ -23,6 +23,7 @@ import {
   type RawContextEntry,
   type RawAgentStep,
   type RawBuiltinPredicate,
+  type RawMcp,
   type RawPredicate,
   type RawStep,
 } from './schema.js';
@@ -34,6 +35,7 @@ import type {
   ExpandedPipeline,
   Job,
   KnowledgeDeclaration,
+  McpServers,
   ModelOrigin,
   Pipeline,
   Predicate,
@@ -490,6 +492,23 @@ function toPermissions(raw: NonNullable<RawAgentStep['permissions']>): Permissio
   };
 }
 
+/**
+ * Приводит сырое объявление серверов к модели. Новый объект строится всегда
+ * заново, даже когда содержимое не меняется (`mcp: {}`): на тождестве этого
+ * объекта держится различение уровня, где объявление сделано на самом деле
+ * (`expand.ts`, StepDefaults, и диагностика линта, design.md решение 2).
+ */
+function toMcp(raw: RawMcp): McpServers {
+  return Object.fromEntries(
+    Object.entries(raw).map(([name, server]) => [
+      name,
+      'command' in server
+        ? { command: server.command, ...(server.env === undefined ? {} : { env: server.env }) }
+        : { url: server.url, ...(server.headers === undefined ? {} : { headers: server.headers }) },
+    ]),
+  );
+}
+
 function toAttempts(
   raw: RawStep['attempts'],
   limits: Config['limits'],
@@ -605,6 +624,12 @@ interface StepDefaults {
   readonly sessionMode: 'shared' | 'per_step';
   /** Политика доступа, объявленная работой — применяется к шагу без своей. */
   readonly permissions: Permissions | undefined;
+  /**
+   * Объявление MCP-серверов, действующее для шагов работы: своё, либо —
+   * тем же объектом — унаследованное от пайплайна. Тождество объекта здесь
+   * и отличает уровень объявления друг от друга (design.md, решение 2).
+   */
+  readonly mcp: McpServers | undefined;
 }
 
 function toStep(
@@ -698,6 +723,14 @@ function toStep(
         : defaults.permissions === undefined
           ? {}
           : { permissions: defaults.permissions }),
+      // Тот же приём, что и с правами: шаг, назвавший свой блок (пустой в том
+      // числе — `mcp: {}` снимает унаследованное), получает новый объект;
+      // иначе — объект уровня работы/пайплайна тем же тождеством ссылки.
+      ...(raw.mcp !== undefined
+        ? { mcp: toMcp(raw.mcp) }
+        : defaults.mcp === undefined
+          ? {}
+          : { mcp: defaults.mcp }),
     },
     modelOrigin,
   };
@@ -778,6 +811,12 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   // законно объявляют одну и ту же модель, и слои должны остаться различимы.
   const defaultModelLayer: 'pipeline' | 'config' | undefined =
     doc.defaults?.model !== undefined ? 'pipeline' : config.defaults.model !== undefined ? 'config' : undefined;
+
+  // Объявление пайплайна — верхний из трёх уровней (design.md, решение 2):
+  // разбирается один раз здесь, а не в цикле работ, чтобы работы, его не
+  // переопределившие, унаследовали ровно этот объект — тождеством ссылки, а
+  // не побитовым равенством, на нём и держится диагностика линта.
+  const pipelineMcp: McpServers | undefined = doc.mcp === undefined ? undefined : toMcp(doc.mcp);
 
   const jobs: Job[] = [];
   const modelOrigins = new Map<string, ModelOrigin>();
@@ -939,6 +978,13 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         ? undefined
         : toPermissions(body.permissions as NonNullable<RawAgentStep['permissions']>);
 
+    // Своё объявление работы — то, что попадёт в её запись замка (задача 4);
+    // действующее для шагов значение (`stepMcp` ниже) отличается тем, что
+    // подставляет пайплайновое там, где работа своего не назвала.
+    const jobMcp: McpServers | undefined =
+      body.mcp === undefined ? undefined : toMcp(body.mcp as RawMcp);
+    const stepMcp = jobMcp ?? pipelineMcp;
+
     const output = body.output as { from?: string; schema?: string } | undefined;
     if (output !== undefined && output.from === undefined) {
       const lastAgent = [...rawSteps].reverse().find((step) => !('run' in step));
@@ -1006,6 +1052,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         ? {}
         : { budget: toBudget(body.budget as RawBudget, substitutions, `${at}.budget`) }),
       ...(jobPermissions === undefined ? {} : { permissions: jobPermissions }),
+      ...(jobMcp === undefined ? {} : { mcp: jobMcp }),
       steps: rawSteps.map((step, index) => {
         const expanded = toStep(
           step,
@@ -1019,6 +1066,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
             timeoutMs: config.defaults.stepTimeoutMs,
             sessionMode,
             permissions: jobPermissions,
+            mcp: stepMcp,
           },
           config,
           substitutions,
@@ -1047,6 +1095,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     context: toContext(doc.context),
     contextUpstream: doc.context_upstream ?? 'all',
     ...(doc.budget === undefined ? {} : { budget: toBudget(doc.budget, substitutions, 'budget') }),
+    ...(pipelineMcp === undefined ? {} : { mcp: pipelineMcp }),
     concurrency:
       doc.concurrency === undefined
         ? config.defaults.concurrency

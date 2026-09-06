@@ -10,8 +10,10 @@ import type {
   BackendRefusal,
   BackendRefusalClass,
   LaunchSpec,
+  McpServerStatus,
   PermissionDenial,
 } from './types.js';
+import type { McpServer, McpServers } from '../pipeline/model.js';
 
 /**
  * Режимы, разрешающие неназванное по умолчанию. Закрытый перечень: словарь
@@ -52,6 +54,7 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
       sessions: config.sessions,
       structuredOutput: config.structuredOutput,
       strictPermissions: config.strictPermissions,
+      mcp: config.mcp,
     },
 
     launch(invocation: AgentInvocation): LaunchSpec {
@@ -80,6 +83,16 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
         // режима settings обычные, и добавлять исключение туда, где отсечения
         // ещё нет, было бы менять поведение шага, который strict не объявлял.
         if (invocation.scratchDir !== undefined) command.push('--add-dir', invocation.scratchDir);
+        // Отрезает серверы из `.mcp.json` и прочих конфигураций вне
+        // объявления независимо от того, назвал ли шаг хоть один сервер сам:
+        // strict без объявления обязан остаться без серверов вовсе, а не
+        // унаследовать их молча из репозитория (design.md, решение 4).
+        //
+        // Под возможностью, как и соседние флаги под своими: `mcp: false`
+        // говорит о CLI, которому про MCP знать нечего, и отсечение серверов
+        // — такой же флаг про MCP, как и само объявление. Ни линт, ни ворота
+        // прогона тут не заступятся: шаг со strict ничего не объявляет.
+        if (config.mcp) command.push('--strict-mcp-config');
       }
       if (permissions?.mode !== undefined) command.push('--permission-mode', permissions.mode);
       const allow = withDataCommand(permissions?.allow, permissions?.enforce === 'strict');
@@ -88,6 +101,10 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
       }
       if (permissions?.deny !== undefined && permissions.deny.length > 0) {
         command.push('--disallowedTools', permissions.deny.join(' '));
+      }
+
+      if (invocation.mcpServers !== undefined && config.mcp) {
+        command.push('--mcp-config', JSON.stringify({ mcpServers: toMcpConfig(invocation.mcpServers) }));
       }
 
       return { command, stdin: invocation.prompt, env: config.env };
@@ -107,7 +124,8 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
       const type = record.type;
 
       if (type === 'system' && record.subtype === 'init') {
-        return { kind: 'init', data: record };
+        const mcpServers = readMcpServers(record.mcp_servers);
+        return { kind: 'init', data: record, ...(mcpServers === undefined ? {} : { mcpServers }) };
       }
 
       if (type === 'assistant') {
@@ -181,6 +199,60 @@ function prepareSchema(path: string): string {
 
   const { $schema: _meta, ...rest } = parsed;
   return JSON.stringify(rest);
+}
+
+/**
+ * Объявление серверов в вид, который принимает `--mcp-config`. Argv делится
+ * на `command` и `args`, потому что так устроен формат конфигурации Claude
+ * Code — не потому что движок счёл это удобным.
+ */
+function toMcpConfig(servers: McpServers): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(servers).map(([name, server]) => [name, mcpServerConfig(server)]));
+}
+
+function mcpServerConfig(server: McpServer): Record<string, unknown> {
+  if ('command' in server) {
+    const [command, ...args] = server.command;
+    return {
+      command,
+      ...(args.length === 0 ? {} : { args }),
+      ...(server.env === undefined ? {} : { env: server.env }),
+    };
+  }
+  // `type: 'http'` — единственный вид конечной точки, объявленный форматом
+  // пайплайна (design.md, решение 3); второй транспорт (`sse`) можно завести
+  // отдельным ключом позже, ничего не ломая.
+  return {
+    type: 'http',
+    url: server.url,
+    ...(server.headers === undefined ? {} : { headers: server.headers }),
+  };
+}
+
+/**
+ * Состав поднятых серверов из записи `init`. Разбор мягкий в ту сторону, в
+ * которую велит design.md (риски, решение 7): форма `mcp_servers` не
+ * документирована и может измениться, и неожиданная форма означает «состав не
+ * сообщён» — то есть отсутствие сличения, а не отказ попытке.
+ *
+ * Поэтому пропуск непонятного элемента здесь не годится: пропущенный элемент
+ * неотличим от «сервера в составе нет», а «нет в составе» движок и толкует как
+ * «не поднялся» (`unavailableMcpServers`). Один элемент неожиданного вида —
+ * переименованное поле, новая форма записи — уронил бы каждую попытку каждого
+ * шага с объявлением, назвав ложную причину. Понятен весь список или ни один:
+ * элемент обязан быть объектом со строковыми `name` и `status`.
+ */
+function readMcpServers(raw: unknown): McpServerStatus[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+
+  const out: McpServerStatus[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'object' || entry === null) return undefined;
+    const item = entry as Record<string, unknown>;
+    if (typeof item.name !== 'string' || typeof item.status !== 'string') return undefined;
+    out.push({ name: item.name, connected: item.status === 'connected' });
+  }
+  return out;
 }
 
 function firstToolUse(

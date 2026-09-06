@@ -90,6 +90,12 @@ export function describeSchemaFailure(error: z.ZodError): SchemaFailure {
       const branch = chooseBranch(issue.errors);
       if (branch !== undefined) return explain(branch, path);
     }
+    // Ключ записи (`z.record` с проверенным ключом, например имя MCP-сервера)
+    // проваливается своим собственным замечанием — обычно одно на весь ключ —
+    // и настоящая причина лежит внутри него, а не в обобщённом «Invalid key».
+    if (issue.code === 'invalid_key' && issue.issues.length > 0) {
+      return explain(issue.issues, path);
+    }
     return { message: describeIssue(issue), at: path.length === 0 ? undefined : path.join('.') };
   };
   return explain(error.issues, []);
