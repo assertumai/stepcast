@@ -2156,6 +2156,72 @@ describe('core: mergeLanes — already_merged', () => {
   });
 });
 
+/**
+ * Задача 3.7 (`knowledge-anchors-after-merge`): единица, записанная в рабочем
+ * дереве дорожки по содержимому, которое сама и создала, обязана оставаться
+ * сошедшейся сразу после сведения — сведение накладывает диф, дающий на
+ * дереве проекта то же содержимое байт в байт, а закрепление зависит только
+ * от содержимого, не от истории (design.md, решение 1). До этого изменения
+ * якорь нёс ревизию последнего коммита пути, и коммит сведения делал его
+ * расходящимся в момент возникновения — тест падает на сегодняшнем коде
+ * жёлтым `stale-anchor`.
+ */
+describe('core: mergeLanes — записанная дорожкой память не стареет от сведения', () => {
+  const RECORDING_LANE_PIPELINE = `
+version: 1
+kind: pipeline
+name: дорожка-пишет-память
+workspace: { mode: worktree }
+jobs:
+  work-a:
+    lane: a
+    steps:
+      - id: шаг
+        run: [sh, -c, 'printf "export const a = 2;\\n" > src/a.ts && printf "%s" "{\\"id\\": \\"a-note\\", \\"title\\": \\"Заметка о правке\\", \\"scope\\": [\\"src/**\\"], \\"anchors\\": [\\"src/a.ts\\"], \\"body\\": \\"Заметка.\\"}" > note.json && node "$STEPCAST_BIN" knowledge write --file note.json']
+        expect: [{ exit_code: 0 }]
+`;
+
+  async function checkKnowledge(project: Project): Promise<{ code: ExitCodeValue; stdout: string }> {
+    const stdout: string[] = [];
+    const io: CliIo = { out: (line) => stdout.push(line), err: () => {}, cwd: project.root };
+    const code = await withHome(project.home, () => runCli(['knowledge', 'check'], io));
+    return { code, stdout: stdout.join('\n') };
+  }
+
+  it('единица, записанная дорожкой, остаётся зелёной на дереве проекта после сведения', async () => {
+    const project = makeProject({
+      '.stepcast/config.yml': 'project:\n  knowledge:\n    provider: fs\n    dir: knowledge\n',
+      'src/a.ts': 'export const a = 1;\n',
+      'stepcast.yml': RECORDING_LANE_PIPELINE,
+    });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = tempDir('lanes-runs-');
+    const result = await runLanes(project, runsRoot);
+    assert.equal(result.status, 'success');
+
+    const backlogFile = project.path('backlog.md');
+    writeFileSync(backlogFile, backlogItem('a-item'));
+    commit(project, 'добавлена очередь');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'Заголовок A');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: backlogFile,
+    });
+    assert.deepEqual(outcomes.map((outcome) => outcome.kind), ['merged']);
+    assert.equal(readFileSync(project.path('src/a.ts'), 'utf8'), 'export const a = 2;\n');
+    assert.ok(existsSync(project.path('knowledge/a-note.md')));
+
+    const verdict = await checkKnowledge(project);
+    assert.equal(verdict.code, ExitCode.ok, verdict.stdout);
+    assert.doesNotMatch(verdict.stdout, /stale-anchor/);
+  });
+});
+
 describe('core: applyRun --lane — отказ повторного наложения сведённой дорожки', () => {
   it('отказывает, называя коммиты сведения, дерева не тронув', async () => {
     const project = makeProject({ 'stepcast.yml': oneLanePipeline(SUCCESS_A) });

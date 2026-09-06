@@ -8,7 +8,7 @@ import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { readStatus } from '../src/core/journal/reader.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import type { Config } from '../src/core/config/resolve.js';
-import { makeProject, type Project } from './helpers.js';
+import { anchorHash, makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 /**
@@ -58,8 +58,7 @@ const BROKEN_UNIT = [
   'scope:',
   '  - src/**',
   'anchors:',
-  '  - path: src/нет.ts',
-  '    rev: abc1234',
+  '  - src/нет.ts',
   'status: active',
   '---',
   '',
@@ -176,10 +175,9 @@ jobs:
       'stepcast.yml': pipelineCalling(record),
     });
     gitInit(project);
-    const stale = execFileSync('git', ['-C', project.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(project.path('src/a.ts'));
 
     project.write('src/a.ts', 'export const a = 2;\n');
-    commit(project, 'второй');
     project.write(
       'knowledge/a.md',
       [
@@ -190,7 +188,7 @@ jobs:
         '  - src/**',
         'anchors:',
         '  - path: src/a.ts',
-        `    rev: '${stale.slice(0, 7)}'`,
+        `    hash: '${hash}'`,
         'status: active',
         '---',
         '',
@@ -198,7 +196,7 @@ jobs:
         '',
       ].join('\n'),
     );
-    commit(project, 'третий');
+    commit(project, 'второй');
     return project;
   }
 

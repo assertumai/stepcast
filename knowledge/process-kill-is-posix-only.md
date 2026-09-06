@@ -7,7 +7,7 @@ scope:
   - src/core/run/**
 anchors:
   - path: src/core/exec/process.ts
-    rev: d5f15e2
+    hash: '58babded4381a588'
 status: active
 ---
 

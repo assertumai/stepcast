@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { globSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -13,7 +12,7 @@ import {
   type KnowledgeSource,
 } from '../src/core/knowledge/types.js';
 import { StepcastError } from '../src/core/errors.js';
-import { gitCommit, gitInit } from './helpers.js';
+import { anchorHash, gitCommit, gitInit } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -129,7 +128,7 @@ describe('knowledge-fs: разбор единицы знания', () => {
     );
   });
 
-  it('принимает якорь строкой — путь без ревизии', () => {
+  it('принимает якорь строкой — путь без закрепления', () => {
     const parsed = parseUnit(
       '---\nid: a\ntitle: б\nanchors:\n  - src/a.ts\n---\n\nтело\n',
       'knowledge/a.md',
@@ -137,54 +136,97 @@ describe('knowledge-fs: разбор единицы знания', () => {
     assert.deepEqual(parsed.anchors, [
       // Голый скаляр отображением не является: вписать в него поле нельзя, не
       // переписав чужую строку, — датировать такой якорь нечем.
-      { path: 'src/a.ts', rev: undefined, staleSince: undefined, staleSinceInvalid: false, datable: false },
+      {
+        path: 'src/a.ts',
+        hash: undefined,
+        legacyRev: false,
+        staleSince: undefined,
+        staleSinceInvalid: false,
+        datable: false,
+      },
     ]);
   });
 
-  // Задача 2.3 / Сценарий: «Ревизия из одних цифр проверяется»
-  it('принимает ревизию, прочитанную YAML числом, строкой', () => {
+  // Задача 3.6 / Сценарий: «Закрепление из одних цифр проверяется»
+  //
+  // Значение меньше 2^53 (границы точного целого в double) и потому
+  // переживает округление в обе стороны: тест ловит дефект разбора, а не
+  // случайность приведения типа.
+  it('принимает закрепление, прочитанное YAML числом, строкой', () => {
     const parsed = parseUnit(
-      '---\nid: a\ntitle: б\nanchors:\n  - path: src/a.ts\n    rev: 9517869\n---\n\nтело\n',
+      '---\nid: a\ntitle: б\nanchors:\n  - path: src/a.ts\n    hash: 1234567890123456\n---\n\nтело\n',
       'knowledge/a.md',
     );
     assert.deepEqual(parsed.anchors, [
-      { path: 'src/a.ts', rev: '9517869', staleSince: undefined, staleSinceInvalid: false, datable: true },
+      {
+        path: 'src/a.ts',
+        hash: '1234567890123456',
+        legacyRev: false,
+        staleSince: undefined,
+        staleSinceInvalid: false,
+        datable: true,
+      },
     ]);
   });
 
-  // Задача 2.3 / Сценарий: «Якорь без ревизии остаётся законным»
-  it('якорь отображением без rev даёт ревизию undefined', () => {
+  // Задача 1.3 / Сценарий: «Якорь без закрепления остаётся законным»
+  it('якорь отображением без hash даёт закрепление undefined', () => {
     const parsed = parseUnit(
       '---\nid: a\ntitle: б\nanchors:\n  - path: src/a.ts\n---\n\nтело\n',
       'knowledge/a.md',
     );
     assert.deepEqual(parsed.anchors, [
-      { path: 'src/a.ts', rev: undefined, staleSince: undefined, staleSinceInvalid: false, datable: true },
+      {
+        path: 'src/a.ts',
+        hash: undefined,
+        legacyRev: false,
+        staleSince: undefined,
+        staleSinceInvalid: false,
+        datable: true,
+      },
     ]);
   });
 
-  // Задача 2.3 / Сценарий: «Непригодное значение ревизии отклонено»
+  // Задача 3.5 / Сценарий: «Единица прежней формы названа»
+  it('якорь с rev без hash отмечен прежней формой', () => {
+    const parsed = parseUnit(
+      '---\nid: a\ntitle: б\nanchors:\n  - path: src/a.ts\n    rev: d5f15e2\n---\n\nтело\n',
+      'knowledge/a.md',
+    );
+    assert.deepEqual(parsed.anchors, [
+      {
+        path: 'src/a.ts',
+        hash: undefined,
+        legacyRev: true,
+        staleSince: undefined,
+        staleSinceInvalid: false,
+        datable: true,
+      },
+    ]);
+  });
+
+  // Задача 1.3 / Сценарий: «Непригодное значение закрепления отклонено»
   //
   // Отказом, а не молчаливым `undefined`: у этих значений нет прочтения, при
   // котором единица осмысленна, а `undefined` значил бы «устаревание не
   // считается» — ровно та ложь, из-за которой заведено это изменение.
-  for (const [name, rev] of [
+  for (const [name, hash] of [
     ['логическим значением', 'true'],
     ['списком', '[a, b]'],
     ['отображением', '{}'],
     ['пустым', ''],
   ] as const) {
-    it(`отклоняет ревизию, объявленную ${name}`, () => {
+    it(`отклоняет закрепление, объявленное ${name}`, () => {
       assert.throws(
         () =>
           parseUnit(
-            `---\nid: a\ntitle: б\nanchors:\n  - path: src/a.ts\n    rev: ${rev}\n---\n\nтело\n`,
+            `---\nid: a\ntitle: б\nanchors:\n  - path: src/a.ts\n    hash: ${hash}\n---\n\nтело\n`,
             'knowledge/a.md',
           ),
         (error: unknown) => {
           assert.ok(error instanceof StepcastError);
           assert.match(error.message, /knowledge\/a\.md/);
-          assert.equal(error.at, 'anchors.rev');
+          assert.equal(error.at, 'anchors.hash');
           return true;
         },
       );
@@ -605,6 +647,27 @@ describe('knowledge-fs: предел тела единицы', () => {
     assert.throws(() => readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'));
   });
 
+  // Сценарий: «Путь, содержимое которого не читается, назван отказом записи».
+  // Записать такой якорь без закрепления значило бы завести форму «якорь есть,
+  // а по нему не проверяется ничего» — ту самую, которой быть не должно.
+  it('write якоря, содержимое которого не читается, отвечает ok: false и не оставляет файла', () => {
+    const box = repo({ 'src/nested/a.ts': 'export const a = 1;\n' });
+    const result = box.source().write({
+      id: 'a',
+      title: 'Первая',
+      scope: ['src/**'],
+      anchors: ['src/nested'],
+      body: 'Тело.',
+    });
+
+    assert.equal(result.ok, false);
+    const problem = result.problems.find((item) => item.kind === 'anchor-unreadable');
+    assert.ok(problem !== undefined, JSON.stringify(result.problems));
+    assert.equal(problem.level, 'red');
+    assert.match(problem.detail, /src\/nested/);
+    assert.throws(() => readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'));
+  });
+
   // Задача 1.7 / Сценарий: «Запись раздутой единицы откатывается» — перезапись
   it('write раздутого тела поверх существующей единицы возвращает прежнее содержимое', () => {
     const box = repo({ 'knowledge/a.md': unit({ id: 'a', title: 'Прежняя' }) });
@@ -659,7 +722,7 @@ describe('knowledge-fs: дрейф', () => {
       'knowledge/a.md': unit({
         id: 'a',
         title: 'Первая',
-        anchors: 'anchors:\n  - path: src/missing.ts\n    rev: abc1234',
+        anchors: 'anchors:\n  - src/missing.ts',
       }),
     });
     const verdict = box.source().check();
@@ -669,31 +732,105 @@ describe('knowledge-fs: дрейф', () => {
     assert.equal(missing.level, 'red');
   });
 
-  // Задача 4.4 / Сценарий: «Задетый файл делает единицу жёлтой»
-  it('жёлтым, когда файл изменён позже зафиксированной ревизии', () => {
+  // Задача 3.2 / Сценарий: «Коммит того же содержимого расхождения не создаёт»
+  //
+  // Свойство, ради которого заведён весь дайджест (design.md, решение 1):
+  // коммит, не менявший байтов пути, не создаёт расхождения. До этого
+  // изменения ровно этот коммит и делал единицу расходящейся.
+  it('коммит неизменённого содержимого расхождения не создаёт', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-
-    box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        // Ревизия в кавычках: этот тест про устаревание, а не про то, каким
-        // типом YAML читает скаляр. Без кавычек хеш из одних цифр приходил бы
-        // числом, и тест падал бы примерно раз в двадцать семь прогонов —
-        // случай проверяется тестом «ревизия из одних цифр».
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
+      }),
+    );
+
+    box.commit('фиксирует путь якоря без правки байтов');
+
+    const verdict = box.source().check();
+    assert.equal(verdict.ok, true);
+    assert.deepEqual(verdict.problems, []);
+  });
+
+  // Задача 3.3 / Сценарий: «Свежесозданный файл закрепляется наравне с прочими»
+  it('якорь на файл без единого коммита получает закрепление и ловит правку', () => {
+    const box = repo({ 'src/new.ts': 'export const b = 1;\n' });
+    // Файл ни разу не закоммичен: раньше это давало якорь без закрепления, по
+    // которому не проверялось ничего вовсе (design.md, Context).
+    const result = box.source().write({
+      id: 'a',
+      title: 'Первая',
+      scope: ['src/**'],
+      anchors: ['src/new.ts'],
+      body: 'Тело.',
+    });
+    assert.equal(result.ok, true);
+    const hash = anchorHash(join(box.root, 'src/new.ts'));
+    assert.match(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), new RegExp(`hash: '${hash}'`));
+
+    box.write('src/new.ts', 'export const b = 2;\n');
+    const verdict = box.source().check();
+    const found = verdict.problems.find((problem) => problem.kind === 'stale-anchor');
+    assert.ok(found !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(found.level, 'yellow');
+  });
+
+  // Задача 3.4 / Сценарий: «Дерево без git проверяется наравне с прочими»
+  it('дерево без git даёт то же жёлтое об устаревании', () => {
+    const root = tempDir('knowledge-no-git-');
+    const write = (path: string, content: string): void => {
+      const full = join(root, path);
+      mkdirSync(dirname(full), { recursive: true });
+      writeFileSync(full, content);
+    };
+    write('src/a.ts', 'export const a = 1;\n');
+    const hash = anchorHash(join(root, 'src/a.ts'));
+    write('src/a.ts', 'export const a = 2;\n');
+    write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
+      }),
+    );
+
+    const source = createFsKnowledgeSource({
+      root,
+      dir: 'knowledge',
+      indexMaxTokens: 2000,
+      specIndexMaxTokens: 2000,
+      unitMaxTokens: 1000,
+      staleAfterMs: 14 * DAY,
+    });
+    const verdict = source.check();
+    assert.equal(verdict.ok, true);
+    const found = verdict.problems.find((problem) => problem.kind === 'stale-anchor');
+    assert.ok(found !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(found.level, 'yellow');
+    assert.ok(!verdict.problems.some((problem) => problem.kind === 'anchor-unknown'));
+  });
+
+  // Задача 4.4 / Сценарий: «Изменённое содержимое делает единицу жёлтой»
+  it('жёлтым, когда содержимое разошлось с закреплением', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
       }),
     );
 
     const verdict = box.source().check();
     assert.equal(verdict.ok, true);
-    // По виду нарушения, а не по позиции в списке: непрочитанная история даёт
-    // соседнее жёлтое, и падение по индексу пряталось бы за «ожидали другое».
     const found = verdict.problems.find((problem) => problem.kind === 'stale-anchor');
     assert.ok(found !== undefined, JSON.stringify(verdict.problems));
     assert.equal(found.level, 'yellow');
@@ -704,25 +841,18 @@ describe('knowledge-fs: дрейф', () => {
   // от возраста коммита, а не от того, увидел ли кто-нибудь расхождение.
   it('месяц простоя без датирования не даёт красного, только жёлтое', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        // Ревизия в кавычках: этот тест про устаревание, а не про то, каким
-        // типом YAML читает скаляр. Без кавычек хеш из одних цифр приходил бы
-        // числом, и тест падал бы примерно раз в двадцать семь прогонов —
-        // случай проверяется тестом «ревизия из одних цифр».
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
       }),
     );
 
-    // Коммиту месяц, а расхождение никто ни разу не датировал: жёлтая фаза
+    // Правке месяц, а расхождение никто ни разу не датировал: жёлтая фаза
     // не кончается сама, чужой активностью (design.md, решение 1).
     const verdict = box.source({ now: Date.now() + 30 * DAY }).check();
     assert.equal(verdict.ok, true);
@@ -734,17 +864,14 @@ describe('knowledge-fs: дрейф', () => {
   // Задача 4.3 / Сценарий: «Просроченное жёлтое становится красным»
   it('красным становится расхождение, датированное дольше stale_after назад', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
       }),
     );
 
@@ -774,16 +901,14 @@ describe('knowledge-fs: дрейф', () => {
   // Задача 4.2 / Сценарий: «Первое наблюдение датирует расхождение»
   it('check({record: true}) вписывает stale_since, остальная часть файла побайтово прежняя', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
       }),
     );
     const before = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
@@ -798,16 +923,14 @@ describe('knowledge-fs: дрейф', () => {
   // Задача 4.4 / Сценарий: «Повторная правка пути не сдвигает дату»
   it('повторная правка пути после датирования не сдвигает дату', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
       }),
     );
 
@@ -817,7 +940,6 @@ describe('knowledge-fs: дрейф', () => {
     assert.ok(firstDate !== undefined);
 
     box.write('src/a.ts', 'export const a = 3;\n');
-    box.commit('третий');
     box.source({ now: t0 + DAY }).check({ record: true });
 
     const secondDate = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8').match(/stale_since: (\S+)/)?.[1];
@@ -830,29 +952,21 @@ describe('knowledge-fs: дрейф', () => {
   // Задача 4.5 / Сценарий: «Исчезнувшее расхождение теряет дату»
   it('check({record: true}) снимает stale_since, когда расхождение исчезло', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
-    const head = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
       }),
     );
     box.source({ now: Date.now() }).check({ record: true });
     assert.match(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), /stale_since:/);
 
-    // Ревизия якоря правится на совпадающую с последним коммитом пути —
-    // расхождения по нему больше нет.
-    const caughtUp = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8').replace(
-      /rev: '[0-9a-f]+'/,
-      `rev: '${head.slice(0, 7)}'`,
-    );
-    writeFileSync(join(box.root, 'knowledge/a.md'), caughtUp);
+    // Содержимое пути правится обратно на закреплённое — расхождения больше нет.
+    box.write('src/a.ts', 'export const a = 1;\n');
 
     const removal = box.source().check({ record: true });
     assert.doesNotMatch(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), /stale_since:/);
@@ -860,20 +974,18 @@ describe('knowledge-fs: дрейф', () => {
   });
 
   // Правка дерева обязана быть названа в самом ответе: перечитывать дерево
-  // вторым вызовом ради того же знания значило бы удвоить чтение истории git,
+  // вторым вызовом ради того же знания значило бы удвоить хеширование файлов,
   // а для источника `cmd` — дважды запустить внешнюю команду.
   it('check({record: true}) отдаёт отчёт о датировании, check без record — нет', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
       }),
     );
 
@@ -897,43 +1009,19 @@ describe('knowledge-fs: дрейф', () => {
     assert.match(dated.detail, /известно с 2026-09-06T09:12:33Z/);
   });
 
-  // Задача 4.6, первая половина
-  it('непрочитанная история пути не снимает уже поставленную дату', () => {
-    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
-    box.write(
-      'knowledge/a.md',
-      unit({
-        id: 'a',
-        title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
-      }),
-    );
-    box.source({ now: Date.now() }).check({ record: true });
-    const dated = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
-    assert.match(dated, /stale_since:/);
-
-    rmSync(join(box.root, '.git'), { recursive: true, force: true });
-    box.source().check({ record: true });
-    assert.equal(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), dated);
-  });
-
-  // Задача 4.6, вторая половина
+  // Задача 4.6, вторая половина: пропавший путь якоря не снимает уже
+  // поставленную дату — missing-anchor обрывает разбор якоря раньше сравнения
+  // содержимого, и снятие даты через него не проходит.
   it('несуществующий путь якоря не снимает уже поставленную дату', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
       }),
     );
     box.source({ now: Date.now() }).check({ record: true });
@@ -948,16 +1036,14 @@ describe('knowledge-fs: дрейф', () => {
   // Задача 4.7 / Сценарий: «Испорченная дата не роняет отбор»
   it('испорченная stale_since — жёлтое, а не отказ разбора; index и select работают', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'\n    stale_since: не-дата`,
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'\n    stale_since: не-дата`,
       }),
     );
 
@@ -979,10 +1065,8 @@ describe('knowledge-fs: дрейф', () => {
   // Задача 1.5 / Сценарий: «якорь потоковым стилем не поддаётся точечной правке»
   it('якорь потоковым стилем не датируется, файл остаётся нетронутым', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
     const text = [
       '---',
       'id: a',
@@ -990,7 +1074,7 @@ describe('knowledge-fs: дрейф', () => {
       'scope:',
       '  - src/**',
       'anchors:',
-      `  - {path: src/a.ts, rev: '${stale.slice(0, 7)}'}`,
+      `  - {path: src/a.ts, hash: '${hash}'}`,
       'status: active',
       '---',
       '',
@@ -1026,10 +1110,9 @@ describe('knowledge-fs: дрейф', () => {
   // Задача 1.5, вторая половина: снять дату с недатируемого якоря так же
   // нельзя, как и поставить, — и оставленная дата сделала бы следующее
   // расхождение красным в момент возникновения.
-  it('недатируемый якорь с датой при сошедшейся ревизии виден жёлтым', () => {
+  it('недатируемый якорь с датой при сошедшемся закреплении виден жёлтым', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const head = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     const text = [
       '---',
       'id: a',
@@ -1037,7 +1120,7 @@ describe('knowledge-fs: дрейф', () => {
       'scope:',
       '  - src/**',
       'anchors:',
-      `  - {path: src/a.ts, rev: '${head.slice(0, 7)}', stale_since: '2026-01-01T00:00:00Z'}`,
+      `  - {path: src/a.ts, hash: '${hash}', stale_since: '2026-01-01T00:00:00Z'}`,
       'status: active',
       '---',
       '',
@@ -1055,53 +1138,44 @@ describe('knowledge-fs: дрейф', () => {
     assert.match(undatable.detail, /src\/a\.ts/);
   });
 
-  // Задача 4.7: испорченная дата — свойство шапки, а не исхода сравнения с
-  // историей. Ветвь совпавшей ревизии и ветвь непрочитанной истории выходят
-  // раньше подтверждённого расхождения, и порча в них была не видна вовсе.
-  it('испорченная stale_since видна и на сошедшемся якоре, и при непрочитанной истории', () => {
+  // Задача 4.7: испорченная дата — свойство шапки, а не исхода сравнения
+  // содержимого. Ветвь сошедшегося закрепления выходит раньше подтверждённого
+  // расхождения, и порча в ней была не видна вовсе.
+  it('испорченная stale_since видна и на сошедшемся закреплении, без нарушения об устаревании', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const head = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${head.slice(0, 7)}'\n    stale_since: не-дата`,
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'\n    stale_since: не-дата`,
       }),
     );
 
     const matched = box.source().check();
     assert.equal(matched.ok, true);
     assert.equal(matched.problems.filter((problem) => problem.kind === 'anchor-bad-since').length, 1);
-    // Ревизия сошлась — расхождения нет, и жёлтое здесь ровно одно: порча даты.
+    // Закрепление сошлось — расхождения нет, и жёлтое здесь ровно одно: порча даты.
     assert.equal(matched.problems.some((problem) => problem.kind === 'stale-anchor'), false);
-
-    rmSync(join(box.root, '.git'), { recursive: true, force: true });
-    const unknown = box.source().check();
-    assert.equal(unknown.problems.filter((problem) => problem.kind === 'anchor-bad-since').length, 1);
-    assert.ok(unknown.problems.some((problem) => problem.kind === 'anchor-unknown'));
   });
 
-  // Задача 1.1 / Сценарий: «Ревизия из одних цифр проверяется»
+  // Задача 3.6 / Сценарий: «Закрепление из одних цифр проверяется»
   //
-  // Короткий хеш git — семь шестнадцатеричных символов, и из одних цифр он
-  // состоит примерно в 3.7 % случаев. YAML типизирует такой скаляр числом, и
-  // разбор, бравший `rev` только строкой, молча превращал его в «якорь без
-  // ревизии»: устаревание по нему не проверялось никогда. Ревизия здесь
-  // задана буквально, а не срезом настоящего хеша, — иначе тест ловил бы
-  // дефект с той же вероятностью 3.7 %, то есть выглядел бы флаком.
-  it('ревизия из одних цифр проверяется на устаревание', () => {
+  // Дайджест из шестнадцати шестнадцатеричных символов состоит из одних цифр
+  // примерно в одном случае из тысячи восьмисот. YAML типизирует такой скаляр
+  // числом, и разбор, бравший `hash` только строкой, молча превращал бы его в
+  // «якорь без закрепления»: устаревание по нему не проверялось бы вовсе.
+  // Значение здесь меньше 2^53 и потому переживает округление double в оба
+  // конца — тест ловит дефект разбора, а не случайность приведения типа.
+  it('закрепление из одних цифр читается строкой и проверяется на устаревание', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: 'anchors:\n  - path: src/a.ts\n    rev: 9517869',
+        anchors: 'anchors:\n  - path: src/a.ts\n    hash: 1234567890123456',
       }),
     );
 
@@ -1111,34 +1185,131 @@ describe('knowledge-fs: дрейф', () => {
     assert.equal(found.level, 'yellow');
   });
 
-  // Задача 3.3 / Сценарий: «Опечатка в ревизии названа»
+  // Задача 3.6 / Сценарий: «Непригодное значение закрепления отклонено» —
+  // форма, не отказ разбора
   //
-  // Жёлтым, а не отказом: похожесть на хеш — догадка, и значение может
-  // оказаться тегом или именем ветки. Но молчать нельзя — иначе опечатка в
-  // ревизии неотличима от устаревшего якоря.
-  it('жёлтым на ревизии, не похожей на хеш git', () => {
+  // Жёлтым, а не отказом (design.md, решение 6): у поля закрепления, в
+  // отличие от прежней ревизии, нет осмысленных значений, кроме дайджеста, но
+  // отказ здесь обрушил бы вместе с проверкой отбор и оглавление.
+  it('жёлтым на закреплении, не похожем на дайджест', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: 'anchors:\n  - path: src/a.ts\n    rev: d5f15e2-fix',
+        anchors: 'anchors:\n  - path: src/a.ts\n    hash: d5f15e2-fix',
       }),
     );
 
     const verdict = box.source().check();
     assert.equal(verdict.ok, true);
-    const found = verdict.problems.find((problem) => problem.kind === 'anchor-bad-rev');
+    const found = verdict.problems.find((problem) => problem.kind === 'anchor-bad-hash');
     assert.ok(found !== undefined, JSON.stringify(verdict.problems));
     assert.equal(found.level, 'yellow');
     assert.match(found.detail, /src\/a\.ts/);
     assert.match(found.detail, /d5f15e2-fix/);
   });
 
-  // Задача 3.3 / Сценарий: «Непохожая ревизия не выдаётся за устаревание»
-  it('непохожая ревизия не даёт нарушения об устаревании', () => {
+  // Терпимость к числовой типизации объявлена безусловной, и оговорок про
+  // «кроме значений за границей точного целого» у неё нет. Обратное приведение
+  // `String(Number(...))` такие значения теряет — 16 девяток не умещаются в
+  // мантиссу double, — поэтому закрепление читается исходным текстом скаляра.
+  for (const [name, hash] of [
+    ['за границей точного целого', '9999999999999999'],
+    ['с ведущими нулями', '0000123456789012'],
+  ] as const) {
+    it(`закрепление ${name} проверяется на устаревание, а не объявляется непригодным`, () => {
+      const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+      box.write(
+        'knowledge/a.md',
+        unit({
+          id: 'a',
+          title: 'Первая',
+          anchors: `anchors:\n  - path: src/a.ts\n    hash: ${hash}`,
+        }),
+      );
+
+      const verdict = box.source().check();
+      assert.equal(verdict.ok, true);
+      const found = verdict.problems.find((problem) => problem.kind === 'stale-anchor');
+      assert.ok(found !== undefined, JSON.stringify(verdict.problems));
+      assert.equal(found.level, 'yellow');
+      // Значение названо ровно тем, чем набрано: округлённое или потерявшее
+      // нули закрепление в сообщении отправило бы человека сверять не то.
+      assert.match(found.detail, new RegExp(hash));
+      assert.ok(!verdict.problems.some((problem) => problem.kind === 'anchor-bad-hash'));
+    });
+  }
+
+  // Значение, которое YAML типизирует числом, а дайджестом оно не является:
+  // форма проверяется по исходному тексту, и запись показателем степени сквозь
+  // неё не проходит.
+  it('жёлтым на числовом закреплении, не имеющем формы дайджеста', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: 'anchors:\n  - path: src/a.ts\n    hash: 1e16',
+      }),
+    );
+
+    const verdict = box.source().check();
+    assert.equal(verdict.ok, true);
+    const found = verdict.problems.find((problem) => problem.kind === 'anchor-bad-hash');
+    assert.ok(found !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(found.level, 'yellow');
+    assert.match(found.detail, /1e16/);
+  });
+
+  // Дайджест этот источник печатает только строчными: набранное заглавными
+  // значение его дайджестом не является ни при каком содержимом. Признай
+  // проверка формы его годным — вышло бы `stale-anchor`, то есть нарушение с
+  // неверной причиной.
+  it('жёлтым о форме на закреплении, набранном заглавными', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    const hash = anchorHash(join(box.root, 'src/a.ts')).toUpperCase();
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
+      }),
+    );
+
+    const verdict = box.source().check();
+    assert.equal(verdict.ok, true);
+    const found = verdict.problems.find((problem) => problem.kind === 'anchor-bad-hash');
+    assert.ok(found !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(found.level, 'yellow');
+    assert.ok(!verdict.problems.some((problem) => problem.kind === 'stale-anchor'));
+  });
+
+  // Задача 3.6 / Сценарий: «Непригодное закрепление не выдаётся за устаревание»
+  it('непохожее закрепление не даёт нарушения об устаревании', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: 'anchors:\n  - path: src/a.ts\n    hash: релиз-осень',
+      }),
+    );
+
+    const verdict = box.source().check();
+    const kinds = verdict.problems.map((problem) => problem.kind);
+    assert.ok(kinds.includes('anchor-bad-hash'), JSON.stringify(verdict.problems));
+    assert.ok(!kinds.includes('stale-anchor'), JSON.stringify(verdict.problems));
+  });
+
+  // Задача 3.5 / Сценарий: «Единица прежней формы названа», «Прежняя форма не
+  // сравнивается с историей»
+  it('якорь с rev без hash даёт жёлтое о прежней форме и не считает устаревание', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
     box.commit('первый');
     box.write('src/a.ts', 'export const a = 2;\n');
@@ -1148,27 +1319,82 @@ describe('knowledge-fs: дрейф', () => {
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: 'anchors:\n  - path: src/a.ts\n    rev: релиз-осень',
+        anchors: 'anchors:\n  - path: src/a.ts\n    rev: d5f15e2',
       }),
     );
 
     const verdict = box.source().check();
-    const kinds = verdict.problems.map((problem) => problem.kind);
-    assert.ok(kinds.includes('anchor-bad-rev'), JSON.stringify(verdict.problems));
-    assert.ok(!kinds.includes('stale-anchor'), JSON.stringify(verdict.problems));
+    assert.equal(verdict.ok, true);
+    const legacy = verdict.problems.find((problem) => problem.kind === 'anchor-legacy-rev');
+    assert.ok(legacy !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(legacy.level, 'yellow');
+    assert.match(legacy.detail, /knowledge\/a\.md/);
+    assert.match(legacy.detail, /src\/a\.ts/);
+    assert.ok(!verdict.problems.some((problem) => problem.kind === 'stale-anchor'));
   });
 
-  it('свежий якорь не даёт нарушения', () => {
-    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const head = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  // Путь существует, а байтов у него нет: каталог проходит проверку
+  // существования и роняет чтение. `check` стоит гейтом, и трасса Node вместо
+  // уровня нарушения обрывала бы работу вместо того, чтобы её назвать.
+  it('жёлтым на якоре, содержимое которого не читается', () => {
+    const box = repo({ 'src/nested/a.ts': 'export const a = 1;\n' });
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        // Кавычки — по той же причине, что в тестах устаревания.
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${head.slice(0, 7)}'`,
+        anchors: "anchors:\n  - path: src/nested\n    hash: '1234567890123456'",
+      }),
+    );
+
+    const verdict = box.source().check();
+    assert.equal(verdict.ok, true);
+    const found = verdict.problems.find((problem) => problem.kind === 'anchor-unreadable');
+    assert.ok(found !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(found.level, 'yellow');
+    assert.match(found.detail, /src\/nested/);
+    assert.ok(!verdict.problems.some((problem) => problem.kind === 'stale-anchor'));
+  });
+
+  // Якорь голым скаляром — законная форма: существование пути проверяется,
+  // устаревание не считается. Проверяется на уровне `check`, а не только
+  // разбора: провались `undefined` в сравнение, всякий такой якорь начал бы
+  // давать ложное жёлтое, а тесты разбора остались бы зелёными.
+  for (const [name, anchors] of [
+    ['голым скаляром', 'anchors:\n  - src/a.ts'],
+    ['отображением без hash', 'anchors:\n  - path: src/a.ts'],
+  ] as const) {
+    it(`якорь ${name} нарушений об устаревании не даёт при любом содержимом`, () => {
+      const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+      box.write('knowledge/a.md', unit({ id: 'a', title: 'Первая', anchors }));
+      box.write('src/a.ts', 'export const a = 2;\n');
+
+      const verdict = box.source().check();
+      assert.equal(verdict.ok, true);
+      assert.deepEqual(verdict.problems, []);
+    });
+  }
+
+  // Якорь на каталог у голого скаляра остаётся законным: закрепления у него
+  // нет, читать нечего, и проверяется по нему одно существование пути.
+  it('якорь голым скаляром на каталог нарушения не даёт', () => {
+    const box = repo({ 'src/nested/a.ts': 'export const a = 1;\n' });
+    box.write('knowledge/a.md', unit({ id: 'a', title: 'Первая', anchors: 'anchors:\n  - src/nested' }));
+
+    const verdict = box.source().check();
+    assert.equal(verdict.ok, true);
+    assert.deepEqual(verdict.problems, []);
+  });
+
+  it('свежий якорь не даёт нарушения', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
       }),
     );
     const verdict = box.source().check();
@@ -1179,7 +1405,8 @@ describe('knowledge-fs: дрейф', () => {
   // Ревью: проверять якоря отменённого — значит требовать от
   // инвалидированного утверждения оставаться верным, и архив со временем
   // делает гейт вечно красным. Тогда инвалидация выталкивает к удалению,
-  // которое она и заводилась заменить.
+  // которое она и заводилась заменить. Форма закрепления (здесь — прежняя,
+  // `rev` без `hash`) по той же причине не проверяется тоже.
   it('якоря инвалидированной единицы не проверяются', () => {
     const box = repo({
       'knowledge/a.md': unit({
@@ -1210,41 +1437,19 @@ describe('knowledge-fs: дрейф', () => {
     assert.ok(verdict.problems.some((problem) => problem.kind === 'duplicate-id'));
   });
 
-  // Ревью нашло это флейком собственного теста: сорвавшийся вызов git молча
-  // превращал нарушение в «память цела». Непроверенное обязано быть видно.
-  it('жёлтым, когда историю пути прочитать не удалось', () => {
-    const box = repo({
-      'knowledge/a.md': unit({
-        id: 'a',
-        title: 'Первая',
-        anchors: 'anchors:\n  - path: src/a.ts\n    rev: abc1234',
-      }),
-      'src/a.ts': 'export const a = 1;\n',
-    });
-    // Каталог перестаёт быть репозиторием: `git log` отказывает целиком.
-    rmSync(join(box.root, '.git'), { recursive: true, force: true });
-
-    const verdict = box.source().check();
-
-    assert.equal(verdict.ok, true);
-    assert.ok(verdict.problems.some((problem) => problem.kind === 'anchor-unknown'));
-  });
-
   // Задача 4.10: check без record остаётся чтением даже при недатированном
   // расхождении — половина ценности команды объявлена гейтом CI/pre-commit,
   // а гейт, правящий рабочую копию, непригоден там, где он полезнее всего.
   it('check без record не меняет каталог знания ни одним байтом', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
     box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${hash}'`,
       }),
     );
     const before = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
@@ -1266,11 +1471,10 @@ describe('knowledge-fs: дрейф', () => {
 });
 
 describe('knowledge-fs: запись', () => {
-  // Задача 4.5 / Сценарий: «Запись фиксирует ревизии якорей»
-  it('подставляет ревизию последнего коммита, тронувшего путь', () => {
+  // Задача 1.4, 1.5 / Сценарий: «Запись закрепляет содержимое якорей»
+  it('закрепляет содержимое якоря дайджестом, закавыченным', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const head = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
 
     const result = box.source().write({
       id: 'a',
@@ -1282,7 +1486,7 @@ describe('knowledge-fs: запись', () => {
 
     assert.equal(result.ok, true);
     const text = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
-    assert.match(text, new RegExp(head.slice(0, 7)));
+    assert.match(text, new RegExp(`hash: '${hash}'`));
   });
 
   // Задача 4.5 / Сценарий: «Отклонённая запись не оставляет файла»
@@ -1340,19 +1544,16 @@ describe('knowledge-fs: запись', () => {
   });
 
   // Задача 4.9 / Сценарий: «Запись единицы дат не оставляет»
-  it('write перезаписывает единицу без stale_since, ревизии якорей свежие', () => {
+  it('write перезаписывает единицу без stale_since, закрепление якорей свежее', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
-    box.commit('первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const staleHash = anchorHash(join(box.root, 'src/a.ts'));
     box.write('src/a.ts', 'export const a = 2;\n');
-    box.commit('второй');
-    const head = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
     box.write(
       'knowledge/a.md',
       unit({
         id: 'a',
         title: 'Первая',
-        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+        anchors: `anchors:\n  - path: src/a.ts\n    hash: '${staleHash}'`,
       }),
     );
     box.source({ now: Date.now() }).check({ record: true });
@@ -1369,7 +1570,8 @@ describe('knowledge-fs: запись', () => {
     assert.equal(result.ok, true);
     const text = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
     assert.doesNotMatch(text, /stale_since/);
-    assert.match(text, new RegExp(head.slice(0, 7)));
+    const freshHash = anchorHash(join(box.root, 'src/a.ts'));
+    assert.match(text, new RegExp(`hash: '${freshHash}'`));
   });
 
   it('контракт записи отклоняет такой идентификатор ещё разбором', () => {

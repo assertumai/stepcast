@@ -1,8 +1,15 @@
-import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { globSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve as resolvePath } from 'node:path';
 
-import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import {
+  isMap,
+  isScalar,
+  isSeq,
+  parseDocument,
+  Scalar,
+  stringify as stringifyYaml,
+} from 'yaml';
 
 import { estimateTokens } from '../context/assemble.js';
 import { matchesGlob } from '../context/glob.js';
@@ -48,7 +55,10 @@ import type {
 
 interface Anchor {
   readonly path: string;
-  readonly rev: string | undefined;
+  /** Дайджест содержимого пути на момент записи (design.md, решение 1). */
+  readonly hash: string | undefined;
+  /** Якорь прежней формы: несёт `rev` и не несёт `hash` (design.md, решение 5). */
+  readonly legacyRev: boolean;
   /** Момент, когда расхождение по этому якорю впервые обнаружено. */
   readonly staleSince: number | undefined;
   /** `stale_since` объявлен, но моментом времени не читается (design.md, решение 7). */
@@ -104,10 +114,47 @@ export interface FsSourceOptions {
 }
 
 /**
- * Похожее на ревизию git: от минимального сокращения, которое git принимает,
- * до полного SHA-1.
+ * Форма дайджеста закрепления: sha256 по байтам файла, первые 16
+ * шестнадцатеричных (design.md, решение 3).
+ *
+ * Без нечувствительности к регистру, и намеренно: `contentHash` печатает
+ * только строчные, поэтому закрепление, набранное заглавными, дайджестом этого
+ * источника не является ни при каком содержимом. Признай проверка формы его
+ * годным — сравнение ниже дало бы `stale-anchor`, то есть нарушение с неверной
+ * причиной: человека послали бы перечитывать файл вместо того, чтобы назвать
+ * непригодное значение.
  */
-const HASH = /^[0-9a-f]{4,40}$/i;
+const HASH = /^[0-9a-f]{16}$/;
+
+/** Закрепление якоря — дайджест содержимого пути, а не его истории (design.md, решение 3). */
+function contentHash(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+}
+
+/**
+ * Дайджест содержимого пути либо причина, по которой его не посчитать.
+ *
+ * Путь якоря существует не значит «путь читается байтами»: каталог, устройство
+ * и файл без прав чтения проходят проверку существования и роняют чтение.
+ * Отдавать причину, а не бросать: `check` стоит гейтом (`knowledge_valid`,
+ * pre-commit), и трасса Node вместо уровня нарушения обрывает работу вместо
+ * того, чтобы её назвать.
+ */
+function readContentHash(absolute: string): { readonly hash: string } | { readonly reason: string } {
+  try {
+    return { hash: contentHash(readFileSync(absolute)) };
+  } catch (error) {
+    return { reason: describeReadFailure(error) };
+  }
+}
+
+/** Причина, по которой байтов у существующего пути не взять, — словами. */
+function describeReadFailure(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === 'EISDIR') return 'путь — каталог, а закрепление считается по байтам файла';
+  if (code === 'EACCES' || code === 'EPERM') return 'нет прав на чтение';
+  return code ?? String(error);
+}
 
 export function createFsKnowledgeSource(options: FsSourceOptions): KnowledgeSource {
   return new FsKnowledgeSource(options);
@@ -273,41 +320,55 @@ class FsKnowledgeSource implements KnowledgeSource {
           continue;
         }
 
-        if (anchor.rev === undefined) continue;
-
-        // Форма ревизии проверяется до чтения истории. Сравнивать с историей
-        // непригодное значение нельзя: `startsWith` на мусоре даёт либо
-        // ложное «совпало», либо «устарело» с неверной причиной, и опечатка в
-        // ревизии становится неотличима от настоящего дрейфа. Жёлтым, а не
-        // отказом разбора: похожесть на хеш — догадка, значение может быть
-        // тегом или именем ветки, а отказывать по догадке значит учить
-        // обходить проверку.
-        if (!HASH.test(anchor.rev)) {
+        // Якорь прежней формы: несёт `rev`, а `hash` перезапись ещё не
+        // проставила. Жёлтым, а не молчанием и не сравнением с историей
+        // (design.md, решение 5): форма записи — не просроченное знание, и
+        // заход, который эту единицу не писал, снять нарушение не вправе.
+        if (anchor.legacyRev) {
           problems.push({
             id: unit.id,
-            kind: 'anchor-bad-rev',
+            kind: 'anchor-legacy-rev',
             level: 'yellow',
-            detail: `Ревизия не похожа на хеш git, устаревание не проверено: ${anchor.path}@${anchor.rev}`,
+            detail: `Якорь закреплён ревизией прежней формы, перезапишите единицу: ${unit.file}#${anchor.path}`,
           });
           continue;
         }
 
-        const last = lastCommit(this.options.root, anchor.path);
-        if (last === 'unavailable') {
-          // Жёлтым, а не молчанием: устаревание по этому якорю не проверено, и
-          // выдавать непроверенное за целое — единственный способ, которым эта
-          // проверка может соврать незаметно. Не красным: в репозитории без
-          // git это состояние нормы, а не поломка.
+        if (anchor.hash === undefined) continue;
+
+        // Форма закрепления проверяется до сравнения содержимого: сравнивать
+        // с мусором нельзя, иначе опечатка в закреплении неотличима от
+        // настоящего дрейфа. Жёлтым, а не отказом разбора: отказ обрушил бы
+        // вместе с проверкой отбор и оглавление (design.md, решение 6).
+        if (!HASH.test(anchor.hash)) {
           problems.push({
             id: unit.id,
-            kind: 'anchor-unknown',
+            kind: 'anchor-bad-hash',
             level: 'yellow',
-            detail: `Историю пути прочитать не удалось, устаревание не проверено: ${anchor.path}`,
+            detail: `Закрепление не похоже на дайджест содержимого, устаревание не проверено: ${anchor.path}@${anchor.hash}`,
           });
           continue;
         }
-        if (last === 'none') continue;
-        if (last.rev.startsWith(anchor.rev) || anchor.rev.startsWith(last.rev)) {
+
+        // Расхождение определяется содержимым пути, а не его историей
+        // (design.md, решение 1): коммит, не менявший байтов, расхождения не
+        // создаёт, и дерево без git проверяется наравне с прочими.
+        const read = readContentHash(absolute);
+        if ('reason' in read) {
+          // Путь существует, но байтов у него нет: каталог, устройство, файл
+          // без прав. Жёлтым, как и всякая непроверенная форма закрепления:
+          // устаревание по такому якорю не считается, но и молчать о нём
+          // нельзя — молчание выключило бы проверку без единого следа.
+          problems.push({
+            id: unit.id,
+            kind: 'anchor-unreadable',
+            level: 'yellow',
+            detail: `Содержимое пути якоря не читается, устаревание не проверено: ${anchor.path} (${read.reason})`,
+          });
+          continue;
+        }
+
+        if (read.hash === anchor.hash) {
           // Расхождение, по которому якорь мог быть датирован раньше, больше
           // не существует: оставленная дата сделала бы следующее — новое —
           // расхождение красным в момент возникновения (design.md, решение 6).
@@ -320,8 +381,8 @@ class FsKnowledgeSource implements KnowledgeSource {
           continue;
         }
 
-        // Расхождение подтверждено. Уровень считается не от возраста коммита
-        // `last`, а от момента, когда это расхождение впервые увидели
+        // Расхождение подтверждено. Уровень считается не от возраста правки
+        // пути, а от момента, когда это расхождение впервые увидели
         // (design.md, решение 1): без даты — всегда жёлтое, с датой — жёлтое
         // в пределах `stale_after` и красное за ним.
         const staleSince = anchor.staleSinceInvalid ? undefined : anchor.staleSince;
@@ -332,10 +393,10 @@ class FsKnowledgeSource implements KnowledgeSource {
           level: overdue ? 'red' : 'yellow',
           detail:
             staleSince === undefined
-              ? `Задето позже зафиксированного: ${anchor.path} изменён коммитом ${short(last.rev)}`
+              ? `Содержимое разошлось с закреплением: ${anchor.path}@${anchor.hash}`
               : overdue
-                ? `Устарело дольше объявленного срока (известно с ${isoSeconds(staleSince)}): ${anchor.path} изменён коммитом ${short(last.rev)}`
-                : `Задето позже зафиксированного (известно с ${isoSeconds(staleSince)}): ${anchor.path} изменён коммитом ${short(last.rev)}`,
+                ? `Устарело дольше объявленного срока (известно с ${isoSeconds(staleSince)}): ${anchor.path}@${anchor.hash}`
+                : `Задето позже зафиксированного (известно с ${isoSeconds(staleSince)}): ${anchor.path}@${anchor.hash}`,
         });
 
         // Ставит первый акт датирования, увидевший расхождение без даты;
@@ -507,6 +568,37 @@ class FsKnowledgeSource implements KnowledgeSource {
         });
       }
     }
+
+    // Закрепления считаются здесь же, до первой правки дерева: путь, байтов у
+    // которого не взять, — отказ с причиной, а не записанная единица с якорем,
+    // по которому не проверяется ничего. Молчаливо записать такой якорь без
+    // закрепления значило бы выключить проверку в момент её объявления.
+    const anchors = request.anchors.map((path) => {
+      // Закрепление подставляется движком, а не пишущим: оно и есть точка, от
+      // которой считается устаревание, и доверять его тому, кто пишет
+      // утверждение, значит позволить объявить себя вечно свежим. Путь может
+      // не существовать — тогда якорь остаётся без закрепления, а `check`
+      // ниже отклонит запись красным `missing-anchor`.
+      const anchorAbsolute = resolvePath(this.options.root, path);
+      if (!exists(anchorAbsolute)) return { path };
+      const read = readContentHash(anchorAbsolute);
+      if ('reason' in read) {
+        problems.push({
+          id: request.id,
+          kind: 'anchor-unreadable',
+          level: 'red',
+          detail: `Содержимое пути якоря не читается, закреплять нечего: ${path} (${read.reason})`,
+        });
+        return { path };
+      }
+      const hash = new Scalar(read.hash);
+      // Закавыченным: тип скаляра не должен зависеть от того, какие символы
+      // выпали в дайджест (design.md, решение 6) — шестнадцать шестнадцатеричных
+      // цифр стоят на границе точного целого в double.
+      hash.type = 'QUOTE_SINGLE';
+      return { path, hash };
+    });
+
     if (problems.length > 0) return { ok: false, problems };
 
     // Уже отменённые не трогаются: отмена идемпотентна, а запись их файла
@@ -516,16 +608,6 @@ class FsKnowledgeSource implements KnowledgeSource {
       const target = unitsById.get(id) as Unit;
       if (target.status === 'active') targets.set(id, target);
     }
-
-    const anchors = request.anchors.map((path) => {
-      const last = lastCommit(this.options.root, path);
-      // Ревизия подставляется движком, а не пишущим: она и есть точка, от
-      // которой считается устаревание, и доверять её тому, кто пишет
-      // утверждение, значит позволить объявить себя вечно свежим. Истории у
-      // пути может не быть вовсе — тогда якорь остаётся без ревизии, и
-      // устаревание по нему не считается.
-      return typeof last === 'string' ? { path } : { path, rev: short(last.rev) };
-    });
 
     const head = {
       id: request.id,
@@ -919,7 +1001,7 @@ function parseAnchorItems(lines: readonly string[], anchorsIndex: number): reado
         pathValue = unquote(pathField[1] as string);
         editable = true;
       } else if (!rest.includes(':')) {
-        // Голый скаляр — якорь без ревизии; отображением он не является, и
+        // Голый скаляр — якорь без закрепления; отображением он не является, и
         // добавить поле в него значило бы переформатировать чужую строку.
         pathValue = unquote(rest);
       }
@@ -1013,9 +1095,19 @@ export function parseUnit(text: string, file: string): Unit {
     });
   }
 
+  // Документом, а не значением: у скаляра закрепления нужен ещё и исходный
+  // текст — типизация YAML его портит (см. `anchorHashSources`).
+  const document = parseDocument(match[1] as string);
+  if (document.errors.length > 0) {
+    throw new StepcastError(`Шапка единицы знания не разбирается как YAML: ${file}`, {
+      file,
+      cause: document.errors[0],
+    });
+  }
+
   let head: unknown;
   try {
-    head = parseYaml(match[1] as string);
+    head = document.toJS();
   } catch (error) {
     throw new StepcastError(`Шапка единицы знания не разбирается как YAML: ${file}`, {
       file,
@@ -1039,7 +1131,12 @@ export function parseUnit(text: string, file: string): Unit {
   }
 
   const scope = toStringList(raw.scope, 'scope', file);
-  const anchors = toAnchors(raw.anchors, file, datableAnchorPaths(match[1] as string));
+  const anchors = toAnchors(
+    raw.anchors,
+    file,
+    datableAnchorPaths(match[1] as string),
+    anchorHashSources(document),
+  );
 
   return { file, id, title, scope, anchors, status, body: (match[2] as string).trim() };
 }
@@ -1097,7 +1194,37 @@ function toStringList(value: unknown, name: string, file: string): readonly stri
   return value as string[];
 }
 
-function toAnchors(value: unknown, file: string, datable: ReadonlySet<string>): readonly Anchor[] {
+/**
+ * Исходный текст скаляра `hash` по номеру якоря в списке.
+ *
+ * Нужен потому, что типизация YAML — потеря: дайджест из одних цифр приходит
+ * числом, а число теряет и ведущие нули (`0000123456789012` → `123456789012`),
+ * и точность за границей `2^53` (`9999999999999999` → `1e16`). Обратное
+ * приведение `String(Number(…))` восстанавливает не всякое такое значение, и
+ * закрепление, записанное движком закавыченным, но набранное человеком без
+ * кавычек, объявлялось бы непригодным вместо того, чтобы проверяться.
+ *
+ * Берётся исходный текст, а не строковая схема на всю шапку: схема задела бы и
+ * `status`, и всякое будущее поле, которому типизация нужна.
+ */
+function anchorHashSources(document: ReturnType<typeof parseDocument>): ReadonlyMap<number, string> {
+  const anchors = document.get('anchors', true);
+  if (!isSeq(anchors)) return new Map();
+  const sources = new Map<number, string>();
+  anchors.items.forEach((item, index) => {
+    if (!isMap(item)) return;
+    const node = item.get('hash', true);
+    if (isScalar(node) && typeof node.source === 'string') sources.set(index, node.source);
+  });
+  return sources;
+}
+
+function toAnchors(
+  value: unknown,
+  file: string,
+  datable: ReadonlySet<string>,
+  hashSources: ReadonlyMap<number, string>,
+): readonly Anchor[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {
     throw new StepcastError(`Поле anchors единицы знания — список: ${file}`, {
@@ -1106,14 +1233,15 @@ function toAnchors(value: unknown, file: string, datable: ReadonlySet<string>): 
     });
   }
 
-  return value.map((item) => {
-    // Строковая форма — якорь без ревизии: путь обязан существовать, но
+  return value.map((item, index) => {
+    // Строковая форма — якорь без закрепления: путь обязан существовать, но
     // устаревание по нему не считается. Форма законная: не всякое
     // утверждение стареет вместе с файлом, к которому относится.
     if (typeof item === 'string') {
       return {
         path: item,
-        rev: undefined,
+        hash: undefined,
+        legacyRev: false,
         staleSince: undefined,
         staleSinceInvalid: false,
         datable: datable.has(item),
@@ -1123,9 +1251,15 @@ function toAnchors(value: unknown, file: string, datable: ReadonlySet<string>): 
       const raw = item as Record<string, unknown>;
       if (typeof raw.path === 'string') {
         const { staleSince, invalid } = toStaleSince(raw.stale_since);
+        const hash = toHash(raw.hash, hashSources.get(index), file);
         return {
           path: raw.path,
-          rev: toRev(raw.rev, file),
+          hash,
+          // Прежняя форма: `rev` объявлен, `hash` — нет (design.md, решение 5).
+          // Значение `rev` не разбирается вовсе: поле отменено целиком, и
+          // единственный законный способ снять нарушение — перезаписать
+          // единицу глаголом `write`.
+          legacyRev: hash === undefined && raw.rev !== undefined,
           staleSince,
           staleSinceInvalid: invalid,
           datable: datable.has(raw.path),
@@ -1160,7 +1294,7 @@ function datableAnchorPaths(header: string): ReadonlySet<string> {
 /**
  * Момент обнаружения расхождения из шапки YAML.
  *
- * В отличие от `toRev`, непригодное значение здесь не отказ разбора, а
+ * В отличие от `toHash`, непригодное значение здесь не отказ разбора, а
  * пометка порчи (design.md, решение 7): у `stale_since` есть безопасное
  * прочтение — «не датировано», оставляющее нарушение жёлтым и видимым, — а
  * `parseUnit` зовётся из всех четырёх глаголов источника, и отказ здесь
@@ -1181,76 +1315,38 @@ function toStaleSince(value: unknown): { readonly staleSince: number | undefined
 }
 
 /**
- * Ревизия якоря из шапки YAML.
+ * Закрепление якоря из шапки YAML.
  *
- * Тип скаляра выбирает YAML, а не автор. Короткий хеш git — семь
- * шестнадцатеричных символов, и из одних цифр он состоит примерно в 3.7 %
- * случаев: `d5f15e2` придёт строкой, `9517869` — числом. Разбор, бравший
- * только строку, превращал второе в `undefined`, а `undefined` в контракте
- * якоря значит ровно обратное — «устаревание по нему не считается». Автор
- * объявлял ревизию, движок её выбрасывал и молчал, и примерно каждый двадцать
- * седьмой якорь не проверялся вовсе. Приведение стоит здесь, а не в
- * загрузчике YAML: строковая схема на всю шапку задела бы и `status`, и любое
- * будущее числовое поле.
+ * Тип скаляра выбирает YAML, а не автор. Дайджест из шестнадцати
+ * шестнадцатеричных символов состоит из одних цифр примерно в одном случае из
+ * тысячи восьмисот: тогда он приходит числом, а не строкой. Разбор, бравший
+ * только строку, превращал бы такое значение в `undefined`, а `undefined` в
+ * контракте якоря значит ровно обратное — «устаревание по нему не считается».
  *
- * Приводится только число, а не всё подряд через `String`: `String(true)` дал
- * бы `'true'`, `String(['a'])` — `'a'`, и молчание сменилось бы бессмыслицей.
- * Непригодный тип — отказ, называющий файл и поле. Отсутствие `rev` остаётся
+ * Числовой скаляр читается своим исходным текстом (`source`), а не обратным
+ * приведением значения: `String(Number(…))` теряет ведущие нули и точность за
+ * границей `2^53`, и часть закреплений из одних цифр объявлялась бы непригодной
+ * вместо того, чтобы проверяться. Приведение значением остаётся запасным путём
+ * — на случай, когда исходного текста нет (якорь собран не разбором текста).
+ *
+ * Берётся только число, а не всё подряд через `String`: `String(true)` дал бы
+ * `'true'`, `String(['a'])` — `'a'`, и молчание сменилось бы бессмыслицей.
+ * Непригодный тип — отказ, называющий файл и поле. Отсутствие `hash` остаётся
  * законной формой: не всякое утверждение стареет вместе с файлом, и отличать
- * её от испорченной обязано устройство, а не удача.
+ * её от испорченной обязано устройство, а не удача (design.md, решение 6).
  */
-function toRev(value: unknown, file: string): string | undefined {
-  // Пустое значение (`rev:` без ничего) — отказ, а не «якоря без ревизии»:
-  // поле объявлено, и молча читать объявленное как необъявленное значит
-  // повторять ту же ошибку в мелком.
+function toHash(value: unknown, source: string | undefined, file: string): string | undefined {
+  // Пустое значение (`hash:` без ничего) — отказ, а не «якоря без
+  // закрепления»: поле объявлено, и молча читать объявленное как
+  // необъявленное значит повторять ту же ошибку в мелком.
   if (value === undefined) return undefined;
   if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'bigint') return String(value);
-  throw new StepcastError(`Ревизия якоря единицы знания — строка: ${file}`, {
+  if (typeof value === 'number' || typeof value === 'bigint') return source ?? String(value);
+  throw new StepcastError(`Закрепление якоря единицы знания — строка: ${file}`, {
     file,
-    at: 'anchors.rev',
-    hint: `Значение поля rev — ${describeType(value)}`,
+    at: 'anchors.hash',
+    hint: `Значение поля hash — ${describeType(value)}`,
   });
-}
-
-interface Commit {
-  readonly rev: string;
-  readonly timeMs: number;
-}
-
-/**
- * Последний коммит, тронувший путь.
- *
- * Три исхода, и различать их обязательно. `none` — git ответил пустотой:
- * файл не отслеживается или репозиторий свеж без единого коммита, устаревание
- * по такому якорю просто не считается, и это законно. `unavailable` — git не
- * ответил вовсе: не установлен, каталог не репозиторий, вызов сорвался. Второе
- * молчаливо выдавать за первое нельзя: тогда сорвавшийся вызов превращает
- * настоящее нарушение в «память цела», и проверка врёт ровно тем способом,
- * который никто не заметит.
- */
-type CommitLookup = Commit | 'none' | 'unavailable';
-
-function lastCommit(root: string, path: string): CommitLookup {
-  let out: string;
-  try {
-    out = execFileSync('git', ['log', '-1', '--format=%H %ct', '--', path], {
-      cwd: root,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-  } catch {
-    return 'unavailable';
-  }
-
-  if (out === '') return 'none';
-  const [rev, seconds] = out.split(' ');
-  if (rev === undefined || seconds === undefined) return 'unavailable';
-  return { rev, timeMs: Number(seconds) * 1000 };
-}
-
-function short(rev: string): string {
-  return rev.slice(0, 7);
 }
 
 /** Заголовок каталога изменения: первая содержательная строка его документов. */

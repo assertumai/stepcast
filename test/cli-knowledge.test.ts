@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { run, type CliIo } from '../src/cli/main.js';
 import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
-import { gitCommit, gitInit, withHome } from './helpers.js';
+import { anchorHash, gitInit, withHome } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 /**
@@ -111,7 +110,7 @@ describe('CLI: stepcast knowledge', () => {
 
   it('check возвращает ненулевой код на красном нарушении и перечисляет его', async () => {
     const box = sandbox({
-      'knowledge/a.md': unit('a', 'Первая', 'anchors:\n  - path: src/нет.ts\n    rev: abc1234\n'),
+      'knowledge/a.md': unit('a', 'Первая', 'anchors:\n  - src/нет.ts\n'),
     });
 
     const result = await knowledge(box, ['check']);
@@ -308,19 +307,17 @@ describe('CLI: stepcast knowledge check --publish', () => {
 });
 
 describe('CLI: stepcast knowledge check --record', () => {
-  /** Дерево с одним расхождением по якорю: путь тронут коммитом позже зафиксированной ревизии. */
+  /** Дерево с одним расхождением по якорю: содержимое пути правлено после закрепления. */
   function staleSandbox(): { box: { root: string; home: string }; anchorFile: string } {
     const box = sandbox({ 'src/a.ts': 'export const a = 1;\n' });
-    gitCommit(box.root, 'первый');
-    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const hash = anchorHash(join(box.root, 'src/a.ts'));
 
     writeFileSync(join(box.root, 'src/a.ts'), 'export const a = 2;\n');
-    gitCommit(box.root, 'второй');
     const anchorFile = join(box.root, 'knowledge/a.md');
     mkdirSync(dirname(anchorFile), { recursive: true });
     writeFileSync(
       anchorFile,
-      unit('a', 'Первая', `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'\n`),
+      unit('a', 'Первая', `anchors:\n  - path: src/a.ts\n    hash: '${hash}'\n`),
     );
     return { box, anchorFile };
   }
@@ -361,13 +358,9 @@ describe('CLI: stepcast knowledge check --record', () => {
     const { box, anchorFile } = staleSandbox();
     await knowledge(box, ['check', '--record']);
 
-    // Ревизия якоря правится на совпадающую с последним коммитом пути:
-    // расхождения больше нет, и дата обязана быть снята.
-    const head = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    writeFileSync(
-      anchorFile,
-      readFileSync(anchorFile, 'utf8').replace(/rev: '[0-9a-f]+'/, `rev: '${head.slice(0, 7)}'`),
-    );
+    // Содержимое пути правится обратно на закреплённое: расхождения больше
+    // нет, и дата обязана быть снята.
+    writeFileSync(join(box.root, 'src/a.ts'), 'export const a = 1;\n');
 
     const cleared = await knowledge(box, ['check', '--record']);
     assert.equal(cleared.code, ExitCode.ok);
@@ -383,7 +376,7 @@ describe('CLI: stepcast knowledge check --record', () => {
     const { box, anchorFile } = staleSandbox();
     writeFileSync(
       join(box.root, 'knowledge/b.md'),
-      unit('b', 'Вторая', 'anchors:\n  - path: src/нет.ts\n    rev: abc1234\n'),
+      unit('b', 'Вторая', 'anchors:\n  - src/нет.ts\n'),
     );
 
     const result = await knowledge(box, ['check', '--record']);

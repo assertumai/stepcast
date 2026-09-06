@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import assert from 'node:assert/strict';
@@ -64,6 +65,17 @@ export function gitInit(dir: string): void {
   git('init', '--quiet', '--initial-branch=main');
   git('config', 'user.email', 'test@example.com');
   git('config', 'user.name', 'Тест');
+}
+
+/**
+ * Дайджест закрепления для фикстур: та же формула, какой считает его источник
+ * `fs` (`contentHash` в `src/core/knowledge/fs.ts`) — sha256 по байтам файла,
+ * первые 16 шестнадцатеричных символов. Дублируется здесь намеренно, а не
+ * импортируется: тест обязан вычислить ожидаемое значение независимо от
+ * реализации, а не переиспользовать её же код как оракул.
+ */
+export function anchorHash(path: string): string {
+  return createHash('sha256').update(readFileSync(path)).digest('hex').slice(0, 16);
 }
 
 /** Закоммитить всё дерево репозитория одним коммитом. */
