@@ -277,6 +277,66 @@ describe('ui-dashboard: детальный снимок прогона', () => {
     assert.ok(snapshot.jobs.length > 0, 'работы берутся из состояния, когда лок не читается');
   });
 
+  it('несёт объявленные дорожку и группу сессий у работы', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: витрина-раскладки
+
+jobs:
+  первая:
+    lane: a
+    session_group: build
+    steps:
+      - id: один
+        agent: claude
+        prompt: "промпт"
+
+  вторая:
+    needs: [первая]
+    steps:
+      - id: два
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    const lockText = serializeLock(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }).pipeline,
+    );
+
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-layout',
+      jobs: [
+        { id: 'первая', status: 'success', steps: [] },
+        { id: 'вторая', status: 'pending', steps: [] },
+      ],
+      lock: lockText,
+      skipUsage: true,
+    });
+
+    const snapshot = buildSnapshot(journal.paths, projectKey(bed.projectRoot));
+    const first = snapshot.jobs.find((job) => job.id === 'первая');
+    const second = snapshot.jobs.find((job) => job.id === 'вторая');
+
+    assert.equal(first?.lane, 'a');
+    assert.equal(first?.sessionGroup, 'build');
+    assert.equal(second?.lane, undefined);
+    assert.equal(second?.sessionGroup, undefined);
+  });
+
+  it('прогон без pipeline.lock.yml раскрывается без дорожки и группы, а не отказывает', () => {
+    const { journal, key } = seed();
+    cleanupRun(journal.paths);
+
+    const snapshot = buildSnapshot(journal.paths, key);
+    for (const job of snapshot.jobs) {
+      assert.equal(job.lane, undefined);
+      assert.equal(job.sessionGroup, undefined);
+    }
+  });
+
   it('не считает неубранный прогон убранным', () => {
     const { journal, key } = seed();
     journal.prepareJob('producer');

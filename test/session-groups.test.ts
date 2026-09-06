@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { parse as parseYaml } from 'yaml';
 
 import { createFakeBackend, initLine, resultLine } from '../src/core/backend/fake.js';
 import { lintPipeline } from '../src/core/lint.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
+import { jobLockHash, pipelineLockHash, serializeLock } from '../src/core/pipeline/lock.js';
+import type { Job, Pipeline } from '../src/core/pipeline/model.js';
+import { computeStepKey } from '../src/core/run/stepKey.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
@@ -262,5 +266,287 @@ steps:
         return true;
       },
     );
+  });
+});
+
+/** Пайплайн с одной работой, объявляющей группу — или не объявляющей вовсе. */
+function soloJob(group?: string): string {
+  const decl = group === undefined ? '' : `    session_group: ${group}\n`;
+  return `
+kind: pipeline
+name: probe
+jobs:
+  solo:
+${decl}    steps:
+      - id: one
+        agent: claude
+        prompt: промпт
+`;
+}
+
+/** Две работы: `first` может объявить группу, `second` — никогда. */
+function firstOnlyGroup(group: string): string {
+  return `
+kind: pipeline
+name: probe
+jobs:
+  first:
+    session_group: ${group}
+    steps:
+      - id: one
+        agent: claude
+        prompt: промпт один
+  second:
+    needs: [first]
+    steps:
+      - id: two
+        agent: claude
+        prompt: промпт два
+`;
+}
+
+const FIVE_JOBS_TWO_GROUPS = `
+kind: pipeline
+name: probe
+jobs:
+  j1:
+    session_group: grpA
+    steps:
+      - id: s
+        agent: claude
+        prompt: p
+  j2:
+    needs: [j1]
+    session_group: grpA
+    steps:
+      - id: s
+        agent: claude
+        prompt: p
+  j3:
+    needs: [j2]
+    session_group: grpA
+    steps:
+      - id: s
+        agent: claude
+        prompt: p
+  j4:
+    needs: [j3]
+    session_group: grpB
+    steps:
+      - id: s
+        agent: claude
+        prompt: p
+  j5:
+    needs: [j4]
+    session_group: grpB
+    steps:
+      - id: s
+        agent: claude
+        prompt: p
+`;
+
+/** Раскладка двух работ по группам: какая из них объявляет группу `x`. */
+function twoJobLayout(options: { readonly firstGroup?: string; readonly secondGroup?: string }): string {
+  const firstDecl = options.firstGroup === undefined ? '' : `    session_group: ${options.firstGroup}\n`;
+  const secondDecl = options.secondGroup === undefined ? '' : `    session_group: ${options.secondGroup}\n`;
+  return `
+kind: pipeline
+name: probe
+jobs:
+  first:
+${firstDecl}    steps:
+      - id: one
+        agent: claude
+        prompt: промпт один
+  second:
+    needs: [first]
+${secondDecl}    steps:
+      - id: two
+        agent: claude
+        prompt: промпт два
+`;
+}
+
+function hashesFor(project: Project): { readonly lockHash: string; readonly stepKey: string } {
+  const pipeline = expand(project).pipeline;
+  const job = pipeline.jobs.find((candidate) => candidate.id === 'solo');
+  assert.ok(job !== undefined, 'работа solo обязана быть в пайплайне');
+  const lockHash = jobLockHash(pipeline, job);
+  const stepKey = computeStepKey({
+    lockHash,
+    jobId: job.id,
+    step: job.steps[0]!,
+    inputsFingerprint: undefined,
+    backendCommand: undefined,
+    upstream: [],
+  });
+  return { lockHash, stepKey };
+}
+
+/**
+ * Модель, собранная напрямую, а не через `expandPipeline`: путь к временному
+ * проекту случаен между прогонами тестов, и `jobLockHash`/`serializeLock`
+ * несут его в себе. Только так значение, снятое один раз на неисправленном
+ * коде, остаётся сравнимым в любом следующем прогоне.
+ */
+const FIXED_STEP = {
+  kind: 'agent' as const,
+  id: 'one',
+  index: 1,
+  env: {},
+  context: [],
+  contextInherit: true,
+  contextExclude: [],
+  timeoutMs: 1_800_000,
+  expect: [],
+  attempts: { max: 1, escalation: [] },
+  agent: 'claude',
+  session: 'default',
+  prompt: 'промпт один',
+};
+
+const FIXED_JOB: Job = {
+  id: 'first',
+  source: '/fixed/project/stepcast.yml',
+  needs: [],
+  on: 'success',
+  session: 'shared',
+  workspace: { mode: 'cwd' },
+  env: {},
+  context: [],
+  contextUpstream: 'all',
+  inputs: [],
+  data: [],
+  steps: [FIXED_STEP],
+};
+
+const FIXED_PIPELINE: Pipeline = {
+  name: 'baseline',
+  file: '/fixed/project/stepcast.yml',
+  knowledge: {
+    provider: undefined,
+    command: undefined,
+    dir: undefined,
+    rules: undefined,
+    indexMaxTokens: 8000,
+    staleAfterMs: 0,
+    timeoutMs: 0,
+  },
+  inputs: {},
+  workspace: { mode: 'cwd' },
+  env: {},
+  envFiles: [],
+  envDeny: [],
+  context: [],
+  contextUpstream: 'all',
+  concurrency: 1,
+  failFast: true,
+  jobs: [FIXED_JOB],
+};
+
+const FIXED_SERIALIZED =
+  'version: 1\n' +
+  'kind: pipeline.lock\n' +
+  'name: baseline\n' +
+  'file: /fixed/project/stepcast.yml\n' +
+  'inputs: {}\n' +
+  'workspace:\n' +
+  '  mode: cwd\n' +
+  'env_deny: []\n' +
+  'context_upstream: all\n' +
+  'concurrency: 1\n' +
+  'fail_fast: true\n' +
+  'jobs:\n' +
+  '  - id: first\n' +
+  '    source: /fixed/project/stepcast.yml\n' +
+  '    needs: []\n' +
+  '    on: success\n' +
+  '    session: shared\n' +
+  '    workspace:\n' +
+  '      mode: cwd\n' +
+  '    context_upstream: all\n' +
+  '    steps:\n' +
+  '      - id: one\n' +
+  '        index: 1\n' +
+  '        timeout: 30m\n' +
+  '        attempts:\n' +
+  '          max: 1\n' +
+  '        agent: claude\n' +
+  '        session: default\n' +
+  '        prompt: промпт один\n';
+
+describe('session_group: попадает в замок и в ключ', () => {
+  it('объявленная группа записывается в запись работы замка', () => {
+    const project = makeProject({ 'stepcast.yml': firstOnlyGroup('build') });
+    const parsed = parseYaml(serializeLock(expand(project).pipeline)) as {
+      jobs: readonly Record<string, unknown>[];
+    };
+    const first = parsed.jobs.find((job) => job['id'] === 'first');
+    assert.equal(first?.['session_group'], 'build');
+  });
+
+  it('работа без объявленной группы не несёт ключа session_group вовсе', () => {
+    const project = makeProject({ 'stepcast.yml': firstOnlyGroup('build') });
+    const parsed = parseYaml(serializeLock(expand(project).pipeline)) as {
+      jobs: readonly Record<string, unknown>[];
+    };
+    const second = parsed.jobs.find((job) => job['id'] === 'second');
+    assert.ok(second !== undefined);
+    assert.equal('session_group' in (second as Record<string, unknown>), false);
+  });
+
+  it('пять работ двух групп восстанавливаются из разобранного замка без обращения к записям шагов', () => {
+    const project = makeProject({ 'stepcast.yml': FIVE_JOBS_TWO_GROUPS });
+    const parsed = parseYaml(serializeLock(expand(project).pipeline)) as {
+      jobs: readonly Record<string, unknown>[];
+    };
+
+    const groups = new Map<string, string[]>();
+    for (const job of parsed.jobs) {
+      const group = job['session_group'];
+      if (typeof group !== 'string') continue;
+      const members = groups.get(group) ?? [];
+      members.push(job['id'] as string);
+      groups.set(group, members);
+    }
+
+    assert.deepEqual(groups.get('grpA'), ['j1', 'j2', 'j3']);
+    assert.deepEqual(groups.get('grpB'), ['j4', 'j5']);
+  });
+
+  it('группа меняет jobLockHash и ключ шага; переименование и снятие возвращают их к прежним', () => {
+    const project = makeProject({ 'stepcast.yml': soloJob() });
+    const withoutGroup = hashesFor(project);
+
+    project.write('stepcast.yml', soloJob('g1'));
+    const withG1 = hashesFor(project);
+
+    project.write('stepcast.yml', soloJob('g2'));
+    const withG2 = hashesFor(project);
+
+    project.write('stepcast.yml', soloJob());
+    const removed = hashesFor(project);
+
+    assert.notEqual(withG1.lockHash, withoutGroup.lockHash);
+    assert.notEqual(withG1.stepKey, withoutGroup.stepKey);
+    assert.notEqual(withG1.lockHash, withG2.lockHash, 'переименование группы обязано менять хеш');
+    assert.notEqual(withG1.stepKey, withG2.stepKey);
+    assert.equal(removed.lockHash, withoutGroup.lockHash, 'снятие объявления возвращает прежний хеш');
+    assert.equal(removed.stepKey, withoutGroup.stepKey);
+  });
+
+  it('пайплайн без единой группы даёт тот же jobLockHash и ту же сериализацию, что и до правки', () => {
+    assert.equal(jobLockHash(FIXED_PIPELINE, FIXED_JOB), 'fc8660e348462efc');
+    assert.equal(serializeLock(FIXED_PIPELINE), FIXED_SERIALIZED);
+  });
+
+  it('раскладка работ по группам меняет pipelineLockHash', () => {
+    const project = makeProject({ 'stepcast.yml': twoJobLayout({ firstGroup: 'x' }) });
+    const hashA = pipelineLockHash(expand(project).pipeline);
+
+    project.write('stepcast.yml', twoJobLayout({ secondGroup: 'x' }));
+    const hashB = pipelineLockHash(expand(project).pipeline);
+
+    assert.notEqual(hashA, hashB);
   });
 });

@@ -197,6 +197,10 @@ function Job({ address, job }: { readonly address: string; readonly job: JobSnap
         {job.needs.length === 0 ? null : <span className="kind">needs: {job.needs.join(', ')}</span>}
         {job.on === 'success' ? null : <span className="kind">on: {job.on}</span>}
         {job.if === undefined ? null : <span className="kind">if: {job.if}</span>}
+        {job.lane === undefined ? null : <span className="kind">lane: {job.lane}</span>}
+        {job.sessionGroup === undefined ? null : (
+          <span className="kind">session_group: {job.sessionGroup}</span>
+        )}
         {fmtSpan(job.startedAt, job.finishedAt) === undefined ? null : (
           <span className="kind">{fmtSpan(job.startedAt, job.finishedAt)}</span>
         )}

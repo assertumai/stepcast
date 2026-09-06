@@ -6,6 +6,7 @@ import { StepcastError } from '../errors.js';
 import { findStepDir, readManifest, readStatus } from '../journal/reader.js';
 import type { RunPaths } from '../journal/paths.js';
 import type { RunManifest, RunStatus, StepRecord } from '../journal/schema.js';
+import { readLock } from '../pipeline/lockRead.js';
 
 /**
  * Сравнение двух прогонов.
@@ -54,6 +55,11 @@ export interface DiffOptions {
 export function diffRuns(options: DiffOptions): RunComparison {
   const a = load(options.a);
   const b = load(options.b);
+  // По разу на прогон, а не на шаг: раскладка сессий — свойство работы, и
+  // читать её заново на каждом её шаге значило бы повторно разбирать один и
+  // тот же файл.
+  const aLayout = loadSessionLayout(options.a);
+  const bLayout = loadSessionLayout(options.b);
 
   if (a.manifest.project_root !== b.manifest.project_root) {
     throw new StepcastError('Прогоны относятся к разным проектам и несравнимы', {
@@ -128,6 +134,8 @@ export function diffRuns(options: DiffOptions): RunComparison {
         left,
         right,
         treesComparable,
+        aLayout,
+        bLayout,
         ...(treesIncomparableReason === undefined ? {} : { treesIncomparableReason }),
         ...(options.anchorer === undefined ? {} : { anchorer: options.anchorer }),
         ...(a.manifest.anchor_kind === undefined ? {} : { anchorKind: a.manifest.anchor_kind }),
@@ -151,6 +159,74 @@ interface Loaded {
 
 function load(paths: RunPaths): Loaded {
   return { manifest: readManifest(paths), status: readStatus(paths) };
+}
+
+/**
+ * Раскладка сессий прогона: объявленная группа каждой работы, взятая из
+ * `pipeline.lock.yml` — единственного места, где она записана после
+ * lock-records-session-group.
+ *
+ * Два разграничения здесь существенны, и оба — про разницу между «замок этого
+ * не утверждал» и «замок утвердил отсутствие группы».
+ *
+ * - `readable`: снятый уборкой, испорченный и усечённый замок читаются как
+ *   пустой список работ ровно так же, как замок пайплайна без единой работы.
+ *   Признак читаемости отделяет сбой чтения от утверждения файла.
+ * - `groups.has(id)`: работа, которой в замке нет вовсе — сравниваются разные
+ *   пайплайны, или запись работы не разобрана, — даёт по `get` то же
+ *   `undefined`, что и работа, группы не объявившая. Наличие ключа отделяет
+ *   одно от другого; значение ключа — сама объявленная группа или `undefined`.
+ *
+ * В обоих случаях источник помечается отсутствующим (`SourceDiff.missing`), а
+ * не выдаётся за совпадение и не выдумывает «группы нет».
+ */
+interface SessionLayout {
+  readonly readable: boolean;
+  readonly groups: ReadonlyMap<string, string | undefined>;
+}
+
+function loadSessionLayout(paths: RunPaths): SessionLayout {
+  const lock = readLock(paths.lock);
+  return {
+    readable: lock.readable,
+    groups: new Map(lock.jobs.map((job) => [job.id, job.sessionGroup])),
+  };
+}
+
+/**
+ * Формулировка привязана к замку намеренно. «Группа не объявлена» было бы
+ * утверждением о пайплайне, а замок прогона, снятый версией движка до
+ * lock-records-session-group, группы не записывал вовсе — и о пайплайне того
+ * прогона не говорит ничего (design.md, Risks).
+ */
+function describeSessionGroup(group: string | undefined): string {
+  return group === undefined ? 'замок группы не называет' : `группа ${group}`;
+}
+
+/**
+ * Различие раскладки сессий работы, которой принадлежит шаг. Источник назван
+ * по работе, а показан у каждого её различающегося шага — у `diff` нет уровня
+ * работы в выводе, и заводить его ради одной строки дороже, чем разбираемый
+ * повтор (design.md, Решение 3).
+ */
+function sessionLayoutDiff(options: CompareOptions, jobId: string): SourceDiff | undefined {
+  const { aLayout, bLayout } = options;
+  const known = (layout: SessionLayout): boolean => layout.readable && layout.groups.has(jobId);
+  if (!known(aLayout) || !known(bLayout)) {
+    if (!known(aLayout) && !known(bLayout)) {
+      return { source: 'раскладка сессий', missing: 'both', lines: [] };
+    }
+    return { source: 'раскладка сессий', missing: !known(aLayout) ? 'a' : 'b', lines: [] };
+  }
+
+  const left = aLayout.groups.get(jobId);
+  const right = bLayout.groups.get(jobId);
+  if (left === right) return undefined;
+
+  return {
+    source: 'раскладка сессий',
+    lines: [`  - ${describeSessionGroup(left)}`, `  + ${describeSessionGroup(right)}`],
+  };
 }
 
 interface Address {
@@ -193,6 +269,8 @@ interface CompareOptions {
   readonly treesIncomparableReason?: string;
   readonly anchorer?: TreeAnchorer;
   readonly anchorKind?: AnchorKind;
+  readonly aLayout: SessionLayout;
+  readonly bLayout: SessionLayout;
 }
 
 /**
@@ -261,6 +339,10 @@ function compareSources(options: CompareOptions): SourceDiff[] {
   }
 
   sources.push(compareTrees(options));
+
+  const layoutDiff = sessionLayoutDiff(options, address.job);
+  if (layoutDiff !== undefined) sources.push(layoutDiff);
+
   return sources;
 }
 

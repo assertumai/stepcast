@@ -12,7 +12,7 @@ import {
 import type { RunPaths } from '../core/journal/paths.js';
 import { ContextReportSchema, type StatusValue, type UsageRecord, type UsageReport } from '../core/journal/schema.js';
 import { renderDisplay, type DisplayData } from '../core/pipeline/display.js';
-import { readLockJobs, type LockJob, type LockStep } from './lock.js';
+import { readLockJobs, type LockJob, type LockStep } from '../core/pipeline/lockRead.js';
 import { layoutJobs, type JobGraph } from './graph.js';
 import { readJournalJson } from './file.js';
 
@@ -108,6 +108,10 @@ export interface JobSnapshot {
   /** Условие исполнения работы: показывает, почему работа может не выполниться. */
   readonly if?: string;
   readonly on: 'success' | 'failure' | 'always';
+  /** Дорожка, объявленная на месте подключения работы. */
+  readonly lane?: string;
+  /** Группа сессий, объявленная на месте подключения работы. */
+  readonly sessionGroup?: string;
   readonly context: readonly string[];
   /** Выходы предшественников, доступные этой работе. */
   readonly inputs: readonly JournalFileRef[];
@@ -299,6 +303,8 @@ function buildJob(
     needs,
     ...(definition?.if === undefined ? {} : { if: definition.if }),
     on: definition?.on ?? 'success',
+    ...(definition?.lane === undefined ? {} : { lane: definition.lane }),
+    ...(definition?.sessionGroup === undefined ? {} : { sessionGroup: definition.sessionGroup }),
     context: definition?.context ?? [],
     inputs,
     ...(output === undefined ? {} : { output }),

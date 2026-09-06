@@ -2749,3 +2749,39 @@ jobs:
     assert.deepEqual(decisions(plan), { 'работа/первый': 'rerun', 'работа/второй': 'rerun' });
   });
 });
+
+/** Работа с необязательно объявленной группой сессий — одна работа, одна попытка. */
+function groupPipeline(group?: string): string {
+  const decl = group === undefined ? '' : `    session_group: ${group}\n`;
+  return `
+version: 1
+kind: pipeline
+name: возобновление-группы
+jobs:
+  работа:
+${decl}    steps:
+      - id: шаг
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`;
+}
+
+describe('run-resume: раскладка сессий входит в ключ шага', () => {
+  // lock-records-session-group, design.md, «Risks»: первое возобновление после
+  // объявления группы обязано переисполнить шаг, а не молча его переиспользовать —
+  // прежний ключ считался по определению работы без раскладки диалогов.
+  it('шаг, исполненный без объявленной группы, не переиспользуется, когда работа группу объявляет', async () => {
+    const b = bed({ 'stepcast.yml': groupPipeline() });
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+
+    b.project.write('stepcast.yml', groupPipeline('g'));
+    const plan = planFor(b, first);
+
+    assert.equal(plan.steps[0]?.decision.kind, 'rerun');
+    assert.match(
+      (plan.steps[0]?.decision as { reason: string }).reason,
+      /изменилось определение шага/,
+    );
+  });
+});

@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { readLockJobs } from '../src/ui/lock.js';
+import { readLockJobs } from '../src/core/pipeline/lockRead.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { serializeLock } from '../src/core/pipeline/lock.js';
 import { makeProject } from './helpers.js';
@@ -101,5 +101,52 @@ describe('ui: мягкий разбор pipeline.lock.yml', () => {
     const noJobs = join(base, 'nojobs.yml');
     writeFileSync(noJobs, 'version: 1\nkind: pipeline.lock\n');
     assert.deepEqual(readLockJobs(noJobs), []);
+  });
+});
+
+const LANE_AND_GROUP_PIPELINE = `
+version: 1
+kind: pipeline
+name: витрина
+
+jobs:
+  first:
+    lane: a
+    session_group: build
+    steps:
+      - id: one
+        agent: claude
+        prompt: "промпт"
+
+  second:
+    needs: [first]
+    steps:
+      - id: two
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`;
+
+function laneAndGroupLockFile(): string {
+  const project = makeProject({ 'stepcast.yml': LANE_AND_GROUP_PIPELINE });
+  const expanded = expandPipeline({
+    pipelinePath: project.path('stepcast.yml'),
+    config: project.config,
+  });
+  const path = project.path('pipeline.lock.yml');
+  writeFileSync(path, serializeLock(expanded.pipeline));
+  return path;
+}
+
+describe('ui: замок несёт объявленные дорожку и группу сессий', () => {
+  it('работа с объявлениями отдаёт и дорожку, и группу', () => {
+    const first = readLockJobs(laneAndGroupLockFile()).find((job) => job.id === 'first');
+    assert.equal(first?.lane, 'a');
+    assert.equal(first?.sessionGroup, 'build');
+  });
+
+  it('работа без объявлений не несёт ни дорожки, ни группы', () => {
+    const second = readLockJobs(laneAndGroupLockFile()).find((job) => job.id === 'second');
+    assert.equal(second?.lane, undefined);
+    assert.equal(second?.sessionGroup, undefined);
   });
 });

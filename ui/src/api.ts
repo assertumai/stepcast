@@ -183,6 +183,10 @@ export interface JobSnapshot {
   readonly needs: readonly string[];
   readonly if?: string;
   readonly on: 'success' | 'failure' | 'always';
+  /** Дорожка, объявленная на месте подключения работы. */
+  readonly lane?: string;
+  /** Группа сессий, объявленная на месте подключения работы. */
+  readonly sessionGroup?: string;
   readonly context: readonly string[];
   readonly inputs: readonly JournalFileRef[];
   readonly output?: JournalFileRef;

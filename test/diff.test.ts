@@ -9,6 +9,7 @@ import { runDiffCommand } from '../src/cli/commands/diff.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { resolveRun } from '../src/core/journal/reader.js';
 import { describeComparison, diffRuns, lineDiff } from '../src/core/run/diff.js';
+import { cleanupRun } from '../src/core/run/cleanup.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { ExitCode, StepcastError } from '../src/core/errors.js';
 import { builtinRegistry } from '../src/core/plugins/builtin.js';
@@ -237,6 +238,114 @@ jobs:
       'результаты предикатов совпали и в выводе не участвуют',
     );
     assert.ok(names.includes('дерево'));
+  });
+});
+
+/** Пайплайн одной работы, объявляющей группу сессий — или не объявляющей вовсе. */
+function groupPipeline(group?: string): string {
+  const decl = group === undefined ? '' : `    session_group: ${group}\n`;
+  return `
+version: 1
+kind: pipeline
+name: сравнение-группы
+jobs:
+  работа:
+    session: per_step
+    inputs: [сырьё.txt]
+${decl}    steps:
+      - id: шаг
+        run: [echo, ok]
+        expect: [{ exit_code: 0 }]
+`;
+}
+
+describe('run-diff: раскладка сессий — отдельный источник', () => {
+  // Сценарий: «Разошлась раскладка сессий»
+  it('прогоны, различающиеся только объявлением группы, называют источник раскладки', async () => {
+    const b = bed({ 'сырьё.txt': 'вход', 'stepcast.yml': groupPipeline() });
+    const first = await run(b);
+
+    b.project.write('stepcast.yml', groupPipeline('build'));
+    const second = await run(b);
+
+    const comparison = compare(b, first, second);
+    const step = comparison.steps[0];
+    assert.equal(step?.category, 'changed');
+
+    const layout = step?.sources.find((source) => source.source === 'раскладка сессий');
+    assert.ok(layout !== undefined, describeComparison(comparison).join('\n'));
+    assert.equal(layout.missing, undefined);
+    assert.deepEqual(layout.lines, ['  - замок группы не называет', '  + группа build']);
+  });
+
+  // Сценарий: «Раскладка совпала»
+  it('источник не появляется, когда объявленная группа совпала в обоих прогонах', async () => {
+    const b = bed({ 'сырьё.txt': 'вход', 'stepcast.yml': groupPipeline('build') });
+    const first = await run(b);
+
+    b.project.write('сырьё.txt', 'другой вход');
+    const second = await run(b);
+
+    const step = compare(b, first, second).steps[0];
+    assert.equal(step?.category, 'changed');
+    assert.equal(
+      step?.sources.find((source) => source.source === 'раскладка сессий'),
+      undefined,
+    );
+  });
+
+  // Сценарий: «Замок снят уборкой»
+  it('замок, снятый уборкой у одного из прогонов, помечает источник отсутствующим', async () => {
+    const b = bed({ 'сырьё.txt': 'вход', 'stepcast.yml': groupPipeline() });
+    const first = await run(b);
+
+    b.project.write('stepcast.yml', groupPipeline('build'));
+    const second = await run(b);
+    cleanupRun(first.journal.paths);
+
+    const step = compare(b, first, second).steps[0];
+    const layout = step?.sources.find((source) => source.source === 'раскладка сессий');
+
+    assert.equal(layout?.missing, 'a');
+    assert.deepEqual(layout?.lines, []);
+  });
+
+  // Сценарий: «Замок не читается»
+  it('испорченный замок помечает источник отсутствующим, а не пустой группой', async () => {
+    const b = bed({ 'сырьё.txt': 'вход', 'stepcast.yml': groupPipeline() });
+    const first = await run(b);
+
+    b.project.write('stepcast.yml', groupPipeline('build'));
+    const second = await run(b);
+
+    // Усечение файла на середине записи: YAML разбирается, но `jobs` списком
+    // не оказывается — то же, что даёт испорченный или недописанный замок.
+    writeFileSync(first.journal.paths.lock, 'version: 1\nkind: pipeline.lock\njobs: не список\n');
+
+    const step = compare(b, first, second).steps[0];
+    const layout = step?.sources.find((source) => source.source === 'раскладка сессий');
+
+    assert.equal(layout?.missing, 'a');
+    assert.deepEqual(layout?.lines, []);
+  });
+
+  // Сценарий: «Работы в замке нет»
+  it('работа, которой в замке нет, помечает источник отсутствующим', async () => {
+    const b = bed({ 'сырьё.txt': 'вход', 'stepcast.yml': groupPipeline() });
+    const first = await run(b);
+
+    b.project.write('stepcast.yml', groupPipeline('build'));
+    const second = await run(b);
+
+    // Замок читается, но работы в нём нет — так выглядит сравнение прогонов
+    // разных пайплайнов. Пустота списка при этом утверждение файла, а не сбой.
+    writeFileSync(first.journal.paths.lock, 'version: 1\nkind: pipeline.lock\njobs: []\n');
+
+    const step = compare(b, first, second).steps[0];
+    const layout = step?.sources.find((source) => source.source === 'раскладка сессий');
+
+    assert.equal(layout?.missing, 'a');
+    assert.deepEqual(layout?.lines, []);
   });
 });
 

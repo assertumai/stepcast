@@ -95,6 +95,7 @@ export function jobToPlain(job: Job): Record<string, unknown> {
     // раскрывает её витрина, в момент отрисовки, против данных работы.
     ...(job.display === undefined ? {} : { display: job.display }),
     session: job.session,
+    ...(job.sessionGroup === undefined ? {} : { session_group: job.sessionGroup }),
     workspace: job.workspace,
     ...(Object.keys(job.env).length === 0 ? {} : { env: job.env }),
     ...(job.context.length === 0 ? {} : { context: job.context }),
