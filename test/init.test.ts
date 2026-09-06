@@ -111,6 +111,8 @@ describe('CLI: stepcast init --knowledge fs', () => {
         dir: config.project.knowledge.dir,
         rules: config.project.knowledge.rules,
         indexMaxTokens: config.project.knowledge.indexMaxTokens,
+        specIndexMaxTokens: config.project.knowledge.specIndexMaxTokens,
+        unitMaxTokens: config.project.knowledge.unitMaxTokens,
         staleAfterMs: config.project.knowledge.staleAfterMs,
         timeoutMs: config.project.knowledge.timeoutMs,
       },

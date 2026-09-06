@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
+import { estimateTokens } from '../src/core/context/assemble.js';
 import { createFsKnowledgeSource, globsIntersect, parseUnit } from '../src/core/knowledge/fs.js';
 import { createKnowledgeSource } from '../src/core/knowledge/source.js';
 import {
@@ -16,11 +17,20 @@ import { tempDir } from './tmp.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
+interface SourceOverrides {
+  indexMaxTokens?: number;
+  specIndexMaxTokens?: number;
+  unitMaxTokens?: number;
+  specDir?: string;
+  staleAfterMs?: number;
+  now?: number;
+}
+
 interface Repo {
   readonly root: string;
   write(path: string, content: string): void;
   commit(message: string): void;
-  source(overrides?: { indexMaxTokens?: number; staleAfterMs?: number; now?: number }): KnowledgeSource;
+  source(overrides?: SourceOverrides): KnowledgeSource;
 }
 
 function repo(files: Readonly<Record<string, string>> = {}): Repo {
@@ -43,7 +53,10 @@ function repo(files: Readonly<Record<string, string>> = {}): Repo {
       createFsKnowledgeSource({
         root,
         dir: 'knowledge',
+        ...(overrides.specDir === undefined ? {} : { specDir: overrides.specDir }),
         indexMaxTokens: overrides.indexMaxTokens ?? 2000,
+        specIndexMaxTokens: overrides.specIndexMaxTokens ?? 2000,
+        unitMaxTokens: overrides.unitMaxTokens ?? 1000,
         staleAfterMs: overrides.staleAfterMs ?? 14 * DAY,
         ...(overrides.now === undefined ? {} : { now: overrides.now }),
       }),
@@ -258,27 +271,74 @@ describe('knowledge-fs: оглавление', () => {
       'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
       'openspec/changes/some-change/proposal.md': '## Why\n\nПричина изменения.\n',
     });
-    const source = createFsKnowledgeSource({
-      root: box.root,
-      dir: 'knowledge',
-      specDir: 'openspec/changes',
-      indexMaxTokens: 2000,
-      staleAfterMs: 14 * DAY,
-    });
+    const source = box.source({ specDir: 'openspec/changes' });
     const entry = source.index().find((item) => item.id === 'spec:some-change');
     assert.ok(entry !== undefined);
     assert.equal(entry.title, 'Причина изменения.');
     assert.deepEqual(entry.scope, ['openspec/changes/some-change/**']);
   });
 
-  // Задача 4.2 / Сценарий: «Индекс перерос предел»
-  it('красное нарушение, когда оглавление перерастает предел', () => {
+  // Задача 3.2 / Сценарий: «Единицы знания переросли предел»
+  it('красное нарушение, когда записи единиц знания перерастают предел', () => {
     const box = repo({
       'knowledge/a.md': unit({ id: 'a', title: 'Очень длинный заголовок'.repeat(20) }),
     });
     const verdict = box.source({ indexMaxTokens: 10 }).check();
     assert.equal(verdict.ok, false);
-    assert.ok(verdict.problems.some((problem) => problem.kind === 'index-overflow'));
+    const problem = verdict.problems.find((item) => item.kind === 'index-overflow');
+    assert.ok(problem !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(problem.level, 'red');
+    assert.match(problem.detail, /единиц[аы] знания/i);
+    assert.match(problem.detail, /index_max_tokens/);
+    assert.doesNotMatch(problem.detail, /каталог/i);
+  });
+
+  // Задача 1.1 / Сценарий: «Каталоги изменений предела памяти не переполняют»
+  it('единицы знания и множество каталогов изменений вместе не дают нарушения о пределе памяти', () => {
+    const specFiles: Record<string, string> = {};
+    for (let index = 0; index < 60; index += 1) {
+      specFiles[`openspec/changes/change-${index}/proposal.md`] =
+        `## Why\n\nПричина изменения номер ${index}, описанная достаточно длинно, чтобы запись в оглавлении практики спецификации репозитория весила заметно.\n`;
+    }
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      'knowledge/b.md': unit({ id: 'b', title: 'Вторая' }),
+      ...specFiles,
+    });
+    // Предел производной части поднят намеренно высоко: этот тест — про то,
+    // что каталоги изменений не задевают предел памяти, а не про то, что они
+    // укладываются в свой собственный (для этого есть отдельный тест).
+    const verdict = box
+      .source({ specDir: 'openspec/changes', indexMaxTokens: 2000, specIndexMaxTokens: 1_000_000 })
+      .check();
+    assert.equal(verdict.ok, true);
+    assert.ok(
+      !verdict.problems.some((problem) => problem.kind === 'index-overflow'),
+      JSON.stringify(verdict.problems),
+    );
+  });
+
+  // Задача 3.3 / Сценарий: «Производная часть переросла предел»
+  it('жёлтое нарушение, когда каталоги изменений перерастают свой предел', () => {
+    const specFiles: Record<string, string> = {};
+    for (let index = 0; index < 60; index += 1) {
+      specFiles[`openspec/changes/change-${index}/proposal.md`] =
+        `## Why\n\nПричина изменения номер ${index}, описанная достаточно длинно, чтобы запись в оглавлении практики спецификации репозитория весила заметно.\n`;
+    }
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      ...specFiles,
+    });
+    const verdict = box
+      .source({ specDir: 'openspec/changes', indexMaxTokens: 1_000_000, specIndexMaxTokens: 2000 })
+      .check();
+    assert.equal(verdict.ok, true);
+    const problem = verdict.problems.find((item) => item.kind === 'spec-index-overflow');
+    assert.ok(problem !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(problem.level, 'yellow');
+    assert.match(problem.detail, /60/);
+    assert.match(problem.detail, /spec_index_max_tokens/);
+    assert.doesNotMatch(problem.detail, /единиц[аы] знания/i);
   });
 });
 
@@ -348,6 +408,234 @@ describe('knowledge-fs: отбор', () => {
     });
     const entries = box.source().select({ kind: 'scope', scope: ['src/**'], budget: 10 });
     assert.equal(entries.length, 1);
+  });
+});
+
+describe('knowledge-fs: усечение производной части в отборе', () => {
+  function specChangeFiles(count: number): Record<string, string> {
+    const files: Record<string, string> = {};
+    for (let index = 0; index < count; index += 1) {
+      files[`openspec/changes/change-${index}/proposal.md`] =
+        `## Why\n\nПричина изменения номер ${index}, описанная достаточно длинно, чтобы запись в оглавлении практики спецификации репозитория весила заметно.\n`;
+    }
+    return files;
+  }
+
+  // Задача 1.4 / Сценарий: «Оглавление в контексте усечено с названным остатком»
+  it('отбор index укладывает записи каталогов в предел и называет остаток', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      'knowledge/b.md': unit({ id: 'b', title: 'Вторая' }),
+      ...specChangeFiles(60),
+    });
+    const source = box.source({
+      specDir: 'openspec/changes',
+      indexMaxTokens: 1_000_000,
+      specIndexMaxTokens: 300,
+    });
+    const text = source.select({ kind: 'index' })[0]?.text ?? '';
+
+    assert.match(text, /a — Первая/);
+    assert.match(text, /b — Вторая/);
+    assert.match(text, /не показано/);
+    assert.match(text, /openspec\/changes/);
+
+    const shownSpecs = (text.match(/spec:change-/g) ?? []).length;
+    assert.ok(shownSpecs > 0, 'хотя бы одна запись каталога обязана поместиться');
+    assert.ok(shownSpecs < 60, 'усечение обязано было сработать');
+  });
+
+  // Задача 1.5 / Сценарий: «Глагол index отдаёт полный список»
+  it('глагол index перечисляет все записи каталогов независимо от предела', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      ...specChangeFiles(60),
+    });
+    const source = box.source({ specDir: 'openspec/changes', specIndexMaxTokens: 300 });
+    const specIds = source.index().map((entry) => entry.id).filter((id) => id.startsWith('spec:'));
+    assert.equal(specIds.length, 60);
+  });
+
+  // Задача 1.5 / Сценарий: «Усечение воспроизводимо»
+  it('два вызова отбора index на неизменном дереве совпадают посимвольно', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      ...specChangeFiles(60),
+    });
+    const source = box.source({ specDir: 'openspec/changes', specIndexMaxTokens: 300 });
+    const once = source.select({ kind: 'index' })[0]?.text;
+    const twice = source.select({ kind: 'index' })[0]?.text;
+    assert.equal(once, twice);
+  });
+
+  it('единицы знания не усекаются ни при каком пределе', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      'knowledge/b.md': unit({ id: 'b', title: 'Вторая' }),
+      ...specChangeFiles(60),
+    });
+    const source = box.source({ specDir: 'openspec/changes', specIndexMaxTokens: 1 });
+    const text = source.select({ kind: 'index' })[0]?.text ?? '';
+    assert.match(text, /a — Первая/);
+    assert.match(text, /b — Вторая/);
+  });
+
+  /** Строки производной части из готового текста оглавления — вместе с хвостом усечения. */
+  function specSection(text: string): string {
+    return text
+      .split('\n')
+      .filter((line) => line.startsWith('spec:') || line.startsWith('…'))
+      .join('\n');
+  }
+
+  // Порог усечения и порог жёлтого нарушения — одна величина, а не две
+  // близкие: сумма построчных округлений больше цельного замера, и между
+  // двумя мерами открывалась полоса, где отбор уже усекает, а `check` молчит.
+  it('усечение начинается ровно там, где check желтит производную часть', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      ...specChangeFiles(60),
+    });
+
+    const whole = box.source({ specDir: 'openspec/changes', specIndexMaxTokens: 1_000_000 });
+    const full = estimateTokens(specSection(whole.select({ kind: 'index' })[0]?.text ?? ''));
+
+    const atLimit = box.source({ specDir: 'openspec/changes', specIndexMaxTokens: full });
+    assert.doesNotMatch(atLimit.select({ kind: 'index' })[0]?.text ?? '', /не показано/);
+    assert.ok(
+      !atLimit.check().problems.some((problem) => problem.kind === 'spec-index-overflow'),
+      'ровно на пределе не усекает и не желтит',
+    );
+
+    const belowLimit = box.source({ specDir: 'openspec/changes', specIndexMaxTokens: full - 1 });
+    assert.match(belowLimit.select({ kind: 'index' })[0]?.text ?? '', /не показано/);
+    assert.ok(
+      belowLimit.check().problems.some((problem) => problem.kind === 'spec-index-overflow'),
+      'на токен ниже усекает и желтит одновременно',
+    );
+  });
+
+  it('усечённая производная часть вместе с хвостовой строкой укладывается в предел', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      ...specChangeFiles(60),
+    });
+    for (const limit of [300, 200, 120]) {
+      const text = box
+        .source({ specDir: 'openspec/changes', specIndexMaxTokens: limit })
+        .select({ kind: 'index' })[0]?.text;
+      const section = specSection(text ?? '');
+      assert.match(section, /не показано/);
+      assert.ok(
+        estimateTokens(section) <= limit,
+        `предел ${limit}: секция весит ${estimateTokens(section)}`,
+      );
+    }
+  });
+
+  // Единственное исключение из предыдущего: предел меньше самой хвостовой
+  // строки. Строка всё равно выводится — она отличает усечение от молчаливой
+  // пропажи записей, и менять её на соблюдение предела значит соврать о
+  // полноте списка.
+  it('хвостовая строка выводится даже при пределе, в который она не помещается', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      ...specChangeFiles(60),
+    });
+    const text =
+      box
+        .source({ specDir: 'openspec/changes', specIndexMaxTokens: 1 })
+        .select({ kind: 'index' })[0]?.text ?? '';
+    assert.equal(specSection(text), specSection(text).split('\n')[0]);
+    assert.match(text, /не показано ещё 60 записей/);
+  });
+});
+
+describe('knowledge-fs: предел тела единицы', () => {
+  // Задача 1.6 / Сценарий: «Тело переросло предел»
+  it('красное нарушение, когда тело активной единицы перерастает предел', () => {
+    const long = 'Очень длинное тело единицы знания. '.repeat(50);
+    const box = repo({ 'knowledge/a.md': unit({ id: 'a', title: 'Первая', body: long }) });
+    const verdict = box.source({ unitMaxTokens: 10 }).check();
+    assert.equal(verdict.ok, false);
+    const problem = verdict.problems.find((item) => item.kind === 'unit-too-large');
+    assert.ok(problem !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(problem.level, 'red');
+    assert.equal(problem.id, 'a');
+    assert.match(problem.detail, /a/);
+    assert.match(problem.detail, /unit_max_tokens/);
+  });
+
+  // Задача 1.6 / Сценарий: «Тело инвалидированной единицы не проверяется»
+  it('тело единицы со status: superseded нарушения не даёт', () => {
+    const long = 'Очень длинное тело единицы знания. '.repeat(50);
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая', body: long, status: 'superseded' }),
+    });
+    const verdict = box.source({ unitMaxTokens: 10 }).check();
+    assert.equal(verdict.ok, true);
+    assert.ok(!verdict.problems.some((problem) => problem.kind === 'unit-too-large'));
+  });
+
+  // Задача 1.7 / Сценарий: «Запись раздутой единицы откатывается»
+  it('write раздутого тела отвечает ok: false и не оставляет файла', () => {
+    const box = repo({});
+    const result = box.source({ unitMaxTokens: 10 }).write({
+      id: 'a',
+      title: 'Первая',
+      scope: ['src/**'],
+      anchors: [],
+      body: 'Очень длинное тело единицы знания. '.repeat(50),
+    });
+    assert.equal(result.ok, false);
+    assert.ok(result.problems.some((problem) => problem.kind === 'unit-too-large'));
+    assert.throws(() => readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'));
+  });
+
+  // Задача 1.7 / Сценарий: «Запись раздутой единицы откатывается» — перезапись
+  it('write раздутого тела поверх существующей единицы возвращает прежнее содержимое', () => {
+    const box = repo({ 'knowledge/a.md': unit({ id: 'a', title: 'Прежняя' }) });
+    const before = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
+
+    const result = box.source({ unitMaxTokens: 10 }).write({
+      id: 'a',
+      title: 'Новая',
+      scope: ['src/**'],
+      anchors: [],
+      body: 'Очень длинное тело единицы знания. '.repeat(50),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), before);
+  });
+
+  // Сценарий: «Раздутая единица запирает запись остальных». Поведение то же,
+  // каким уже живут `missing-anchor` и `duplicate-id`: `write` откатывается на
+  // любом красном по всему дереву, а не только на относящемся к записываемой
+  // единице. Проверяется явно, потому что новый предел тела делает это
+  // состояние достижимым при обновлении репозитория, где предела не было.
+  it('раздутая единица в дереве запирает запись другой, называя виновную', () => {
+    const box = repo({
+      'knowledge/a.md': unit({
+        id: 'a',
+        title: 'Первая',
+        body: 'Очень длинное тело единицы знания. '.repeat(50),
+      }),
+    });
+
+    const result = box.source({ unitMaxTokens: 10 }).write({
+      id: 'b',
+      title: 'Вторая',
+      scope: ['src/**'],
+      anchors: [],
+      body: 'Короткое тело.',
+    });
+
+    assert.equal(result.ok, false);
+    const problem = result.problems.find((item) => item.kind === 'unit-too-large');
+    assert.ok(problem !== undefined, JSON.stringify(result.problems));
+    assert.equal(problem.id, 'a');
+    assert.throws(() => readFileSync(join(box.root, 'knowledge/b.md'), 'utf8'));
   });
 });
 
@@ -730,6 +1018,8 @@ describe('knowledge-source: контракт внешней команды', () 
         dir: undefined,
         rules: undefined,
         indexMaxTokens: 2000,
+        specIndexMaxTokens: 2000,
+        unitMaxTokens: 1000,
         staleAfterMs: 14 * DAY,
         timeoutMs,
       },
@@ -807,6 +1097,8 @@ describe('knowledge-source: контракт внешней команды', () 
         dir: undefined,
         rules: undefined,
         indexMaxTokens: 2000,
+        specIndexMaxTokens: 2000,
+        unitMaxTokens: 1000,
         staleAfterMs: 14 * DAY,
         timeoutMs: 10_000,
       },

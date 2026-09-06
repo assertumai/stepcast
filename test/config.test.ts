@@ -1076,13 +1076,38 @@ describe('stepcast-configuration: практика памяти', () => {
   });
 
   // Задача 1.5: величины несут встроенные умолчания, в отличие от provider и dir.
+  //
+  // Задача 1.8 / Сценарий: «Умолчания пределов»
   it('даёт величинам встроенные умолчания, а провайдеру и каталогу — нет', () => {
     const { config } = resolveIn(sandbox({}));
     assert.equal(config.project.knowledge.provider, undefined);
     assert.equal(config.project.knowledge.dir, undefined);
     assert.equal(config.project.knowledge.indexMaxTokens, 2000);
+    assert.equal(config.project.knowledge.specIndexMaxTokens, 2000);
+    assert.equal(config.project.knowledge.unitMaxTokens, 1000);
     assert.equal(config.project.knowledge.staleAfterMs, 14 * 24 * 60 * 60 * 1000);
     assert.equal(config.project.knowledge.timeoutMs, 10_000);
+  });
+
+  // Задача 1.8 / Сценарий: «Объявлен только предел производной части»
+  it('объявление spec_index_max_tokens не меняет действующее значение index_max_tokens', () => {
+    const box = sandbox({
+      project: 'project:\n  knowledge:\n    spec_index_max_tokens: 6k\n',
+    });
+    const { config } = resolveIn(box);
+    assert.equal(config.project.knowledge.specIndexMaxTokens, 6000);
+    assert.equal(config.project.knowledge.indexMaxTokens, 2000);
+  });
+
+  // Задача 1.8: пределы независимы друг от друга в обе стороны.
+  it('объявление unit_max_tokens не меняет действующие значения двух других пределов', () => {
+    const box = sandbox({
+      project: 'project:\n  knowledge:\n    unit_max_tokens: 3k\n',
+    });
+    const { config } = resolveIn(box);
+    assert.equal(config.project.knowledge.unitMaxTokens, 3000);
+    assert.equal(config.project.knowledge.indexMaxTokens, 2000);
+    assert.equal(config.project.knowledge.specIndexMaxTokens, 2000);
   });
 
   // Задача 1.5 / Сценарий: «Провайдер cmd без команды»

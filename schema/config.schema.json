@@ -380,6 +380,26 @@
                 }
               ]
             },
+            "spec_index_max_tokens": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
+            "unit_max_tokens": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "number"
+                }
+              ]
+            },
             "stale_after": {
               "anyOf": [
                 {

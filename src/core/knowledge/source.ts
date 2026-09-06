@@ -47,6 +47,8 @@ export function createKnowledgeSource(options: {
       dir: knowledge.dir,
       specDir: options.specDir,
       indexMaxTokens: knowledge.indexMaxTokens,
+      specIndexMaxTokens: knowledge.specIndexMaxTokens,
+      unitMaxTokens: knowledge.unitMaxTokens,
       staleAfterMs: knowledge.staleAfterMs,
       ...(options.now === undefined ? {} : { now: options.now }),
     });

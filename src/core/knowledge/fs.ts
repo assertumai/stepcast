@@ -32,10 +32,13 @@ import type {
  * 1. **Оглавление производно.** Файла индекса в дереве нет; он собирается из
  *    шапок. Рассогласование оглавления с содержимым каталога поэтому
  *    невозможно — целый класс дрейфа исчезает по построению.
- * 2. **Предел кладётся на оглавление, а не на объём знания.** Стоимость новой
- *    единицы для читателя перестаёт быть нулевой, и упёршееся в предел
- *    оглавление вынуждает единицы сливать. Ровно этого не хватает каталогу
- *    спек, где ничто не мешает восемнадцати документам стать сотней.
+ * 2. **Три независимых предела, а не один.** `index_max_tokens` кладётся на
+ *    записи единиц знания в оглавлении: стоимость новой единицы для читателя
+ *    перестаёт быть нулевой, и упёршееся в предел оглавление вынуждает
+ *    единицы сливать. `spec_index_max_tokens` — на производную часть
+ *    оглавления (каталоги практики спецификации), число которых память не
+ *    контролирует. `unit_max_tokens` — на тело одной единицы, которое
+ *    оплачивает каждый отбор по области. Подробности — `docs/knowledge.md`.
  * 3. **Устаревшее инвалидируется, а не удаляется.** `status: superseded`
  *    выпадает из оглавления и отбора по области, оставаясь в дереве и в
  *    истории. Знание не теряется, но и не отравляет контекст.
@@ -64,7 +67,12 @@ export interface FsSourceOptions {
   readonly dir: string;
   /** Каталог документов практики спецификации, если она объявлена. */
   readonly specDir?: string | undefined;
+  /** Предел на записи единиц знания в оглавлении — дисциплина памяти. */
   readonly indexMaxTokens: number;
+  /** Предел на производную часть оглавления — записи каталогов практики спецификации. */
+  readonly specIndexMaxTokens: number;
+  /** Предел на тело одной единицы знания. */
+  readonly unitMaxTokens: number;
   readonly staleAfterMs: number;
   /** Момент отсчёта просрочки. Параметром — чтобы проверка была проверяемой. */
   readonly now?: number;
@@ -88,22 +96,19 @@ class FsKnowledgeSource implements KnowledgeSource {
   }
 
   index(): readonly KnowledgeIndexEntry[] {
-    const entries: KnowledgeIndexEntry[] = [];
-
-    for (const unit of this.units()) {
-      if (unit.status === 'superseded') continue;
-      entries.push({ id: unit.id, title: unit.title, scope: [...unit.scope] });
-    }
-
-    entries.push(...this.specEntries());
+    const entries = [...this.unitEntries(), ...this.specEntries()];
     // Порядок — по идентификатору, а не по обходу файловой системы: он
     // попадает в промпт, а промпт обязан быть посимвольно воспроизводимым.
-    return entries.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+    return entries.sort(compareById);
   }
 
   select(selector: KnowledgeSelector): readonly KnowledgeEntry[] {
     if (selector.kind === 'index') {
-      const text = renderIndex(this.index());
+      // Глагол `index` (выше) отдаёт список целиком: он обслуживает
+      // `stepcast knowledge index`, и человеку в терминале токенов не платят.
+      // Здесь же текст уезжает в контекст агентского шага, и производная
+      // часть укладывается в свой предел (design.md, решение 3).
+      const text = this.renderContextIndex();
       return [
         {
           id: 'index',
@@ -181,6 +186,19 @@ class FsKnowledgeSource implements KnowledgeSource {
       // проверяется у обоих статусов — по нему отменённое всё ещё достаётся
       // поимённым отбором, и двусмысленность там настоящая.
       if (unit.status === 'superseded') continue;
+
+      // Тело инвалидированной единицы не проверяется по той же причине, что
+      // её якоря: отменённое не попадает ни в оглавление, ни в отбор по
+      // области, и потому никем не оплачивается.
+      const bodyTokens = estimateTokens(unit.body);
+      if (bodyTokens > this.options.unitMaxTokens) {
+        problems.push({
+          id: unit.id,
+          kind: 'unit-too-large',
+          level: 'red',
+          detail: `Тело единицы ${unit.id}: ${formatTokens(bodyTokens)} против предела ${formatTokens(this.options.unitMaxTokens)} (unit_max_tokens)`,
+        });
+      }
 
       for (const anchor of unit.anchors) {
         const absolute = resolvePath(this.options.root, anchor.path);
@@ -263,12 +281,32 @@ class FsKnowledgeSource implements KnowledgeSource {
       }
     }
 
-    const indexTokens = estimateTokens(renderIndex(this.index()));
-    if (indexTokens > this.options.indexMaxTokens) {
+    // Единицы знания и производная часть меряются раздельно — это и есть суть
+    // изменения (design.md, решение 1): дисциплина памяти не должна зависеть
+    // от числа открытых изменений, которым пишущий память не управляет.
+    // Шапка `renderIndex` (первые две строки) отнесена к единицам знания:
+    // слитый текст несёт её один раз, а не дважды, и приписывать её
+    // производной части завышало бы её вес без причины.
+    const unitEntries = this.unitEntries();
+    const unitsTokens = estimateTokens(renderIndex(unitEntries));
+    if (unitsTokens > this.options.indexMaxTokens) {
       problems.push({
         kind: 'index-overflow',
         level: 'red',
-        detail: `Оглавление ${formatTokens(indexTokens)} против предела ${formatTokens(this.options.indexMaxTokens)} — слейте единицы знания`,
+        detail: `Единицы знания в оглавлении: ${formatTokens(unitsTokens)} против предела ${formatTokens(this.options.indexMaxTokens)} (index_max_tokens) — слейте единицы знания`,
+      });
+    }
+
+    const specEntriesList = this.specEntries();
+    const specTokens = estimateTokens(renderSpecSection(specEntriesList));
+    if (specTokens > this.options.specIndexMaxTokens) {
+      // Жёлтым, а не красным: закрыть или заархивировать каталоги изменений
+      // пишущий память не может, и красное здесь означало бы гейт,
+      // невыполнимый иначе как поднятием предела (design.md, решение 2).
+      problems.push({
+        kind: 'spec-index-overflow',
+        level: 'yellow',
+        detail: `Каталоги практики спецификации в оглавлении: ${specEntriesList.length} записей, ${formatTokens(specTokens)} против предела ${formatTokens(this.options.specIndexMaxTokens)} (spec_index_max_tokens)`,
       });
     }
 
@@ -346,6 +384,93 @@ class FsKnowledgeSource implements KnowledgeSource {
     return units;
   }
 
+  /** Записи оглавления по единицам знания — часть, которую держит дисциплина памяти. */
+  private unitEntries(): readonly KnowledgeIndexEntry[] {
+    const entries: KnowledgeIndexEntry[] = [];
+    for (const unit of this.units()) {
+      if (unit.status === 'superseded') continue;
+      entries.push({ id: unit.id, title: unit.title, scope: [...unit.scope] });
+    }
+    return entries;
+  }
+
+  /**
+   * Оглавление для контекста агентского шага: записи единиц знания полностью,
+   * записи каталогов практики спецификации — в пределах `specIndexMaxTokens`.
+   *
+   * Порядок укладки — тот же порядок по идентификатору, каким собрано
+   * оглавление: усечение обязано быть посимвольно воспроизводимым, потому что
+   * текст уезжает в промпт. Единицы знания в укладке не участвуют вовсе — они
+   * показаны все и всегда (design.md, решение 4): усечение спрятало бы
+   * нарушение дисциплины, ради которого нарушение и красное. Уложенные записи
+   * каталогов и записи единиц сливаются тем же порядком, каким их сливает
+   * глагол `index`.
+   */
+  private renderContextIndex(): string {
+    const unitEntries = this.unitEntries();
+    const specEntriesList = this.specEntries();
+    if (unitEntries.length === 0 && specEntriesList.length === 0) {
+      return 'Знание репозитория пусто.';
+    }
+
+    // Укладываются только записи каталогов, и берётся их начало — не
+    // «пропустить одну и попробовать следующую»: хвост обязан быть связным,
+    // чтобы одна строка могла честно назвать всё, чего в списке нет.
+    const shown = this.fitSpecEntries(specEntriesList);
+    const hidden = specEntriesList.length - shown;
+
+    const lines = [...unitEntries, ...specEntriesList.slice(0, shown)]
+      .sort(compareById)
+      .map(renderEntryLine);
+    if (hidden > 0) lines.push(this.specTailLine(hidden));
+
+    return [
+      'Известное по проекту. Тела здесь нет — запрашивайте по идентификатору.',
+      '',
+      ...lines,
+    ].join('\n');
+  }
+
+  /**
+   * Сколько записей каталогов помещается в `spec_index_max_tokens`.
+   *
+   * Мера здесь — та же, что у нарушения `spec-index-overflow`: токены целого
+   * текста секции, а не сумма построчных замеров. Меры обязаны совпадать:
+   * каждый построчный `estimateTokens` округляет вверх, сумма округлений
+   * систематически больше цельного замера, и между двумя порогами открылась бы
+   * полоса, где отбор уже усекает, а `check` молчит, — предел срабатывал бы
+   * молча для того, кто его настраивает.
+   */
+  private fitSpecEntries(entries: readonly KnowledgeIndexEntry[]): number {
+    const limit = this.options.specIndexMaxTokens;
+    if (estimateTokens(renderSpecSection(entries)) <= limit) return entries.length;
+
+    // Хвостовая строка — часть той же секции, и место под неё резервируется до
+    // укладки: иначе текст выходил бы за предел ровно на её размер. Резерв
+    // считается по наибольшему возможному числу скрытых записей: точное число
+    // известно только после укладки, а укладка не вправе зависеть от того, чем
+    // сама кончится. Разница — единицы символов в записи числа.
+    //
+    // Предел меньше самой хвостовой строки оставляет отрицательный остаток, и
+    // тогда не показывается ни одна запись каталога, а строка всё равно
+    // выводится: она — единственное, что отличает усечение от молчаливой
+    // пропажи, и выбрасывать её ради соблюдения предела значит менять его
+    // соблюдение на ложь о полноте списка.
+    const budget = limit - estimateTokens(`\n${this.specTailLine(entries.length)}`);
+
+    let shown = 0;
+    for (let count = 1; count <= entries.length; count += 1) {
+      if (estimateTokens(renderSpecSection(entries.slice(0, count))) > budget) break;
+      shown = count;
+    }
+    return shown;
+  }
+
+  /** Хвост усечённой производной части: чего в списке нет и где лежит полный. */
+  private specTailLine(hidden: number): string {
+    return `… не показано ещё ${hidden} записей каталогов практики спецификации в ${this.options.specDir ?? ''} — полный список: stepcast knowledge index`;
+  }
+
   /**
    * Документы практики спецификации — одной записью на каталог изменения, а
    * не на файл: каталог и есть единица, о существовании которой агент должен
@@ -383,19 +508,40 @@ class FsKnowledgeSource implements KnowledgeSource {
   }
 }
 
-/** Оглавление в том виде, в каком оно уезжает в промпт. */
+/**
+ * Текст производной части оглавления — то, чем её меряют и нарушение
+ * `spec-index-overflow`, и укладка отбора. Функция общая нарочно: два разных
+ * замера одной величины разошлись бы округлением (см. `fitSpecEntries`).
+ */
+function renderSpecSection(entries: readonly KnowledgeIndexEntry[]): string {
+  return entries.map(renderEntryLine).join('\n');
+}
+
+/** Строка одной записи оглавления — общая для полного и усечённого текста. */
+function renderEntryLine(entry: KnowledgeIndexEntry): string {
+  const scope = entry.scope.length === 0 ? '' : `  ·  ${entry.scope.join(', ')}`;
+  return `${entry.id} — ${entry.title}${scope}`;
+}
+
+/** Порядок по идентификатору — не по обходу файловой системы: он попадает в промпт. */
+function compareById(left: KnowledgeIndexEntry, right: KnowledgeIndexEntry): number {
+  return left.id < right.id ? -1 : left.id > right.id ? 1 : 0;
+}
+
+/**
+ * Оглавление в том виде, в каком его отдаёт глагол `index`: список целиком,
+ * без усечения. Отбор `select({ kind: 'index' })`, чей текст уезжает в
+ * контекст агентского шага, использует другой путь построения — приватный
+ * `renderContextIndex` источника `fs` — потому что производная часть там
+ * укладывается в свой предел (design.md, решение 3).
+ */
 export function renderIndex(entries: readonly KnowledgeIndexEntry[]): string {
   if (entries.length === 0) return 'Знание репозитория пусто.';
-
-  const lines = entries.map((entry) => {
-    const scope = entry.scope.length === 0 ? '' : `  ·  ${entry.scope.join(', ')}`;
-    return `${entry.id} — ${entry.title}${scope}`;
-  });
 
   return [
     'Известное по проекту. Тела здесь нет — запрашивайте по идентификатору.',
     '',
-    ...lines,
+    ...entries.map(renderEntryLine),
   ].join('\n');
 }
 

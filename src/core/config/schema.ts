@@ -178,9 +178,10 @@ export const RawSpecSchema = z
  * источник (раскладка описана в docs/knowledge.md), `cmd` — любой свой,
  * названный ключом `command`. Умолчания нет ни у одного ключа: источник,
  * подставленный за автора, читал бы в чужом репозитории несуществующий
- * каталог, а величины (`index_max_tokens`, `stale_after`, `timeout`)
- * умолчания как раз имеют — они про поведение движка и источника, а не про
- * устройство чужого дерева, и объявлены встроенным слоем конфигурации.
+ * каталог, а величины (`index_max_tokens`, `spec_index_max_tokens`,
+ * `unit_max_tokens`, `stale_after`, `timeout`) умолчания как раз имеют — они
+ * про поведение движка и источника, а не про устройство чужого дерева, и
+ * объявлены встроенным слоем конфигурации.
  */
 export const RawKnowledgeSchema = z
   .object({
@@ -191,7 +192,16 @@ export const RawKnowledgeSchema = z
     command: CheckCommandSchema.optional(),
     dir: RelativeRepoPathSchema.optional(),
     rules: RelativeRepoPathSchema.optional(),
+    // Дисциплина памяти: считает только записи единиц знания. Упор в этот
+    // предел чинится слиянием единиц, и только им.
     index_max_tokens: amount.optional(),
+    // Производная часть оглавления — записи каталогов практики спецификации.
+    // Отдельный ключ, потому что число открытых изменений пишущим память не
+    // управляется и слиянием единиц знания не чинится (design.md, решение 1).
+    spec_index_max_tokens: amount.optional(),
+    // Тело одной единицы знания. За него платит каждый отбор по области, а не
+    // только оглавление, — предел не зависит от двух других.
+    unit_max_tokens: amount.optional(),
     stale_after: amount.optional(),
     timeout: amount.optional(),
   })

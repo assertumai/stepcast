@@ -62,11 +62,12 @@ const PROJECT_NAMES = [
   'spec.rules',
   'spec.tool',
   'spec.check',
-  // Практика памяти публикуется тремя именами из семи объявляемых: `dir` и
+  // Практика памяти публикуется тремя именами из девяти объявляемых: `dir` и
   // `rules` вставляются документами (границей правок работы записи, записью
   // контекста с правилами письма), `provider` — тем, что о нём иногда надо
-  // сказать промпту. Величины (`index_max_tokens`, `stale_after`, `timeout`)
-  // не публикуются: их читает движок и источник, и вставлять их некуда.
+  // сказать промпту. Величины (`index_max_tokens`, `spec_index_max_tokens`,
+  // `unit_max_tokens`, `stale_after`, `timeout`) не публикуются: их читает
+  // движок и источник, и вставлять их некуда.
   'knowledge.dir',
   'knowledge.rules',
   'knowledge.provider',
@@ -189,6 +190,14 @@ function resolveKnowledge(
       declared?.index_max_tokens === undefined
         ? base.indexMaxTokens
         : parseTokens(declared.index_max_tokens, 'project.knowledge.index_max_tokens'),
+    specIndexMaxTokens:
+      declared?.spec_index_max_tokens === undefined
+        ? base.specIndexMaxTokens
+        : parseTokens(declared.spec_index_max_tokens, 'project.knowledge.spec_index_max_tokens'),
+    unitMaxTokens:
+      declared?.unit_max_tokens === undefined
+        ? base.unitMaxTokens
+        : parseTokens(declared.unit_max_tokens, 'project.knowledge.unit_max_tokens'),
     staleAfterMs:
       declared?.stale_after === undefined
         ? base.staleAfterMs

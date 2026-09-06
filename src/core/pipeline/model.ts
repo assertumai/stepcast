@@ -300,6 +300,8 @@ export interface KnowledgeDeclaration {
   readonly dir: string | undefined;
   readonly rules: string | undefined;
   readonly indexMaxTokens: number;
+  readonly specIndexMaxTokens: number;
+  readonly unitMaxTokens: number;
   readonly staleAfterMs: number;
   readonly timeoutMs: number;
 }

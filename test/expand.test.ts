@@ -48,6 +48,20 @@ function withProjectEditPaths(project: Project, editPaths: readonly string[] | u
   return { ...project.config, project: { ...project.config.project, editPaths } };
 }
 
+/** Тот же проект, но с указанной группой `project.knowledge`, будто она объявлена в `.stepcast/config.yml`. */
+function withProjectKnowledge(
+  project: Project,
+  knowledge: Partial<Config['project']['knowledge']>,
+): Config {
+  return {
+    ...project.config,
+    project: {
+      ...project.config.project,
+      knowledge: { ...project.config.project.knowledge, ...knowledge },
+    },
+  };
+}
+
 function expand(project: Project, file = 'stepcast.yml', inputs?: Record<string, string>) {
   return expandPipeline({
     pipelinePath: project.path(file),
@@ -2632,6 +2646,56 @@ jobs:
     assert.match(error.hint ?? '', /содержит только/);
     assert.match(error.hint ?? '', /spec\.dir/);
     assert.doesNotMatch(error.hint ?? '', /допустимы строки/);
+  });
+});
+
+// Задача 1.9: пределы практики памяти (`index_max_tokens`,
+// `spec_index_max_tokens`, `unit_max_tokens`) не публикуются подстановкой
+// (см. `PROJECT_NAMES` в expand.ts), но раскрываются на слитом значении
+// `Pipeline.knowledge` тем же порядком, каким слиты `project.spec.*`.
+describe('pipeline-definition: действующее значение project.knowledge.* (пределы памяти)', () => {
+  const PIPELINE_WITH_SPEC_LIMIT = `
+kind: pipeline
+project:
+  knowledge:
+    spec_index_max_tokens: 6k
+jobs:
+  build:
+    steps: [{ id: c, run: echo ok }]
+`;
+
+  it('пайплайн перекрывает конфигурацию по project.knowledge.spec_index_max_tokens', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE_WITH_SPEC_LIMIT });
+    const config = withProjectKnowledge(project, { specIndexMaxTokens: 2000 });
+    const pipeline = expandWith(project, config).pipeline;
+    assert.equal(pipeline.knowledge.specIndexMaxTokens, 6000);
+  });
+
+  it('объявление одного ключа в пайплайне не задевает два других предела из конфигурации', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE_WITH_SPEC_LIMIT });
+    const config = withProjectKnowledge(project, {
+      indexMaxTokens: 4000,
+      specIndexMaxTokens: 2000,
+      unitMaxTokens: 1500,
+    });
+    const pipeline = expandWith(project, config).pipeline;
+    assert.equal(pipeline.knowledge.specIndexMaxTokens, 6000, 'ключ пайплайна побеждает');
+    assert.equal(pipeline.knowledge.indexMaxTokens, 4000, 'не объявленный пайплайном ключ берётся из конфигурации');
+    assert.equal(pipeline.knowledge.unitMaxTokens, 1500, 'не объявленный пайплайном ключ берётся из конфигурации');
+  });
+
+  it('объявление только в конфигурации раскрывается им, когда пайплайн ключ не называет', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps: [{ id: c, run: echo ok }]
+`,
+    });
+    const config = withProjectKnowledge(project, { unitMaxTokens: 1500 });
+    const pipeline = expandWith(project, config).pipeline;
+    assert.equal(pipeline.knowledge.unitMaxTokens, 1500);
   });
 });
 

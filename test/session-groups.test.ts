@@ -429,6 +429,8 @@ const FIXED_PIPELINE: Pipeline = {
     dir: undefined,
     rules: undefined,
     indexMaxTokens: 8000,
+    specIndexMaxTokens: 2000,
+    unitMaxTokens: 1000,
     staleAfterMs: 0,
     timeoutMs: 0,
   },

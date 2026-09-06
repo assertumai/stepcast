@@ -148,6 +148,8 @@ export interface Config {
       readonly dir: string | undefined;
       readonly rules: string | undefined;
       readonly indexMaxTokens: number;
+      readonly specIndexMaxTokens: number;
+      readonly unitMaxTokens: number;
       readonly staleAfterMs: number;
       readonly timeoutMs: number;
     };
@@ -530,6 +532,8 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
         dir: typeof knowledgeDir === 'string' ? knowledgeDir : undefined,
         rules: typeof knowledgeRules === 'string' ? knowledgeRules : undefined,
         indexMaxTokens: requireNumber(values, 'project.knowledge.index_max_tokens'),
+        specIndexMaxTokens: requireNumber(values, 'project.knowledge.spec_index_max_tokens'),
+        unitMaxTokens: requireNumber(values, 'project.knowledge.unit_max_tokens'),
         staleAfterMs: requireNumber(values, 'project.knowledge.stale_after'),
         timeoutMs: requireNumber(values, 'project.knowledge.timeout'),
       },
