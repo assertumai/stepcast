@@ -25,6 +25,7 @@
     "../src/ui/grouping.ts",
     "../src/ui/format.ts",
     "../src/ui/transcript.ts",
+    "../src/ui/runsView.ts",
     "../vite.config.ts"
   ]
 }

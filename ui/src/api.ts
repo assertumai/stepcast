@@ -544,9 +544,9 @@ export async function saveSettings(patch: SettingsPatch): Promise<Settings> {
 }
 
 /**
- * Отбор прогонов к уборке. Ничего не удаляет: показывает, что удалится и
- * сколько места освободится, — удаление идёт отдельным запросом по списку
- * адресов, которые пользователь увидел здесь.
+ * Отбор прогонов к уборке по признаку. Ничего не удаляет: показывает, что
+ * удалится и сколько места освободится, — удаление идёт отдельным запросом по
+ * списку адресов, которые пользователь увидел здесь.
  */
 export async function selectRuns(options: {
   readonly traits: readonly CleanupTrait[];
@@ -559,6 +559,20 @@ export async function selectRuns(options: {
     query.set('older-than', options.olderThan);
   }
   if (options.project !== undefined) query.set('project', options.project);
+  return json<RunSelection>(await fetch(`/api/runs?${query.toString()}`));
+}
+
+/**
+ * Отбор прогонов к уборке по явному списку адресов, увиденных пользователем
+ * (флажки списка прогонов) — а не по признаку. Отдельная функция, а не общий
+ * параметр с `selectRuns`: демон отклоняет запрос, называющий и то и другое
+ * (design.md изменения ui-runs-list-controls, Решение 9), и заводить тип,
+ * допускающий такое сочетание, значило бы переносить эту ошибку на выполнение
+ * вместо того, чтобы её не пускать на уровне вызова.
+ */
+export async function selectRunsByAddresses(addresses: readonly string[]): Promise<RunSelection> {
+  const query = new URLSearchParams();
+  for (const address of addresses) query.append('run', address);
   return json<RunSelection>(await fetch(`/api/runs?${query.toString()}`));
 }
 

@@ -11,6 +11,7 @@ import {
   removeRun,
   removeRunWithStats,
   removeRuns,
+  selectByAddresses,
   selectCandidates,
   selectOlderThan,
   type RemovalSummary,
@@ -480,6 +481,57 @@ describe('run-cleanup: отбор по признаку', () => {
 
     assert.ok(existsSync(journal.paths.dir));
     assert.ok(existsSync(journal.paths.manifest));
+  });
+});
+
+describe('run-cleanup: отбор по явным адресам', () => {
+  it('даёт тот же размер, возраст и endedAt, что отбор по признаку на тех же прогонах', () => {
+    const { runsRoot, projectRoot } = bed();
+    const key = projectKey(projectRoot);
+    const journal = makeStatusRun(runsRoot, projectRoot, 'failed', 'failed');
+    writeFileSync(join(journal.paths.dir, 'груз.bin'), 'x'.repeat(10_000));
+
+    const now = new Date();
+    const byTrait = selectCandidates(runsRoot, { failed: true }, { now });
+    const byAddress = selectByAddresses(runsRoot, [{ key, runId: 'failed' }], now);
+
+    assert.equal(byAddress.length, 1);
+    assert.deepEqual(byAddress, byTrait);
+  });
+
+  it('пропускает адрес, каталога которого нет, без ошибки', () => {
+    const { runsRoot, projectRoot } = bed();
+    const key = projectKey(projectRoot);
+    makeStatusRun(runsRoot, projectRoot, 'here', 'success');
+
+    const selected = selectByAddresses(runsRoot, [
+      { key, runId: 'here' },
+      { key, runId: 'нет-такого' },
+    ]);
+
+    assert.deepEqual(
+      selected.map((c) => c.address),
+      [`${key}/here`],
+    );
+  });
+
+  it('возвращает результат в порядке заданных адресов', () => {
+    const { runsRoot, projectRoot } = bed();
+    const key = projectKey(projectRoot);
+    makeStatusRun(runsRoot, projectRoot, 'a', 'success');
+    makeStatusRun(runsRoot, projectRoot, 'b', 'success');
+    makeStatusRun(runsRoot, projectRoot, 'c', 'success');
+
+    const selected = selectByAddresses(runsRoot, [
+      { key, runId: 'c' },
+      { key, runId: 'a' },
+      { key, runId: 'b' },
+    ]);
+
+    assert.deepEqual(
+      selected.map((c) => c.address),
+      [`${key}/c`, `${key}/a`, `${key}/b`],
+    );
   });
 });
 

@@ -94,3 +94,22 @@ export function fmtTime(iso: string | undefined): string {
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? DASH : date.toLocaleString('ru');
 }
+
+/**
+ * «1 прогон», «2 прогона», «5 прогонов» — число с русским склонением
+ * существительного. Переехало из `Runs.tsx`: подтверждению группового
+ * удаления нужно то же склонение, что и полосе расхождения версий, а
+ * проверить его тестом можно только здесь.
+ *
+ * Форма сказуемого («записан» / «записаны») сюда не входит: она нужна только
+ * полосе расхождения версий и остаётся там же, рядом с текстом, который её
+ * использует.
+ */
+export function pluralRuns(count: number): string {
+  const teens = count % 100;
+  const last = count % 10;
+  const one = last === 1 && teens !== 11;
+  const few = last >= 2 && last <= 4 && (teens < 12 || teens > 14);
+  const noun = one ? 'прогон' : few ? 'прогона' : 'прогонов';
+  return `${count} ${noun}`;
+}

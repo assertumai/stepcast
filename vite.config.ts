@@ -39,7 +39,8 @@ export default defineConfig({
       // собирается, — её собственный каталог, зависимости и общие с
       // демоном модули (`routes.ts` — разбор адресов, `grouping.ts` — склейка
       // прогонов с пайплайнами, `format.ts` — форматирование величин,
-      // `transcript.ts` — разбор потока шага в записи хода).
+      // `transcript.ts` — разбор потока шага в записи хода, `runsView.ts` —
+      // фильтры и порядок списка прогонов).
       // Целый корень репозитория здесь означал бы,
       // что любая открытая в браузере страница читает через `/@fs/` что
       // угодно из рабочего дерева.
@@ -50,6 +51,7 @@ export default defineConfig({
         join(ROOT, 'src', 'ui', 'grouping.ts'),
         join(ROOT, 'src', 'ui', 'format.ts'),
         join(ROOT, 'src', 'ui', 'transcript.ts'),
+        join(ROOT, 'src', 'ui', 'runsView.ts'),
       ],
     },
   },

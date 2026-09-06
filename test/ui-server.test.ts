@@ -970,6 +970,140 @@ describe('ui-dashboard: отбор прогонов к удалению', () => 
   });
 });
 
+describe('ui-dashboard: отбор прогонов по явному списку адресов', () => {
+  // Сценарий: «Объём выбранных прогонов»
+  it('называет размер каждого из трёх адресов, их число и суммарный объём', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    seedRun(runsRoot, projectRoot, { runId: 'b' });
+    seedRun(runsRoot, projectRoot, { runId: 'c' });
+    writeFileSync(join(runPaths(runsRoot, key, 'a').dir, 'груз.bin'), 'x'.repeat(10_000));
+    const server = await startServer(t, { runsRoot });
+
+    const query = ['a', 'b', 'c'].map((runId) => `run=${address(key, runId)}`).join('&');
+    const selected = await fetchJson(server, `/api/runs?${query}`);
+
+    assert.equal(selected.code, 200);
+    assert.equal(selected.json.count, 3);
+    const runs = selected.json.runs as Array<{ address: string; sizeBytes: number }>;
+    assert.deepEqual(
+      runs.map((r) => r.address).sort(),
+      [`${key}/a`, `${key}/b`, `${key}/c`].sort(),
+    );
+    assert.equal(
+      selected.json.totalBytes,
+      runs.reduce((sum, r) => sum + r.sizeBytes, 0),
+    );
+    assert.ok(existsSync(runPaths(runsRoot, key, 'a').dir), 'отбор ничего не удаляет');
+  });
+
+  // Сценарий: «Адреса вместе с признаком»
+  it('отклоняет запрос, называющий и адреса, и признак', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    for (const extra of ['trait=failed', 'older-than=7d', `project=${key}`]) {
+      const refused = await fetchJson(server, `/api/runs?run=${address(key, 'a')}&${extra}`);
+      assert.equal(refused.code, 400, `run вместе с ${extra} должен быть отклонён`);
+    }
+  });
+
+  // Сценарий: «Адрес исчезнувшего прогона»
+  it('пропускает адрес исчезнувшего прогона, а остальные измеряет', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'here' });
+    const server = await startServer(t, { runsRoot });
+
+    const selected = await fetchJson(
+      server,
+      `/api/runs?run=${address(key, 'here')}&run=${address(key, 'нет-такого')}`,
+    );
+
+    assert.equal(selected.code, 200);
+    assert.equal(selected.json.count, 1);
+    assert.deepEqual(
+      (selected.json.runs as Array<{ address: string }>).map((r) => r.address),
+      [`${key}/here`],
+    );
+  });
+
+  // Сценарий: «Адрес неверной формы»
+  it('отклоняет адрес неверной формы', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    const refused = await fetchJson(server, `/api/runs?run=${encodeURIComponent('однасегмент')}`);
+    assert.equal(refused.code, 400);
+    assert.equal(refused.json.runs, undefined);
+  });
+
+  // Сценарий: «Адрес за пределами корня»
+  it('отклоняет адрес, уводящий за пределы корня прогонов', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    const refused = await fetchJson(server, `/api/runs?run=${encodeURIComponent('../..')}`);
+    assert.equal(refused.code, 400);
+    assert.equal(refused.json.runs, undefined);
+  });
+
+  // Сценарий: «Адрес назван дважды»
+  it('меряет дважды названный адрес один раз', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(runPaths(runsRoot, key, 'a').dir, 'груз.bin'), 'x'.repeat(10_000));
+    const server = await startServer(t, { runsRoot });
+
+    const once = await fetchJson(server, `/api/runs?run=${address(key, 'a')}`);
+    const twice = await fetchJson(server, `/api/runs?run=${address(key, 'a')}&run=${address(key, 'a')}`);
+
+    assert.equal(twice.code, 200);
+    assert.equal(twice.json.count, 1);
+    assert.equal(twice.json.totalBytes, once.json.totalBytes);
+    assert.deepEqual(
+      (twice.json.runs as Array<{ address: string }>).map((r) => r.address),
+      [`${key}/a`],
+    );
+  });
+
+  // Повторы снимаются до проверки предела: предел считает прогоны, а не
+  // строки запроса, и один адрес, названный 501 раз, — по-прежнему один прогон.
+  it('не считает повторы одного адреса списком сверх предела', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    const query = Array.from({ length: 501 }, () => `run=${address(key, 'a')}`).join('&');
+    const selected = await fetchJson(server, `/api/runs?${query}`);
+
+    assert.equal(selected.code, 200);
+    assert.equal(selected.json.count, 1);
+  });
+
+  // Сценарий: «Список сверх предела»
+  it('отклоняет список адресов сверх предела и ничего не измеряет', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    // Короткие ASCII-адреса: длина запроса не должна упереться в предел
+    // заголовков HTTP раньше проверки числа адресов, которую здесь и проверяем.
+    const query = Array.from({ length: 501 }, (_, i) => `run=${address(key, `m${i}`)}`).join('&');
+    const refused = await fetchJson(server, `/api/runs?${query}`);
+    assert.equal(refused.code, 413);
+    assert.equal(refused.json.runs, undefined);
+  });
+});
+
 describe('ui-dashboard: групповое удаление прогонов', () => {
   // Сценарий: «Уборка оборванных разом»
   it('снимает группу прогонов одним запросом', async (t) => {

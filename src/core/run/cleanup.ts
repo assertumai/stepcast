@@ -209,6 +209,34 @@ export function selectCandidates(
   return selected;
 }
 
+/**
+ * Отбор прогонов по явному списку адресов — тот же `candidateOf`, что и отбор
+ * по признаку: возраст и размер обязаны считаться одним кодом, иначе два
+ * ответа на вопрос «сколько прогон занимает» разойдутся при первой же правке
+ * (design.md изменения ui-runs-list-controls, Решение 9).
+ *
+ * Адрес, каталога которого уже нет, в отбор не попадает и ошибкой не
+ * считается: между показом списка пользователю и его подтверждением прогон
+ * мог уйти сам собой.
+ *
+ * Названный дважды адрес меряется дважды: отбор считает ровно то, что ему
+ * дали, а снятие повторов — дело вызывающего, знающего, откуда пришёл список
+ * (для `GET /api/runs` — `handleSelectRuns` в `src/ui/server.ts`).
+ */
+export function selectByAddresses(
+  runsRoot: string,
+  addresses: readonly { readonly key: string; readonly runId: string }[],
+  now: Date = new Date(),
+): AddressedCandidate[] {
+  const selected: AddressedCandidate[] = [];
+  for (const { key, runId } of addresses) {
+    const paths = runPaths(runsRoot, key, runId);
+    if (!existsSync(paths.dir)) continue;
+    selected.push({ ...candidateOf(paths, runId, now), key, address: `${key}/${runId}` });
+  }
+  return selected;
+}
+
 export interface RunAddress {
   readonly key: string;
   readonly runId: string;

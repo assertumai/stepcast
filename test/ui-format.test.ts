@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { fmtBytes, fmtDuration, fmtMoney, fmtSpan, fmtTokens } from '../src/ui/format.js';
+import { fmtBytes, fmtDuration, fmtMoney, fmtSpan, fmtTokens, pluralRuns } from '../src/ui/format.js';
 
 describe('ui-format: длительность', () => {
   it('не показывает разрядов, которых на часах не бывает', () => {
@@ -73,5 +73,24 @@ describe('ui-format: отрезок исполнения', () => {
   it('нечитаемое время — не отрезок, а его отсутствие', () => {
     assert.equal(fmtSpan('не время', undefined, NOW), undefined);
     assert.equal(fmtSpan(START, 'не время', NOW), undefined);
+  });
+});
+
+describe('ui-format: склонение «прогон»', () => {
+  it('различает единственное число, «пару-тройку-четвёрку» и остальное', () => {
+    assert.equal(pluralRuns(1), '1 прогон');
+    assert.equal(pluralRuns(2), '2 прогона');
+    assert.equal(pluralRuns(5), '5 прогонов');
+  });
+
+  it('11–14 и их сотенные повторы склоняются как «прогонов», а не как единицы', () => {
+    assert.equal(pluralRuns(11), '11 прогонов');
+    assert.equal(pluralRuns(12), '12 прогонов');
+    assert.equal(pluralRuns(111), '111 прогонов');
+    assert.equal(pluralRuns(114), '114 прогонов');
+  });
+
+  it('21 склоняется как единица, а не как «одиннадцать»', () => {
+    assert.equal(pluralRuns(21), '21 прогон');
   });
 });

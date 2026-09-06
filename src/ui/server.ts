@@ -6,7 +6,9 @@ import { isRunAlive } from '../core/journal/reader.js';
 import {
   removeRunWithStats,
   removeRuns,
+  selectByAddresses,
   selectCandidates,
+  type AddressedCandidate,
   type RunAddress,
   type SelectTraits,
   type StatsDisposition,
@@ -347,13 +349,85 @@ function handleDelete(runsRoot: string, url: URL, watcher: Watcher, res: ServerR
 }
 
 /**
- * Отбор прогонов к групповому удалению по признаку.
+ * Ответ на любой отбор — по признаку или по явным адресам: адрес, размер
+ * каталога, возраст, число прогонов и суммарный объём. Общая точка, потому
+ * что подтверждению группового удаления нужен ровно этот состав независимо
+ * от того, чем прогоны названы.
+ */
+function sendRunSelection(res: ServerResponse, runsRoot: string, selected: readonly AddressedCandidate[]): void {
+  // Читается один раз на весь отбор: подтверждение должно отличать прогон, у
+  // которого есть что сохранить сверх файлов, от того, у которого нет
+  // (ui-dashboard, «Прогон без записи в хранилище»).
+  const { records } = readUsageStore(runsRoot);
+
+  sendJson(res, 200, {
+    runs: selected.map((candidate) => ({
+      address: candidate.address,
+      sizeBytes: candidate.sizeBytes,
+      ageMs: candidate.ageMs,
+      endedAt: candidate.endedAt,
+      // Журнал прогона не читается: возраст взят по каталогу, статуса нет.
+      // Пользователь должен видеть, почему такой прогон назван, а не гадать.
+      unreadable: candidate.unreadable,
+      hasUsageRecord: records.has(candidate.address),
+    })),
+    count: selected.length,
+    totalBytes: selected.reduce((sum, candidate) => sum + candidate.sizeBytes, 0),
+  });
+}
+
+/**
+ * Отбор прогонов к групповому удалению — по признаку либо по явному списку
+ * адресов, увиденных пользователем в списке прогонов (`run=<адрес>`,
+ * повторяемый). Только отчёт: ничего не удаляется здесь, только показывается,
+ * что удалится и сколько места освободится, — подтверждение пользователь даёт
+ * отдельным запросом со списком адресов, увиденных здесь.
  *
- * Только отчёт: ничего не удаляется здесь, только показывается, что удалится
- * и сколько места освободится, — подтверждение пользователь даёт отдельным
- * запросом со списком адресов, увиденных здесь.
+ * Список адресов и признаки взаимоисключающие (design.md изменения
+ * ui-runs-list-controls, Решение 9): смешивать «эти пять» с «все отказавшие»
+ * нечем — объединение и пересечение дали бы разные списки, и угадывать, какой
+ * имелся в виду, хуже отказа.
  */
 function handleSelectRuns(runsRoot: string, url: URL, res: ServerResponse): void {
+  const addressParams = url.searchParams.getAll('run');
+  const hasTraitParams =
+    url.searchParams.has('trait') || url.searchParams.has('older-than') || url.searchParams.has('project');
+
+  if (addressParams.length > 0) {
+    if (hasTraitParams) {
+      sendJson(res, 400, {
+        error: 'Параметр run не сочетается с trait, older-than или project: список адресов и признак — разные способы отбора',
+      });
+      return;
+    }
+
+    // Один и тот же адрес, названный дважды, — один прогон: без снятия
+    // повторов его каталог мерился бы дважды, и `count` с `totalBytes` назвали
+    // бы объём, которого не освободится. Повторы снимаются до проверки
+    // предела: предел считает прогоны, а не строки запроса.
+    const distinct = [...new Set(addressParams)];
+
+    // Тот же предел, что и у группового удаления: иначе предел удаления
+    // обходился бы отбором по адресам.
+    if (distinct.length > MAX_RUN_ADDRESSES) {
+      sendJson(res, 413, { error: `Список адресов превышает предел в ${MAX_RUN_ADDRESSES}` });
+      return;
+    }
+
+    const addresses: RunAddress[] = [];
+    for (const value of distinct) {
+      const address = parseRunAddress(value);
+      if (address === undefined) {
+        sendJson(res, 400, { error: `Адрес прогона должен иметь вид <проект>/<прогон>: ${value}` });
+        return;
+      }
+      addresses.push(address);
+    }
+
+    sendRunSelection(res, runsRoot, selectByAddresses(runsRoot, addresses));
+    return;
+  }
+
   const traits: { -readonly [K in keyof SelectTraits]: SelectTraits[K] } = {};
 
   for (const trait of url.searchParams.getAll('trait')) {
@@ -388,25 +462,7 @@ function handleSelectRuns(runsRoot: string, url: URL, res: ServerResponse): void
   }
 
   const selected = selectCandidates(runsRoot, traits, project === null ? {} : { project });
-  // Читается один раз на весь отбор: подтверждение должно отличать прогон, у
-  // которого есть что сохранить сверх файлов, от того, у которого нет
-  // (ui-dashboard, «Прогон без записи в хранилище»).
-  const { records } = readUsageStore(runsRoot);
-
-  sendJson(res, 200, {
-    runs: selected.map((candidate) => ({
-      address: candidate.address,
-      sizeBytes: candidate.sizeBytes,
-      ageMs: candidate.ageMs,
-      endedAt: candidate.endedAt,
-      // Журнал прогона не читается: возраст взят по каталогу, статуса нет.
-      // Пользователь должен видеть, почему такой прогон назван, а не гадать.
-      unreadable: candidate.unreadable,
-      hasUsageRecord: records.has(candidate.address),
-    })),
-    count: selected.length,
-    totalBytes: selected.reduce((sum, candidate) => sum + candidate.sizeBytes, 0),
-  });
+  sendRunSelection(res, runsRoot, selected);
 }
 
 /**
