@@ -88,6 +88,25 @@ describe('CLI: stepcast knowledge', () => {
     assert.match(result.stdout, /Тело a/);
   });
 
+  // Задача 1.6: разрешение каталога практики спецификации по имени доступно и
+  // человеку у терминала, не только сборке контекста.
+  it('select --id spec:<слаг> печатает документы каталога практики спецификации', async () => {
+    const configWithSpec =
+      'project:\n  knowledge:\n    provider: fs\n    dir: knowledge\n  spec:\n    dir: openspec/changes\n';
+    const box = sandbox({
+      '.stepcast/config.yml': configWithSpec,
+      'openspec/changes/one/proposal.md': '## Why\n\nПричина изменения one.\n',
+      'openspec/changes/one/design.md': '## Context\n\nКонтекст изменения one.\n',
+    });
+
+    const result = await knowledge(box, ['select', '--id', 'spec:one']);
+
+    assert.equal(result.code, ExitCode.ok);
+    assert.match(result.stdout, /### spec:one — /);
+    assert.match(result.stdout, /Причина изменения one/);
+    assert.match(result.stdout, /Контекст изменения one/);
+  });
+
   it('select требует ровно одного из --scope и --id', async () => {
     const box = sandbox({ 'knowledge/a.md': unit('a', 'Первая') });
 

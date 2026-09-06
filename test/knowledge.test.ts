@@ -466,6 +466,157 @@ describe('knowledge-fs: отбор', () => {
   });
 });
 
+describe('knowledge-fs: разрешение каталога практики спецификации по имени', () => {
+  // Задача 1.1 / Сценарий: «Каждое имя из оглавления разрешается» — падает на
+  // сегодняшнем коде: spec:one даёт StepcastError «Единица знания не найдена».
+  it('всякое имя из оглавления разрешается отбором по имени', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      'openspec/changes/one/proposal.md': '## Why\n\nПричина изменения one.\n',
+      'openspec/changes/two/proposal.md': '## Why\n\nПричина изменения two.\n',
+    });
+    const source = box.source({ specDir: 'openspec/changes' });
+
+    for (const entry of source.index()) {
+      const entries = source.select({ kind: 'id', id: [entry.id] });
+      assert.ok(entries.length > 0, `${entry.id}: отбор обязан отдать хотя бы одну запись`);
+      for (const picked of entries) {
+        assert.equal(picked.text, undefined);
+        assert.ok(picked.path !== undefined, `${entry.id}: запись обязана нести path`);
+        assert.doesNotThrow(() => readFileSync(join(box.root, picked.path as string), 'utf8'));
+      }
+    }
+  });
+
+  // Задача 1.2 / Сценарий: «Каталог отдаётся всеми своими документами»
+  it('каталог разрешается записью на каждый документ Markdown, порядком по пути', () => {
+    const box = repo({
+      'openspec/changes/one/proposal.md': '## Why\n\nПричина.\n',
+      'openspec/changes/one/design.md': '## Context\n\nКонтекст.\n',
+      'openspec/changes/one/specs/some/spec.md': '## ADDED Requirements\n\nТребование.\n',
+    });
+    const source = box.source({ specDir: 'openspec/changes' });
+
+    const entries = source.select({ kind: 'id', id: ['spec:one'] });
+
+    assert.deepEqual(
+      entries.map((entry) => entry.path),
+      [
+        'openspec/changes/one/design.md',
+        'openspec/changes/one/proposal.md',
+        'openspec/changes/one/specs/some/spec.md',
+      ],
+    );
+    for (const entry of entries) {
+      assert.equal(entry.id, 'spec:one');
+      assert.equal(entry.text, undefined);
+    }
+  });
+
+  it('повторно названный идентификатор каталога записей не удваивает', () => {
+    const box = repo({ 'openspec/changes/one/proposal.md': '## Why\n\nПричина.\n' });
+    const source = box.source({ specDir: 'openspec/changes' });
+
+    const entries = source.select({ kind: 'id', id: ['spec:one', 'spec:one'] });
+
+    assert.equal(entries.length, 1);
+  });
+
+  // То же правило, каким уже режутся тела единиц знания.
+  it('предел записи режет по границе документа каталога, оставляя хотя бы одну запись', () => {
+    const long = `## Why\n\n${'Очень длинный текст причины изменения. '.repeat(80)}`;
+    const box = repo({
+      'openspec/changes/one/proposal.md': long,
+      'openspec/changes/one/design.md': long,
+    });
+    const source = box.source({ specDir: 'openspec/changes' });
+
+    const entries = source.select({ kind: 'id', id: ['spec:one'], budget: 10 });
+
+    assert.equal(entries.length, 1);
+  });
+
+  // Задача 1.3 / Сценарий: «Отбор по области каталоги не возвращает»
+  it('отбор по области не возвращает записи каталогов практики спецификации', () => {
+    const box = repo({ 'openspec/changes/one/proposal.md': '## Why\n\nПричина.\n' });
+    const source = box.source({ specDir: 'openspec/changes' });
+
+    const entries = source.select({ kind: 'scope', scope: ['openspec/changes/**'] });
+
+    assert.equal(entries.length, 0);
+  });
+
+  // Задача 1.4 / Сценарий: «Несуществующий идентификатор по-прежнему отказывает»
+  it('отказывает на несуществующем идентификаторе каталога, называя его', () => {
+    const box = repo({ 'openspec/changes/one/proposal.md': '## Why\n\nПричина.\n' });
+    const source = box.source({ specDir: 'openspec/changes' });
+
+    assert.throws(
+      () => source.select({ kind: 'id', id: ['spec:нет-такого'] }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /spec:нет-такого/);
+        return true;
+      },
+    );
+  });
+
+  // Область у записи каталога печатается наравне с областью единицы знания, а
+  // отбор по области таких записей не возвращает: обещание снимается словами,
+  // иначе шаг, объявивший прочитанную в оглавлении область, получил бы не
+  // отказ, а пустой ответ — молчание, неотличимое от «знания нет».
+  it('оглавление в контексте называет записи каталогов запрашиваемыми только по имени', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      'openspec/changes/one/proposal.md': '## Why\n\nПричина.\n',
+    });
+
+    const text = box.source({ specDir: 'openspec/changes' }).select({ kind: 'index' })[0]?.text ?? '';
+
+    assert.match(text, /spec:one — .*openspec\/changes\/one/);
+    assert.match(text, /запрашиваются только по идентификатору/);
+    assert.match(text, /отбор по области их не возвращает/);
+  });
+
+  it('оговорки нет в оглавлении, где не показано ни одной записи каталога', () => {
+    const box = repo({ 'knowledge/a.md': unit({ id: 'a', title: 'Первая' }) });
+
+    const text = box.source().select({ kind: 'index' })[0]?.text ?? '';
+
+    assert.match(text, /a — Первая/);
+    assert.doesNotMatch(text, /отбор по области/);
+  });
+
+  // `project.spec.dir` держит что угодно, что положила туда практика
+  // спецификации: каталог с именем на `.md` попадает в перечень документов
+  // наравне с файлом. Отбор зовётся посреди прогона, при сборке контекста, и
+  // трасса Node вместо названной причины обрывает работу вместо того, чтобы
+  // её назвать.
+  it('нечитаемый документ каталога отказывает названной причиной, а не трассой Node', () => {
+    const box = repo({ 'openspec/changes/one/proposal.md': '## Why\n\nПричина.\n' });
+    mkdirSync(join(box.root, 'openspec/changes/one/notes.md'), { recursive: true });
+    const source = box.source({ specDir: 'openspec/changes' });
+
+    assert.throws(
+      () => source.select({ kind: 'id', id: ['spec:one'] }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /openspec\/changes\/one\/notes\.md/);
+        assert.match(error.hint ?? '', /каталог/);
+        return true;
+      },
+    );
+  });
+
+  it('каталог без единого документа Markdown отсутствует и в index, и в отборе по имени', () => {
+    const box = repo({ 'openspec/changes/empty/notes.txt': 'не markdown\n' });
+    const source = box.source({ specDir: 'openspec/changes' });
+
+    assert.ok(!source.index().some((entry) => entry.id === 'spec:empty'));
+    assert.throws(() => source.select({ kind: 'id', id: ['spec:empty'] }), StepcastError);
+  });
+});
+
 describe('knowledge-fs: усечение производной части в отборе', () => {
   function specChangeFiles(count: number): Record<string, string> {
     const files: Record<string, string> = {};

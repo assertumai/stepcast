@@ -148,10 +148,14 @@ function readContentHash(absolute: string): { readonly hash: string } | { readon
   }
 }
 
-/** Причина, по которой байтов у существующего пути не взять, — словами. */
+/**
+ * Причина, по которой байтов у существующего пути не взять, — словами. Причина
+ * названа без привязки к тому, кто читал: тем же перечнем объясняется и
+ * нечитаемое закрепление якоря, и нечитаемый документ каталога изменения.
+ */
 function describeReadFailure(error: unknown): string {
   const code = (error as NodeJS.ErrnoException | null)?.code;
-  if (code === 'EISDIR') return 'путь — каталог, а закрепление считается по байтам файла';
+  if (code === 'EISDIR') return 'путь — каталог, а не файл';
   if (code === 'EACCES' || code === 'EPERM') return 'нет прав на чтение';
   return code ?? String(error);
 }
@@ -192,26 +196,54 @@ class FsKnowledgeSource implements KnowledgeSource {
     }
 
     const units = this.units();
-    const picked: Unit[] = [];
+    // Заготовленные записи ответа — тела единиц и документы каталогов вперемешку,
+    // одним списком: обеим веткам ниже нужен ровно один бюджетный цикл, а не по
+    // одному на каждый род записи (design.md, решение 5).
+    const picked: KnowledgeEntry[] = [];
 
     if (selector.kind === 'id') {
+      const asked = new Set<string>();
+      // Перечень каталогов снимается не больше раза на вызов и только при
+      // нужде: каждый его обход — `statSync` и чтение шапки на каталог
+      // (`describeSpecDir`), а каталогов в живом репозитории десятки. Имён же
+      // в запросе несколько, и ненайденных среди единиц — сколько угодно, так
+      // что съём внутри цикла оплачивался бы и заведомо ошибочным именем.
+      // Согласованность с оглавлением от этого не страдает: перечень тот же
+      // и снят тем же методом (design.md, решение 1).
+      let specIndex: readonly KnowledgeIndexEntry[] | undefined;
       for (const id of selector.id) {
+        // Повторно названный идентификатор записей не удваивает — ни для
+        // единицы, ни для каталога.
+        if (asked.has(id)) continue;
+        asked.add(id);
+
         // Поимённый запрос достаёт и инвалидированное: человек и агент,
         // назвавшие идентификатор, знают, чего просят, — а вот отбор по
-        // области отдавать отменённое не вправе.
+        // области отдавать отменённое не вправе. Столкновение имён решается в
+        // пользу единицы знания (design.md, решение 6): в дереве может лежать
+        // единица с id: spec:<слаг>, и шапка единицы схемой на форму
+        // идентификатора не стоит.
         const unit = units.find((candidate) => candidate.id === id);
-        if (unit === undefined) {
+        if (unit !== undefined) {
+          picked.push({ id: unit.id, title: unit.title, path: unit.file, tokens: estimateTokens(unit.body) });
+          continue;
+        }
+
+        // Не единица — тогда, может быть, каталог практики спецификации:
+        // тем же перечнем, из которого собрано оглавление (design.md, решение 1).
+        const documents = this.specDocumentEntries(id, (specIndex ??= this.specEntries()));
+        if (documents.length === 0) {
           throw new StepcastError(`Единица знания не найдена: ${id}`, {
             hint: 'Проверьте идентификатор по оглавлению: stepcast knowledge index',
           });
         }
-        if (!picked.includes(unit)) picked.push(unit);
+        picked.push(...documents);
       }
     } else {
       for (const unit of units) {
         if (unit.status === 'superseded') continue;
         if (unit.scope.some((own) => selector.scope.some((asked) => globsIntersect(own, asked)))) {
-          picked.push(unit);
+          picked.push({ id: unit.id, title: unit.title, path: unit.file, tokens: estimateTokens(unit.body) });
         }
       }
       picked.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
@@ -219,15 +251,15 @@ class FsKnowledgeSource implements KnowledgeSource {
 
     const entries: KnowledgeEntry[] = [];
     let spent = 0;
-    for (const unit of picked) {
-      const tokens = estimateTokens(unit.body);
-      // Предел записи режет по границе единицы, а не по середине текста:
-      // усечённое знание выглядит целым и потому хуже отсутствующего.
-      if (selector.budget !== undefined && spent + tokens > selector.budget && entries.length > 0) {
+    for (const candidate of picked) {
+      // Предел записи режет по границе записи, а не по середине текста:
+      // усечённый документ или усечённое знание выглядит целым и потому хуже
+      // отсутствующего.
+      if (selector.budget !== undefined && spent + candidate.tokens > selector.budget && entries.length > 0) {
         continue;
       }
-      spent += tokens;
-      entries.push({ id: unit.id, title: unit.title, path: unit.file, tokens });
+      spent += candidate.tokens;
+      entries.push(candidate);
     }
     return entries;
   }
@@ -723,6 +755,17 @@ class FsKnowledgeSource implements KnowledgeSource {
 
     return [
       'Известное по проекту. Тела здесь нет — запрашивайте по идентификатору.',
+      // Показанная запись каталога печатает свою область наравне с единицей
+      // знания (`renderEntryLine`), а отбор по области таких записей не
+      // возвращает (design.md, решение 7). Без этой строки оглавление обещало
+      // бы селектор, по которому шаг получит не отказ, а пустой ответ, — тот
+      // же промах, который чинится для отбора по имени, только тихий, и тем
+      // хуже: молчание неотличимо от «знания нет».
+      //
+      // Строка постоянная, и ни в один из пределов оглавления она не входит:
+      // пределы держат растущие части — записи единиц и записи каталогов, — а
+      // эта строка одна на оглавление, как и шапка над ней.
+      ...(shown > 0 ? [SPEC_ID_ONLY] : []),
       '',
       ...lines,
     ].join('\n');
@@ -803,6 +846,67 @@ class FsKnowledgeSource implements KnowledgeSource {
     }
     return entries;
   }
+
+  /**
+   * Отбор по имени, разворачивающий запись каталога `spec:<слаг>` в записи
+   * ответа — по одной на каждый документ Markdown внутри него, порядком по
+   * пути (design.md, решения 2 и 3). Пустой список значит «такого каталога
+   * нет»: имя проверяется перечнем `specEntries()`, из которого собрано
+   * оглавление, а не своим обходом `project.spec.dir` — иначе правило «каталог
+   * без документа документом не является» разошлось бы между оглавлением и
+   * отбором (design.md, решение 1). Перечень передаётся готовым: снимать его
+   * заново на каждое имя запроса значило бы обходить дерево столько раз,
+   * сколько имён названо.
+   */
+  private specDocumentEntries(
+    id: string,
+    known: readonly KnowledgeIndexEntry[],
+  ): readonly KnowledgeEntry[] {
+    const specDir = this.options.specDir;
+    if (specDir === undefined) return [];
+    if (!known.some((entry) => entry.id === id)) return [];
+
+    const slug = id.slice('spec:'.length);
+    const specRoot = resolvePath(this.options.root, specDir);
+    const dirAbsolute = join(specRoot, slug);
+
+    const files = (globSync('**/*.md', { cwd: dirAbsolute }) as string[]).sort();
+    return files.map((relativeFile) => {
+      const absolute = join(dirAbsolute, relativeFile);
+      const path = toPosix(relative(this.options.root, absolute));
+      return {
+        id,
+        title: toPosix(relativeFile),
+        path,
+        tokens: estimateTokens(readSpecDocument(absolute, path)),
+      };
+    });
+  }
+}
+
+/**
+ * Содержимое документа каталога практики спецификации — либо отказ, называющий
+ * путь и причину.
+ *
+ * Обёртка не лишняя, хотя имя пришло из обхода дерева: `project.spec.dir`
+ * держит что угодно, что положила туда практика спецификации, — каталог с
+ * именем на `.md`, файл без прав чтения, битую ссылку, — и всё это попадает в
+ * перечень `globSync` наравне с документом. Отбор зовётся посреди прогона, при
+ * сборке контекста шага, и трасса Node вместо названной причины обрывает
+ * работу вместо того, чтобы её назвать: тот же приём, что у `readContentHash`
+ * здесь и у чтения пути знания в `resolveKnowledge`
+ * (`src/core/context/assemble.ts`).
+ */
+function readSpecDocument(absolute: string, path: string): string {
+  try {
+    return readFileSync(absolute, 'utf8');
+  } catch (error) {
+    throw new StepcastError(`Документ каталога практики спецификации не читается: ${path}`, {
+      file: path,
+      cause: error,
+      hint: describeReadFailure(error),
+    });
+  }
 }
 
 /**
@@ -813,6 +917,17 @@ class FsKnowledgeSource implements KnowledgeSource {
 function renderSpecSection(entries: readonly KnowledgeIndexEntry[]): string {
   return entries.map(renderEntryLine).join('\n');
 }
+
+/**
+ * Оговорка про записи каталогов в оглавлении, уезжающем в контекст шага: у них
+ * область печатается, но селектором не является (design.md, решение 7).
+ *
+ * Область у такой записи всё же названа, а не убрана: она говорит агенту, где
+ * каталог лежит в дереве, — а вот обещание «отберётся по ней» с неё снято
+ * словами.
+ */
+const SPEC_ID_ONLY =
+  'Записи spec:… запрашиваются только по идентификатору: область у них называет место в дереве, отбор по области их не возвращает.';
 
 /** Строка одной записи оглавления — общая для полного и усечённого текста. */
 function renderEntryLine(entry: KnowledgeIndexEntry): string {
@@ -831,6 +946,13 @@ function compareById(left: KnowledgeIndexEntry, right: KnowledgeIndexEntry): num
  * контекст агентского шага, использует другой путь построения — приватный
  * `renderContextIndex` источника `fs` — потому что производная часть там
  * укладывается в свой предел (design.md, решение 3).
+ *
+ * Оговорки `SPEC_ID_ONLY` здесь нет намеренно: эта функция печатает оглавление
+ * любого источника, включая `cmd`, а имя `spec:…` за пределами раскладки `fs`
+ * не значит ничего — оговорка стала бы утверждением о чужом источнике, которое
+ * движку неоткуда проверить. Человеку у терминала промах и не стоит шага:
+ * пустой ответ он видит сразу и целиком, а правило записано в
+ * `docs/knowledge.md`.
  */
 export function renderIndex(entries: readonly KnowledgeIndexEntry[]): string {
   if (entries.length === 0) return 'Знание репозитория пусто.';
