@@ -2,9 +2,10 @@ import { spawnSync } from 'node:child_process';
 
 import type { z } from 'zod';
 
+import { estimateTokens } from '../context/assemble.js';
 import { StepcastError } from '../errors.js';
 import type { KnowledgeDeclaration } from '../pipeline/model.js';
-import { createFsKnowledgeSource } from './fs.js';
+import { createFsKnowledgeSource, renderIndex } from './fs.js';
 import {
   KnowledgeCheckResponseSchema,
   KnowledgeIndexResponseSchema,
@@ -89,12 +90,17 @@ class CommandKnowledgeSource implements KnowledgeSource {
   }
 
   select(selector: KnowledgeSelector): readonly KnowledgeEntry[] {
+    if (selector.kind === 'index') {
+      // Оглавление — отдельный глагол контракта (`docs/knowledge.md`), а не
+      // поле запроса `select`: источник, написанный по документации, не
+      // узнал бы `index` внутри запроса `select` вовсе.
+      const text = renderIndex(this.index());
+      return [{ id: 'index', title: 'Оглавление знания', text, tokens: estimateTokens(text) }];
+    }
     const request =
-      selector.kind === 'index'
-        ? { index: true }
-        : selector.kind === 'scope'
-          ? { scope: selector.scope, ...(selector.budget === undefined ? {} : { budget: selector.budget }) }
-          : { id: selector.id, ...(selector.budget === undefined ? {} : { budget: selector.budget }) };
+      selector.kind === 'scope'
+        ? { scope: selector.scope, ...(selector.budget === undefined ? {} : { budget: selector.budget }) }
+        : { id: selector.id, ...(selector.budget === undefined ? {} : { budget: selector.budget }) };
     return this.call('select', request, KnowledgeSelectResponseSchema).entries;
   }
 

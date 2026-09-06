@@ -1926,6 +1926,97 @@ describe('knowledge-source: контракт внешней команды', () 
     return { box: { root, command }, source };
   }
 
+  /**
+   * Источник-заглушка, пишущий в лог-файл вызванный глагол и полученный
+   * запрос — по одной строке JSON на вызов. `handler` отвечает на stdout;
+   * переменные `verb` и `request` доступны ему по имени.
+   */
+  function loggingStub(handler: string): {
+    source: KnowledgeSource;
+    readLog: () => Array<{ verb: string; request: unknown }>;
+  } {
+    const root = tempDir('knowledge-cmd-log-');
+    const file = join(root, 'source.mjs');
+    const log = join(root, 'log.jsonl');
+    writeFileSync(
+      file,
+      `import { appendFileSync } from 'node:fs';
+       const chunks = [];
+       for await (const chunk of process.stdin) chunks.push(chunk);
+       const request = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+       const verb = process.argv[2];
+       appendFileSync(${JSON.stringify(log)}, JSON.stringify({ verb, request }) + '\\n');
+       ${handler}`,
+    );
+    const command = `node ${JSON.stringify(file)}`;
+    const source = createKnowledgeSource({
+      knowledge: {
+        provider: 'cmd',
+        command,
+        dir: undefined,
+        rules: undefined,
+        indexMaxTokens: 2000,
+        specIndexMaxTokens: 2000,
+        unitMaxTokens: 1000,
+        staleAfterMs: 14 * DAY,
+        timeoutMs: 10_000,
+      },
+      root,
+    });
+    assert.ok(source !== undefined);
+    const readLog = (): Array<{ verb: string; request: unknown }> =>
+      readFileSync(log, 'utf8')
+        .split('\n')
+        .filter((line) => line.trim() !== '')
+        .map((line) => JSON.parse(line) as { verb: string; request: unknown });
+    return { source: source as KnowledgeSource, readLog };
+  }
+
+  // Задача 1.1: запись `knowledge: index` разрешается глаголом `index`, а не
+  // `select` с полем вне контракта.
+  it('запись `knowledge: index` вызывает глагол index, а не select', () => {
+    const { source, readLog } = loggingStub(
+      `if (verb === 'index') {
+         process.stdout.write(JSON.stringify({ entries: [{ id: 'a', title: 'A', scope: [] }] }));
+       } else {
+         process.stdout.write(JSON.stringify({ entries: [] }));
+       }`,
+    );
+    const entries = source.select({ kind: 'index' });
+    const log = readLog();
+    assert.equal(log.length, 1);
+    assert.equal(log[0]?.verb, 'index');
+    assert.deepEqual(log[0]?.request, {});
+    assert.ok(log.every((call) => call.verb !== 'select'));
+    assert.ok(entries[0]?.text?.includes('a — A'));
+  });
+
+  it('оглавление пустое — текст говорит об этом, а не молчит', () => {
+    const { source } = loggingStub(
+      `process.stdout.write(JSON.stringify({ entries: [] }));`,
+    );
+    const entries = source.select({ kind: 'index' });
+    assert.equal(entries[0]?.text, 'Знание репозитория пусто.');
+  });
+
+  // Задача 1.2: запрос select по области и по идентификаторам несёт только
+  // документированные поля — без `index`.
+  it('запрос select по области и по id не несёт поля вне scope/id/budget', () => {
+    const { source, readLog } = loggingStub(
+      `process.stdout.write(JSON.stringify({ entries: [] }));`,
+    );
+    source.select({ kind: 'scope', scope: ['src/**'], budget: 500 });
+    source.select({ kind: 'id', id: ['a', 'b'] });
+    const log = readLog();
+    assert.equal(log.length, 2);
+    assert.ok(log.every((call) => call.verb === 'select'));
+    assert.deepEqual(
+      Object.keys(log[0]?.request as Record<string, unknown>).sort(),
+      ['budget', 'scope'],
+    );
+    assert.deepEqual(Object.keys(log[1]?.request as Record<string, unknown>).sort(), ['id']);
+  });
+
   // Задача 2.4: успешный отбор — глагол первым аргументом, запрос на stdin.
   it('передаёт глагол первым аргументом и запрос стандартным вводом', () => {
     const { source } = stub(
