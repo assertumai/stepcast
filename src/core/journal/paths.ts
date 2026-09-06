@@ -83,6 +83,15 @@ export function runPaths(runsRoot: string, key: string, runId: string): RunPaths
   };
 }
 
+/**
+ * Хранилище расхода: построчный журнал в корне прогонов, а не в каталоге
+ * прогона, — сводка обязана пережить удаление своего каталога
+ * (run-stats-retention, Решение 1).
+ */
+export function usageStorePath(runsRoot: string): string {
+  return join(runsRoot, 'usage.ndjson');
+}
+
 export function jobDir(paths: RunPaths, jobId: string): string {
   return join(paths.jobs, jobId);
 }

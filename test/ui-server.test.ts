@@ -342,6 +342,80 @@ describe('ui-dashboard: HTTP-витрина', () => {
     assert.equal(malformed.code, 400);
   });
 
+  // Сценарий ui-dashboard «Раскрытие прогона без файлов»: каталога нет, запись
+  // хранилища есть — снимок собирается по ней, а не отказывает 404.
+  it('раскрывает прогон без файлов по записи хранилища и отказывает, когда нет и записи', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'a',
+      usage: {
+        run_id: 'a',
+        total: {
+          tokens_in: 10,
+          tokens_out: 5,
+          cache_read: 0,
+          cache_write: 0,
+          billable_tokens: 15,
+          wallclock_ms: 1000,
+          cost_usd: 0.25,
+        },
+        unreported: [],
+        jobs: {
+          build: {
+            billable_tokens: 15,
+            wallclock_ms: 1000,
+            cost_usd: 0.25,
+            steps: {
+              write: {
+                billable_tokens: 15,
+                wallclock_ms: 1000,
+                cost_usd: 0.25,
+                attempts: [
+                  {
+                    attempt: 1,
+                    backend: 'claude',
+                    model: 'opus',
+                    billable_tokens: 15,
+                    wallclock_ms: 1000,
+                    cost_usd: 0.25,
+                  },
+                ],
+              },
+            },
+          },
+        },
+      },
+    });
+    seedRun(runsRoot, projectRoot, { runId: 'b' });
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    // Файлы сняты, статистика сохранена — умолчание удаления.
+    const removed = await sendJson(server, { method: 'DELETE', path: `/api/run?run=${address(key, 'a')}` });
+    assert.equal(removed.json.stats, 'kept');
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), false);
+
+    const byRecord = await fetchJson(server, `/api/run?run=${address(key, 'a')}`);
+    assert.equal(byRecord.code, 200, 'прогон без файлов, но с записью, раскрывается сохранённой сводкой');
+    assert.equal(byRecord.json.filesGone, true);
+    assert.equal(pick(byRecord.json, 'total', 'billableTokens'), 15);
+    assert.equal(pick(byRecord.json, 'total', 'costUsd'), 0.25);
+    assert.equal(pick(byRecord.json, 'models', 0, 'model'), 'opus');
+    assert.equal(pick(byRecord.json, 'jobs', 0, 'id'), 'build');
+    assert.equal(pick(byRecord.json, 'jobs', 0, 'steps', 0, 'id'), 'write');
+
+    // Ни каталога, ни записи — только тогда отказ.
+    const dropped = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/usage-records',
+      body: JSON.stringify({ records: [`${key}/a`] }),
+    });
+    assert.equal(dropped.code, 200);
+
+    const gone = await fetchJson(server, `/api/run?run=${address(key, 'a')}`);
+    assert.equal(gone.code, 404, '404 остаётся, когда нет ни каталога, ни записи');
+  });
+
   // Сценарий: «Путь за пределы каталога прогона»
   it('отклоняет кодом 400 файл за пределами каталога прогона', async (t) => {
     const { runsRoot, projectRoot } = makeJournalBed();
@@ -456,7 +530,10 @@ jobs:
 `;
 
 describe('ui-dashboard: удаление прогона', () => {
-  it('снимает прогон с диска и из обзора', async (t) => {
+  // Требование ui-dashboard «Отказ от статистики требует отдельного
+  // действия»: удаление без указания судьбы статистики сохраняет её, и
+  // прогон остаётся в обзоре — файлов нет, а запись есть (Решение 10).
+  it('снимает прогон с диска, но по умолчанию сохраняет его статистику и место в обзоре', async (t) => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     seedRun(runsRoot, projectRoot, { runId: 'b' });
@@ -468,6 +545,31 @@ describe('ui-dashboard: удаление прогона', () => {
       path: `/api/run?run=${address(key, 'a')}`,
     });
     assert.equal(removed.code, 200);
+    assert.equal(removed.json.stats, 'kept');
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), false);
+
+    const overview = await fetchJson(server, '/api/overview');
+    const runs = pick(overview.json, 'projects', 0, 'runs') as Array<{ runId: string; filesGone: boolean }>;
+    assert.deepEqual(
+      runs.map((run) => run.runId).sort(),
+      ['a', 'b'],
+    );
+    assert.equal(runs.find((run) => run.runId === 'a')?.filesGone, true);
+  });
+
+  it('stats: drop снимает и статистику — прогон целиком пропадает из обзора', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    seedRun(runsRoot, projectRoot, { runId: 'b' });
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    const removed = await sendJson(server, {
+      method: 'DELETE',
+      path: `/api/run?run=${address(key, 'a')}&stats=drop`,
+    });
+    assert.equal(removed.code, 200);
+    assert.equal(removed.json.stats, 'removed');
     assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), false);
 
     const overview = await fetchJson(server, '/api/overview');
@@ -889,6 +991,156 @@ describe('ui-dashboard: групповое удаление прогонов', (
     });
     assert.equal(result.code, 403);
     assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), true);
+  });
+
+  // Требование ui-dashboard «Отказ от статистики требует отдельного
+  // действия»: групповое удаление без указания судьбы статистики её сохраняет.
+  it('групповое удаление без stats сохраняет записи, с drop — снимает', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    seedRun(runsRoot, projectRoot, { runId: 'b' });
+    const server = await startServer(t, { runsRoot });
+
+    const kept = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/runs',
+      body: JSON.stringify({ runs: [`${key}/a`] }),
+    });
+    assert.equal(kept.code, 200);
+    const keptOutcome = (kept.json.outcomes as Array<{ address: string; stats?: string }>)[0];
+    assert.equal(keptOutcome?.stats, 'kept');
+
+    const dropped = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/runs',
+      body: JSON.stringify({ runs: [`${key}/b`], stats: 'drop' }),
+    });
+    assert.equal(dropped.code, 200);
+    const droppedOutcome = (dropped.json.outcomes as Array<{ address: string; stats?: string }>)[0];
+    assert.equal(droppedOutcome?.stats, 'removed');
+  });
+
+  it('отклоняет негодное значение stats в теле запроса', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    const result = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/runs',
+      body: JSON.stringify({ runs: [`${key}/a`], stats: 'both' }),
+    });
+    assert.equal(result.code, 400);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), true);
+  });
+});
+
+describe('ui-dashboard: одиночное удаление и судьба статистики', () => {
+  it('отклоняет негодное значение stats в query-параметре', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    const result = await sendJson(server, {
+      method: 'DELETE',
+      path: `/api/run?run=${address(key, 'a')}&stats=${encodeURIComponent('и-то-и-другое')}`,
+    });
+    assert.equal(result.code, 400);
+    assert.equal(existsSync(runPaths(runsRoot, key, 'a').dir), true);
+  });
+});
+
+describe('ui-dashboard: отбор и снятие записей хранилища расхода', () => {
+  // Требование run-cleanup «Отбор progonov к удалению» перенесённое на
+  // записи: GET /api/runs называет по каждому кандидату, есть ли у него
+  // запись в хранилище.
+  it('GET /api/runs называет по каждому кандидату наличие записи в хранилище', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'failed', status: 'failed' });
+    const server = await startServer(t, { runsRoot });
+
+    // Запись есть — файлы всё ещё на диске, но хранилище уже перенесло её
+    // при старте демона.
+    const withRecord = await fetchJson(server, '/api/runs?trait=failed');
+    const candidate = (withRecord.json.runs as Array<{ address: string; hasUsageRecord: boolean }>)[0];
+    assert.equal(candidate?.address, `${key}/failed`);
+    assert.equal(candidate?.hasUsageRecord, true);
+  });
+
+  it('GET /api/usage-records отбирает по возрасту, исходу и проекту', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, {
+      runId: 'old-failed',
+      status: 'failed',
+      manifest: { started_at: '2020-01-01T00:00:00.000Z', finished_at: '2020-01-01T00:05:00.000Z' },
+    });
+    seedRun(runsRoot, projectRoot, { runId: 'recent-ok', status: 'success' });
+    const server = await startServer(t, { runsRoot });
+
+    const byAge = await fetchJson(server, '/api/usage-records?older-than=365d');
+    assert.deepEqual(
+      (byAge.json.records as Array<{ address: string }>).map((r) => r.address),
+      [`${key}/old-failed`],
+    );
+
+    const byOutcome = await fetchJson(server, '/api/usage-records?trait=failed');
+    assert.deepEqual(
+      (byOutcome.json.records as Array<{ address: string }>).map((r) => r.address),
+      [`${key}/old-failed`],
+    );
+
+    const byProject = await fetchJson(server, `/api/usage-records?trait=failed&project=${key}`);
+    assert.equal(byProject.json.count, 1);
+
+    const empty = await fetchJson(server, '/api/usage-records');
+    assert.deepEqual(empty.json.records, []);
+  });
+
+  it('DELETE /api/usage-records снимает записи по явному списку адресов и не трогает файлов', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    const journal = seedRun(runsRoot, projectRoot, { runId: 'a' });
+    seedRun(runsRoot, projectRoot, { runId: 'b' });
+    const server = await startServer(t, { runsRoot });
+
+    const result = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/usage-records',
+      body: JSON.stringify({ records: [`${key}/a`, `${key}/нет-такого`] }),
+    });
+    assert.equal(result.code, 200);
+    const outcomes = result.json.outcomes as Array<{ address: string; outcome: string }>;
+    assert.equal(outcomes.find((o) => o.address === `${key}/a`)?.outcome, 'removed');
+    assert.equal(outcomes.find((o) => o.address === `${key}/нет-такого`)?.outcome, 'skipped_missing');
+
+    // Файлы прогона не тронуты — снятие записи не снимает статистику вместо файлов.
+    assert.equal(existsSync(journal.paths.dir), true);
+  });
+
+  it('отклоняет список сверх предела и адрес неверной формы для DELETE /api/usage-records', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const server = await startServer(t, { runsRoot });
+
+    const badAddress = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/usage-records',
+      body: JSON.stringify({ records: ['однасегмент'] }),
+    });
+    assert.equal(badAddress.code, 400);
+
+    const tooMany = await sendJson(server, {
+      method: 'DELETE',
+      path: '/api/usage-records',
+      body: JSON.stringify({ records: Array.from({ length: 501 }, (_, i) => `${key}/нет-${i}`) }),
+    });
+    assert.equal(tooMany.code, 413);
   });
 });
 

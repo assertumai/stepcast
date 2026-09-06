@@ -6,7 +6,9 @@ import { describe, it } from 'node:test';
 
 import { runGcCommand } from '../src/cli/commands/gc.js';
 import type { ParsedArgs } from '../src/cli/args.js';
-import { ExitCode } from '../src/core/errors.js';
+import { ExitCode, isStepcastError } from '../src/core/errors.js';
+import { projectKey } from '../src/core/journal/paths.js';
+import { readUsageStore } from '../src/core/journal/usageStore.js';
 import { RunJournal } from '../src/core/journal/writer.js';
 import type { RunManifest } from '../src/core/journal/schema.js';
 
@@ -283,5 +285,129 @@ describe('CLI: stepcast gc', () => {
 
     const code = withHome(home, () => runGcCommand(args({ 'older-than': '0s' }), () => {}, projectRoot));
     assert.equal(code, ExitCode.ok);
+  });
+});
+
+describe('CLI: stepcast gc --stats', () => {
+  // Сценарий «Отчёт называет обе величины».
+  it('отчёт без ключей называет и каталоги, и число записей хранилища, и способ снять каждое', () => {
+    const { runsRoot, projectRoot, home } = bed();
+    makeRun(runsRoot, projectRoot, 'run-a');
+    const lines: string[] = [];
+
+    const code = withHome(home, () => runGcCommand(args(), (line) => lines.push(line), projectRoot));
+
+    assert.equal(code, ExitCode.ok);
+    const text = lines.join('\n');
+    assert.match(text, /итого/);
+    assert.match(text, /записей хранилища расхода: 1/);
+    assert.match(text, /--older-than/);
+    assert.match(text, /--stats/);
+  });
+
+  // Сценарий «Снятие записей не трогает файлов».
+  it('--stats --older-than снимает записи и не трогает файлов', () => {
+    const { runsRoot, projectRoot, home } = bed();
+    const journal = makeRun(runsRoot, projectRoot, 'old', {
+      started_at: '2020-01-01T00:00:00.000Z',
+      finished_at: '2020-01-01T00:05:00.000Z',
+    });
+    const lines: string[] = [];
+
+    const code = withHome(home, () =>
+      runGcCommand(args({ stats: true, 'older-than': '1d' }), (line) => lines.push(line), projectRoot),
+    );
+
+    assert.equal(code, ExitCode.ok);
+    assert.ok(existsSync(journal.paths.dir), 'каталог прогона не должен трогаться');
+    assert.ok(existsSync(journal.paths.jobs), 'снятие записей не снимает содержимого каталога');
+    const key = projectKey(projectRoot);
+    assert.equal(readUsageStore(runsRoot).records.has(`${key}/old`), false);
+    assert.match(lines.join('\n'), /снято записей: 1/);
+  });
+
+  // Сценарий «Снятие записей без признаков ничего не снимает».
+  it('--stats без единого признака перечисляет кандидатов и завершается кодом 0, не сняв ни одной', () => {
+    const { runsRoot, projectRoot, home } = bed();
+    makeRun(runsRoot, projectRoot, 'run-a');
+    const lines: string[] = [];
+
+    const code = withHome(home, () => runGcCommand(args({ stats: true }), (line) => lines.push(line), projectRoot));
+
+    assert.equal(code, ExitCode.ok);
+    const key = projectKey(projectRoot);
+    assert.equal(readUsageStore(runsRoot).records.size, 1, 'запись остаётся — снятия не было');
+    assert.match(lines.join('\n'), new RegExp(`${key}/a`));
+  });
+
+  /**
+   * Найдено ревью: цель «файлы» ограничена проектом рабочего каталога
+   * (`listCandidates`), а цель «записи» ходила по всему корню — команда,
+   * набранная внутри одного проекта, снимала статистику всех остальных.
+   */
+  it('--stats не выходит за пределы проекта рабочего каталога', () => {
+    const { runsRoot, projectRoot, home } = bed();
+    const otherRoot = join(projectRoot, '..', 'другой-проект');
+    mkdirSync(otherRoot, { recursive: true });
+    const stale = {
+      started_at: '2020-01-01T00:00:00.000Z',
+      finished_at: '2020-01-01T00:05:00.000Z',
+    };
+    makeRun(runsRoot, projectRoot, 'свой', stale);
+    makeRun(runsRoot, otherRoot, 'чужой', stale);
+
+    const code = withHome(home, () =>
+      runGcCommand(args({ stats: true, 'older-than': '1d' }), () => {}, projectRoot),
+    );
+
+    assert.equal(code, ExitCode.ok);
+    const { records } = readUsageStore(runsRoot);
+    assert.equal(records.has(`${projectKey(projectRoot)}/свой`), false, 'запись своего проекта снята');
+    assert.ok(
+      records.has(`${projectKey(otherRoot)}/чужой`),
+      'запись чужого проекта не снимается вызовом, набранным в этом проекте',
+    );
+  });
+
+  // Проект — такой же признак отбора, как срок и исход (спека run-cleanup:
+  // «возраст, исход и проект»): названный явно, он снимает свою область
+  // целиком, а не уходит в отчёт, подсказывающий этот же вызов.
+  it('--stats --project снимает записи названного проекта и не трогает чужих', () => {
+    const { runsRoot, projectRoot, home } = bed();
+    const otherRoot = join(projectRoot, '..', 'другой-проект');
+    mkdirSync(otherRoot, { recursive: true });
+    makeRun(runsRoot, projectRoot, 'свой');
+    makeRun(runsRoot, otherRoot, 'чужой');
+    const otherKey = projectKey(otherRoot);
+    const lines: string[] = [];
+
+    const code = withHome(home, () =>
+      runGcCommand(args({ stats: true, project: otherKey }), (line) => lines.push(line), projectRoot),
+    );
+
+    assert.equal(code, ExitCode.ok);
+    assert.match(lines.join('\n'), /снято записей: 1/);
+    const { records } = readUsageStore(runsRoot);
+    assert.equal(records.has(`${otherKey}/чужой`), false);
+    assert.ok(records.has(`${projectKey(projectRoot)}/свой`), 'записи своего проекта названный чужой не уносит');
+  });
+
+  // Сценарий «Две цели не совмещаются в одном вызове».
+  it('--failed без --stats отклоняется с объяснением', () => {
+    const { projectRoot, home } = bed();
+
+    assert.throws(
+      () => withHome(home, () => runGcCommand(args({ failed: true }), () => {}, projectRoot)),
+      (error: unknown) => isStepcastError(error) && /--stats/.test(error.message),
+    );
+  });
+
+  it('--project без --stats отклоняется с объяснением', () => {
+    const { projectRoot, home } = bed();
+
+    assert.throws(
+      () => withHome(home, () => runGcCommand(args({ project: 'abc' }), () => {}, projectRoot)),
+      (error: unknown) => isStepcastError(error) && /--stats/.test(error.message),
+    );
   });
 });

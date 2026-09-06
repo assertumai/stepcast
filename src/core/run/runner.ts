@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, readFileSync, readdirSync, rmdirSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import {
   createAnchorer,
@@ -60,6 +60,7 @@ import { createWaitState } from './waitState.js';
 import { jobDataPath, readJobData, writeJobDataUnchecked } from '../journal/data.js';
 import { jobDir, jobScratchDir, shortRunId } from '../journal/paths.js';
 import { findStepDir } from '../journal/reader.js';
+import { appendUsageRecord, usageRecord } from '../journal/usageStore.js';
 import { RunJournal } from '../journal/writer.js';
 import { jobLockHash, serializeLock } from '../pipeline/lock.js';
 import type {
@@ -354,8 +355,9 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     // Сводка пишется раньше состояния: витрина замечает изменение прогона по
     // mtime status.json, и к этому моменту лежащая рядом сводка не должна
     // быть старше него (design.md, Решение 2).
-    journal.writeUsage(usage.report(journal.paths.runId, partial));
-    journal.writeStatus({
+    const report = usage.report(journal.paths.runId, partial);
+    journal.writeUsage(report);
+    const runStatus: RunStatus = {
       run_id: journal.paths.runId,
       pipeline: pipeline.name,
       lock_hash: lockHash,
@@ -394,7 +396,25 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
           }),
       ...(waitState.earliest() === undefined ? {} : { wake_at: waitState.earliest() as string }),
       updated_at: new Date().toISOString(),
-    } satisfies RunStatus);
+    };
+    journal.writeStatus(runStatus);
+
+    // Дозапись хранилища расхода: только терминальной записью, рядом с
+    // подведением сводки (design.md, Решение 3) — идущий прогон в хранилище
+    // не попадает вовсе. Отказ дозаписи не должен ронять уже завершившийся
+    // прогон: он сообщается тем же путём, что и прочий внутренний учёт.
+    if (!partial) {
+      try {
+        const key = basename(journal.paths.projectDir);
+        appendUsageRecord(dirname(journal.paths.projectDir), usageRecord(key, manifest, runStatus, report));
+      } catch (error) {
+        journal.event({
+          kind: 'bookkeeping.failed',
+          operation: 'дозапись хранилища расхода',
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   };
 
   // Выходы переиспользованных работ публикуются не здесь, а по ходу
@@ -479,15 +499,16 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
       ? 'budget_exceeded'
       : result.status;
 
+  // Манифест обновляется раньше терминальной записи состояния: запись
+  // хранилища расхода, дописываемая изнутри `writeStatus`, читает `finished_at`
+  // и `status` из того же объекта `manifest` (`usageRecord`) — без этого
+  // порядка она увидела бы прогон ещё не завершённым.
+  const exitCode = resolveExitCode(finalStatus, result.settled);
+  manifest = { ...manifest, finished_at: new Date().toISOString(), status: finalStatus, exit_code: exitCode };
+
   writeStatus(finalStatus, false);
 
-  const exitCode = resolveExitCode(finalStatus, result.settled);
-  journal.writeManifest({
-    ...manifest,
-    finished_at: new Date().toISOString(),
-    status: finalStatus,
-    exit_code: exitCode,
-  });
+  journal.writeManifest(manifest);
   journal.event({ kind: 'run.finished', status: finalStatus, exit_code: exitCode });
 
   const costLimitUnapplied = anyCostBudgetDeclared(pipeline) && usage.runCostNeverReported();

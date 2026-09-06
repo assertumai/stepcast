@@ -12,6 +12,7 @@ import { basename, dirname, join } from 'node:path';
 import { isRunAlive, listProjects, listRuns, listRunsByKey, readManifest, readStatus } from '../journal/reader.js';
 import { projectKey, runPaths, type RunPaths } from '../journal/paths.js';
 import { isFailure, type StatusValue } from '../journal/schema.js';
+import { ensureUsageRecord, removeUsageRecords, usageRecordAddresses } from '../journal/usageStore.js';
 import { removeWorktree } from './worktrees.js';
 
 /**
@@ -219,11 +220,64 @@ export interface RunAddress {
   readonly sizeBytes?: number;
 }
 
+/**
+ * Что сделать со статистикой расхода при удалении файлов прогона.
+ * `keep` — умолчание: убедиться, что запись в хранилище есть, и не снимать
+ * её. `drop` — снять запись отдельным действием после успешного снятия
+ * файлов (design.md изменения run-stats-retention, Решения 10, 11).
+ */
+export type StatsDisposition = 'keep' | 'drop';
+
+/**
+ * Что стало с записью хранилища расхода после удаления файлов прогона:
+ * `kept` — сохранена, `removed` — снята явной просьбой, `missing` — снимать
+ * было нечего, записи у прогона не было и с этим удалением не появилось.
+ * Третий исход не украшение: «снята» о прогоне, чья статистика никогда не
+ * доходила до хранилища, врёт ровно там, где человек проверяет, что уехало.
+ */
+export type StatsOutcome = 'kept' | 'removed' | 'missing';
+
+/**
+ * Убедиться, что запись прогона в хранилище есть, — до того, как его каталог
+ * уйдёт под `rmSync`. Снятие («drop») в этом не нуждается: запись всё равно
+ * снимется следующим шагом.
+ */
+function applyStatsBeforeRemoval(
+  runsRoot: string,
+  key: string,
+  runId: string,
+  stats: StatsDisposition,
+  present: Set<string>,
+): void {
+  if (stats === 'drop') return;
+  ensureUsageRecord(runsRoot, key, runId, present);
+}
+
+/**
+ * Судьба записи после удаления файлов — только называется здесь; само снятие
+ * идёт одним переписыванием хранилища на весь список (`removeUsageRecords`
+ * ниже). Снятие запрошено, но файлы не снялись целиком — вырожденный исход
+ * `removeRun` (каталог остался ради перенятого рабочего дерева) — запись
+ * остаётся: восстановить её потом будет неоткуда.
+ */
+function statsOutcomeOf(
+  address: string,
+  stats: StatsDisposition,
+  filesFullyGone: boolean,
+  present: ReadonlySet<string>,
+): StatsOutcome {
+  // Записи нет и не появилось — у прогона не было и сводки расхода, дописывать
+  // было нечего. Ни «сохранена», ни «снята» о нём сказать нельзя.
+  if (!present.has(address)) return 'missing';
+  return stats === 'drop' && filesFullyGone ? 'removed' : 'kept';
+}
+
 export type RemovalOutcome =
   | {
       readonly address: string;
       readonly outcome: 'removed';
       readonly sizeBytes: number;
+      readonly stats: StatsOutcome;
       /** Записи рабочих деревьев, которые снять не удалось. Отсутствует, если их нет. */
       readonly unresolvedWorktrees?: readonly string[];
       /** Каталоги, сохранённые ради продолжения в другом прогоне. Отсутствует, если их нет. */
@@ -243,10 +297,25 @@ export interface RemovalSummary {
  * заново перед каждым снятием: список адресов приходит с отбора, сделанного
  * раньше показа подтверждения, а прогон за это время мог перезапуститься.
  * Отказ на одном адресе не останавливает снятие остальных.
+ *
+ * `stats` — одна судьба статистики на весь список: групповое удаление
+ * запрашивается одной кнопкой с одним переключателем (Решение 11), а не по
+ * адресу.
+ *
+ * Хранилище расхода при этом читается один раз на весь список и переписывается
+ * тоже один раз: и то и другое — работа по всему файлу, а список приходит
+ * сотнями адресов (`MAX_RUN_ADDRESSES`), и обращение по адресу за раз выросло
+ * бы квадратично по числу записей.
  */
-export function removeRuns(runsRoot: string, addresses: readonly RunAddress[]): RemovalSummary {
+export function removeRuns(
+  runsRoot: string,
+  addresses: readonly RunAddress[],
+  stats: StatsDisposition = 'keep',
+): RemovalSummary {
   const outcomes: RemovalOutcome[] = [];
   let freedBytes = 0;
+  const present = usageRecordAddresses(runsRoot);
+  const toDrop: string[] = [];
 
   for (const { key, runId, sizeBytes: known } of addresses) {
     const address = `${key}/${runId}`;
@@ -264,12 +333,16 @@ export function removeRuns(runsRoot: string, addresses: readonly RunAddress[]): 
 
     try {
       const sizeBytes = known ?? dirSize(paths.dir);
+      applyStatsBeforeRemoval(runsRoot, key, runId, stats, present);
       const result = removeRun(runsRoot, key, runId);
+      const statsOutcome = statsOutcomeOf(address, stats, !existsSync(paths.dir), present);
+      if (statsOutcome === 'removed') toDrop.push(address);
       freedBytes += sizeBytes;
       outcomes.push({
         address,
         outcome: 'removed',
         sizeBytes,
+        stats: statsOutcome,
         ...(result.unresolvedWorktrees.length === 0 ? {} : { unresolvedWorktrees: result.unresolvedWorktrees }),
         ...(result.preservedWorkspaces.length === 0 ? {} : { preservedWorkspaces: result.preservedWorkspaces }),
       });
@@ -277,6 +350,10 @@ export function removeRuns(runsRoot: string, addresses: readonly RunAddress[]): 
       outcomes.push({ address, outcome: 'failed', reason: (error as Error).message });
     }
   }
+
+  // Одно переписывание хранилища на всю группу — после того, как файлы сняты:
+  // снятие записи прогона, чьи файлы удалить не удалось, сюда не попадает.
+  if (toDrop.length > 0) removeUsageRecords(runsRoot, toDrop);
 
   return { outcomes, freedBytes };
 }
@@ -588,6 +665,28 @@ export function removeRun(runsRoot: string, key: string, runId: string): RunClea
   if (listRunsByKey(runsRoot, key).length === 0) dropProjectEntry(runsRoot, key);
 
   return { unresolvedWorktrees, preservedWorkspaces: preservedList(preserved) };
+}
+
+/**
+ * Снять прогон целиком вместе с решением о судьбе его статистики — обёртка
+ * над `removeRun` для одиночного удаления (`DELETE /api/run`). `removeRun`
+ * сам хранилища не касается (design.md, Решение 10); эта функция — точка,
+ * где решение «сохранить» или «снять» применяется вокруг него.
+ */
+export function removeRunWithStats(
+  runsRoot: string,
+  key: string,
+  runId: string,
+  stats: StatsDisposition = 'keep',
+): RunCleanupResult & { readonly stats: StatsOutcome } {
+  const address = `${key}/${runId}`;
+  const present = usageRecordAddresses(runsRoot);
+  applyStatsBeforeRemoval(runsRoot, key, runId, stats, present);
+  const result = removeRun(runsRoot, key, runId);
+  const filesFullyGone = !existsSync(runPaths(runsRoot, key, runId).dir);
+  const statsOutcome = statsOutcomeOf(address, stats, filesFullyGone, present);
+  if (statsOutcome === 'removed') removeUsageRecords(runsRoot, [address]);
+  return { ...result, stats: statsOutcome };
 }
 
 /** Ярлык `latest` после удаления: на новейший оставшийся прогон либо никуда. */

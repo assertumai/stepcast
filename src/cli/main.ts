@@ -91,11 +91,24 @@ export const COMMANDS: Record<string, CommandSpec> = {
     },
   },
   gc: {
-    description: 'убрать прогоны: без --older-than только отчёт, ничего не удаляя',
+    description:
+      'уборка: две отдельные цели — файлы прогонов (умолчание) и записи хранилища расхода (--stats); без ключей только отчёт',
     flags: {
       'older-than': {
         kind: 'string',
-        description: 'удалить прогоны старше этой длительности, например 30d',
+        description: 'удалить прогоны (или, вместе с --stats, записи) старше этой длительности, например 30d',
+      },
+      stats: {
+        kind: 'boolean',
+        description: 'снять записи хранилища расхода вместо файлов прогонов; --failed и --project действуют только с ним',
+      },
+      failed: {
+        kind: 'boolean',
+        description: 'отбирать отказавшие прогоны — только вместе с --stats',
+      },
+      project: {
+        kind: 'string',
+        description: 'ограничить отбор ключом проекта — только вместе с --stats',
       },
     },
   },

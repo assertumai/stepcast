@@ -3,7 +3,9 @@ import { readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import { createWatcher } from '../src/ui/watcher.js';
-import { cleanupRun } from '../src/core/run/cleanup.js';
+import { cleanupRun, removeRunWithStats } from '../src/core/run/cleanup.js';
+import { projectKey } from '../src/core/journal/paths.js';
+import { removeUsageRecords } from '../src/core/journal/usageStore.js';
 import type { Overview } from '../src/ui/overview.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 
@@ -106,6 +108,43 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
 
     assert.equal(seen.length, 1, 'уборка должна дойти до клиента');
     assert.equal(seen[0]?.projects[0]?.runs[0]?.swept, true);
+    watcher.dispose();
+  });
+
+  /**
+   * Найдено ревью: у прогона без файлов каталога нет вовсе, и он живёт в
+   * обзоре одной лишь записью хранилища. Пока отпечаток перечислял только
+   * каталоги, снятие такой записи (`DELETE /api/usage-records`,
+   * `stepcast gc --stats`) отпечатка не меняло, и снятый прогон оставался на
+   * экране и в разрезе расхода до первого изменения какого-нибудь каталога.
+   */
+  it('замечает появление и снятие записи хранилища у прогона без файлов', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    seedRun(runsRoot, projectRoot, { runId: 'b' });
+
+    const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+    const seen: Overview[] = [];
+    watcher.subscribe((overview) => seen.push(overview));
+
+    // Файлы сняты, статистика сохранена: каталога у прогона больше нет, но в
+    // обзоре он остаётся записью.
+    removeRunWithStats(runsRoot, key, 'a');
+    watcher.poll();
+    const afterRemoval = seen.at(-1)?.projects[0]?.runs.find((run) => run.runId === 'a');
+    assert.equal(afterRemoval?.filesGone, true, 'прогон без файлов обязан остаться в обзоре записью');
+
+    const before = seen.length;
+    removeUsageRecords(runsRoot, [`${key}/a`]);
+    watcher.poll();
+
+    assert.ok(seen.length > before, 'снятие записи обязано дойти до клиента');
+    assert.equal(
+      seen.at(-1)?.projects[0]?.runs.some((run) => run.runId === 'a'),
+      false,
+      'снятый прогон обязан пропасть из обзора',
+    );
     watcher.dispose();
   });
 

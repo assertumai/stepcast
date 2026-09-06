@@ -138,6 +138,11 @@ function TokenCell({ run }: { readonly run: RunOverview }): JSX.Element {
  * (`409`), и предлагать действие, заведомо кончающееся отказом, — врать
  * кнопкой. Оборванный при этом удаляется наравне с завершённым, и «идёт» тут
  * значит живой процесс, а не статус `running`.
+ *
+ * По той же причине её не получает и прогон без файлов: удалять у него нечего,
+ * `DELETE /api/run` ответит `404`, а снять его из истории — значит снять его
+ * запись хранилища, и делается это на вкладке «Уборка», где видно, что именно
+ * уходит безвозвратно.
  */
 function DeleteCell({
   address,
@@ -153,6 +158,17 @@ function DeleteCell({
   if (run.running && !run.abandoned) {
     return (
       <span className="dim small" title="Идущий прогон сначала останавливают">
+        —
+      </span>
+    );
+  }
+
+  if (run.filesGone) {
+    return (
+      <span
+        className="dim small"
+        title="Файлов у прогона уже нет: осталась запись хранилища расхода — снять её можно на вкладке «Уборка»"
+      >
         —
       </span>
     );
@@ -189,7 +205,9 @@ function DeleteCell({
 
   return (
     <div className="confirm">
-      <span className="question">удалить?</span>
+      <span className="question" title="Статистика расхода останется в истории — снять её можно на вкладке «Уборка»">
+        удалить файлы?
+      </span>
       <button className="danger" disabled={busy} onClick={remove}>
         да
       </button>
@@ -272,6 +290,7 @@ export function Runs({
                             {run.status ?? 'неизвестно'}
                           </span>
                           {run.swept ? <span className="badge">убран</span> : null}
+                          {run.filesGone ? <span className="badge">файлов нет</span> : null}
                           {run.problem?.kind === 'version-skew' ? (
                             <span className="badge">читатель устарел</span>
                           ) : run.problem?.kind === 'legacy-journal' ? (

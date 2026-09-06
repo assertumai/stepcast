@@ -1,24 +1,38 @@
 import { readUsageSoft } from '../core/journal/reader.js';
 import { runPaths } from '../core/journal/paths.js';
-import type { StatusValue, UsageAttemptReport, UsageReport } from '../core/journal/schema.js';
+import type { StatusValue, UsageRecord } from '../core/journal/schema.js';
+import { UNKNOWN_MODEL, iterateAttempts, spread } from '../core/journal/usageSpread.js';
+import { readUsageStore } from '../core/journal/usageStore.js';
 import type { Overview, ProjectOverview, RunOverview } from './overview.js';
+
+export { UNKNOWN_MODEL } from '../core/journal/usageSpread.js';
 
 /**
  * Расход поперёк прогонов: итог за период, дни с разбивкой по моделям,
  * пайплайны с их заходами.
  *
- * Итог каждого прогона берётся из `RunOverview.usage` — той же величины, что
- * уже показывает экран «Прогоны» (`src/ui/overview.ts`), — а `usage.json`
- * перечитывается лишь затем, чтобы разложить этот известный итог по моделям
- * (design.md, Решение 1). Недостача между итогом прогона и суммой его попыток
- * уходит в долю `UNKNOWN_MODEL`: прогон без сводки, сводка прежней формы без
- * перечня попыток и попытка без поля `model` — три случая одной причины
- * (Решение 2). Излишек — сумма попыток больше итога прогона — ужимается
- * пропорционально: см. `spread`. Попытка без `cost_usd` не входит в денежные
- * суммы и не подставляет нуля, но её токены считаются наравне с прочими;
- * число таких попыток названо на уровнях итога, пайплайна и захода.
+ * Разрез строится по хранилищу расхода (`journal/usageStore.ts`): прогон,
+ * которому запись уже дописана, входит записью — её разрез по моделям уже
+ * приведён к её же итогу правилом `spread` в момент записи (design.md
+ * изменения run-stats-retention, Решение 13), читателю остаётся сложение.
+ * Прогон, записи которому ещё нет (идущий, либо редкое окно до первого
+ * переноса), раскладывается по `usage.json` его каталога тем же правилом —
+ * это и есть путь «как сегодня», оставленный ради идущих прогонов. Итог
+ * каждого прогона в обоих случаях — тот же, что показывает экран «Прогоны»
+ * (`RunOverview.usage`, `src/ui/overview.ts`): для прогона с записью обзор и
+ * хранилище согласованы по построению (Решение 13), для идущего — общий
+ * источник, как и раньше (Решение 1 изменения usage-live-progress).
  *
- * Модуль читает диск (`readUsageSoft`) и живёт только в демоне — в отличие от
+ * Недостача между итогом прогона и суммой его попыток уходит в долю
+ * `UNKNOWN_MODEL`: прогон без сводки, сводка прежней формы без перечня
+ * попыток и попытка без поля `model` — три случая одной причины (Решение 2).
+ * Излишек — сумма попыток больше итога прогона — ужимается пропорционально:
+ * см. `spread` в `core/journal/usageSpread.ts`. Попытка без `cost_usd` не
+ * входит в денежные суммы и не подставляет нуля, но её токены считаются
+ * наравне с прочими; число таких попыток названо на уровнях итога, пайплайна
+ * и захода.
+ *
+ * Модуль читает диск и хранилище и живёт только в демоне — в отличие от
  * `routes.ts` и `grouping.ts`, витрина его не импортирует.
  */
 
@@ -101,9 +115,6 @@ export interface UsageOptions {
  */
 export const MAX_USAGE_DAYS = 3650;
 
-/** Доля расхода, чью модель назвать нечем (Решение 2). */
-export const UNKNOWN_MODEL = 'модель не сообщена';
-
 /** Строка разреза для прогонов, чей пайплайн назвать нечем (Решение 6). */
 export const NO_PIPELINE = 'без пайплайна';
 
@@ -162,14 +173,6 @@ function addDelta(map: Map<string, ModelDelta>, model: string, delta: ModelDelta
   map.set(model, current);
 }
 
-function* iterateAttempts(report: UsageReport): Generator<UsageAttemptReport> {
-  for (const job of Object.values(report.jobs)) {
-    for (const step of Object.values(job.steps)) {
-      yield* step.attempts;
-    }
-  }
-}
-
 interface RunDecomposition {
   readonly modelDeltas: ReadonlyMap<string, ModelDelta>;
   readonly costUnreportedAttempts: number;
@@ -177,53 +180,41 @@ interface RunDecomposition {
 }
 
 /**
- * Разложить известный итог прогона по долям его попыток — по одной мере.
+ * Разложение прогона, записанного в хранилище, по моделям.
  *
- * Пока сумма попыток не больше итога, доли равны самим величинам попыток, а
- * недостача уходит в `UNKNOWN_MODEL`: разреза на неё нет (Решение 2).
+ * Разрез уже приведён к итогу записи правилом `spread` в момент дозаписи
+ * (`usageRecord` в `core/journal/usageStore.ts`, Решение 13) — читать
+ * `usage.json` заново незачем, только сложить готовые доли.
  *
- * Обратный случай — сумма попыток БОЛЬШЕ итога прогона — не выдуман: у шага,
- * продолжившего оборванную сессию, перенесённая попытка входит в перечень
- * попыток сводки, но не в итог работы и не в итог прогона (`docs/run-layout.md`,
- * раздел «Возобновление»; `carried` в `src/core/budget/accumulator.ts`). Тогда
- * доли ужимаются пропорционально: итог прогона на всех экранах один и тот же
- * (Решение 1), а разрез — его разложение, и сумма долей обязана с ним
- * сходиться, иначе столбцы графика перерастают собственный итог периода.
- *
- * `integral` — мера считается целыми (токены): доли берутся разностями
- * округлённых частичных сумм, поэтому и целы, и складываются ровно в итог.
+ * `breakdownAvailable` — по наличию хотя бы одной названной модели, а не по
+ * числу попыток: запись попыток не несёт (Решение 5). Запись без единой
+ * названной модели неотличима от записи вовсе без попыток — обе отдают весь
+ * итог в `UNKNOWN_MODEL`, и это ровно тот случай, ради которого счётчик
+ * `runsWithoutBreakdown` заведён: показать пользователю нечего в обоих
+ * случаях одинаково.
  */
-function spread(shares: ReadonlyMap<string, number>, total: number, integral: boolean): Map<string, number> {
-  const sum = [...shares.values()].reduce((acc, value) => acc + value, 0);
-  const result = new Map<string, number>();
-
-  if (sum <= total) {
-    for (const [model, value] of shares) if (value > 0) result.set(model, value);
-    const remainder = total - sum;
-    if (remainder > 0) result.set(UNKNOWN_MODEL, (result.get(UNKNOWN_MODEL) ?? 0) + remainder);
-    return result;
+function decomposeFromRecord(record: UsageRecord): RunDecomposition {
+  const modelDeltas = new Map<string, ModelDelta>();
+  let hasNamedModel = false;
+  for (const [model, slice] of Object.entries(record.models)) {
+    if (model !== UNKNOWN_MODEL) hasNamedModel = true;
+    addDelta(modelDeltas, model, { tokens: slice.billable_tokens, cost: slice.cost_usd ?? 0 });
   }
-
-  let exact = 0;
-  let given = 0;
-  for (const [model, value] of shares) {
-    exact += (value / sum) * total;
-    const upto = integral ? Math.round(exact) : exact;
-    const share = upto - given;
-    given = upto;
-    if (share > 0) result.set(model, share);
-  }
-  return result;
+  return {
+    modelDeltas,
+    costUnreportedAttempts: record.cost_unreported_attempts,
+    breakdownAvailable: hasNamedModel,
+  };
 }
 
 /**
- * Разложение известного итога прогона по моделям.
- *
- * Итог не пересчитывается: он приходит извне (`run.usage`, обзор
- * наблюдателя). `usage.json` читается лишь ради перечня попыток, а доли
- * приводятся к итогу правилом `spread` — по каждой мере отдельно.
+ * Разложение известного итога прогона по моделям, читая `usage.json` его
+ * каталога, — путь для прогона, которому запись хранилища ещё не дописана
+ * (идущий прогон, Решение 13). Итог не пересчитывается: он приходит извне
+ * (`run.usage`, обзор наблюдателя), а доли приводятся к нему правилом
+ * `spread` — по каждой мере отдельно.
  */
-function decomposeRun(runsRoot: string, projectKey: string, run: RunOverview): RunDecomposition {
+function decomposeFromDisk(runsRoot: string, projectKey: string, run: RunOverview): RunDecomposition {
   const paths = runPaths(runsRoot, projectKey, run.runId);
   const { summary } = readUsageSoft(paths);
 
@@ -256,6 +247,20 @@ function decomposeRun(runsRoot: string, projectKey: string, run: RunOverview): R
   }
 
   return { modelDeltas: deltas, costUnreportedAttempts, breakdownAvailable: attemptsCount > 0 };
+}
+
+/**
+ * Разложение прогона периода: запись хранилища побеждает диск, когда есть и
+ * то и другое (Решение 13) — величины и разрез берутся из записи.
+ */
+function decomposeRun(
+  records: ReadonlyMap<string, UsageRecord>,
+  runsRoot: string,
+  projectKey: string,
+  run: RunOverview,
+): RunDecomposition {
+  const record = records.get(`${projectKey}/${run.runId}`);
+  return record === undefined ? decomposeFromDisk(runsRoot, projectKey, run) : decomposeFromRecord(record);
 }
 
 interface PipelineIdentity {
@@ -310,6 +315,9 @@ export function buildUsage(runsRoot: string, overview: Overview, options: UsageO
   const now = options.now ?? new Date();
   const toDate = startOfDay(now);
   const to = dayKeyOf(toDate);
+  // Только чтение — перенос накопленного делает тот, кто открывает хранилище
+  // при старте демона, не этот маршрут (design.md, Решение 9).
+  const { records } = readUsageStore(runsRoot);
 
   interface DatedRun {
     readonly project: ProjectOverview;
@@ -347,7 +355,7 @@ export function buildUsage(runsRoot: string, overview: Overview, options: UsageO
   let totalCost = 0;
 
   for (const { project, run, day } of periodRuns) {
-    const { modelDeltas, costUnreportedAttempts, breakdownAvailable } = decomposeRun(runsRoot, project.key, run);
+    const { modelDeltas, costUnreportedAttempts, breakdownAvailable } = decomposeRun(records, runsRoot, project.key, run);
     if (!breakdownAvailable) runsWithoutBreakdown += 1;
     totalCostUnreportedAttempts += costUnreportedAttempts;
 

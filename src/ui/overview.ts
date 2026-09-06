@@ -11,7 +11,8 @@ import {
   type JournalProblem,
 } from '../core/journal/reader.js';
 import { runPaths } from '../core/journal/paths.js';
-import type { StatusValue } from '../core/journal/schema.js';
+import type { StatusValue, UsageRecord } from '../core/journal/schema.js';
+import { readUsageStore } from '../core/journal/usageStore.js';
 
 /**
  * Обзор всего, что происходит: проекты корня прогонов и их прогоны.
@@ -44,8 +45,14 @@ export interface RunOverview {
   readonly finishedAt?: string;
   /** Прогон спит до сброса окна лимита: отличает сон от зависания. */
   readonly wakeAt?: string;
-  /** Прогон после уборки: подробностей на диске уже нет. */
+  /** Прогон после уборки: подробностей на диске уже нет, но каталог остался. */
   readonly swept: boolean;
+  /**
+   * У прогона нет каталога вовсе — файлы удалены, а запись хранилища расхода
+   * (`journal/usageStore.ts`) сохранена (run-stats-retention, Решение 12).
+   * Отличимо от `swept`: там каталог, пусть и пустой, ещё существует.
+   */
+  readonly filesGone: boolean;
   /** Продолжительность прогона: от старта до завершения, а у идущего — до сих пор. */
   readonly durationMs?: number;
   /** Манифест или состояние не читаются — прогон показан, но неполно. */
@@ -238,20 +245,98 @@ function readRun(
     ...(durationMs === undefined ? {} : { durationMs }),
     // Каталог работ исчезает только после уборки: движок создаёт его всегда.
     swept: !existsSync(paths.jobs),
+    filesGone: false,
     unreadable,
     ...(problem === undefined ? {} : { problem }),
     ...(usage === undefined ? {} : { usage }),
   };
 }
 
+/**
+ * Продолжительность записи хранилища: у незавершённого переноса
+ * (`finished_at` отсутствует) считать нечего — тот же смысл, что и у
+ * `duration()` для прогона без времени завершения.
+ */
+function recordDurationMs(record: UsageRecord): number | undefined {
+  if (record.finished_at === undefined) return undefined;
+  const from = new Date(record.started_at).getTime();
+  const to = new Date(record.finished_at).getTime();
+  return Number.isNaN(from) || Number.isNaN(to) ? undefined : Math.max(0, to - from);
+}
+
+/**
+ * Прогон без каталога — целиком из записи хранилища (Решение 12). Разрез по
+ * моделям в обзоре не показывается (это дело экрана расхода), только итог —
+ * тот же набор полей, что несёт `RunUsageOverview` для прогона с диска.
+ */
+function overviewFromRecord(record: UsageRecord, projectPath: string | undefined): RunOverview {
+  const durationMs = recordDurationMs(record);
+  return {
+    runId: record.run_id,
+    shortId: record.run_id.slice(record.run_id.lastIndexOf('-') + 1),
+    pipeline: record.pipeline.name,
+    pipelineFile: pipelineFileView(projectPath, record.pipeline.file),
+    status: record.status,
+    running: false,
+    abandoned: false,
+    startedAt: record.started_at,
+    ...(record.finished_at === undefined ? {} : { finishedAt: record.finished_at }),
+    ...(durationMs === undefined ? {} : { durationMs }),
+    swept: false,
+    filesGone: true,
+    unreadable: false,
+    usage: {
+      billableTokens: record.total.billable_tokens,
+      wallclockMs: record.total.wallclock_ms,
+      breakdown: {
+        tokensIn: record.total.tokens_in,
+        tokensOut: record.total.tokens_out,
+        cacheRead: record.total.cache_read,
+        cacheWrite: record.total.cache_write,
+      },
+      costUsd: record.total.cost_usd ?? null,
+      aggregated: true,
+      partial: false,
+      unreported: record.unreported,
+    },
+  };
+}
+
+/** Путь проекта из любой его записи хранилища — запасной вариант, когда каталога уже нет. */
+function pathFromRecords(records: ReadonlyMap<string, UsageRecord>, key: string): string | undefined {
+  for (const record of records.values()) if (record.project.key === key) return record.project.path;
+  return undefined;
+}
+
 export function buildOverview(runsRoot: string, now: Date = new Date()): Overview {
-  const projects = listProjects(runsRoot).map((project) => ({
-    key: project.key,
-    ...(project.path === undefined ? {} : { path: project.path }),
-    runs: listRunsByKey(runsRoot, project.key).map((runId) =>
-      readRun(runsRoot, project.key, runId, now, project.path),
-    ),
-  }));
+  // Хранилище только читается здесь: перенос накопленного делает тот, кто
+  // открывает хранилище (демон при старте), а не сборка обзора на каждый
+  // запрос (design.md изменения run-stats-retention, Решение 9).
+  const { records } = readUsageStore(runsRoot);
+
+  const diskProjects = listProjects(runsRoot);
+  const pathByKey = new Map(diskProjects.map((project) => [project.key, project.path] as const));
+  const keys = new Set(diskProjects.map((project) => project.key));
+  for (const record of records.values()) keys.add(record.project.key);
+
+  const projects = [...keys].sort().map((key) => {
+    const path = pathByKey.get(key) ?? pathFromRecords(records, key);
+    const diskRunIds = listRunsByKey(runsRoot, key);
+    const diskRuns = diskRunIds.map((runId) => readRun(runsRoot, key, runId, now, path));
+
+    // Прогоны, чьи файлы удалены, а запись сохранена: не входят в
+    // `listRunsByKey`, потому что каталога у них нет вовсе.
+    const onDisk = new Set(diskRunIds);
+    const recordOnlyRuns = [...records.values()]
+      .filter((record) => record.project.key === key && !onDisk.has(record.run_id))
+      .map((record) => overviewFromRecord(record, path));
+
+    // Общий порядок — новейшими первыми, тот же, что даёт `listRunsByKey` для
+    // каталогов: идентификатор прогона начинается отметкой времени.
+    const runs = [...diskRuns, ...recordOnlyRuns].sort((a, b) => b.runId.localeCompare(a.runId));
+
+    return { key, ...(path === undefined ? {} : { path }), runs };
+  });
 
   return {
     // Проект без единого прогона показывать незачем: он попал бы в обзор

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { buildOverview } from '../src/ui/overview.js';
-import { cleanupRun } from '../src/core/run/cleanup.js';
+import { cleanupRun, removeRunWithStats } from '../src/core/run/cleanup.js';
 import { projectKey } from '../src/core/journal/paths.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 
@@ -342,5 +342,56 @@ describe('ui-dashboard: обзор всех проектов и прогонов
     } finally {
       process.kill = originalKill;
     }
+  });
+
+  // Требование ui-dashboard «Прогон без файлов остаётся видимым и отличимым».
+  it('прогон без файлов виден в обзоре с признаком filesGone и отличим от убранного', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, {
+      runId: 'gone',
+      usage: {
+        run_id: 'gone',
+        total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 40, wallclock_ms: 40, cost_usd: 4 },
+        unreported: [],
+        jobs: {},
+      },
+    });
+    const sweptJournal = seedRun(runsRoot, projectRoot, { runId: 'swept' });
+    cleanupRun(sweptJournal.paths);
+
+    const result = removeRunWithStats(runsRoot, key, 'gone');
+    assert.equal(result.stats, 'kept');
+
+    const overview = buildOverview(runsRoot);
+    const runs = overview.projects.find((p) => p.key === key)?.runs ?? [];
+    const gone = runs.find((r) => r.runId === 'gone');
+    const swept = runs.find((r) => r.runId === 'swept');
+
+    assert.ok(gone !== undefined, 'прогон без файлов обязан остаться в обзоре');
+    assert.equal(gone.filesGone, true);
+    assert.equal(gone.swept, false);
+    assert.equal(gone.usage?.billableTokens, 40);
+    assert.equal(gone.usage?.costUsd, 4);
+
+    assert.ok(swept !== undefined);
+    assert.equal(swept.swept, true);
+    assert.equal(swept.filesGone, false, 'убранный прогон отличим от прогона без файлов');
+  });
+
+  it('прогон без файлов и без записи в обзоре отсутствует', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'kept' });
+    seedRun(runsRoot, projectRoot, { runId: 'erased' });
+
+    removeRunWithStats(runsRoot, key, 'erased', 'drop');
+
+    const runs = buildOverview(runsRoot).projects.find((p) => p.key === key)?.runs ?? [];
+    assert.equal(
+      runs.some((r) => r.runId === 'erased'),
+      false,
+    );
+    assert.ok(runs.some((r) => r.runId === 'kept'));
   });
 });

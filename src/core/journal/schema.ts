@@ -465,6 +465,86 @@ export const UsageReportSchema = z
   })
   .strict();
 
+/**
+ * Разрез расхода по одной модели в записи хранилища расхода
+ * (`journal/usageStore.ts`). Без попыток: попытки — самая объёмная часть
+ * сводки прогона и в хранилище не переносятся (design.md изменения
+ * run-stats-retention, Решение 5).
+ */
+export const UsageStoreModelSliceSchema = z
+  .object({
+    billable_tokens: z.number(),
+    cost_usd: z.number().optional(),
+  })
+  .passthrough();
+
+export const UsageStoreStepSliceSchema = z
+  .object({
+    billable_tokens: z.number(),
+    wallclock_ms: z.number(),
+    cost_usd: z.number().optional(),
+  })
+  .passthrough();
+
+export const UsageStoreJobSliceSchema = z
+  .object({
+    billable_tokens: z.number(),
+    wallclock_ms: z.number(),
+    cost_usd: z.number().optional(),
+    steps: z.record(z.string(), UsageStoreStepSliceSchema),
+  })
+  .passthrough();
+
+/**
+ * Запись хранилища расхода: построчный журнал `<корень прогонов>/usage.ndjson`
+ * (`journal/usageStore.ts`), по одной записи на прогон, переживающий удаление
+ * его каталога.
+ *
+ * В отличие от прочих схем этого файла, запись не `.strict()`, а
+ * `.passthrough()` на каждом уровне: журнал прогона живёт, пока жив сам
+ * прогон, и строгость там ловит разошедшиеся версии рано, — а хранилище
+ * расхода заведено ровно ради того, чтобы пережить и прогон, и читателя.
+ * Отвергнутая по незнакомому полю запись — это потерянная навсегда история,
+ * то есть та самая беда, против которой хранилище и строится (design.md
+ * изменения run-stats-retention, Решение 7). Поэтому запись версии новее
+ * читателя читается по известным полям, а не отвергается целиком.
+ */
+export const UsageRecordSchema = z
+  .object({
+    /** Версия формата записи — не связана с `JOURNAL_FORMAT` журнала прогона. */
+    format: z.number().int().positive(),
+    project: z.object({ key: z.string(), path: z.string() }).passthrough(),
+    pipeline: z.object({ name: z.string(), file: z.string() }).passthrough(),
+    run_id: z.string(),
+    started_at: z.string(),
+    /** Отсутствует у прогона, перенесённого незавершённым (Решение 9). */
+    finished_at: z.string().optional(),
+    status: StatusValueSchema,
+    total: z
+      .object({
+        tokens_in: z.number(),
+        tokens_out: z.number(),
+        cache_read: z.number(),
+        cache_write: z.number(),
+        billable_tokens: z.number(),
+        wallclock_ms: z.number(),
+        cost_usd: z.number().optional(),
+      })
+      .passthrough(),
+    /** Измерения, которых бэкенды не сообщили, — то же поле, что в `UsageReport`. */
+    unreported: z.array(z.string()),
+    /** Число попыток прогона, чей расход не содержал цены. */
+    cost_unreported_attempts: z.number().int().nonnegative(),
+    models: z.record(z.string(), UsageStoreModelSliceSchema),
+    jobs: z.record(z.string(), UsageStoreJobSliceSchema),
+  })
+  .passthrough();
+
+export type UsageRecord = z.infer<typeof UsageRecordSchema>;
+export type UsageStoreJobSlice = z.infer<typeof UsageStoreJobSliceSchema>;
+export type UsageStoreStepSlice = z.infer<typeof UsageStoreStepSliceSchema>;
+export type UsageStoreModelSlice = z.infer<typeof UsageStoreModelSliceSchema>;
+
 const eventBase = { ts: z.string(), seq: z.number().int().nonnegative() };
 
 export const EventSchema = z.discriminatedUnion('kind', [

@@ -344,6 +344,36 @@ export function RunDetail({
         </p>
       ) : null}
 
+      {current.filesGone ? (
+        <>
+          <p className="note dim">
+            Файлы прогона удалены. Показана сводка расхода, сохранённая в хранилище: логи, промпты и
+            диффы не восстановить — этого хранилище и не обещает.
+          </p>
+          {current.total === undefined ? null : (
+            <div className="card">
+              <div className="card-head">
+                <span className="card-title">Сохранённый итог</span>
+                <span className="kind">
+                  {fmtTokens(current.total.billableTokens)} · {fmtDuration(current.total.wallclockMs)} ·{' '}
+                  {fmtMoney(current.total.costUsd)}
+                </span>
+              </div>
+              {current.models === undefined || current.models.length === 0 ? null : (
+                <div className="row">
+                  <span className="label">модели</span>
+                  <span className="desc">
+                    {current.models
+                      .map((slice) => `${slice.model}: ${fmtTokens(slice.billableTokens)} · ${fmtMoney(slice.costUsd)}`)
+                      .join('; ')}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+        </>
+      ) : null}
+
       {current.problem === undefined ? null : <ProblemNotice problem={current.problem} />}
 
       <JobGraph

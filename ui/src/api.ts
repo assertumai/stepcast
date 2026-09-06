@@ -80,6 +80,8 @@ export interface RunOverview {
   readonly finishedAt?: string;
   readonly wakeAt?: string;
   readonly swept: boolean;
+  /** У прогона нет каталога вовсе — виден по записи хранилища расхода. Отличимо от `swept`. */
+  readonly filesGone: boolean;
   readonly durationMs?: number;
   readonly unreadable: boolean;
   /** Диагноз беды чтения: файл, место, версии. Отсутствует, когда читаются штатно. */
@@ -201,6 +203,12 @@ export interface RunSnapshot {
   readonly jobs: readonly JobSnapshot[];
   readonly graph: JobGraph;
   readonly swept: boolean;
+  /** У прогона нет каталога — снимок собран по записи хранилища расхода. */
+  readonly filesGone: boolean;
+  /** Итог прогона — только когда `filesGone: true`. */
+  readonly total?: UsageSnapshot;
+  /** Разрез по моделям — только когда `filesGone: true`. */
+  readonly models?: readonly { readonly model: string; readonly billableTokens: number; readonly costUsd: number | null }[];
   /** Диагноз беды чтения журнала: манифест, состояние, сводка расхода — в этом порядке. */
   readonly problem?: JournalProblem;
 }
@@ -390,6 +398,8 @@ export interface RunCandidate {
   readonly endedAt?: string;
   /** Журнал не прочитался: возраст взят по каталогу, статуса нет. */
   readonly unreadable: boolean;
+  /** У прогона уже есть запись в хранилище расхода — статистика ему есть что сохранять. */
+  readonly hasUsageRecord: boolean;
 }
 
 export interface RunSelection {
@@ -400,16 +410,51 @@ export interface RunSelection {
 
 export type RemovalOutcomeKind = 'removed' | 'skipped_missing' | 'skipped_alive' | 'failed';
 
+/**
+ * Судьба статистики при удалении: `kept` — сохранена, `removed` — снята явной
+ * просьбой, `missing` — записи у прогона не было и снимать было нечего
+ * (`StatsOutcome` в `src/core/run/cleanup.ts`).
+ */
+export type StatsOutcome = 'kept' | 'removed' | 'missing';
+export type StatsDisposition = 'keep' | 'drop';
+
 export interface RemovalOutcome {
   readonly address: string;
   readonly outcome: RemovalOutcomeKind;
   readonly sizeBytes?: number;
   readonly reason?: string;
+  /** Есть только у `outcome: 'removed'`: что стало с записью хранилища расхода. */
+  readonly stats?: StatsOutcome;
 }
 
 export interface RemovalSummary {
   readonly outcomes: readonly RemovalOutcome[];
   readonly freedBytes: number;
+}
+
+/** Кандидат к снятию из хранилища расхода — сверено с `handleSelectUsageRecords` в `src/ui/server.ts`. */
+export interface UsageRecordCandidate {
+  readonly address: string;
+  readonly ageMs: number;
+  readonly endedAt: string;
+  readonly status: StatusValue;
+}
+
+export interface UsageRecordSelection {
+  readonly records: readonly UsageRecordCandidate[];
+  readonly count: number;
+}
+
+export type UsageRecordOutcomeKind = 'removed' | 'skipped_missing';
+
+export interface UsageRecordOutcome {
+  readonly address: string;
+  readonly outcome: UsageRecordOutcomeKind;
+}
+
+export interface UsageRecordRemovalSummary {
+  readonly outcomes: readonly UsageRecordOutcome[];
+  readonly removed: number;
 }
 
 /** Ответ демона с внятной ошибкой: её текст показывается как есть. */
@@ -513,16 +558,54 @@ export async function selectRuns(options: {
   return json<RunSelection>(await fetch(`/api/runs?${query.toString()}`));
 }
 
-export async function deleteRun(address: string): Promise<{ readonly removed: string }> {
-  return json(await fetch(`/api/run?run=${encodeURIComponent(address)}`, { method: 'DELETE' }));
+/**
+ * Удаление файлов прогона. `stats` не назван — умолчание демона «сохранить»
+ * (design.md изменения run-stats-retention, Решение 10): снятие статистики
+ * требует отдельного, явно вооружённого действия (Решение 11).
+ */
+export async function deleteRun(
+  address: string,
+  stats?: StatsDisposition,
+): Promise<{ readonly removed: string; readonly stats: StatsOutcome }> {
+  const query = stats === undefined ? '' : `&stats=${stats}`;
+  return json(await fetch(`/api/run?run=${encodeURIComponent(address)}${query}`, { method: 'DELETE' }));
 }
 
-export async function deleteRuns(addresses: readonly string[]): Promise<RemovalSummary> {
+export async function deleteRuns(addresses: readonly string[], stats?: StatsDisposition): Promise<RemovalSummary> {
   return json<RemovalSummary>(
     await fetch('/api/runs', {
       method: 'DELETE',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ runs: addresses }),
+      body: JSON.stringify({ runs: addresses, ...(stats === undefined ? {} : { stats }) }),
+    }),
+  );
+}
+
+/**
+ * Отбор записей хранилища расхода к снятию — только отчёт, файлов прогонов
+ * не касается. Те же признаки, что у `selectRuns`, кроме «оборванного»: он к
+ * записи не применим (`selectUsageRecords` в `core/journal/usageStore.ts`).
+ */
+export async function selectUsageRecords(options: {
+  readonly failed?: boolean;
+  readonly olderThan?: string;
+  readonly project?: string;
+}): Promise<UsageRecordSelection> {
+  const query = new URLSearchParams();
+  if (options.failed === true) query.append('trait', 'failed');
+  if (options.olderThan !== undefined && options.olderThan !== '') {
+    query.set('older-than', options.olderThan);
+  }
+  if (options.project !== undefined) query.set('project', options.project);
+  return json<UsageRecordSelection>(await fetch(`/api/usage-records?${query.toString()}`));
+}
+
+export async function deleteUsageRecords(addresses: readonly string[]): Promise<UsageRecordRemovalSummary> {
+  return json<UsageRecordRemovalSummary>(
+    await fetch('/api/usage-records', {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ records: addresses }),
     }),
   );
 }

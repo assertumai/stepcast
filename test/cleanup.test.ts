@@ -20,12 +20,15 @@ import {
   dirSize,
   listCandidates,
   removeRun,
+  removeRunWithStats,
   removeRuns,
   selectCandidates,
   selectOlderThan,
+  type RemovalSummary,
 } from '../src/core/run/cleanup.js';
-import { projectKey } from '../src/core/journal/paths.js';
+import { projectKey, usageStorePath } from '../src/core/journal/paths.js';
 import { listRunsByKey } from '../src/core/journal/reader.js';
+import { ensureUsageRecord, readUsageStore } from '../src/core/journal/usageStore.js';
 import { RunJournal } from '../src/core/journal/writer.js';
 import type { RunManifest, StatusValue } from '../src/core/journal/schema.js';
 
@@ -527,7 +530,9 @@ describe('run-cleanup: групповое снятие', () => {
     ]);
 
     assert.equal(freedBytes, 4242);
-    assert.deepEqual(outcomes, [{ address: `${key}/run-a`, outcome: 'removed', sizeBytes: 4242 }]);
+    assert.deepEqual(outcomes, [
+      { address: `${key}/run-a`, outcome: 'removed', sizeBytes: 4242, stats: 'kept' },
+    ]);
   });
 
   // Сценарий: «Прогон исчез до удаления»
@@ -981,5 +986,177 @@ describe('run-cleanup: сохранение каталога, перенятог
     assert.deepEqual(result.preservedWorkspaces, []);
     assert.ok(!existsSync(workDir));
     assert.deepEqual(worktreeRecords(projectRoot), []);
+  });
+});
+
+/** Судьба записи хранилища у адреса: у неснятого прогона её в исходе нет вовсе. */
+function statsOf(outcomes: RemovalSummary['outcomes'], address: string): string | undefined {
+  const outcome = outcomes.find((item) => item.address === address);
+  return outcome?.outcome === 'removed' ? outcome.stats : undefined;
+}
+
+describe('run-cleanup: удаление файлов и хранилище расхода', () => {
+  // Требование «Удаление файлов прогона не удаляет его статистику»,
+  // сценарий «Уборка по возрасту не трогает хранилища».
+  it('cleanupRun не создаёт и не трогает хранилище расхода', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = makeRun(runsRoot, projectRoot, 'run-a');
+
+    cleanupRun(journal.paths);
+
+    assert.ok(!existsSync(usageStorePath(runsRoot)), 'уборка по возрасту не должна заводить хранилище');
+  });
+
+  // Сценарий «Полное снятие прогона сохраняет его запись».
+  it('removeRunWithStats по умолчанию сохраняет статистику после снятия файлов', () => {
+    const { runsRoot, projectRoot } = bed();
+    const key = projectKey(projectRoot);
+    const journal = makeRun(runsRoot, projectRoot, 'run-a');
+
+    const result = removeRunWithStats(runsRoot, key, 'run-a');
+
+    assert.equal(result.stats, 'kept');
+    assert.ok(!existsSync(journal.paths.dir), 'каталог прогона обязан уйти');
+    const { records } = readUsageStore(runsRoot);
+    assert.ok(records.has(`${key}/run-a`), 'запись обязана пережить удаление каталога');
+  });
+
+  // Сценарий «Оборванный прогон получает запись перед снятием файлов».
+  it('оборванный прогон без записи получает её из каталога перед снятием файлов', () => {
+    const { runsRoot, projectRoot } = bed();
+    const key = projectKey(projectRoot);
+    const journal = RunJournal.create({ runsRoot, projectRoot, runId: 'stuck' });
+    journal.writeManifest({ ...baseManifest('stuck'), project_root: projectRoot });
+    journal.writeStatus({
+      run_id: 'stuck',
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'running',
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      jobs: [],
+      budget: { tokens_used: 5, wallclock_ms: 5 },
+      updated_at: '2026-08-01T00:00:00.000Z',
+    });
+    journal.writeUsage({
+      run_id: 'stuck',
+      total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 5, wallclock_ms: 5 },
+      unreported: [],
+      jobs: {},
+    });
+
+    assert.equal(readUsageStore(runsRoot).records.size, 0, 'у оборванного прогона записи ещё нет');
+
+    const result = removeRunWithStats(runsRoot, key, 'stuck');
+
+    assert.equal(result.stats, 'kept');
+    assert.ok(!existsSync(journal.paths.dir));
+    const { records } = readUsageStore(runsRoot);
+    const record = records.get(`${key}/stuck`);
+    assert.ok(record !== undefined, 'запись обязана появиться из каталога до снятия файлов');
+    assert.equal(record.status, 'running');
+    assert.equal(record.total.billable_tokens, 5);
+  });
+
+  // Найдено ревью: исход адреса говорил «статистика: снята» и о прогоне,
+  // записи которому в хранилище не было вовсе, — вкладка «Уборка» показывала
+  // это в столбце исходов как совершённое снятие.
+  it('прогон без сводки расхода получает исход «записи не было», а не «снята»', () => {
+    const { runsRoot, projectRoot } = bed();
+    const key = projectKey(projectRoot);
+    // Прогон без `usage.json`: дописывать в хранилище нечего ни до снятия
+    // файлов, ни после.
+    makeStatusRun(runsRoot, projectRoot, 'без-сводки', 'failed');
+    makeRun(runsRoot, projectRoot, 'со-сводкой');
+    // Запись, какую оставляет за собой завершившийся прогон: снятие («drop»)
+    // само её не дописывает, и снимать ему было бы нечего.
+    ensureUsageRecord(runsRoot, key, 'со-сводкой');
+
+    const dropped = removeRuns(
+      runsRoot,
+      [
+        { key, runId: 'без-сводки' },
+        { key, runId: 'со-сводкой' },
+      ],
+      'drop',
+    );
+
+    assert.equal(
+      statsOf(dropped.outcomes, `${key}/без-сводки`),
+      'missing',
+      'снимать было нечего — исход обязан это называть',
+    );
+    assert.equal(statsOf(dropped.outcomes, `${key}/со-сводкой`), 'removed');
+    assert.equal(readUsageStore(runsRoot).records.size, 0);
+  });
+
+  // Групповое удаление работает с хранилищем пакетом: одно чтение и одно
+  // переписывание на весь список (найдено ревью — было по одному на адрес).
+  // Проверяется по итогу: записи снятых уходят, чужие и несняты́е остаются.
+  it('групповое удаление правит хранилище один раз и не задевает чужих записей', () => {
+    const { runsRoot, projectRoot } = bed();
+    const key = projectKey(projectRoot);
+    makeRun(runsRoot, projectRoot, 'run-a');
+    makeRun(runsRoot, projectRoot, 'run-b');
+    makeRun(runsRoot, projectRoot, 'run-c');
+    makeStatusRun(runsRoot, projectRoot, 'alive', 'running', {
+      started_at: new Date().toISOString(),
+      pid: process.pid,
+    });
+
+    // Сначала группа с сохранением: записи дописываются всем снятым.
+    const kept = removeRuns(runsRoot, [
+      { key, runId: 'run-a' },
+      { key, runId: 'run-c' },
+    ]);
+    assert.deepEqual(
+      [statsOf(kept.outcomes, `${key}/run-a`), statsOf(kept.outcomes, `${key}/run-c`)],
+      ['kept', 'kept'],
+    );
+    const afterKeep = readUsageStore(runsRoot).records;
+    assert.deepEqual([...afterKeep.keys()].sort(), [`${key}/run-a`, `${key}/run-c`]);
+
+    // Затем группа со снятием: уходит только запись снятого прогона, а живой
+    // прогон группы не трогается вовсе.
+    const dropped = removeRuns(
+      runsRoot,
+      [
+        { key, runId: 'run-b' },
+        { key, runId: 'alive' },
+      ],
+      'drop',
+    );
+    assert.equal(dropped.outcomes.find((o) => o.address === `${key}/alive`)?.outcome, 'skipped_alive');
+    assert.deepEqual(
+      [...readUsageStore(runsRoot).records.keys()].sort(),
+      [`${key}/run-a`, `${key}/run-c`],
+      'записи прогонов, снятых с сохранением, переживают следующее групповое снятие',
+    );
+  });
+
+  // Сценарий «Снятие файлов не удалось — статистика не снимается».
+  it('снятие файлов не удалось: запись хранилища не снимается', () => {
+    const { runsRoot, projectRoot } = bed();
+    const key = projectKey(projectRoot);
+    const doomed = makeRun(runsRoot, projectRoot, 'run-b');
+    ensureUsageRecord(runsRoot, key, 'run-b');
+    assert.ok(readUsageStore(runsRoot).records.has(`${key}/run-b`));
+
+    // Каталог без права записи родителя нельзя ни снять, ни переставить в нём
+    // ярлык — тот же приём, что и в «сбой на одном адресе не обрывает
+    // остальные» выше в файле.
+    chmodSync(doomed.paths.projectDir, 0o500);
+    try {
+      const { outcomes } = removeRuns(runsRoot, [{ key, runId: 'run-b' }], 'drop');
+      assert.equal(outcomes[0]?.outcome, 'failed');
+    } finally {
+      chmodSync(doomed.paths.projectDir, 0o700);
+    }
+
+    assert.ok(existsSync(doomed.paths.dir), 'снятие отказало — каталог остаётся');
+    assert.ok(
+      readUsageStore(runsRoot).records.has(`${key}/run-b`),
+      'запись остаётся, когда снятие файлов отказало',
+    );
   });
 });

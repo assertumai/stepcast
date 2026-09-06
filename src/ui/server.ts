@@ -3,7 +3,21 @@ import { existsSync } from 'node:fs';
 
 import { runPaths } from '../core/journal/paths.js';
 import { isRunAlive } from '../core/journal/reader.js';
-import { removeRun, removeRuns, selectCandidates, type RunAddress, type SelectTraits } from '../core/run/cleanup.js';
+import {
+  removeRunWithStats,
+  removeRuns,
+  selectCandidates,
+  type RunAddress,
+  type SelectTraits,
+  type StatsDisposition,
+} from '../core/run/cleanup.js';
+import {
+  backfillUsageStore,
+  readUsageStore,
+  removeUsageRecords,
+  selectUsageRecords,
+  type UsageRecordSelectTraits,
+} from '../core/journal/usageStore.js';
 import { isStepcastError } from '../core/errors.js';
 import { parseDuration } from '../core/units.js';
 import type { Config } from '../core/config/resolve.js';
@@ -12,7 +26,7 @@ import { readJournalFile } from './file.js';
 import { buildPipelines } from './pipelines.js';
 import { isApiPath, isSafeSegment } from './routes.js';
 import { readSettings, writeSettings, type SettingsPatch } from './settings.js';
-import { buildSnapshot } from './snapshot.js';
+import { buildSnapshot, buildSnapshotFromRecord } from './snapshot.js';
 import { readStepOutput } from './stepOutput.js';
 import { MAX_USAGE_DAYS, buildUsage } from './usage.js';
 import { createWatcher, type Watcher } from './watcher.js';
@@ -123,6 +137,20 @@ function readBody(req: IncomingMessage): Promise<string> {
   });
 }
 
+/**
+ * Снимок прогона: по каталогу, если он ещё есть; иначе — по записи хранилища
+ * расхода, если она сохранена (design.md изменения run-stats-retention,
+ * Решение 12). Отказ 404 остаётся только тогда, когда нет ни того, ни
+ * другого — прогон убран целиком, вместе со статистикой.
+ */
+function snapshotOrRecord(runsRoot: string, key: string, runId: string): ReturnType<typeof buildSnapshot> | undefined {
+  const paths = runPaths(runsRoot, key, runId);
+  if (existsSync(paths.dir)) return buildSnapshot(paths, key);
+
+  const record = readUsageStore(runsRoot).records.get(`${key}/${runId}`);
+  return record === undefined ? undefined : buildSnapshotFromRecord(record, key);
+}
+
 function handleSnapshot(runsRoot: string, address: string | null, res: ServerResponse): void {
   const parsed = parseRunAddress(address);
   if (parsed === undefined) {
@@ -130,13 +158,13 @@ function handleSnapshot(runsRoot: string, address: string | null, res: ServerRes
     return;
   }
 
-  const paths = runPaths(runsRoot, parsed.key, parsed.runId);
-  if (!existsSync(paths.dir)) {
+  const snapshot = snapshotOrRecord(runsRoot, parsed.key, parsed.runId);
+  if (snapshot === undefined) {
     sendJson(res, 404, { error: `Прогон ${parsed.runId} не найден` });
     return;
   }
 
-  sendJson(res, 200, buildSnapshot(paths, parsed.key));
+  sendJson(res, 200, snapshot);
 }
 
 function handleFile(runsRoot: string, url: URL, res: ServerResponse): void {
@@ -174,6 +202,17 @@ function readNonNegativeInt(url: URL, param: string): number | undefined | typeo
   if (raw === null) return undefined;
   const value = Number(raw);
   return Number.isInteger(value) && value >= 0 ? value : INVALID;
+}
+
+/**
+ * Судьба статистики при удалении файлов — `keep` умолчанием (design.md,
+ * Решение 10): запрос, не назвавший её, сохраняет статистику, а не отказывает
+ * и не снимает молча.
+ */
+function readStatsDisposition(url: URL): StatsDisposition | typeof INVALID {
+  const raw = url.searchParams.get('stats');
+  if (raw === null || raw === 'keep') return 'keep';
+  return raw === 'drop' ? 'drop' : INVALID;
 }
 
 /**
@@ -276,6 +315,12 @@ function handleDelete(runsRoot: string, url: URL, watcher: Watcher, res: ServerR
     return;
   }
 
+  const stats = readStatsDisposition(url);
+  if (stats === INVALID) {
+    sendJson(res, 400, { error: 'stats должен быть keep или drop' });
+    return;
+  }
+
   const paths = runPaths(runsRoot, parsed.key, parsed.runId);
   if (!existsSync(paths.dir)) {
     sendJson(res, 404, { error: `Прогон ${parsed.runId} не найден` });
@@ -289,12 +334,13 @@ function handleDelete(runsRoot: string, url: URL, watcher: Watcher, res: ServerR
     return;
   }
 
-  const result = removeRun(runsRoot, parsed.key, parsed.runId);
+  const result = removeRunWithStats(runsRoot, parsed.key, parsed.runId, stats);
   // Обзор пересобирается сразу: иначе удалённый прогон повисит на экране до
   // следующего опроса, и пользователь решит, что удаление не сработало.
   watcher.poll();
   sendJson(res, 200, {
     removed: `${parsed.key}/${parsed.runId}`,
+    stats: result.stats,
     ...(result.unresolvedWorktrees.length === 0 ? {} : { unresolvedWorktrees: result.unresolvedWorktrees }),
     ...(result.preservedWorkspaces.length === 0 ? {} : { preservedWorkspaces: result.preservedWorkspaces }),
   });
@@ -342,6 +388,10 @@ function handleSelectRuns(runsRoot: string, url: URL, res: ServerResponse): void
   }
 
   const selected = selectCandidates(runsRoot, traits, project === null ? {} : { project });
+  // Читается один раз на весь отбор: подтверждение должно отличать прогон, у
+  // которого есть что сохранить сверх файлов, от того, у которого нет
+  // (ui-dashboard, «Прогон без записи в хранилище»).
+  const { records } = readUsageStore(runsRoot);
 
   sendJson(res, 200, {
     runs: selected.map((candidate) => ({
@@ -352,6 +402,7 @@ function handleSelectRuns(runsRoot: string, url: URL, res: ServerResponse): void
       // Журнал прогона не читается: возраст взят по каталогу, статуса нет.
       // Пользователь должен видеть, почему такой прогон назван, а не гадать.
       unreadable: candidate.unreadable,
+      hasUsageRecord: records.has(candidate.address),
     })),
     count: selected.length,
     totalBytes: selected.reduce((sum, candidate) => sum + candidate.sizeBytes, 0),
@@ -394,6 +445,13 @@ async function handleDeleteRuns(
     return;
   }
 
+  const statsField = (parsed as { stats?: unknown }).stats;
+  if (statsField !== undefined && statsField !== 'keep' && statsField !== 'drop') {
+    sendJson(res, 400, { error: 'Поле stats должно быть keep или drop' });
+    return;
+  }
+  const stats: StatsDisposition = statsField === 'drop' ? 'drop' : 'keep';
+
   if (list.length > MAX_RUN_ADDRESSES) {
     sendJson(res, 413, { error: `Список адресов превышает предел в ${MAX_RUN_ADDRESSES}` });
     return;
@@ -409,11 +467,125 @@ async function handleDeleteRuns(
     addresses.push(address);
   }
 
-  const summary = removeRuns(runsRoot, addresses);
+  const summary = removeRuns(runsRoot, addresses, stats);
   // Одна пересборка на всю группу, а не на каждый прогон: наблюдатель не
   // должен просыпаться сотни раз за один запрос.
   watcher.poll();
   sendJson(res, 200, summary);
+}
+
+const KNOWN_USAGE_RECORD_TRAITS = new Set(['failed']);
+
+/**
+ * Отбор записей хранилища расхода к снятию — только отчёт, файлов прогонов
+ * не касается (design.md изменения run-stats-retention, Решение 14). Те же
+ * признаки, что у `handleSelectRuns`, кроме «оборванного»: он не применим к
+ * записи (см. `selectUsageRecords`).
+ */
+function handleSelectUsageRecords(runsRoot: string, url: URL, res: ServerResponse): void {
+  const traits: { -readonly [K in keyof UsageRecordSelectTraits]: UsageRecordSelectTraits[K] } = {};
+
+  for (const trait of url.searchParams.getAll('trait')) {
+    if (!KNOWN_USAGE_RECORD_TRAITS.has(trait)) {
+      sendJson(res, 400, { error: `Неизвестный признак отбора: ${trait}`, hint: 'Допустимые признаки: failed' });
+      return;
+    }
+    traits.failed = true;
+  }
+
+  const olderThan = url.searchParams.get('older-than');
+  if (olderThan !== null) {
+    try {
+      traits.olderThanMs = parseDuration(olderThan, 'older-than');
+    } catch (error) {
+      const message = isStepcastError(error) ? error.message : 'Не удалось разобрать срок';
+      sendJson(res, 400, { error: message });
+      return;
+    }
+  }
+
+  const project = url.searchParams.get('project');
+  if (project !== null && !isSafeSegment(project)) {
+    sendJson(res, 400, { error: 'Ключ проекта должен быть одним сегментом раскладки' });
+    return;
+  }
+
+  const selected = selectUsageRecords(runsRoot, traits, project === null ? {} : { project });
+
+  sendJson(res, 200, {
+    records: selected.map((entry) => ({
+      address: entry.address,
+      ageMs: entry.ageMs,
+      endedAt: entry.record.finished_at ?? entry.record.started_at,
+      status: entry.record.status,
+    })),
+    count: selected.length,
+  });
+}
+
+/**
+ * Снятие записей хранилища расхода по явному списку адресов — та же схема,
+ * что у `handleDeleteRuns`: список пришёл с отбора, увиденного пользователем,
+ * а не с признака, и файлов прогонов вызов не трогает вовсе.
+ */
+async function handleDeleteUsageRecords(
+  runsRoot: string,
+  req: IncomingMessage,
+  watcher: Watcher,
+  res: ServerResponse,
+): Promise<void> {
+  let body: string;
+  try {
+    body = await readBody(req);
+  } catch {
+    sendJson(res, 413, { error: 'Тело запроса слишком велико' });
+    return;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body === '' ? '{}' : body);
+  } catch {
+    sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
+    return;
+  }
+
+  const list = (parsed as { records?: unknown }).records;
+  if (!Array.isArray(list) || list.some((item) => typeof item !== 'string')) {
+    sendJson(res, 400, { error: 'Тело запроса должно нести список адресов: { "records": string[] }' });
+    return;
+  }
+
+  if (list.length > MAX_RUN_ADDRESSES) {
+    sendJson(res, 413, { error: `Список адресов превышает предел в ${MAX_RUN_ADDRESSES}` });
+    return;
+  }
+
+  const addresses: string[] = [];
+  for (const value of list as string[]) {
+    const address = parseRunAddress(value);
+    if (address === undefined) {
+      sendJson(res, 400, { error: `Адрес записи должен иметь вид <проект>/<прогон>: ${value}` });
+      return;
+    }
+    addresses.push(`${address.key}/${address.runId}`);
+  }
+
+  // Исход по каждому адресу отдельно — так же, как у снятия каталогов
+  // (`RemovalOutcome`): адрес, у которого записи уже не было, не должен
+  // выглядеть снятым этим вызовом.
+  const existedBefore = readUsageStore(runsRoot).records;
+  const removed = removeUsageRecords(runsRoot, addresses);
+  // Одна пересборка на всю группу — как и у снятия файлов: прогон без файлов,
+  // чья запись снята этим вызовом, обязан пропасть из обзора немедленно.
+  watcher.poll();
+  sendJson(res, 200, {
+    outcomes: addresses.map((address) => ({
+      address,
+      outcome: existedBefore.has(address) ? ('removed' as const) : ('skipped_missing' as const),
+    })),
+    removed,
+  });
 }
 
 async function handleSettingsWrite(
@@ -467,8 +639,8 @@ function handleEvents(
   const push = (): void => {
     send('overview', watcher.current());
     if (followed === undefined) return;
-    const paths = runPaths(runsRoot, followed.key, followed.runId);
-    if (existsSync(paths.dir)) send('run', buildSnapshot(paths, followed.key));
+    const snapshot = snapshotOrRecord(runsRoot, followed.key, followed.runId);
+    if (snapshot !== undefined) send('run', snapshot);
   };
 
   push();
@@ -496,6 +668,11 @@ function handlePage(res: ServerResponse, dashboardFile: string | undefined): voi
 
 export function createUiServer(options: UiServerOptions): Promise<UiServer> {
   const { runsRoot, config, home, dashboardFile } = options;
+  // Перенос накопленного делает тот, кто открывает хранилище — здесь, при
+  // старте демона, до первого обзора и до первого запроса, — поэтому
+  // `GET /api/usage` и прочие читающие маршруты остаются чтением (design.md
+  // изменения run-stats-retention, Решение 9).
+  backfillUsageStore(runsRoot);
   const watcher =
     options.watcher ??
     createWatcher({ runsRoot, ...(options.log === undefined ? {} : { log: options.log }) });
@@ -517,6 +694,11 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
 
     if (method === 'DELETE' && url.pathname === '/api/runs') {
       void handleDeleteRuns(runsRoot, req, watcher, res);
+      return;
+    }
+
+    if (method === 'DELETE' && url.pathname === '/api/usage-records') {
+      void handleDeleteUsageRecords(runsRoot, req, watcher, res);
       return;
     }
 
@@ -545,6 +727,9 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
         return;
       case '/api/runs':
         handleSelectRuns(runsRoot, url, res);
+        return;
+      case '/api/usage-records':
+        handleSelectUsageRecords(runsRoot, url, res);
         return;
       case '/api/pipelines':
         if (config === undefined) {

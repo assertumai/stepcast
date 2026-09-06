@@ -10,7 +10,7 @@ import {
   type readStatus,
 } from '../core/journal/reader.js';
 import type { RunPaths } from '../core/journal/paths.js';
-import { ContextReportSchema, type StatusValue, type UsageReport } from '../core/journal/schema.js';
+import { ContextReportSchema, type StatusValue, type UsageRecord, type UsageReport } from '../core/journal/schema.js';
 import { renderDisplay, type DisplayData } from '../core/pipeline/display.js';
 import { readLockJobs, type LockJob, type LockStep } from './lock.js';
 import { layoutJobs, type JobGraph } from './graph.js';
@@ -136,6 +136,17 @@ export interface RunSnapshot {
   readonly graph: JobGraph;
   /** Прогон убран: остались только манифест, состояние и расход. */
   readonly swept: boolean;
+  /**
+   * У прогона нет каталога вовсе — снимок собран по записи хранилища расхода
+   * (Решение 12 изменения run-stats-retention). Работы, шаги и их расход
+   * показаны по записи; контекста, файлов и попыток у них нет — запись их не
+   * несёт (Решение 5).
+   */
+  readonly filesGone: boolean;
+  /** Итог прогона — только у снимка, собранного по записи (`filesGone: true`). */
+  readonly total?: UsageSnapshot;
+  /** Разрез по моделям — только у снимка, собранного по записи. */
+  readonly models?: readonly { readonly model: string; readonly billableTokens: number; readonly costUsd: number | null }[];
   /**
    * Диагноз беды чтения журнала: манифеста, состояния или сводки расхода — в
    * этом же порядке. Отсутствует, когда файлы прогона читаются штатно.
@@ -388,6 +399,69 @@ export function buildSnapshot(paths: RunPaths, projectKeyValue: string): RunSnap
       })),
     ),
     swept,
+    filesGone: false,
     ...(problem === undefined ? {} : { problem }),
+  };
+}
+
+/**
+ * Снимок прогона, чей каталог удалён, — собранный по записи хранилища
+ * расхода вместо файлов. Показывает то, что запись несёт: итог, работы,
+ * шаги и модели (design.md изменения run-stats-retention, Решение 12).
+ * Контекста, файлов, попыток и предикатов у такого снимка нет — запись их не
+ * несёт (Решение 5), а не потому, что они были и потерялись.
+ */
+export function buildSnapshotFromRecord(record: UsageRecord, projectKeyValue: string): RunSnapshot {
+  const jobs: JobSnapshot[] = Object.entries(record.jobs).map(([jobId, job]) => ({
+    id: jobId,
+    needs: [],
+    on: 'success',
+    context: [],
+    inputs: [],
+    outputDeclared: false,
+    steps: Object.entries(job.steps).map(([stepId, step]) => ({
+      id: stepId,
+      // Вид шага (agent/run) запись не несёт (Решение 5) — «agent» ближе к
+      // типичному шагу и не более неверен, чем любой другой выбор наугад;
+      // на отображение расхода это поле не влияет.
+      kind: 'agent' as const,
+      attempts: 0,
+      attemptModels: [],
+      context: [],
+      files: [],
+      usage: {
+        billableTokens: step.billable_tokens,
+        wallclockMs: step.wallclock_ms,
+        costUsd: step.cost_usd ?? null,
+      },
+    })),
+    usage: {
+      billableTokens: job.billable_tokens,
+      wallclockMs: job.wallclock_ms,
+      costUsd: job.cost_usd ?? null,
+    },
+  }));
+
+  return {
+    runId: record.run_id,
+    projectKey: projectKeyValue,
+    pipeline: record.pipeline.name,
+    status: record.status,
+    jobs,
+    graph: layoutJobs(jobs.map((job) => ({ id: job.id, needs: job.needs, on: job.on }))),
+    swept: false,
+    filesGone: true,
+    total: {
+      billableTokens: record.total.billable_tokens,
+      wallclockMs: record.total.wallclock_ms,
+      costUsd: record.total.cost_usd ?? null,
+    },
+    models: Object.entries(record.models)
+      .map(([model, slice]) => ({
+        model,
+        billableTokens: slice.billable_tokens,
+        costUsd: slice.cost_usd ?? null,
+      }))
+      .sort((a, b) => (b.costUsd ?? 0) - (a.costUsd ?? 0) || b.billableTokens - a.billableTokens),
   };
 }

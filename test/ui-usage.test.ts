@@ -3,8 +3,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { cleanupRun } from '../src/core/run/cleanup.js';
+import { cleanupRun, removeRunWithStats } from '../src/core/run/cleanup.js';
 import { projectKey } from '../src/core/journal/paths.js';
+import { ensureUsageRecord } from '../src/core/journal/usageStore.js';
 import { buildOverview, type Overview } from '../src/ui/overview.js';
 import { buildUsage, NO_PIPELINE, UNKNOWN_MODEL } from '../src/ui/usage.js';
 import { makeJournalBed, seedRun } from './helpers.js';
@@ -313,6 +314,7 @@ describe('ui-dashboard: расход поперёк прогонов', () => {
               abandoned: false,
               startedAt: '2026-08-01T00:00:00.000Z',
               swept: false,
+              filesGone: false,
               unreadable: false,
               usage: measure,
             },
@@ -325,6 +327,7 @@ describe('ui-dashboard: расход поперёк прогонов', () => {
               abandoned: false,
               startedAt: '2026-08-02T00:00:00.000Z',
               swept: false,
+              filesGone: false,
               unreadable: false,
               usage: measure,
             },
@@ -337,6 +340,7 @@ describe('ui-dashboard: расход поперёк прогонов', () => {
               abandoned: false,
               startedAt: '2026-08-01T00:00:00.000Z',
               swept: false,
+              filesGone: false,
               unreadable: false,
               usage: measure,
             },
@@ -349,6 +353,7 @@ describe('ui-dashboard: расход поперёк прогонов', () => {
               abandoned: false,
               startedAt: '2026-08-01T00:00:00.000Z',
               swept: false,
+              filesGone: false,
               unreadable: true,
               usage: measure,
             },
@@ -430,5 +435,104 @@ describe('ui-dashboard: расход поперёк прогонов', () => {
     assert.equal(usage.total.runs, 1);
     assert.equal(usage.total.billableTokens, 400);
     assert.deepEqual(usage.models, [{ model: 'opus', billableTokens: 400, costUsd: 4 }]);
+  });
+
+  // Требование ui-dashboard «Разрез расхода строится по хранилищу и не
+  // редеет от уборки», сценарии «Заход, чьих файлов уже нет» и «Идущий
+  // прогон в разрезе».
+  it('прогон, чьих файлов уже нет, входит в итог периода, в ряд дней и в ряд заходов пайплайна', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, {
+      runId: 'gone',
+      manifest: { started_at: '2026-08-01T09:00:00.000Z' },
+      usage: {
+        run_id: 'gone',
+        total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 200, wallclock_ms: 1_000, cost_usd: 2 },
+        unreported: [],
+        jobs: {
+          build: {
+            billable_tokens: 200,
+            wallclock_ms: 1_000,
+            cost_usd: 2,
+            steps: {
+              write: {
+                billable_tokens: 200,
+                wallclock_ms: 1_000,
+                cost_usd: 2,
+                attempts: [{ attempt: 1, backend: 'claude', model: 'opus', billable_tokens: 200, wallclock_ms: 1_000, cost_usd: 2 }],
+              },
+            },
+          },
+        },
+      },
+    });
+    // Идущий прогон того же дня: записи в хранилище у него нет, и он входит
+    // в разрез по обзору, как и раньше.
+    seedRun(runsRoot, projectRoot, {
+      runId: 'going',
+      status: 'running',
+      skipUsage: true,
+      manifest: { started_at: '2026-08-01T10:00:00.000Z' },
+      budget: { tokens_used: 50, wallclock_ms: 500, cost_used_usd: 0.5 },
+    });
+
+    const removal = removeRunWithStats(runsRoot, key, 'gone');
+    assert.equal(removal.stats, 'kept');
+
+    const now = new Date('2026-08-01T12:00:00.000Z');
+    const overview = buildOverview(runsRoot, now);
+    const usage = buildUsage(runsRoot, overview, { days: 1, now });
+
+    assert.equal(usage.total.runs, 2);
+    assert.equal(usage.total.billableTokens, 250);
+    assert.deepEqual(
+      usage.days[0]?.models.find((m) => m.model === 'opus'),
+      { model: 'opus', billableTokens: 200, costUsd: 2 },
+    );
+    const pipelineRuns = usage.pipelines.flatMap((p) => p.runs.map((r) => r.runId));
+    assert.ok(pipelineRuns.includes('gone'), 'прогон без файлов обязан остаться в ряду заходов');
+    assert.ok(pipelineRuns.includes('going'), 'идущий прогон входит по обзору');
+  });
+
+  // Сценарий «Прогон не удваивается»: запись в хранилище есть, а каталог
+  // прогона ещё цел (окно между дозаписью и уборкой).
+  it('прогон, который есть и в хранилище, и на диске, назван один раз величинами из записи', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, {
+      runId: 'both',
+      manifest: { started_at: '2026-08-01T00:00:00.000Z' },
+      usage: {
+        run_id: 'both',
+        total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 100, wallclock_ms: 1_000, cost_usd: 1 },
+        unreported: [],
+        jobs: {
+          build: {
+            billable_tokens: 100,
+            wallclock_ms: 1_000,
+            cost_usd: 1,
+            steps: {
+              write: {
+                billable_tokens: 100,
+                wallclock_ms: 1_000,
+                cost_usd: 1,
+                attempts: [{ attempt: 1, backend: 'claude', model: 'sonnet', billable_tokens: 100, wallclock_ms: 1_000, cost_usd: 1 }],
+              },
+            },
+          },
+        },
+      },
+    });
+
+    ensureUsageRecord(runsRoot, key, 'both');
+
+    const now = new Date('2026-08-01T12:00:00.000Z');
+    const overview = buildOverview(runsRoot, now);
+    const usage = buildUsage(runsRoot, overview, { days: 1, now });
+
+    assert.equal(usage.total.runs, 1, 'прогон с записью и на диске назван один раз');
+    assert.equal(usage.total.billableTokens, 100);
+    assert.deepEqual(usage.models, [{ model: 'sonnet', billableTokens: 100, costUsd: 1 }]);
   });
 });
