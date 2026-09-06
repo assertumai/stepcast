@@ -1,6 +1,6 @@
-import { ExitCode, type ExitCodeValue } from '../core/errors.js';
+import { ExitCode, StepcastError, type ExitCodeValue } from '../core/errors.js';
 import { parseArgs, type CliIo, type CommandSpec } from './args.js';
-import type { CommandContribution } from '../core/plugins/contract.js';
+import type { CommandContribution, CommandEnv } from '../core/plugins/contract.js';
 import { resolveWithPlugins } from '../core/plugins/resolve.js';
 import { reportError } from './output.js';
 import { runApplyCommand } from './commands/apply.js';
@@ -243,6 +243,15 @@ export const COMMANDS: Record<string, CommandSpec> = {
 export type { CliIo } from './args.js';
 
 /**
+ * Команды, независимые от конфигурации: их исполнение не читает ни одного
+ * значения действующей конфигурации и ни одного вклада реестра. Правило
+ * проверяется чтением кода самой команды, а не удобством — это ровно три
+ * встроенные команды сегодня; все прочие зовут `resolveConfig` внутри себя
+ * либо читают `env.config`/`env.registry`, и остаются зависимыми.
+ */
+export const CONFIG_INDEPENDENT_COMMANDS: ReadonlySet<string> = new Set(['data', 'down', 'init']);
+
+/**
  * Встроенные команды как вклады: тот же контракт, что у команд плагина.
  * Описание аргументов остаётся в `COMMANDS`, исполнение — здесь; всё вместе
  * складывается в реестр, и диспетчеризация не знает, встроенная команда или
@@ -356,8 +365,51 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
   },
 ];
 
+/** Найти вклад встроенной команды по имени — без обращения к реестру плагинов. */
+function findBuiltinCommand(name: string): CommandContribution | undefined {
+  return BUILTIN_COMMANDS.find((contribution) => contribution.name === name);
+}
+
+/**
+ * `CommandEnv` ранней ветки: настоящих `config` и `registry` в ней нет,
+ * потому что она их не разрешает. Чтение любого из двух свойств — признак
+ * того, что перечень независимых команд назвал команду неверно, и это
+ * StepcastError с объяснением, а не встроенные умолчания: подставленное
+ * умолчание превратило бы ошибку разметки в тихое неверное поведение.
+ */
+export function buildIndependentCommandEnv(name: string, cwd: string): CommandEnv {
+  function readForbidden(): never {
+    throw new StepcastError(
+      `Команда ${name} объявлена независимой от конфигурации и не вправе читать её`,
+    );
+  }
+  return {
+    cwd,
+    get config() {
+      return readForbidden();
+    },
+    get registry() {
+      return readForbidden();
+    },
+  };
+}
+
 export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeValue> {
   try {
+    const commandName = argv[0];
+    if (commandName !== undefined && CONFIG_INDEPENDENT_COMMANDS.has(commandName)) {
+      const contribution = findBuiltinCommand(commandName);
+      // Перечень называет только имена встроенных команд — их вклад в
+      // BUILTIN_COMMANDS обязан существовать. Отсутствие здесь — дефект
+      // самого перечня, а не рантайм-случай, который стоит проглатывать.
+      if (contribution === undefined) {
+        throw new StepcastError(`Команда ${commandName} названа независимой, но не встроена`);
+      }
+
+      const args = parseArgs(argv, { [commandName]: contribution.spec });
+      return await contribution.run(args, io, buildIndependentCommandEnv(commandName, io.cwd));
+    }
+
     // Плагины загружаются до разбора аргументов: команда плагина обязана
     // попасть в перечень раньше, чем разбор объявит её неизвестной.
     const { resolved, registry } = await resolveWithPlugins(
