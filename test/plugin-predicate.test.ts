@@ -10,10 +10,11 @@ import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { builtinRegistry } from '../src/core/plugins/builtin.js';
 import { addPlugin, type Registry } from '../src/core/plugins/registry.js';
 import type { PredicateContribution } from '../src/core/plugins/contract.js';
+import { planResume, readSourceRun } from '../src/core/run/resumePlan.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { computeStepKey } from '../src/core/run/stepKey.js';
 import { lintPipeline } from '../src/core/lint.js';
-import { makeProject, type Project } from './helpers.js';
+import { makeProject, seedRun, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 /**
@@ -291,5 +292,102 @@ jobs:
     assert.ok(own !== undefined, JSON.stringify(diagnostics));
     assert.equal(own.severity, 'warning');
     assert.match(own.at ?? '', /expect\.0\.text_has/);
+  });
+});
+
+describe('plugin-contributions: возобновление прогона с плагинным предикатом', () => {
+  it('плагин загружен в реестр возобновления — пайплайн раскрывается', async () => {
+    const project = makeProject({ 'stepcast.yml': pipelineWith('[{ text_has: "готово" }]') });
+    const result = await run(project, pluginRegistry());
+    const source = readSourceRun(result.journal.paths);
+
+    const { expanded, plan } = planResume({
+      cwd: project.root,
+      config: project.config,
+      source,
+      registry: pluginRegistry(),
+    });
+
+    const job = expanded.pipeline.jobs.find((item) => item.id === 'build');
+    assert.ok(job?.steps.some((step) => step.id === 'say'), 'плагинный предикат прошёл разбор документа');
+    assert.ok(plan.steps.some((step) => step.job === 'build' && step.step === 'say'));
+  });
+
+  it('плагин не загружен в реестр возобновления — отказ называет его по манифесту', async () => {
+    const project = makeProject({ 'stepcast.yml': pipelineWith('[{ text_has: "готово" }]') });
+    const result = await run(project, pluginRegistry());
+    const source = readSourceRun(result.journal.paths);
+    assert.deepEqual(
+      source.manifest.plugins?.map((plugin) => plugin.name),
+      ['example'],
+    );
+
+    assert.throws(
+      () =>
+        planResume({
+          cwd: project.root,
+          config: project.config,
+          source,
+          registry: builtinRegistry(),
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /example/);
+        assert.match(error.message, /1\.0\.0/);
+        assert.match(error.message, /\/модуль\/example\.js/);
+        assert.doesNotMatch(error.message, /неизвестный ключ/);
+        assert.equal(error.hint, undefined);
+        return true;
+      },
+    );
+  });
+
+  it('опечатка в предикате при полном составе плагинов остаётся неизвестным ключом', async () => {
+    const project = makeProject({ 'stepcast.yml': pipelineWith('[{ text_has: "готово" }]') });
+    const result = await run(project, pluginRegistry());
+    const source = readSourceRun(result.journal.paths);
+
+    // Пайплайн правится после прогона: опечатка в имени встроенного предиката,
+    // не связанная ни с одним плагином, — а не пропажа плагина `example`.
+    project.write('stepcast.yml', pipelineWith('[{ exit_cod: 0 }]'));
+
+    assert.throws(
+      () =>
+        planResume({
+          cwd: project.root,
+          config: project.config,
+          source,
+          registry: pluginRegistry(),
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /неизвестный ключ exit_cod/);
+        assert.equal(error.hint, 'Сверьтесь с docs/pipeline-format.md');
+        return true;
+      },
+    );
+  });
+
+  it('манифест прежней версии без поля plugins сохраняет прежнюю диагностику', () => {
+    const project = makeProject({ 'stepcast.yml': pipelineWith('[{ exit_cod: 0 }]') });
+    const journal = seedRun(tempDir('runs-'), project.root);
+    const source = readSourceRun(journal.paths);
+    assert.equal(source.manifest.plugins, undefined);
+
+    assert.throws(
+      () =>
+        planResume({
+          cwd: project.root,
+          config: project.config,
+          source,
+          registry: pluginRegistry(),
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /неизвестный ключ exit_cod/);
+        assert.equal(error.hint, 'Сверьтесь с docs/pipeline-format.md');
+        return true;
+      },
+    );
   });
 });

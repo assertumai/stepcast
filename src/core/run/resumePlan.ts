@@ -18,6 +18,7 @@ import type { JobRecord, RunManifest, RunStatus, StepRecord } from '../journal/s
 import { expandPipeline } from '../pipeline/expand.js';
 import { jobLockHash } from '../pipeline/lock.js';
 import { definitionFiles, type ExpandedPipeline, type Job, type Pipeline, type Step } from '../pipeline/model.js';
+import type { Registry } from '../plugins/registry.js';
 import { buildGraph, executionOrder, upstreamOutputs, type Graph } from '../graph.js';
 import { declaredInheritance } from './inherit.js';
 import { computeStepKey, upstreamForKey } from './stepKey.js';
@@ -495,6 +496,28 @@ function describeComposition(nestedRepos: readonly string[]): string {
   return nestedRepos.length === 0 ? '(без вложенных репозиториев)' : nestedRepos.join(', ');
 }
 
+type ManifestPlugin = NonNullable<RunManifest['plugins']>[number];
+
+/**
+ * Плагины манифеста исходного прогона, не загруженные в переданный реестр.
+ * Манифест прежней версии (`plugins` вовсе не записан) не сравнивается: он не
+ * называет состав, и объявлять его пустым значило бы утверждать то, чего
+ * журнал не говорил.
+ */
+function missingManifestPlugins(
+  manifestPlugins: RunManifest['plugins'],
+  registry: Registry | undefined,
+): readonly ManifestPlugin[] {
+  if (manifestPlugins === undefined) return [];
+  const loaded = new Set((registry?.plugins ?? []).map((plugin) => plugin.name));
+  return manifestPlugins.filter((plugin) => !loaded.has(plugin.name));
+}
+
+function describeManifestPlugin(plugin: ManifestPlugin): string {
+  const name = plugin.version === undefined ? plugin.name : `${plugin.name}@${plugin.version}`;
+  return `${name} (${plugin.source})`;
+}
+
 function outputValue(record: JobRecord | undefined): unknown {
   if (record?.output === undefined || !existsSync(record.output)) return undefined;
   try {
@@ -912,6 +935,14 @@ export interface ResumeRequest {
   readonly overrides?: Readonly<Record<string, string>>;
   /** `--from`, ещё не разобранный: команды получают его прямо из CLI-флагов. */
   readonly from?: string;
+  /**
+   * Реестр вкладов, загруженный для текущего вызова. Раскрывает пайплайн
+   * исходного прогона вместо одних встроенных вкладов — тот же реестр, что
+   * уходит в `runPipeline()`. Без него (например, `status --explain`)
+   * плагинный предикат отклоняется разбором документа как неизвестный ключ,
+   * как и раньше.
+   */
+  readonly registry?: Registry;
 }
 
 export interface ResumePlanResult {
@@ -930,11 +961,30 @@ export interface ResumePlanResult {
 export function planResume(request: ResumeRequest): ResumePlanResult {
   const { cwd, config, source } = request;
 
+  // Манифест исходного прогона знает ровно то, чего не хватает окружению
+  // возобновления: имя, версию и путь модуля каждого плагина, загруженного
+  // при первом прогоне. Проверка идёт до разбора документа схемой — иначе
+  // недостающий плагин выглядел бы опечаткой ключа предиката, а не пропажей
+  // вклада.
+  const missing = missingManifestPlugins(source.manifest.plugins, request.registry);
+  if (missing.length > 0) {
+    throw new StepcastError(
+      missing.length === 1
+        ? `Плагин ${describeManifestPlugin(missing[0]!)}, названный манифестом исходного прогона, не загружен`
+        : `Плагины, названные манифестом исходного прогона, не загружены: ${missing.map(describeManifestPlugin).join(', ')}`,
+    );
+  }
+
   const inputs: Record<string, string> = {};
   for (const [name, value] of Object.entries(source.manifest.inputs)) inputs[name] = String(value);
   for (const [name, value] of Object.entries(request.overrides ?? {})) inputs[name] = value;
 
-  const expanded = expandPipeline({ pipelinePath: source.manifest.pipeline_file, config, inputs });
+  const expanded = expandPipeline({
+    pipelinePath: source.manifest.pipeline_file,
+    config,
+    inputs,
+    ...(request.registry === undefined ? {} : { registry: request.registry }),
+  });
 
   const from = request.from === undefined ? undefined : parseFrom(request.from);
   if (from !== undefined) {

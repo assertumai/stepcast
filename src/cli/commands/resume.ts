@@ -32,6 +32,7 @@ export async function runResumeCommand(
       source,
       overrides,
       ...(from === undefined ? {} : { from }),
+      ...(registry === undefined ? {} : { registry }),
     });
 
     for (const line of describePlan(plan)) write(line);
