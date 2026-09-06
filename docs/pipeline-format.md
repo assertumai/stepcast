@@ -34,6 +34,40 @@ kebab-case; `/`, `.` и `..` в имени, а также имя, которог
 `prompt: file:…` и `context:` её не понимают и читают `stepcast:…` как обычный
 путь — движок не публикует ни работ, ни промптов, ни контекстов.
 
+## Схема для редактора
+
+Пакет поставляет `schema/pipeline.schema.json` и `schema/job.schema.json` —
+JSON Schema встроенного набора предикатов. Их достаточно проекту без плагинов;
+проекту с плагинными предикатами (`docs/plugins.md`) они не подходят: ключ
+плагина такая схема подсветит как неизвестный.
+
+`stepcast schema` печатает в проект `.stepcast/schema/pipeline.schema.json` и
+`.stepcast/schema/job.schema.json` от действующего реестра — эта схема знает
+предикаты объявленных плагинов и форму их значения. Подключить её к документу
+можно модельной строкой в самом файле:
+
+```yaml
+# yaml-language-server: $schema=./.stepcast/schema/pipeline.schema.json
+version: 1
+kind: pipeline
+...
+```
+
+либо настройкой `yaml.schemas` редактора (VS Code, расширение YAML):
+
+```json
+{
+  "yaml.schemas": {
+    "./.stepcast/schema/pipeline.schema.json": ["stepcast.yml", ".stepcast/pipelines/*.yml"],
+    "./.stepcast/schema/job.schema.json": [".stepcast/jobs/*.yml"]
+  }
+}
+```
+
+Файл `.stepcast/schema/*.json` устаревает так же, как устарел бы вручную
+подключённый файл пакета: состав плагинов поменялся, схему не
+перегенерировали. `stepcast lint` называет это предупреждением.
+
 ## Верхний уровень
 
 ```yaml

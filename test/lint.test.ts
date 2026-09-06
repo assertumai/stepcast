@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -8,7 +8,8 @@ import type { Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import type { BackendConfig } from '../src/core/config/resolve.js';
 import { builtinRegistry } from '../src/core/plugins/builtin.js';
-import { addPlugin } from '../src/core/plugins/registry.js';
+import { addPlugin, type Registry } from '../src/core/plugins/registry.js';
+import { buildPublishedSchemas } from '../src/core/pipeline/published-schema.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../src/core/lint.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
 import { gitCommit, gitInit, makeProject, withHome, type Project } from './helpers.js';
@@ -2709,5 +2710,115 @@ jobs:
     const entry = expanded.pipeline.jobs[0]?.context[0];
     assert.equal(entry?.kind, 'knowledge');
     assert.deepEqual(entry.selector, { kind: 'scope', scope: ['src/**', 'test/**'] });
+  });
+});
+
+describe('editor-schema: устаревшая схема проекта называет линт', () => {
+  const PIPELINE = `
+kind: pipeline
+name: schema-check
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok], expect: [{ exit_code: 0 }] }]
+`;
+
+  function registryWithPredicate(): Registry {
+    const registry = builtinRegistry();
+    addPlugin(
+      registry,
+      {
+        name: 'example',
+        predicates: [
+          {
+            name: 'text_has',
+            schema: { type: 'string', minLength: 1 },
+            evaluate: () => ({ predicate: 'text_has', passed: true, hard: true }),
+          },
+        ],
+      },
+      '/модуль/example.js',
+    );
+    return registry;
+  }
+
+  function lintWithRegistry(project: Project, registry?: Registry): Diagnostic[] {
+    return lintPipeline(expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }), {
+      config: project.config,
+      cwd: project.root,
+      ...(registry === undefined ? {} : { registry }),
+    });
+  }
+
+  // Сценарий: «Плагин добавлен, схема не перегенерирована»
+  it('файл, записанный без плагина, при плагине в действующем реестре даёт предупреждение', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE });
+    const stalePath = project.write(
+      join('.stepcast', 'schema', 'pipeline.schema.json'),
+      `${JSON.stringify(buildPublishedSchemas().pipeline, null, 2)}\n`,
+    );
+    project.write(join('.stepcast', 'schema', 'job.schema.json'), `${JSON.stringify(buildPublishedSchemas().job, null, 2)}\n`);
+
+    const diagnostics = lintWithRegistry(project, registryWithPredicate());
+
+    const message = warnings(diagnostics).find((text) => text.includes(stalePath));
+    assert.ok(message !== undefined, warnings(diagnostics).join('\n'));
+    assert.equal(hasErrors(diagnostics), false);
+  });
+
+  // Сценарий: «Схема свежа»
+  it('файл, совпадающий с действующим реестром, предупреждения не даёт', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE });
+    const registry = registryWithPredicate();
+    const fresh = buildPublishedSchemas([{ name: 'text_has', schema: { type: 'string', minLength: 1 }, owner: 'example' }]);
+    project.write(join('.stepcast', 'schema', 'pipeline.schema.json'), `${JSON.stringify(fresh.pipeline, null, 2)}\n`);
+    project.write(join('.stepcast', 'schema', 'job.schema.json'), `${JSON.stringify(fresh.job, null, 2)}\n`);
+
+    const diagnostics = lintWithRegistry(project, registry);
+
+    assert.deepEqual(
+      warnings(diagnostics).filter((text) => /Схема проекта/.test(text)),
+      [],
+    );
+  });
+
+  // Файл на месте, а прочитать его нельзя: сказать об этом обязана та же
+  // диагностика — молча признать схему свежей нельзя, уронить линт тоже.
+  it('неразбираемый файл схемы даёт предупреждение с путём, а не отказ', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE });
+    const brokenPath = project.write(join('.stepcast', 'schema', 'pipeline.schema.json'), '{ это не JSON\n');
+
+    const diagnostics = lintWithRegistry(project, registryWithPredicate());
+
+    const message = warnings(diagnostics).find((text) => text.includes(brokenPath));
+    assert.ok(message !== undefined, warnings(diagnostics).join('\n'));
+    assert.match(message, /Схема проекта нечитаема/);
+    assert.equal(hasErrors(diagnostics), false);
+  });
+
+  it('нечитаемый файл схемы даёт то же предупреждение', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE });
+    // Каталог вместо файла: `existsSync` его видит, чтение отказывает.
+    const path = project.path(join('.stepcast', 'schema', 'job.schema.json'));
+    mkdirSync(path, { recursive: true });
+
+    const diagnostics = lintWithRegistry(project, registryWithPredicate());
+
+    const message = warnings(diagnostics).find((text) => text.includes(path));
+    assert.ok(message !== undefined, warnings(diagnostics).join('\n'));
+    assert.match(message, /Схема проекта нечитаема/);
+    assert.equal(hasErrors(diagnostics), false);
+  });
+
+  // Сценарий: «Схемы проекта нет»
+  it('отсутствующий каталог .stepcast/schema линт не замечает вовсе', () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE });
+
+    const diagnostics = lintWithRegistry(project, registryWithPredicate());
+
+    assert.deepEqual(
+      warnings(diagnostics).filter((text) => /Схема проекта/.test(text)),
+      [],
+    );
   });
 });

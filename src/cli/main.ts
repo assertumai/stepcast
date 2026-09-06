@@ -20,6 +20,7 @@ import { runMergeLanesCommand } from './commands/merge-lanes.js';
 import { runProjectCommand } from './commands/project.js';
 import { runResumeCommand } from './commands/resume.js';
 import { runRunCommand } from './commands/run.js';
+import { runSchemaCommand } from './commands/schema.js';
 import { runStatusCommand } from './commands/status.js';
 import { runUpCommand } from './commands/up.js';
 import { runUsageCommand } from './commands/usage.js';
@@ -88,6 +89,13 @@ export const COMMANDS: Record<string, CommandSpec> = {
     flags: {
       model: { kind: 'string', description: 'переопределить модель по умолчанию' },
       agent: { kind: 'string', description: 'переопределить бэкенд по умолчанию' },
+    },
+  },
+  schema: {
+    description:
+      'записать в .stepcast/schema/ JSON Schema документов проекта, знающую предикаты загруженных плагинов',
+    flags: {
+      out: { kind: 'string', description: 'каталог вывода вместо .stepcast/schema/' },
     },
   },
   gc: {
@@ -280,6 +288,11 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
     name: 'config',
     spec: COMMANDS['config'] as CommandSpec,
     run: (args, io, env) => runConfigCommand(args, io.out, env.cwd, env.registry),
+  },
+  {
+    name: 'schema',
+    spec: COMMANDS['schema'] as CommandSpec,
+    run: (args, io, env) => runSchemaCommand(args, io.out, env.cwd, env.registry),
   },
   {
     name: 'gc',

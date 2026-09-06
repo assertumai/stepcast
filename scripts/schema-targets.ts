@@ -16,11 +16,31 @@ export interface SchemaTarget {
   readonly title: string;
   /** Форма документа: `input` — то, что пишет человек, `output` — то, что печатает команда. */
   readonly io: 'input' | 'output';
+  /**
+   * Печатается `buildPublishedSchemas()` (с пустым перечнем плагинных
+   * предикатов — реестра здесь нет), а не прямым вызовом `z.toJSONSchema`:
+   * печать схемы пакета и схемы проекта обязана идти одним кодом (design.md,
+   * решение 4). `schema`/`io` у такой цели остаются — ими пользуется
+   * независимая проверка `test/schema-generated.test.ts`.
+   */
+  readonly published?: 'pipeline' | 'job';
 }
 
 export const SCHEMA_TARGETS: readonly SchemaTarget[] = [
-  { file: 'schema/pipeline.schema.json', schema: PipelineDocumentSchema, title: 'stepcast pipeline', io: 'input' },
-  { file: 'schema/job.schema.json', schema: JobDocumentSchema, title: 'stepcast job', io: 'input' },
+  {
+    file: 'schema/pipeline.schema.json',
+    schema: PipelineDocumentSchema,
+    title: 'stepcast pipeline',
+    io: 'input',
+    published: 'pipeline',
+  },
+  {
+    file: 'schema/job.schema.json',
+    schema: JobDocumentSchema,
+    title: 'stepcast job',
+    io: 'input',
+    published: 'job',
+  },
   { file: 'schema/config.schema.json', schema: RawConfigSchema, title: 'stepcast config', io: 'input' },
   {
     file: 'schema/backlog.schema.json',

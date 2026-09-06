@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 
 import type { BackendConfig, Config } from './config/resolve.js';
@@ -7,6 +7,7 @@ import { effectivePermissions } from './backend/permissions.js';
 import { parseExpression, references } from './expr/parse.js';
 import { buildGraph } from './graph.js';
 import { isStepcastError } from './errors.js';
+import { buildPublishedSchemas, pluginPredicateEntries } from './pipeline/published-schema.js';
 import { builtinRegistry } from './plugins/builtin.js';
 import { availableNames, type Registry } from './plugins/registry.js';
 import { isGitWorktree } from './anchor/git.js';
@@ -384,6 +385,67 @@ function checkSessionGroups(
   }
 }
 
+/** Сравнение без учёта порядка ключей: печать схемы не гарантирует его. */
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeys);
+  if (value === null || typeof value !== 'object') return value;
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+    sorted[key] = sortKeys((value as Record<string, unknown>)[key]);
+  }
+  return sorted;
+}
+
+function jsonEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(sortKeys(left)) === JSON.stringify(sortKeys(right));
+}
+
+const SCHEMA_TARGETS = [
+  { file: 'pipeline.schema.json', key: 'pipeline' as const },
+  { file: 'job.schema.json', key: 'job' as const },
+];
+
+/**
+ * Устаревшая схема проекта (design.md, решение 6): `.stepcast/schema/*.json`
+ * ветшает ровно так же, как врал бы статический файл пакета, — состав
+ * плагинов поменялся, а файл остался. Проверка стоит печати схем в память, и
+ * только если хотя бы один файл найден: проект, не пользовавшийся командой
+ * `stepcast schema`, о ней от линта не узнаёт вовсе.
+ */
+function checkPublishedSchema(base: string, registry: Registry | undefined, push: (diagnostic: Diagnostic) => void): void {
+  const dir = join(base, '.stepcast', 'schema');
+  const targets = SCHEMA_TARGETS.map((target) => ({ ...target, path: join(dir, target.file) }));
+  if (!targets.some((target) => existsSync(target.path))) return;
+
+  // Тот же перечень, каким печатает команда `stepcast schema`: сверка со
+  // «свежим» выводом верна лишь пока сборка перечня у них одна.
+  const current = buildPublishedSchemas(pluginPredicateEntries(registry ?? builtinRegistry()));
+
+  for (const target of targets) {
+    if (!existsSync(target.path)) continue;
+
+    let stale: boolean;
+    let reason: string | undefined;
+    try {
+      stale = !jsonEqual(JSON.parse(readFileSync(target.path, 'utf8')), current[target.key]);
+    } catch (error) {
+      stale = true;
+      reason = error instanceof Error ? error.message : String(error);
+    }
+    if (!stale) continue;
+
+    push({
+      severity: 'warning',
+      message:
+        reason === undefined
+          ? `Схема проекта устарела: ${target.path} расходится с действующим составом плагинов`
+          : `Схема проекта нечитаема: ${target.path} — ${reason}`,
+      file: target.path,
+      hint: 'Перегенерируйте: stepcast schema',
+    });
+  }
+}
+
 /**
  * Статическая проверка предиката плагина — то же, что проверка пути у
  * `schema`: сказать до первого токена всё, что видно без запуска. Общая для
@@ -480,6 +542,8 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
   // берётся из каталога проекта: в режиме `cwd` он с ней совпадает, а
   // `worktree` и `copy` копируют дерево из него же.
   const base = options.cwd ?? dirname(pipeline.file);
+
+  checkPublishedSchema(base, options.registry, push);
 
   // Практика памяти объявлена — значит записи `knowledge:` и предикат
   // `knowledge_valid` имеют кем разрешаться. Значение уже слито (пайплайн
