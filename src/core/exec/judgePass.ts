@@ -155,9 +155,13 @@ async function callJudge(options: CallJudgeOptions): Promise<CallJudgeResult> {
     prompt,
     cwd: options.cwd,
     ...(predicate.model === undefined ? {} : { model: predicate.model }),
-    // Свежий идентификатор, продолжение выключено: судья не должен ни
-    // попасть в сессию шага, ни начать общую с другим вызовом.
-    sessionId: randomUUID(),
+    // Свежий разговор, продолжение выключено: судья не должен ни попасть в
+    // сессию шага, ни начать общую с другим вызовом. Идентификатор для этого
+    // заводится только там, где его принимает бэкенд: адаптеру, который
+    // заводит нить сам (`sessionIdSource: 'backend'`), выдуманный
+    // идентификатор передавать нельзя — у бэкенда такой нити нет, и запуск
+    // либо отказал бы, либо продолжил бы чужую.
+    ...(adapter.capabilities.sessionIdSource === 'engine' ? { sessionId: randomUUID() } : {}),
     resumeSession: false,
     outputSchemaPath: judgeVerdictSchemaPath(),
   });

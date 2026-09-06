@@ -55,6 +55,9 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
       structuredOutput: config.structuredOutput,
       strictPermissions: config.strictPermissions,
       mcp: config.mcp,
+      // Claude Code принимает `--session-id`: идентификатор заводит и
+      // называет движок, не сам CLI.
+      sessionIdSource: 'engine',
     },
 
     launch(invocation: AgentInvocation): LaunchSpec {

@@ -23,13 +23,24 @@ import { runProcess, type ProcessResult } from './process.js';
  * Исполнение агентского шага.
  *
  * Промпт уходит на stdin, поток разбирается по мере поступления, расход
- * снимается на лету. Идентификаторы сессий раздаёт движок: только так он
- * может заранее решить, к какой сессии относится шаг.
+ * снимается на лету. Идентификатор сессии раздаёт та сторона, которую назвал
+ * адаптер (`capabilities.sessionIdSource`): движок заводит его заранее и
+ * потому знает до запуска, к какой сессии относится шаг, — либо бэкенд
+ * сообщает его записью потока, и тогда шаг узнаёт свою нить по ходу дела, а
+ * движок передаёт её обратно только на продолжении.
  */
 
 export interface SessionRegistry {
   /** Выдать идентификатор сессии по псевдониму, отметив, начата ли она. */
   acquire(alias: string): { readonly id: string; readonly resume: boolean };
+  /**
+   * Идентификатор псевдонима, если сессия уже начата, иначе `undefined` —
+   * без заведения новой. Для бэкенда, что выдаёт идентификаторы сам
+   * (`capabilities.sessionIdSource === 'backend'`), `acquire()` не годится:
+   * он завёл бы случайный UUID, которого у бэкенда нет, и следующая попытка
+   * требовала бы продолжения несуществующей нити.
+   */
+  peek(alias: string): string | undefined;
   /**
    * Засеять псевдоним идентификатором уже начатой сессии — продолжение
    * оборванной сессии из другого прогона. Следующий `acquire` того же
@@ -54,6 +65,9 @@ export function createSessionRegistry(): SessionRegistry {
       const id = randomUUID();
       started.set(alias, id);
       return { id, resume: false };
+    },
+    peek(alias) {
+      return started.get(alias);
     },
     seed(alias, sessionId) {
       started.set(alias, sessionId);
@@ -139,7 +153,15 @@ export interface AgentStepResult {
   readonly reason?: string;
   readonly attempts: readonly AttemptRecord[];
   readonly results: readonly (readonly PredicateResult[])[];
-  readonly sessionId: string;
+  /**
+   * Идентификатор сессии шага — `undefined`, когда сессии не случилось вовсе.
+   * Так бывает у бэкенда, который заводит нить сам (`sessionIdSource:
+   * 'backend'`) и не успел её назвать: отмена, таймаут или падение до первой
+   * записи потока. Пустая строка на этом месте была бы хуже отсутствия — её
+   * записали бы в журнал как настоящий идентификатор, и следующий прогон
+   * пошёл бы продолжать несуществующую нить.
+   */
+  readonly sessionId: string | undefined;
   readonly last: AgentAttemptOutcome | undefined;
 }
 
@@ -171,7 +193,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
 
   let last: AgentAttemptOutcome | undefined;
   let previousFailure: string | undefined;
-  let sessionId = '';
+  let sessionId: string | undefined;
 
   await runAttempts<AttemptRecord>({
     attempts: step.attempts,
@@ -185,8 +207,18 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
       // и здесь: попытка, до процесса не дошедшая, обязана остаться с началом.
       let startedAt = new Date().toISOString();
 
-      const session = options.sessions.acquire(options.sessionAlias ?? step.session);
-      sessionId = session.id;
+      const alias = options.sessionAlias ?? step.session;
+      // Направление решает, откуда взять идентификатор: движок заводит его
+      // сам (`acquire`), бэкенд — только читает уже известный (`peek`), не
+      // заводя случайный UUID, которого у него нет (design.md, решение 3).
+      let session: { readonly id: string | undefined; readonly resume: boolean };
+      if (adapter.capabilities.sessionIdSource === 'backend') {
+        const known = options.sessions.peek(alias);
+        session = { id: known, resume: known !== undefined };
+      } else {
+        session = options.sessions.acquire(alias);
+      }
+      if (session.id !== undefined) sessionId = session.id;
 
       const resolvedModel = plan.model ?? step.model;
       const prompt = options.buildPrompt(plan, plan.includeFailure ? previousFailure : undefined);
@@ -194,7 +226,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
         prompt,
         cwd: options.cwd,
         ...(resolvedModel === undefined ? {} : { model: resolvedModel }),
-        ...(adapter.capabilities.sessions ? { sessionId: session.id } : {}),
+        ...(adapter.capabilities.sessions && session.id !== undefined ? { sessionId: session.id } : {}),
         resumeSession: adapter.capabilities.sessions && session.resume,
         ...(step.outputSchemaPath === undefined
           ? {}
@@ -261,6 +293,10 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
             options.onUnparsed?.(event.line);
             break;
           case 'ignored':
+            break;
+          case 'session_started':
+            sessionId = event.sessionId;
+            options.sessions.seed(alias, event.sessionId);
             break;
         }
       };

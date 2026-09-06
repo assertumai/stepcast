@@ -13,6 +13,20 @@ const coreBoundaryPatterns = [
   },
 ];
 
+/**
+ * Плагины пакета (`src/backends/**`) — не половина ядра: близость ограничена
+ * механически, тем же приёмом, что и граница ядра/поверхности выше
+ * (design.md первого настоящего плагина, решение 2). Импорт из ядра —
+ * относительной формой любой глубины, `**` ловит и её.
+ */
+const backendsBoundaryPatterns = [
+  {
+    group: ['**/core/**'],
+    message:
+      'src/backends не должен импортировать src/core — плагин обязан идти через ../../plugin.js (design.md, решение 2).',
+  },
+];
+
 /** Прямое создание временного каталога заводит утечку у пользователя, а не только под тестом. */
 const enginePaths = [
   {
@@ -94,6 +108,16 @@ export default tseslint.config(
     ignores: ['test/tmp.ts'],
     rules: {
       'no-restricted-imports': ['error', { paths: testPaths }],
+    },
+  },
+  {
+    // Плагины в том же пакете: граница ядра плюс запрет временного каталога
+    // напрямую. Оба перечислены одной записью правила по той же причине, что
+    // и у блока ядра выше — раздельные блоки на одном наборе файлов не
+    // сливаются, второй молча заменил бы первый.
+    files: ['src/backends/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { paths: enginePaths, patterns: backendsBoundaryPatterns }],
     },
   },
   {

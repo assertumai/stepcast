@@ -28,6 +28,7 @@ async function restrictedImports(filePath: string, code: string): Promise<string
 const CLI_IMPORT = "import { run } from '../../cli/main.js';\n";
 const TEMP_IMPORT = "import { mkdtempSync } from 'node:fs';\n";
 const TMPDIR_IMPORT = "import { tmpdir } from 'node:os';\n";
+const CORE_IMPORT = "import { createClaudeAdapter } from '../../core/backend/claude.js';\n";
 
 describe('eslint: запреты импорта действуют одновременно', () => {
   // test-sandbox, «Код движка мимо помощника».
@@ -92,5 +93,29 @@ describe('eslint: запреты импорта действуют одновр�
   // test-sandbox, «Модуль песочницы».
   it('модуль песочницы: прямое создание разрешено', async () => {
     assert.deepEqual(await restrictedImports('test/tmp.ts', TEMP_IMPORT + TMPDIR_IMPORT), []);
+  });
+
+  // Плагины пакета: близость к ядру ограничена механически (design.md
+  // первого настоящего плагина, решение 2). Тот же случай, что и у ядра
+  // выше, — оба запрета обязаны сработать в одном файле, иначе новый блок
+  // молча снял бы запрет временного каталога с этих файлов.
+  it('плагины пакета: импорт ядра отклоняется границей плагина', async () => {
+    const messages = await restrictedImports('src/backends/codex/проба.ts', CORE_IMPORT);
+    assert.ok(
+      messages.some((message) => message.includes('../../plugin.js')),
+      messages.join('\n'),
+    );
+  });
+
+  it('плагины пакета: оба запрета срабатывают в одном файле', async () => {
+    const messages = await restrictedImports('src/backends/codex/проба.ts', CORE_IMPORT + TEMP_IMPORT);
+    assert.ok(
+      messages.some((message) => message.includes('../../plugin.js')),
+      messages.join('\n'),
+    );
+    assert.ok(
+      messages.some((message) => message.includes('withTempDir()')),
+      messages.join('\n'),
+    );
   });
 });

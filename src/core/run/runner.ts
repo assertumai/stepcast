@@ -2432,6 +2432,13 @@ async function runAgentStep(
     });
   }
 
+  // Сессия попадает в исход шага, только если она была: у бэкенда, который
+  // заводит нить сам, отменённый или упавший до первой записи шаг остаётся
+  // вовсе без идентификатора, и записать за него пустую строку значило бы
+  // обещать следующему прогону продолжение несуществующего диалога
+  // (`docs/run-layout.md`, «Оборванный шаг продолжает свою сессию»).
+  const sessionField = result.sessionId === undefined ? {} : { session: result.sessionId };
+
   // Отказ бэкенда — свой либо доставшийся судье внутри `evaluate` — приходит
   // тем же именем предиката: источник дальше не различается.
   const refusal = extractRefusal(result.results.at(-1) ?? []);
@@ -2442,7 +2449,7 @@ async function runAgentStep(
       step,
       result.attempts.at(-1)?.attempt ?? result.attempts.length,
       context,
-      { attempts: result.attempts, results: result.results, session: result.sessionId },
+      { attempts: result.attempts, results: result.results, ...sessionField },
     );
     if (resolved.kind === 'retry') continue;
     return resolved.outcome;
@@ -2458,7 +2465,7 @@ async function runAgentStep(
         ...(result.reason === undefined ? {} : { reason: result.reason }),
         attempts: result.attempts,
         results: result.results,
-        session: result.sessionId,
+        ...sessionField,
       };
     }
     context.usage.sealStep(job.id, step.id);
@@ -2470,7 +2477,7 @@ async function runAgentStep(
         reason: describeExceeded(waited.exceeded),
         attempts: result.attempts,
         results: result.results,
-        session: result.sessionId,
+        ...sessionField,
         exceeded: waited.exceeded,
       };
     }
@@ -2479,7 +2486,7 @@ async function runAgentStep(
       ...(result.reason === undefined ? {} : { reason: result.reason }),
       attempts: result.attempts,
       results: result.results,
-      session: result.sessionId,
+      ...sessionField,
     };
   }
 
@@ -2495,7 +2502,7 @@ async function runAgentStep(
     attempts: result.attempts,
     results: result.results,
     ...(result.last?.structured === undefined ? {} : { structured: result.last.structured }),
-    session: result.sessionId,
+    ...sessionField,
     ...(result.last?.observedInputs === undefined
       ? {}
       : { observedInputs: result.last.observedInputs }),

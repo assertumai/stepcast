@@ -22,11 +22,12 @@ import { runPipeline } from '../src/core/run/runner.js';
 import { resolveAdapter } from '../src/core/backend/registry.js';
 import { builtinRegistry } from '../src/core/plugins/builtin.js';
 import { addPlugin } from '../src/core/plugins/registry.js';
-import { readStatus } from '../src/core/journal/reader.js';
+import { readEvents, readStatus } from '../src/core/journal/reader.js';
 import { StepcastError } from '../src/core/errors.js';
 import { makeProject } from './helpers.js';
 import type { BackendConfig, Config } from '../src/core/config/resolve.js';
 import type { AgentStep } from '../src/core/pipeline/model.js';
+import type { AgentInvocation, BackendAdapter, BackendCapabilities } from '../src/core/backend/types.js';
 import { tempDir } from './tmp.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -330,6 +331,33 @@ jobs:
     assert.throws(
       () => resolveAdapter('gemini', project.config, builtinRegistry()),
       (error: unknown) => error instanceof StepcastError && /Неизвестный бэкенд gemini/.test(error.message),
+    );
+  });
+
+  // Сценарий: «Адаптер не объявил направление идентификатора сессии»
+  it('адаптер плагина без объявленного направления сессии отказывает при подборе', () => {
+    const project = makeProject({});
+    const backend = createFakeBackend({ lines: [] });
+    // Плагин грузится готовым JS-модулем, и типы ему не указ: поле, забытое в
+    // чужом коде, доходит до движка как `undefined`. Приведение здесь
+    // воспроизводит ровно это, а не проверяет типизацию.
+    const { sessionIdSource: _forgotten, ...withoutDirection } = backend.adapter.capabilities;
+    const adapter: BackendAdapter = {
+      ...backend.adapter,
+      capabilities: withoutDirection as BackendCapabilities,
+    };
+    const registry = builtinRegistry();
+    addPlugin(
+      registry,
+      { name: 'codex-adapter', backends: { codex: { create: () => adapter } } },
+      '/м.js',
+    );
+
+    assert.throws(
+      () => resolveAdapter('codex', withCodex(project.config), registry),
+      (error: unknown) =>
+        error instanceof StepcastError &&
+        /Адаптер бэкенда codex не объявил направление идентификатора сессии/.test(error.message),
     );
   });
 });
@@ -1276,6 +1304,285 @@ describe('agent-backend: исполнение шага', () => {
     assert.ok(existsSync(join(dir, 'prompt.txt')));
     assert.ok(existsSync(join(dir, 'prompt.2.txt')));
     assert.ok(existsSync(join(dir, 'stdout.2.log')));
+  });
+});
+
+/**
+ * Бэкенд, выдающий идентификатор сессии сам, — как Codex, а не как Claude
+ * Code (design.md, решение 3). Собран прямо в тесте, а не через
+ * `createFakeBackend()`: та разбирает поток адаптером Claude, которому
+ * идентификатор передаёт движок, и не годится для проверки обратного
+ * направления.
+ */
+function createBackendIssuedSessionAdapter(options: {
+  readonly lines: readonly string[] | ((invocationIndex: number) => readonly string[]);
+  readonly exitCode?: number | ((invocationIndex: number) => number);
+}): { readonly adapter: BackendAdapter; readonly invocations: AgentInvocation[] } {
+  const invocations: AgentInvocation[] = [];
+  const adapter: BackendAdapter = {
+    name: 'thread-backend',
+    capabilities: {
+      sessions: true,
+      structuredOutput: false,
+      strictPermissions: false,
+      mcp: false,
+      sessionIdSource: 'backend',
+    },
+    launch(invocation): { command: readonly string[]; stdin: string } {
+      const index = invocations.length;
+      invocations.push(invocation);
+      const lines = typeof options.lines === 'function' ? options.lines(index) : options.lines;
+      const exitCode = typeof options.exitCode === 'function' ? options.exitCode(index) : options.exitCode ?? 0;
+      const payload = JSON.stringify(lines.map((line) => `${line}\n`).join(''));
+      const script = `process.stdout.write(${payload}, () => process.exit(${exitCode}));`;
+      return { command: [process.execPath, '-e', script], stdin: invocation.prompt };
+    },
+    parseLine(line) {
+      const trimmed = line.trim();
+      if (trimmed === '') return { kind: 'ignored' };
+      let record: Record<string, unknown>;
+      try {
+        record = JSON.parse(trimmed) as Record<string, unknown>;
+      } catch {
+        return { kind: 'unparsed', line: trimmed };
+      }
+      if (record.type === 'thread.started' && typeof record.id === 'string') {
+        return { kind: 'session_started', sessionId: record.id };
+      }
+      if (record.type === 'init') return { kind: 'init', data: record };
+      if (record.type === 'result') {
+        return { kind: 'result', ...(typeof record.text === 'string' ? { text: record.text } : {}) };
+      }
+      return { kind: 'ignored' };
+    },
+  };
+  return { adapter, invocations };
+}
+
+describe('agent-backend: направление идентификатора сессии', () => {
+  // Сценарий: «Идентификатор выдаёт бэкенд»
+  it('первый запуск идёт без идентификатора, второй — с сообщённым бэкендом', async () => {
+    const dir = tempDir('backend-');
+    const backend = createBackendIssuedSessionAdapter({
+      lines: (index) =>
+        index === 0
+          ? [JSON.stringify({ type: 'thread.started', id: 'thread-1' }), JSON.stringify({ type: 'result', text: 'ок' })]
+          : [JSON.stringify({ type: 'result', text: 'ок' })],
+    });
+    const sessions = createSessionRegistry();
+
+    const first = await executeAgentStep({
+      step: makeAgentStep({ id: 'read', session: 'default' }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions,
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(backend.invocations[0]?.sessionId, undefined, 'первый запуск не знает идентификатора заранее');
+    assert.equal(backend.invocations[0]?.resumeSession, false);
+    assert.equal(first.sessionId, 'thread-1', 'результат шага несёт идентификатор, сообщённый бэкендом');
+
+    await executeAgentStep({
+      step: makeAgentStep({ id: 'draft', session: 'default' }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions,
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(backend.invocations[1]?.sessionId, 'thread-1');
+    assert.equal(backend.invocations[1]?.resumeSession, true);
+  });
+
+  // Сценарий: «Собственные идентификаторы не деградируют»
+  it('session: shared на бэкенде со своими идентификаторами не даёт backend.degraded', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: shared-thread-backend
+
+jobs:
+  работа:
+    session: shared
+    steps:
+      - id: первый
+        agent: thread
+        prompt: "Первый"
+        expect: [{ exit_code: 0 }]
+      - id: второй
+        agent: thread
+        prompt: "Второй"
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    const runsRoot = tempDir('runs-');
+    const backend = createBackendIssuedSessionAdapter({
+      lines: (index) =>
+        index === 0
+          ? [JSON.stringify({ type: 'thread.started', id: 'thread-1' }), JSON.stringify({ type: 'result', text: 'ок' })]
+          : [JSON.stringify({ type: 'result', text: 'ок' })],
+    });
+
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: () => backend.adapter,
+    });
+
+    assert.equal(result.status, 'success');
+    const degraded = readEvents(result.journal.paths).filter((event) => event.kind === 'backend.degraded');
+    assert.deepEqual(degraded, []);
+
+    // Отсутствие деградации — половина сценария. Вторая половина: шаги работы
+    // действительно исполнены как продолжение одного диалога — через ключ
+    // сессии работы, а не псевдоним шага, — и журнал называет тот
+    // идентификатор, который сообщил бэкенд.
+    assert.equal(backend.invocations[0]?.sessionId, undefined, 'первый шаг не знает нити заранее');
+    assert.equal(backend.invocations[1]?.sessionId, 'thread-1');
+    assert.equal(backend.invocations[1]?.resumeSession, true);
+    assert.deepEqual(
+      (readStatus(result.journal.paths).jobs[0]?.steps ?? []).map((step) => step.session),
+      ['thread-1', 'thread-1'],
+    );
+  });
+
+  it('шаг, которому бэкенд не назвал нити, остаётся вовсе без идентификатора сессии', async () => {
+    const dir = tempDir('backend-');
+    // Бэкенд объявляет свои идентификаторы, но нить назвать не успел: отмена,
+    // таймаут или падение до первой записи потока выглядят именно так.
+    const backend = createBackendIssuedSessionAdapter({
+      lines: [JSON.stringify({ type: 'result', text: 'ок' })],
+    });
+
+    const result = await executeAgentStep({
+      step: makeAgentStep({ id: 'read', session: 'default' }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(
+      result.sessionId,
+      undefined,
+      'пустая строка на месте идентификатора выглядела бы записанной сессией',
+    );
+  });
+
+  // Судья — свежий разговор на общих основаниях, но выдуманный идентификатор
+  // ему не заводится: у бэкенда, который называет нити сам, такой нити нет.
+  it('вызов судьи на бэкенде со своими идентификаторами идёт без идентификатора', async () => {
+    const dir = tempDir('judge-');
+    const backend = createBackendIssuedSessionAdapter({
+      lines: [JSON.stringify({ type: 'result', text: 'ок' })],
+    });
+
+    await runJudgePass({
+      predicates: [{ kind: 'judge', claim: 'звучит правдоподобно', hard: true }],
+      firstPass: [{ predicate: 'judge', passed: true, hard: true, expected: 'звучит правдоподобно' }],
+      task: 'задание',
+      text: 'ок',
+      structured: undefined,
+      cwd: dir,
+      stepDir: dir,
+      attempt: 1,
+      timeoutMs: 5_000,
+      adapterFor: () => backend.adapter,
+      defaultAgent: 'thread-backend',
+      journal: RunJournal.create({
+        runsRoot: tempDir('judge-runs-'),
+        projectRoot: tempDir('judge-project-'),
+      }),
+      nextCallIndex: () => 1,
+      canCall: () => true,
+      onUsage: () => {},
+    });
+
+    assert.equal(backend.invocations.length, 1);
+    assert.equal(backend.invocations[0]?.sessionId, undefined);
+    assert.equal(backend.invocations[0]?.resumeSession, false);
+  });
+
+  it('вызов судьи на бэкенде с идентификаторами от движка получает свежий идентификатор', async () => {
+    const dir = tempDir('judge-');
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'ок' })] });
+
+    await runJudgePass({
+      predicates: [{ kind: 'judge', claim: 'звучит правдоподобно', hard: true }],
+      firstPass: [{ predicate: 'judge', passed: true, hard: true, expected: 'звучит правдоподобно' }],
+      task: 'задание',
+      text: 'ок',
+      structured: undefined,
+      cwd: dir,
+      stepDir: dir,
+      attempt: 1,
+      timeoutMs: 5_000,
+      adapterFor: () => backend.adapter,
+      defaultAgent: 'fake',
+      journal: RunJournal.create({
+        runsRoot: tempDir('judge-runs-'),
+        projectRoot: tempDir('judge-project-'),
+      }),
+      nextCallIndex: () => 1,
+      canCall: () => true,
+      onUsage: () => {},
+    });
+
+    assert.notEqual(backend.invocations[0]?.sessionId, undefined);
+    assert.equal(backend.invocations[0]?.resumeSession, false);
+  });
+
+  // Сценарий: «Продолжение не открылось»
+  it('засеянный идентификатор снимается, если продолжение не открылось у бэкенда', async () => {
+    const dir = tempDir('backend-');
+    const backend = createBackendIssuedSessionAdapter({
+      // Ни `init`, ни `thread.started` — бэкенд отказал, не начав нить.
+      lines: [],
+      exitCode: 1,
+    });
+    const sessions = createSessionRegistry();
+    sessions.seed('default', 'oborvannaya-nit');
+    let failedContinuation = 0;
+
+    await executeAgentStep({
+      step: makeAgentStep({ id: 'read', session: 'default' }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions,
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+      onFailedContinuation: () => {
+        failedContinuation += 1;
+        sessions.unseed('default');
+      },
+    });
+
+    assert.equal(failedContinuation, 1);
+    assert.equal(backend.invocations[0]?.sessionId, 'oborvannaya-nit', 'первая попытка продолжала засеянную нить');
+
+    await executeAgentStep({
+      step: makeAgentStep({ id: 'read-again', session: 'default' }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions,
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(backend.invocations[1]?.sessionId, undefined, 'следующая попытка идёт без идентификатора');
+    assert.equal(backend.invocations[1]?.resumeSession, false);
   });
 });
 

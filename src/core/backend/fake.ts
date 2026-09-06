@@ -65,6 +65,9 @@ export function createFakeBackend(options: FakeBackendOptions): FakeBackend {
       structuredOutput: options.capabilities?.structuredOutput ?? true,
       strictPermissions: options.capabilities?.strictPermissions ?? true,
       mcp: options.capabilities?.mcp ?? true,
+      // Разбор строится поверх адаптера Claude (см. `parser` выше) — то же
+      // направление, что и у него, если тест не объявил своё.
+      sessionIdSource: options.capabilities?.sessionIdSource ?? 'engine',
     },
     launch(invocation): LaunchSpec {
       const index = invocations.length;

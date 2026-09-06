@@ -2210,6 +2210,55 @@ describe('run-resume: продолжение сессии оборванного
     assert.equal(secondBackend.invocations[0]?.resumeSession, false);
   });
 
+  // Бэкенд, который называет нити сам (`sessionIdSource: 'backend'`), может не
+  // успеть назвать её вовсе: отмена застаёт шаг до первой записи потока. Тогда
+  // сессии у шага нет, и продолжать нечего — записанная за него пустая строка
+  // выглядела бы идентификатором и стоила бы следующему прогону попытки.
+  it('отменённый шаг без названной бэкендом нити продолжения не назначает', async () => {
+    const b = bed({ 'stepcast.yml': SESSION_CONTINUATION_PIPELINE }, { git: true });
+    const config = configWithFakeSessions(b, true);
+
+    const { first } = await runFirstCanceledAtSecondStep(b, config, {
+      capabilities: { sessionIdSource: 'backend' },
+    });
+    assert.equal(first.status, 'canceled');
+
+    const второйRecord = steps(first).find((step) => step.id === 'второй');
+    assert.equal(второйRecord?.status, 'canceled');
+    assert.equal(
+      второйRecord?.session,
+      undefined,
+      'нить не названа — записывать за неё нечего, в том числе пустую строку',
+    );
+
+    // Продолжения нет — и общий разговор работы приходится вести заново
+    // целиком, как при любом другом отказе от продолжения в `session: shared`.
+    const { plan } = planResume({ cwd: b.project.root, config, source: readSourceRun(first.journal.paths) });
+    assert.deepEqual(decisions(plan), { 'работа/первый': 'rerun', 'работа/второй': 'rerun' });
+
+    const secondBackend = createFakeBackend({
+      capabilities: { sessionIdSource: 'backend' },
+      lines: [initLine(), resultLine({ text: 'готово' })],
+    });
+    const second = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config }),
+      config,
+      projectRoot: b.project.root,
+      cwd: b.project.root,
+      resume: { plan, source: readSourceRun(first.journal.paths) },
+      adapterFor: () => secondBackend.adapter,
+    });
+
+    assert.equal(second.status, 'success');
+    assert.equal(secondBackend.invocations.length, 2, 'оба шага исполняются заново');
+    assert.deepEqual(
+      secondBackend.invocations.map((invocation) => invocation.sessionId),
+      [undefined, undefined],
+      'продолжать нечего: выдуманный идентификатор бэкенду не передаётся',
+    );
+    assert.equal(secondBackend.invocations[0]?.resumeSession, false, 'разговор начинается заново');
+  });
+
   // Сценарий: «Изменённое определение шага отменяет продолжение»
   it('изменённый после прогона промпт шага отменяет продолжение', async () => {
     const b = bed({ 'stepcast.yml': SESSION_CONTINUATION_PIPELINE }, { git: true });

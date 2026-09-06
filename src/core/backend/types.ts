@@ -23,6 +23,18 @@ export interface BackendCapabilities {
    * молчаливое «нет» для чужого адаптера неотличимо от забытого поля.
    */
   readonly mcp: boolean;
+  /**
+   * Кто выдаёт идентификатор сессии. `'engine'` — движок заводит его до
+   * запуска и передаёт бэкенду (Claude Code принимает `--session-id`).
+   * `'backend'` — идентификатор нити заводит сам бэкенд и сообщает его
+   * первой записью потока (`BackendEvent` с `kind: 'session_started'`);
+   * движок способен передать его обратно только на продолжении, когда он
+   * уже известен (design.md, решение 3). Обязательное поле, а не
+   * необязательное с умолчанием, — по прецеденту `mcp`: молчаливое «engine»
+   * для чужого адаптера неотличимо от забытого поля, а перепутанное
+   * направление стоило бы попытки продолжения несуществующей у бэкенда нити.
+   */
+  readonly sessionIdSource: 'engine' | 'backend';
 }
 
 export interface AgentInvocation {
@@ -106,7 +118,12 @@ export type BackendEvent =
       readonly permissionDenials?: readonly PermissionDenial[];
     }
   | { readonly kind: 'unparsed'; readonly line: string }
-  | { readonly kind: 'ignored' };
+  | { readonly kind: 'ignored' }
+  | {
+      readonly kind: 'session_started';
+      /** Идентификатор нити, как его завёл и назвал сам бэкенд. */
+      readonly sessionId: string;
+    };
 
 /** Один отказ бэкенда в разрешении на вызов инструмента. */
 export interface PermissionDenial {

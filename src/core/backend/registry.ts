@@ -35,5 +35,26 @@ export function resolveAdapter(
     });
   }
 
-  return contribution.create(backend);
+  const adapter = contribution.create(backend);
+  assertDeclaredCapabilities(adapter, name);
+  return adapter;
+}
+
+/**
+ * Возможности, объявленные без умолчания, проверяются здесь — на границе, где
+ * адаптер приходит от чужого кода. Типы плагину не указ: он грузится готовым
+ * JS-модулем, и забытое поле дошло бы до движка как `undefined`. Для
+ * направления идентификатора сессии это не безобидно: `undefined` неотличимо
+ * от `'engine'` в ветвлении, и движок завёл бы бэкенду UUID, которого у того
+ * нет, — тихая деградация, ради которой поле и сделано обязательным.
+ */
+function assertDeclaredCapabilities(adapter: BackendAdapter, name: string): void {
+  const source: unknown = adapter.capabilities.sessionIdSource;
+  if (source === 'engine' || source === 'backend') return;
+  throw new StepcastError(
+    `Адаптер бэкенда ${name} не объявил направление идентификатора сессии (capabilities.sessionIdSource)`,
+    {
+      hint: "Объявите 'engine' — идентификатор заводит движок и передаёт бэкенду — либо 'backend' — идентификатор заводит бэкенд и сообщает его записью потока (docs/plugins.md)",
+    },
+  );
 }
