@@ -10,6 +10,7 @@ import {
   KnowledgeIndexResponseSchema,
   KnowledgeSelectResponseSchema,
   KnowledgeWriteResponseSchema,
+  type KnowledgeCheckOptions,
   type KnowledgeCheckResponse,
   type KnowledgeEntry,
   type KnowledgeIndexEntry,
@@ -97,8 +98,11 @@ class CommandKnowledgeSource implements KnowledgeSource {
     return this.call('select', request, KnowledgeSelectResponseSchema).entries;
   }
 
-  check(): KnowledgeCheckResponse {
-    return this.call('check', {}, KnowledgeCheckResponseSchema);
+  check(options?: KnowledgeCheckOptions): KnowledgeCheckResponse {
+    // Чем `record` оборачивается за внешней командой — дело источника
+    // (design.md, Non-Goals); контракт лишь передаёт запрос дальше.
+    const request = options?.record === true ? { record: true } : {};
+    return this.call('check', request, KnowledgeCheckResponseSchema);
   }
 
   write(request: KnowledgeWriteRequest): KnowledgeWriteResponse {

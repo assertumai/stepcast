@@ -74,10 +74,43 @@ export const KnowledgeProblemSchema = z
   })
   .strict();
 
+/**
+ * Отчёт акта датирования: какие якоря получили момент обнаружения, а с каких он
+ * снят. Отдаётся только на запрос с `record` — молчаливая правка рабочего
+ * дерева худший сорт вывода, а перечитывать дерево вторым вызовом ради того же
+ * знания значит удвоить чтение истории git и запуск внешнего источника.
+ *
+ * Нарушения в ответе посчитаны на дереве **до** этой правки: датирование не
+ * влияет на исход того же вызова, и `recorded` называет ровно то, чего в
+ * `problems` ещё не видно.
+ */
+export const KnowledgeDatedAnchorSchema = z
+  .object({
+    id: z.string().min(1),
+    path: z.string().min(1),
+    since: z.string().min(1),
+  })
+  .strict();
+
+export const KnowledgeClearedAnchorSchema = z
+  .object({
+    id: z.string().min(1),
+    path: z.string().min(1),
+  })
+  .strict();
+
+export const KnowledgeRecordedSchema = z
+  .object({
+    dated: z.array(KnowledgeDatedAnchorSchema).default([]),
+    cleared: z.array(KnowledgeClearedAnchorSchema).default([]),
+  })
+  .strict();
+
 export const KnowledgeCheckResponseSchema = z
   .object({
     ok: z.boolean(),
     problems: z.array(KnowledgeProblemSchema).default([]),
+    recorded: KnowledgeRecordedSchema.optional(),
   })
   .strict();
 
@@ -124,8 +157,14 @@ export type KnowledgeIndexEntry = z.infer<typeof KnowledgeIndexEntrySchema>;
 export type KnowledgeEntry = z.infer<typeof KnowledgeEntrySchema>;
 export type KnowledgeProblem = z.infer<typeof KnowledgeProblemSchema>;
 export type KnowledgeCheckResponse = z.infer<typeof KnowledgeCheckResponseSchema>;
+export type KnowledgeRecorded = z.infer<typeof KnowledgeRecordedSchema>;
 export type KnowledgeWriteRequest = z.infer<typeof KnowledgeWriteRequestSchema>;
 export type KnowledgeWriteResponse = z.infer<typeof KnowledgeWriteResponseSchema>;
+
+/** Запрос глагола `check`: `record` требует датировать обнаруженные расхождения. */
+export interface KnowledgeCheckOptions {
+  readonly record?: boolean;
+}
 
 /**
  * Источник знания глазами движка. Синхронный намеренно: сборка контекста
@@ -136,7 +175,7 @@ export type KnowledgeWriteResponse = z.infer<typeof KnowledgeWriteResponseSchema
 export interface KnowledgeSource {
   index(): readonly KnowledgeIndexEntry[];
   select(selector: KnowledgeSelector): readonly KnowledgeEntry[];
-  check(): KnowledgeCheckResponse;
+  check(options?: KnowledgeCheckOptions): KnowledgeCheckResponse;
   write(request: KnowledgeWriteRequest): KnowledgeWriteResponse;
 }
 

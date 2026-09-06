@@ -170,16 +170,40 @@ function runCheck(
     });
   }
 
-  const verdict = source.check();
+  // Один вызов, а не проверка с записью и проверка следом: для источника `fs`
+  // второй вызов заново читал бы историю git по каждому якорю, для `cmd` —
+  // заново запускал бы внешнюю команду. Что именно записано, ответ называет
+  // сам полем `recorded` — датирование по-прежнему не влияет на исход этого же
+  // вызова (design.md, решение 3), и напечатанные нарушения посчитаны на
+  // дереве до правки.
+  const record = args.flags.record === true;
+  const verdict = source.check(record ? { record: true } : undefined);
 
   if (asJson) {
     write(JSON.stringify(verdict, null, 2));
-  } else if (verdict.problems.length === 0) {
-    write('Память цела.');
   } else {
-    for (const problem of verdict.problems) {
-      const where = problem.id === undefined ? problem.kind : `${problem.id} (${problem.kind})`;
-      write(`${problem.level === 'red' ? 'красное' : 'жёлтое'}  ${where}: ${problem.detail}`);
+    // Правка рабочего дерева печатается всегда, даже когда её не случилось:
+    // молчаливо поправленное дерево — худший сорт вывода, а «датировать было
+    // нечего» отличает исправную память от неработающего ключа.
+    if (record) {
+      for (const item of verdict.recorded?.dated ?? []) {
+        write(`датировано  ${item.id}: ${item.path} — известно с ${item.since}`);
+      }
+      for (const item of verdict.recorded?.cleared ?? []) {
+        write(`снято  ${item.id}: ${item.path} — расхождения больше нет`);
+      }
+      if ((verdict.recorded?.dated.length ?? 0) + (verdict.recorded?.cleared.length ?? 0) === 0) {
+        write('Датировать нечего: дерево не изменено.');
+      }
+    }
+
+    if (verdict.problems.length === 0) {
+      write('Память цела.');
+    } else {
+      for (const problem of verdict.problems) {
+        const where = problem.id === undefined ? problem.kind : `${problem.id} (${problem.kind})`;
+        write(`${problem.level === 'red' ? 'красное' : 'жёлтое'}  ${where}: ${problem.detail}`);
+      }
     }
   }
 

@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { run, type CliIo } from '../src/cli/main.js';
 import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
-import { gitInit, withHome } from './helpers.js';
+import { gitCommit, gitInit, withHome } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 /**
@@ -303,5 +304,91 @@ describe('CLI: stepcast knowledge check --publish', () => {
 
     assert.equal(result.code, ExitCode.ok);
     assert.match(result.stdout, /жёлтое/);
+  });
+});
+
+describe('CLI: stepcast knowledge check --record', () => {
+  /** Дерево с одним расхождением по якорю: путь тронут коммитом позже зафиксированной ревизии. */
+  function staleSandbox(): { box: { root: string; home: string }; anchorFile: string } {
+    const box = sandbox({ 'src/a.ts': 'export const a = 1;\n' });
+    gitCommit(box.root, 'первый');
+    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+    writeFileSync(join(box.root, 'src/a.ts'), 'export const a = 2;\n');
+    gitCommit(box.root, 'второй');
+    const anchorFile = join(box.root, 'knowledge/a.md');
+    mkdirSync(dirname(anchorFile), { recursive: true });
+    writeFileSync(
+      anchorFile,
+      unit('a', 'Первая', `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'\n`),
+    );
+    return { box, anchorFile };
+  }
+
+  // Задача 5.5 / Сценарий: «Проверка без ключа дерева не трогает»
+  it('без ключа дерево не изменилось ни байтом', async () => {
+    const { box, anchorFile } = staleSandbox();
+    const before = readFileSync(anchorFile, 'utf8');
+
+    const result = await knowledge(box, ['check']);
+
+    assert.equal(result.code, ExitCode.ok);
+    assert.match(result.stdout, /жёлтое/);
+    assert.equal(readFileSync(anchorFile, 'utf8'), before);
+  });
+
+  // Задача 5.5 / Сценарий: «Датирование ключом»
+  it('с ключом дата в шапке, повторный вызов без ключа отдаёт то же жёлтое с датой', async () => {
+    const { box, anchorFile } = staleSandbox();
+
+    const recorded = await knowledge(box, ['check', '--record']);
+    assert.equal(recorded.code, ExitCode.ok);
+    assert.match(readFileSync(anchorFile, 'utf8'), /stale_since:/);
+    // Правка дерева названа вслух: молчаливо поправленная рабочая копия —
+    // худший сорт вывода, а ключ зовётся из шага прогона, где смотреть в
+    // дерево некому.
+    assert.match(recorded.stdout, /датировано {2}a: src\/a\.ts — известно с \d{4}-\d{2}-\d{2}T/);
+
+    const again = await knowledge(box, ['check']);
+    assert.equal(again.code, ExitCode.ok);
+    assert.match(again.stdout, /жёлтое/);
+    assert.match(again.stdout, /известно с/);
+    // Без ключа отчёта о правке нет вовсе.
+    assert.doesNotMatch(again.stdout, /датировано/);
+  });
+
+  it('снятие даты названо строкой, а нечего датировать — сказано прямо', async () => {
+    const { box, anchorFile } = staleSandbox();
+    await knowledge(box, ['check', '--record']);
+
+    // Ревизия якоря правится на совпадающую с последним коммитом пути:
+    // расхождения больше нет, и дата обязана быть снята.
+    const head = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    writeFileSync(
+      anchorFile,
+      readFileSync(anchorFile, 'utf8').replace(/rev: '[0-9a-f]+'/, `rev: '${head.slice(0, 7)}'`),
+    );
+
+    const cleared = await knowledge(box, ['check', '--record']);
+    assert.equal(cleared.code, ExitCode.ok);
+    assert.doesNotMatch(readFileSync(anchorFile, 'utf8'), /stale_since:/);
+    assert.match(cleared.stdout, /снято {2}a: src\/a\.ts/);
+
+    const quiet = await knowledge(box, ['check', '--record']);
+    assert.equal(quiet.code, ExitCode.ok);
+    assert.match(quiet.stdout, /Датировать нечего/);
+  });
+
+  it('красный исход не отменяет датирования', async () => {
+    const { box, anchorFile } = staleSandbox();
+    writeFileSync(
+      join(box.root, 'knowledge/b.md'),
+      unit('b', 'Вторая', 'anchors:\n  - path: src/нет.ts\n    rev: abc1234\n'),
+    );
+
+    const result = await knowledge(box, ['check', '--record']);
+
+    assert.notEqual(result.code, ExitCode.ok);
+    assert.match(readFileSync(anchorFile, 'utf8'), /stale_since:/);
   });
 });

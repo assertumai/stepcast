@@ -134,7 +134,11 @@ describe('knowledge-fs: разбор единицы знания', () => {
       '---\nid: a\ntitle: б\nanchors:\n  - src/a.ts\n---\n\nтело\n',
       'knowledge/a.md',
     );
-    assert.deepEqual(parsed.anchors, [{ path: 'src/a.ts', rev: undefined }]);
+    assert.deepEqual(parsed.anchors, [
+      // Голый скаляр отображением не является: вписать в него поле нельзя, не
+      // переписав чужую строку, — датировать такой якорь нечем.
+      { path: 'src/a.ts', rev: undefined, staleSince: undefined, staleSinceInvalid: false, datable: false },
+    ]);
   });
 
   // Задача 2.3 / Сценарий: «Ревизия из одних цифр проверяется»
@@ -143,7 +147,9 @@ describe('knowledge-fs: разбор единицы знания', () => {
       '---\nid: a\ntitle: б\nanchors:\n  - path: src/a.ts\n    rev: 9517869\n---\n\nтело\n',
       'knowledge/a.md',
     );
-    assert.deepEqual(parsed.anchors, [{ path: 'src/a.ts', rev: '9517869' }]);
+    assert.deepEqual(parsed.anchors, [
+      { path: 'src/a.ts', rev: '9517869', staleSince: undefined, staleSinceInvalid: false, datable: true },
+    ]);
   });
 
   // Задача 2.3 / Сценарий: «Якорь без ревизии остаётся законным»
@@ -152,7 +158,9 @@ describe('knowledge-fs: разбор единицы знания', () => {
       '---\nid: a\ntitle: б\nanchors:\n  - path: src/a.ts\n---\n\nтело\n',
       'knowledge/a.md',
     );
-    assert.deepEqual(parsed.anchors, [{ path: 'src/a.ts', rev: undefined }]);
+    assert.deepEqual(parsed.anchors, [
+      { path: 'src/a.ts', rev: undefined, staleSince: undefined, staleSinceInvalid: false, datable: true },
+    ]);
   });
 
   // Задача 2.3 / Сценарий: «Непригодное значение ревизии отклонено»
@@ -691,8 +699,10 @@ describe('knowledge-fs: дрейф', () => {
     assert.equal(found.level, 'yellow');
   });
 
-  // Задача 4.4 / Сценарий: «Просроченное жёлтое становится красным»
-  it('красным, когда устаревание держится дольше объявленного срока', () => {
+  // Задача 4.1 / Сценарий: «Месяц простоя не даёт красного» — тест написан до
+  // правки уровня и падает на прежнем коде (там красное): срок отсчитывается
+  // от возраста коммита, а не от того, увидел ли кто-нибудь расхождение.
+  it('месяц простоя без датирования не даёт красного, только жёлтое', () => {
     const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
     box.commit('первый');
     const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -712,11 +722,365 @@ describe('knowledge-fs: дрейф', () => {
       }),
     );
 
+    // Коммиту месяц, а расхождение никто ни разу не датировал: жёлтая фаза
+    // не кончается сама, чужой активностью (design.md, решение 1).
     const verdict = box.source({ now: Date.now() + 30 * DAY }).check();
-    assert.equal(verdict.ok, false);
-    const overdue = verdict.problems.find((problem) => problem.kind === 'stale-anchor');
-    assert.ok(overdue !== undefined, JSON.stringify(verdict.problems));
-    assert.equal(overdue.level, 'red');
+    assert.equal(verdict.ok, true);
+    const found = verdict.problems.find((problem) => problem.kind === 'stale-anchor');
+    assert.ok(found !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(found.level, 'yellow');
+  });
+
+  // Задача 4.3 / Сценарий: «Просроченное жёлтое становится красным»
+  it('красным становится расхождение, датированное дольше stale_after назад', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+      }),
+    );
+
+    box.source({ now: Date.now() }).check({ record: true });
+    // `stale_since` пишется секундной точностью ISO-8601; читаем записанное
+    // значение обратно, а не полагаемся на исходный `Date.now()`, — иначе
+    // усечение до секунды сдвигало бы границу теста на до тысячи миллисекунд.
+    const recorded = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8').match(/stale_since: (\S+)/)?.[1];
+    assert.ok(recorded !== undefined);
+    const staleSinceMs = Date.parse(recorded as string);
+
+    const withinTerm = box.source({ now: staleSinceMs + 14 * DAY }).check();
+    assert.equal(withinTerm.ok, true);
+    const yellow = withinTerm.problems.find((problem) => problem.kind === 'stale-anchor');
+    assert.ok(yellow !== undefined, JSON.stringify(withinTerm.problems));
+    assert.equal(yellow.level, 'yellow');
+    assert.match(yellow.detail, /известно с/);
+
+    const overdue = box.source({ now: staleSinceMs + 14 * DAY + 1 }).check();
+    assert.equal(overdue.ok, false);
+    const red = overdue.problems.find((problem) => problem.kind === 'stale-anchor');
+    assert.ok(red !== undefined, JSON.stringify(overdue.problems));
+    assert.equal(red.level, 'red');
+    assert.match(red.detail, /известно с/);
+  });
+
+  // Задача 4.2 / Сценарий: «Первое наблюдение датирует расхождение»
+  it('check({record: true}) вписывает stale_since, остальная часть файла побайтово прежняя', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+      }),
+    );
+    const before = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
+
+    box.source({ now: Date.now() }).check({ record: true });
+
+    const after = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
+    assert.match(after, /stale_since: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z/);
+    assert.equal(after.replace(/\n[ \t]*stale_since:[^\n]*/, ''), before);
+  });
+
+  // Задача 4.4 / Сценарий: «Повторная правка пути не сдвигает дату»
+  it('повторная правка пути после датирования не сдвигает дату', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+      }),
+    );
+
+    const t0 = Date.now();
+    box.source({ now: t0 }).check({ record: true });
+    const firstDate = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8').match(/stale_since: (\S+)/)?.[1];
+    assert.ok(firstDate !== undefined);
+
+    box.write('src/a.ts', 'export const a = 3;\n');
+    box.commit('третий');
+    box.source({ now: t0 + DAY }).check({ record: true });
+
+    const secondDate = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8').match(/stale_since: (\S+)/)?.[1];
+    assert.equal(secondDate, firstDate);
+
+    // Срок до красного не начался заново от чужой правки пути.
+    assert.equal(box.source({ now: t0 + 14 * DAY + 1 }).check().ok, false);
+  });
+
+  // Задача 4.5 / Сценарий: «Исчезнувшее расхождение теряет дату»
+  it('check({record: true}) снимает stale_since, когда расхождение исчезло', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    const head = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+      }),
+    );
+    box.source({ now: Date.now() }).check({ record: true });
+    assert.match(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), /stale_since:/);
+
+    // Ревизия якоря правится на совпадающую с последним коммитом пути —
+    // расхождения по нему больше нет.
+    const caughtUp = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8').replace(
+      /rev: '[0-9a-f]+'/,
+      `rev: '${head.slice(0, 7)}'`,
+    );
+    writeFileSync(join(box.root, 'knowledge/a.md'), caughtUp);
+
+    const removal = box.source().check({ record: true });
+    assert.doesNotMatch(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), /stale_since:/);
+    assert.deepEqual(removal.recorded, { dated: [], cleared: [{ id: 'a', path: 'src/a.ts' }] });
+  });
+
+  // Правка дерева обязана быть названа в самом ответе: перечитывать дерево
+  // вторым вызовом ради того же знания значило бы удвоить чтение истории git,
+  // а для источника `cmd` — дважды запустить внешнюю команду.
+  it('check({record: true}) отдаёт отчёт о датировании, check без record — нет', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+      }),
+    );
+
+    const now = Date.parse('2026-09-06T09:12:33Z');
+    const verdict = box.source({ now }).check({ record: true });
+    assert.deepEqual(verdict.recorded, {
+      dated: [{ id: 'a', path: 'src/a.ts', since: '2026-09-06T09:12:33Z' }],
+      cleared: [],
+    });
+    // Нарушения посчитаны на дереве до правки: датирование не влияет на исход
+    // того же вызова, и вновь поставленной даты в детали ещё нет.
+    const found = verdict.problems.find((problem) => problem.kind === 'stale-anchor');
+    assert.ok(found !== undefined, JSON.stringify(verdict.problems));
+    assert.doesNotMatch(found.detail, /известно с/);
+
+    // Следующая проверка видит дату и называет её, а отчёта не несёт вовсе.
+    const next = box.source({ now }).check();
+    assert.equal(next.recorded, undefined);
+    const dated = next.problems.find((problem) => problem.kind === 'stale-anchor');
+    assert.ok(dated !== undefined, JSON.stringify(next.problems));
+    assert.match(dated.detail, /известно с 2026-09-06T09:12:33Z/);
+  });
+
+  // Задача 4.6, первая половина
+  it('непрочитанная история пути не снимает уже поставленную дату', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+      }),
+    );
+    box.source({ now: Date.now() }).check({ record: true });
+    const dated = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
+    assert.match(dated, /stale_since:/);
+
+    rmSync(join(box.root, '.git'), { recursive: true, force: true });
+    box.source().check({ record: true });
+    assert.equal(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), dated);
+  });
+
+  // Задача 4.6, вторая половина
+  it('несуществующий путь якоря не снимает уже поставленную дату', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+      }),
+    );
+    box.source({ now: Date.now() }).check({ record: true });
+    const dated = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
+    assert.match(dated, /stale_since:/);
+
+    rmSync(join(box.root, 'src/a.ts'), { force: true });
+    box.source().check({ record: true });
+    assert.equal(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), dated);
+  });
+
+  // Задача 4.7 / Сценарий: «Испорченная дата не роняет отбор»
+  it('испорченная stale_since — жёлтое, а не отказ разбора; index и select работают', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'\n    stale_since: не-дата`,
+      }),
+    );
+
+    const verdict = box.source().check();
+    assert.equal(verdict.ok, true);
+    const badSince = verdict.problems.find((problem) => problem.kind === 'anchor-bad-since');
+    assert.ok(badSince !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(badSince.level, 'yellow');
+    assert.match(badSince.detail, /knowledge\/a\.md/);
+    assert.match(badSince.detail, /src\/a\.ts/);
+    const stale2 = verdict.problems.find((problem) => problem.kind === 'stale-anchor');
+    assert.ok(stale2 !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(stale2.level, 'yellow');
+
+    assert.doesNotThrow(() => box.source().index());
+    assert.doesNotThrow(() => box.source().select({ kind: 'scope', scope: ['src/**'] }));
+  });
+
+  // Задача 1.5 / Сценарий: «якорь потоковым стилем не поддаётся точечной правке»
+  it('якорь потоковым стилем не датируется, файл остаётся нетронутым', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    const text = [
+      '---',
+      'id: a',
+      'title: Первая',
+      'scope:',
+      '  - src/**',
+      'anchors:',
+      `  - {path: src/a.ts, rev: '${stale.slice(0, 7)}'}`,
+      'status: active',
+      '---',
+      '',
+      'Тело.',
+      '',
+    ].join('\n');
+    box.write('knowledge/a.md', text);
+
+    const recorded = box.source({ now: Date.now() }).check({ record: true });
+
+    assert.equal(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), text);
+    assert.deepEqual(recorded.recorded, { dated: [], cleared: [] });
+    const found = recorded.problems.find((problem) => problem.kind === 'stale-anchor');
+    assert.ok(found !== undefined, JSON.stringify(recorded.problems));
+    assert.equal(found.level, 'yellow');
+
+    // Молчать о недатируемом якоре нельзя: `--record` не сделает по нему
+    // ничего ни в этот заход, ни в любой следующий, и без отдельного
+    // нарушения эта деградация памяти ничем не отличается от расхождения,
+    // которое просто ещё не датировали.
+    for (const verdict of [recorded, box.source().check()]) {
+      const undatable = verdict.problems.find((problem) => problem.kind === 'anchor-not-datable');
+      assert.ok(undatable !== undefined, JSON.stringify(verdict.problems));
+      assert.equal(undatable.level, 'yellow');
+      assert.equal(undatable.id, 'a');
+      assert.match(undatable.detail, /knowledge\/a\.md/);
+      assert.match(undatable.detail, /src\/a\.ts/);
+    }
+    // Жёлтое, не красное: гейт этим не проваливается.
+    assert.equal(box.source().check().ok, true);
+  });
+
+  // Задача 1.5, вторая половина: снять дату с недатируемого якоря так же
+  // нельзя, как и поставить, — и оставленная дата сделала бы следующее
+  // расхождение красным в момент возникновения.
+  it('недатируемый якорь с датой при сошедшейся ревизии виден жёлтым', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const head = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    const text = [
+      '---',
+      'id: a',
+      'title: Первая',
+      'scope:',
+      '  - src/**',
+      'anchors:',
+      `  - {path: src/a.ts, rev: '${head.slice(0, 7)}', stale_since: '2026-01-01T00:00:00Z'}`,
+      'status: active',
+      '---',
+      '',
+      'Тело.',
+      '',
+    ].join('\n');
+    box.write('knowledge/a.md', text);
+
+    const verdict = box.source({ now: Date.now() }).check({ record: true });
+
+    assert.equal(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), text);
+    const undatable = verdict.problems.find((problem) => problem.kind === 'anchor-not-datable');
+    assert.ok(undatable !== undefined, JSON.stringify(verdict.problems));
+    assert.equal(undatable.level, 'yellow');
+    assert.match(undatable.detail, /src\/a\.ts/);
+  });
+
+  // Задача 4.7: испорченная дата — свойство шапки, а не исхода сравнения с
+  // историей. Ветвь совпавшей ревизии и ветвь непрочитанной истории выходят
+  // раньше подтверждённого расхождения, и порча в них была не видна вовсе.
+  it('испорченная stale_since видна и на сошедшемся якоре, и при непрочитанной истории', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const head = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${head.slice(0, 7)}'\n    stale_since: не-дата`,
+      }),
+    );
+
+    const matched = box.source().check();
+    assert.equal(matched.ok, true);
+    assert.equal(matched.problems.filter((problem) => problem.kind === 'anchor-bad-since').length, 1);
+    // Ревизия сошлась — расхождения нет, и жёлтое здесь ровно одно: порча даты.
+    assert.equal(matched.problems.some((problem) => problem.kind === 'stale-anchor'), false);
+
+    rmSync(join(box.root, '.git'), { recursive: true, force: true });
+    const unknown = box.source().check();
+    assert.equal(unknown.problems.filter((problem) => problem.kind === 'anchor-bad-since').length, 1);
+    assert.ok(unknown.problems.some((problem) => problem.kind === 'anchor-unknown'));
   });
 
   // Задача 1.1 / Сценарий: «Ревизия из одних цифр проверяется»
@@ -866,6 +1230,30 @@ describe('knowledge-fs: дрейф', () => {
     assert.ok(verdict.problems.some((problem) => problem.kind === 'anchor-unknown'));
   });
 
+  // Задача 4.10: check без record остаётся чтением даже при недатированном
+  // расхождении — половина ценности команды объявлена гейтом CI/pre-commit,
+  // а гейт, правящий рабочую копию, непригоден там, где он полезнее всего.
+  it('check без record не меняет каталог знания ни одним байтом', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+      }),
+    );
+    const before = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
+
+    box.source().check();
+
+    assert.equal(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), before);
+  });
+
   it('предупреждает о совпадающем заголовке при пересекающейся области', () => {
     const box = repo({
       'knowledge/a.md': unit({ id: 'a', title: 'Одно и то же', scope: ['src/judge/**'] }),
@@ -949,6 +1337,39 @@ describe('knowledge-fs: запись', () => {
       },
     );
     assert.equal(readFileSync(join(box.root, 'src/a.ts'), 'utf8'), 'export const a = 1;\n');
+  });
+
+  // Задача 4.9 / Сценарий: «Запись единицы дат не оставляет»
+  it('write перезаписывает единицу без stale_since, ревизии якорей свежие', () => {
+    const box = repo({ 'src/a.ts': 'export const a = 1;\n' });
+    box.commit('первый');
+    const stale = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write('src/a.ts', 'export const a = 2;\n');
+    box.commit('второй');
+    const head = execFileSync('git', ['-C', box.root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    box.write(
+      'knowledge/a.md',
+      unit({
+        id: 'a',
+        title: 'Первая',
+        anchors: `anchors:\n  - path: src/a.ts\n    rev: '${stale.slice(0, 7)}'`,
+      }),
+    );
+    box.source({ now: Date.now() }).check({ record: true });
+    assert.match(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), /stale_since:/);
+
+    const result = box.source().write({
+      id: 'a',
+      title: 'Первая',
+      scope: ['src/**'],
+      anchors: ['src/a.ts'],
+      body: 'Тело.',
+    });
+
+    assert.equal(result.ok, true);
+    const text = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
+    assert.doesNotMatch(text, /stale_since/);
+    assert.match(text, new RegExp(head.slice(0, 7)));
   });
 
   it('контракт записи отклоняет такой идентификатор ещё разбором', () => {

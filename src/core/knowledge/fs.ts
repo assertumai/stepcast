@@ -10,6 +10,7 @@ import { StepcastError } from '../errors.js';
 import { formatTokens } from '../units.js';
 import { KnowledgeIdSchema } from './types.js';
 import type {
+  KnowledgeCheckOptions,
   KnowledgeCheckResponse,
   KnowledgeEntry,
   KnowledgeIndexEntry,
@@ -48,6 +49,19 @@ import type {
 interface Anchor {
   readonly path: string;
   readonly rev: string | undefined;
+  /** Момент, когда расхождение по этому якорю впервые обнаружено. */
+  readonly staleSince: number | undefined;
+  /** `stale_since` объявлен, но моментом времени не читается (design.md, решение 7). */
+  readonly staleSinceInvalid: boolean;
+  /**
+   * Поддаётся ли отображение этого якоря точечной правке `stale_since`.
+   *
+   * Считается при разборе, а не в момент записи: иначе якорь, датировать
+   * который нельзя, молчал бы у всякого вызова без `record` — а `check` без
+   * `record` и есть тот вызов, которым проверку зовут в CI. Признак нужен
+   * проверке, а не только записи, и потому живёт рядом с самим якорем.
+   */
+  readonly datable: boolean;
 }
 
 interface Unit {
@@ -171,11 +185,32 @@ class FsKnowledgeSource implements KnowledgeSource {
     return entries;
   }
 
-  check(): KnowledgeCheckResponse {
+  check(options?: KnowledgeCheckOptions): KnowledgeCheckResponse {
+    const record = options?.record === true;
     const problems: KnowledgeProblem[] = [];
     const units = this.units();
     const now = this.options.now ?? Date.now();
     const seen = new Map<string, Unit>();
+    // Собранные по ходу разбора правки дат — по файлу, чтобы применить все
+    // правки одной единицы за одно чтение-запись (design.md, решение 2).
+    const edits = new Map<string, StaleSinceEdit[]>();
+    const scheduleEdit = (file: string, edit: StaleSinceEdit): void => {
+      const list = edits.get(file);
+      if (list === undefined) edits.set(file, [edit]);
+      else list.push(edit);
+    };
+    // Якорь, отображение которого точечной правке не поддаётся, датировать
+    // нечем. Нарушение отдаётся независимо от `record`: иначе `check`,
+    // стоящий гейтом без записи, молчал бы о памяти, которую никакой заход
+    // петли уже не датирует.
+    const undatable = (unit: Unit, anchor: Anchor): void => {
+      problems.push({
+        id: unit.id,
+        kind: 'anchor-not-datable',
+        level: 'yellow',
+        detail: `Отображение якоря не поддаётся точечной правке, момент обнаружения не датируется: ${unit.file}#${anchor.path}`,
+      });
+    };
 
     for (const unit of units) {
       const twin = seen.get(unit.id);
@@ -212,6 +247,21 @@ class FsKnowledgeSource implements KnowledgeSource {
       }
 
       for (const anchor of unit.anchors) {
+        // Испорченная дата — свойство самой шапки, а не исхода сравнения с
+        // историей: она видна и на якоре, ревизия которого совпала, и на
+        // якоре с непригодной ревизией, и там, где историю прочитать не
+        // удалось. Отдавать её только внутри подтверждённого расхождения
+        // значило бы прятать порчу ровно в тех случаях, где её никто и не
+        // исправит.
+        if (anchor.staleSinceInvalid) {
+          problems.push({
+            id: unit.id,
+            kind: 'anchor-bad-since',
+            level: 'yellow',
+            detail: `Момент обнаружения не читается как ISO-8601, расхождение считается недатированным: ${unit.file}#${anchor.path}`,
+          });
+        }
+
         const absolute = resolvePath(this.options.root, anchor.path);
         if (!exists(absolute)) {
           problems.push({
@@ -257,17 +307,47 @@ class FsKnowledgeSource implements KnowledgeSource {
           continue;
         }
         if (last === 'none') continue;
-        if (last.rev.startsWith(anchor.rev) || anchor.rev.startsWith(last.rev)) continue;
+        if (last.rev.startsWith(anchor.rev) || anchor.rev.startsWith(last.rev)) {
+          // Расхождение, по которому якорь мог быть датирован раньше, больше
+          // не существует: оставленная дата сделала бы следующее — новое —
+          // расхождение красным в момент возникновения (design.md, решение 6).
+          if (anchor.staleSince !== undefined || anchor.staleSinceInvalid) {
+            if (!anchor.datable) undatable(unit, anchor);
+            else if (record) {
+              scheduleEdit(unit.file, { id: unit.id, anchorPath: anchor.path, staleSince: undefined });
+            }
+          }
+          continue;
+        }
 
-        const overdue = now - last.timeMs > this.options.staleAfterMs;
+        // Расхождение подтверждено. Уровень считается не от возраста коммита
+        // `last`, а от момента, когда это расхождение впервые увидели
+        // (design.md, решение 1): без даты — всегда жёлтое, с датой — жёлтое
+        // в пределах `stale_after` и красное за ним.
+        const staleSince = anchor.staleSinceInvalid ? undefined : anchor.staleSince;
+        const overdue = staleSince !== undefined && now - staleSince > this.options.staleAfterMs;
         problems.push({
           id: unit.id,
           kind: 'stale-anchor',
           level: overdue ? 'red' : 'yellow',
-          detail: overdue
-            ? `Устарело дольше объявленного срока: ${anchor.path} изменён коммитом ${short(last.rev)}`
-            : `Задето позже зафиксированного: ${anchor.path} изменён коммитом ${short(last.rev)}`,
+          detail:
+            staleSince === undefined
+              ? `Задето позже зафиксированного: ${anchor.path} изменён коммитом ${short(last.rev)}`
+              : overdue
+                ? `Устарело дольше объявленного срока (известно с ${isoSeconds(staleSince)}): ${anchor.path} изменён коммитом ${short(last.rev)}`
+                : `Задето позже зафиксированного (известно с ${isoSeconds(staleSince)}): ${anchor.path} изменён коммитом ${short(last.rev)}`,
         });
+
+        // Ставит первый акт датирования, увидевший расхождение без даты;
+        // уже поставленную дату повторная правка того же пути не сдвигает
+        // (design.md, решение 6) — иначе чужая активность держала бы память
+        // вечно жёлтой.
+        if (staleSince === undefined) {
+          if (!anchor.datable) undatable(unit, anchor);
+          else if (record) {
+            scheduleEdit(unit.file, { id: unit.id, anchorPath: anchor.path, staleSince: isoSeconds(now) });
+          }
+        }
       }
     }
 
@@ -326,7 +406,47 @@ class FsKnowledgeSource implements KnowledgeSource {
       });
     }
 
-    return { ok: !problems.some((problem) => problem.level === 'red'), problems };
+    // Запись — после того, как нарушения посчитаны на прочитанном дереве:
+    // датирование не должно влиять на исход этого же вызова (design.md,
+    // решение 3). Каждый файл читается и пишется ровно раз, всеми своими
+    // правками сразу.
+    const dated: { id: string; path: string; since: string }[] = [];
+    const cleared: { id: string; path: string }[] = [];
+    if (record) {
+      for (const [file, fileEdits] of edits) {
+        const absolute = resolvePath(this.options.root, file);
+        const before = readFileSync(absolute, 'utf8');
+        const { text: after, failed } = applyStaleSinceEdits(before, fileEdits);
+        if (after !== before) writeFileSync(absolute, after, 'utf8');
+        // Правка, не удавшаяся вопреки разбору (шапка изменилась между чтением
+        // дерева и записью), названа тем же жёлтым нарушением, что и якорь,
+        // размеченный недатируемым при разборе: тихо потерянная правка — то
+        // самое молчание, ради устранения которого признак и заведён.
+        const lost = new Set(failed);
+        for (const edit of fileEdits) {
+          if (lost.has(edit.anchorPath)) {
+            problems.push({
+              id: edit.id,
+              kind: 'anchor-not-datable',
+              level: 'yellow',
+              detail: `Отображение якоря не поддаётся точечной правке, момент обнаружения не датируется: ${file}#${edit.anchorPath}`,
+            });
+          } else if (edit.staleSince === undefined) {
+            cleared.push({ id: edit.id, path: edit.anchorPath });
+          } else {
+            dated.push({ id: edit.id, path: edit.anchorPath, since: edit.staleSince });
+          }
+        }
+      }
+    }
+
+    return {
+      ok: !problems.some((problem) => problem.level === 'red'),
+      problems,
+      // Отчёт о правке — только на запрос с `record`: ответ обычной проверки
+      // остаётся ровно тем же, каким был до этого изменения.
+      ...(record ? { recorded: { dated, cleared } } : {}),
+    };
   }
 
   write(request: KnowledgeWriteRequest): KnowledgeWriteResponse {
@@ -693,6 +813,196 @@ function withSupersededStatus(text: string, file: string): string {
   return `${open}${nextHeader}${rest}`;
 }
 
+/** Требуемая правка одного якоря: `undefined` значит «удалить строку». */
+interface StaleSinceEdit {
+  /** Единица, которой принадлежит якорь, — для отчёта о правке. */
+  readonly id: string;
+  readonly anchorPath: string;
+  readonly staleSince: string | undefined;
+}
+
+/** Один элемент списка `anchors:`, найденный построчным разбором шапки. */
+interface AnchorItem {
+  readonly pathValue: string | undefined;
+  /** Индекс первой строки элемента (с дефисом) в массиве строк шапки. */
+  readonly start: number;
+  /** Индекс строки, следующей за последней строкой элемента. */
+  readonly end: number;
+  /** Годится ли элемент для точечной правки: блочное отображение, не поток. */
+  readonly editable: boolean;
+  /** Отступ вложенных полей — колонка, с которой пишется новая строка `stale_since`. */
+  readonly fieldIndent: number;
+  /** Индекс существующей строки `stale_since`, если она уже есть. */
+  readonly staleSinceLine: number | undefined;
+}
+
+function indentOf(line: string): number {
+  return (/^ */.exec(line)?.[0] ?? '').length;
+}
+
+function unquote(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length >= 2) {
+    const first = trimmed[0];
+    const last = trimmed[trimmed.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return trimmed.slice(1, -1);
+    }
+  }
+  return trimmed;
+}
+
+/**
+ * Разбор списка `anchors:` на отдельные элементы, построчно.
+ *
+ * Понимает ровно ту раскладку, которую пишет `write` и явно называет
+ * design.md: блочное отображение вида `- path: …` с полями на той же или
+ * последующих строках, тем же отступом. Всё, что этой раскладке не
+ * соответствует — потоковое `{path: …}`, голый скаляр без ревизии, поле не
+ * первым, — размечается `editable: false`, а не додумывается: лучше не
+ * датировать, чем угадать не туда и испортить чужую шапку.
+ */
+function parseAnchorItems(lines: readonly string[], anchorsIndex: number): readonly AnchorItem[] {
+  const anchorsIndent = indentOf(lines[anchorsIndex] as string);
+
+  let cursor = anchorsIndex + 1;
+  while (cursor < lines.length && (lines[cursor] as string).trim() === '') cursor += 1;
+  if (cursor >= lines.length) return [];
+
+  const listIndent = indentOf(lines[cursor] as string);
+  if (listIndent <= anchorsIndent || !/^\s*-(\s|$)/.test(lines[cursor] as string)) return [];
+
+  const items: AnchorItem[] = [];
+  let i = cursor;
+  while (i < lines.length) {
+    const line = lines[i] as string;
+    if (line.trim() === '') {
+      i += 1;
+      continue;
+    }
+    const lineIndent = indentOf(line);
+    if (lineIndent <= anchorsIndent) break;
+    if (lineIndent !== listIndent || !/^\s*-(\s|$)/.test(line)) break;
+
+    const dashMatch = /^( *)-\s?(.*)$/.exec(line);
+    if (dashMatch === null) break;
+    const dashIndent = (dashMatch[1] as string).length;
+    const rest = (dashMatch[2] as string).trim();
+
+    let end = i + 1;
+    while (end < lines.length && (lines[end] as string).trim() !== '' && indentOf(lines[end] as string) > listIndent) {
+      end += 1;
+    }
+
+    let pathValue: string | undefined;
+    let editable = false;
+    let fieldIndent = dashIndent + 2;
+
+    if (rest.startsWith('{') || rest.startsWith('[')) {
+      // Поток — не редактируется точечно; путь достаётся только для того,
+      // чтобы уметь назвать этот якорь неудавшейся правкой, а не потерять его.
+      const flowPath = /path:\s*([^,}\s]+)/.exec(rest);
+      pathValue = flowPath === null ? undefined : unquote(flowPath[1] as string);
+    } else if (rest === '') {
+      const fieldLine = lines[i + 1];
+      if (fieldLine !== undefined && indentOf(fieldLine) > listIndent) {
+        fieldIndent = indentOf(fieldLine);
+        const pathField = /^path:\s*(.*)$/.exec(fieldLine.slice(fieldIndent));
+        if (pathField !== null) {
+          pathValue = unquote(pathField[1] as string);
+          editable = true;
+        }
+      }
+    } else {
+      const pathField = /^path:\s*(.*)$/.exec(rest);
+      if (pathField !== null) {
+        pathValue = unquote(pathField[1] as string);
+        editable = true;
+      } else if (!rest.includes(':')) {
+        // Голый скаляр — якорь без ревизии; отображением он не является, и
+        // добавить поле в него значило бы переформатировать чужую строку.
+        pathValue = unquote(rest);
+      }
+    }
+
+    let staleSinceLine: number | undefined;
+    if (editable) {
+      for (let j = i + 1; j < end; j += 1) {
+        if (indentOf(lines[j] as string) !== fieldIndent) {
+          // Не плоское отображение (вложенный блок, многострочный скаляр) —
+          // безопаснее промолчать, чем гадать, куда вписывать поле.
+          editable = false;
+          break;
+        }
+        if (/^\s*stale_since:/.test(lines[j] as string)) staleSinceLine = j;
+      }
+    }
+
+    items.push({ pathValue, start: i, end, editable, fieldIndent, staleSinceLine });
+    i = end;
+  }
+
+  return items;
+}
+
+/**
+ * Точечная правка `stale_since` во всех задетых якорях одной единицы за одно
+ * чтение текста: строка вписывается, заменяется или удаляется с отступом её
+ * якоря, а тело, заголовок, область, статус и прочие поля остаются байт в
+ * байт прежними — тот же приём, что у `withSupersededStatus`, — YAML не
+ * пересериализуется.
+ *
+ * Якорь, чьё отображение не поддаётся такой правке (поток, необычная
+ * раскладка), попадает в `failed`, и вызывающий его не датирует: расхождение
+ * остаётся жёлтым сколь угодно долго (design.md, решение 7) — это честнее,
+ * чем переписать набранную человеком шапку.
+ */
+function applyStaleSinceEdits(
+  text: string,
+  edits: readonly StaleSinceEdit[],
+): { readonly text: string; readonly failed: readonly string[] } {
+  const match = HEAD_BOUNDARY.exec(text);
+  if (match === null) return { text, failed: edits.map((edit) => edit.anchorPath) };
+  const [open, header, rest] = [match[1], match[2], match[3]] as [string, string, string];
+  const lineEnding = header.includes('\r\n') ? '\r\n' : '\n';
+  const lines = header.split(/\r?\n/);
+
+  const anchorsIndex = lines.findIndex((line) => /^anchors:\s*$/.test(line));
+  const items = anchorsIndex === -1 ? [] : parseAnchorItems(lines, anchorsIndex);
+
+  // Снизу вверх: правка более раннего элемента списка не сдвигает индексы
+  // элементов, идущих ниже него, которые уже обработаны.
+  const order = [...edits].sort((a, b) => {
+    const ai = items.find((item) => item.pathValue === a.anchorPath)?.start ?? -1;
+    const bi = items.find((item) => item.pathValue === b.anchorPath)?.start ?? -1;
+    return bi - ai;
+  });
+
+  const failed: string[] = [];
+  for (const edit of order) {
+    const item = items.find((candidate) => candidate.pathValue === edit.anchorPath);
+    if (item === undefined || !item.editable) {
+      failed.push(edit.anchorPath);
+      continue;
+    }
+    const indent = ' '.repeat(item.fieldIndent);
+    if (edit.staleSince === undefined) {
+      if (item.staleSinceLine !== undefined) lines.splice(item.staleSinceLine, 1);
+    } else if (item.staleSinceLine !== undefined) {
+      lines[item.staleSinceLine] = `${indent}stale_since: ${edit.staleSince}`;
+    } else {
+      lines.splice(item.end, 0, `${indent}stale_since: ${edit.staleSince}`);
+    }
+  }
+
+  return { text: `${open}${lines.join(lineEnding)}${rest}`, failed };
+}
+
+/** ISO-8601 в UTC с точностью до секунды — форма, в которой пишется `stale_since`. */
+function isoSeconds(ms: number): string {
+  return new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
 /** Разбор единицы знания. Неполная шапка — отказ, а не молчаливый пропуск. */
 export function parseUnit(text: string, file: string): Unit {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text);
@@ -729,7 +1039,7 @@ export function parseUnit(text: string, file: string): Unit {
   }
 
   const scope = toStringList(raw.scope, 'scope', file);
-  const anchors = toAnchors(raw.anchors, file);
+  const anchors = toAnchors(raw.anchors, file, datableAnchorPaths(match[1] as string));
 
   return { file, id, title, scope, anchors, status, body: (match[2] as string).trim() };
 }
@@ -787,7 +1097,7 @@ function toStringList(value: unknown, name: string, file: string): readonly stri
   return value as string[];
 }
 
-function toAnchors(value: unknown, file: string): readonly Anchor[] {
+function toAnchors(value: unknown, file: string, datable: ReadonlySet<string>): readonly Anchor[] {
   if (value === undefined) return [];
   if (!Array.isArray(value)) {
     throw new StepcastError(`Поле anchors единицы знания — список: ${file}`, {
@@ -800,15 +1110,74 @@ function toAnchors(value: unknown, file: string): readonly Anchor[] {
     // Строковая форма — якорь без ревизии: путь обязан существовать, но
     // устаревание по нему не считается. Форма законная: не всякое
     // утверждение стареет вместе с файлом, к которому относится.
-    if (typeof item === 'string') return { path: item, rev: undefined };
+    if (typeof item === 'string') {
+      return {
+        path: item,
+        rev: undefined,
+        staleSince: undefined,
+        staleSinceInvalid: false,
+        datable: datable.has(item),
+      };
+    }
     if (item !== null && typeof item === 'object') {
       const raw = item as Record<string, unknown>;
       if (typeof raw.path === 'string') {
-        return { path: raw.path, rev: toRev(raw.rev, file) };
+        const { staleSince, invalid } = toStaleSince(raw.stale_since);
+        return {
+          path: raw.path,
+          rev: toRev(raw.rev, file),
+          staleSince,
+          staleSinceInvalid: invalid,
+          datable: datable.has(raw.path),
+        };
       }
     }
     throw new StepcastError(`Якорь единицы знания без пути: ${file}`, { file, at: 'anchors' });
   });
+}
+
+/**
+ * Пути тех якорей шапки, чьё отображение поддаётся точечной правке
+ * `stale_since`, — построчным разбором того же текста, который потом правит
+ * `applyStaleSinceEdits`, и ровно теми же правилами.
+ *
+ * Разбирается при чтении единицы, а не при записи: якорь, датировать который
+ * нельзя, обязан быть виден жёлтым нарушением и у `check` без `record` —
+ * именно им проверка стоит гейтом, и молчать перед ним значило бы прятать
+ * тихую деградацию памяти.
+ */
+function datableAnchorPaths(header: string): ReadonlySet<string> {
+  const lines = header.split(/\r?\n/);
+  const anchorsIndex = lines.findIndex((line) => /^anchors:\s*$/.test(line));
+  if (anchorsIndex === -1) return new Set();
+  const paths = new Set<string>();
+  for (const item of parseAnchorItems(lines, anchorsIndex)) {
+    if (item.editable && item.pathValue !== undefined) paths.add(item.pathValue);
+  }
+  return paths;
+}
+
+/**
+ * Момент обнаружения расхождения из шапки YAML.
+ *
+ * В отличие от `toRev`, непригодное значение здесь не отказ разбора, а
+ * пометка порчи (design.md, решение 7): у `stale_since` есть безопасное
+ * прочтение — «не датировано», оставляющее нарушение жёлтым и видимым, — а
+ * `parseUnit` зовётся из всех четырёх глаголов источника, и отказ здесь
+ * обрушил бы вместе с проверкой ещё и отбор, и оглавление.
+ *
+ * `yaml` не резолвит ISO-подобные строки во `Date` (в отличие от `js-yaml`),
+ * так что обычная запись `stale_since: 2026-09-06T09:12:33Z` приходит сюда
+ * строкой; типы, строкой не являющиеся (число, логическое значение,
+ * отображение), считаются порчей наравне с нечитаемой строкой.
+ */
+function toStaleSince(value: unknown): { readonly staleSince: number | undefined; readonly invalid: boolean } {
+  if (value === undefined) return { staleSince: undefined, invalid: false };
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    if (!Number.isNaN(parsed)) return { staleSince: parsed, invalid: false };
+  }
+  return { staleSince: undefined, invalid: true };
 }
 
 /**

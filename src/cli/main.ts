@@ -162,6 +162,11 @@ export const COMMANDS: Record<string, CommandSpec> = {
         description:
           'check: опубликовать данными работы ключом true/false — есть ли среди нарушений index-overflow; только внутри шага прогона',
       },
+      record: {
+        kind: 'boolean',
+        description:
+          'check: датировать обнаруженные расхождения по якорям — без этого ключа check дерева не правит',
+      },
     },
   },
   backlog: {
