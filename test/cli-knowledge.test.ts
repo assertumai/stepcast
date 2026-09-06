@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -213,5 +213,95 @@ describe('CLI: stepcast knowledge', () => {
     const box = sandbox();
     const result = await knowledge(box, ['refresh']);
     assert.equal(result.code, ExitCode.configError);
+  });
+});
+
+describe('CLI: stepcast knowledge check --publish', () => {
+  const OVERFLOWING_CONFIG =
+    'project:\n  knowledge:\n    provider: fs\n    dir: knowledge\n    index_max_tokens: 10\n';
+
+  /** Каталог работы с объявлением — тот же вид, что заводит движок до первого шага. */
+  function jobDirWithDeclaration(declared: readonly string[]): string {
+    const dir = tempDir('knowledge-jobdir-');
+    writeFileSync(join(dir, 'resolved.json'), JSON.stringify({ id: 'knowledge-room', data: declared }));
+    return dir;
+  }
+
+  /** Позвать knowledge с заданным (или отсутствующим) STEPCAST_JOB_DIR, восстановив окружение после. */
+  async function knowledgeAsStep(
+    box: { root: string; home: string },
+    argv: readonly string[],
+    jobDir: string | undefined,
+  ): Promise<Result> {
+    const previous = process.env['STEPCAST_JOB_DIR'];
+    if (jobDir === undefined) delete process.env['STEPCAST_JOB_DIR'];
+    else process.env['STEPCAST_JOB_DIR'] = jobDir;
+    try {
+      return await knowledge(box, argv);
+    } finally {
+      if (previous === undefined) delete process.env['STEPCAST_JOB_DIR'];
+      else process.env['STEPCAST_JOB_DIR'] = previous;
+    }
+  }
+
+  // Задача 5.4 / Сценарий: «Переполнение публикуется истиной»
+  it('публикует true на переполненном оглавлении', async () => {
+    const box = sandbox({
+      'knowledge/a.md': unit('a', 'Очень длинный заголовок'.repeat(20)),
+      '.stepcast/config.yml': OVERFLOWING_CONFIG,
+    });
+    const jobDir = jobDirWithDeclaration(['index_full']);
+
+    const result = await knowledgeAsStep(box, ['check', '--publish', 'index_full'], jobDir);
+
+    assert.equal(result.code, ExitCode.ok);
+    const data = JSON.parse(readFileSync(join(jobDir, 'data.json'), 'utf8')) as Record<string, string>;
+    assert.equal(data['index_full'], 'true');
+  });
+
+  it('публикует false на укладывающемся оглавлении', async () => {
+    const box = sandbox({ 'knowledge/a.md': unit('a', 'Первая') });
+    const jobDir = jobDirWithDeclaration(['index_full']);
+
+    const result = await knowledgeAsStep(box, ['check', '--publish', 'index_full'], jobDir);
+
+    assert.equal(result.code, ExitCode.ok);
+    const data = JSON.parse(readFileSync(join(jobDir, 'data.json'), 'utf8')) as Record<string, string>;
+    assert.equal(data['index_full'], 'false');
+  });
+
+  // Задача 5.4 / Сценарий: «Необъявленный ключ — отказ команды»
+  it('необъявленный ключ отказывает командой, называя работу и ключ', async () => {
+    const box = sandbox({ 'knowledge/a.md': unit('a', 'Первая') });
+    const jobDir = jobDirWithDeclaration([]);
+
+    const result = await knowledgeAsStep(box, ['check', '--publish', 'index_full'], jobDir);
+
+    assert.notEqual(result.code, ExitCode.ok);
+    assert.match(result.stderr, /knowledge-room/);
+    assert.match(result.stderr, /index_full/);
+    assert.equal(existsSync(join(jobDir, 'data.json')), false);
+  });
+
+  // Задача 5.4 / Сценарий: «Вне шага прогона»
+  it('вне шага прогона отказывает до вызова check', async () => {
+    const box = sandbox({ 'knowledge/a.md': unit('a', 'Первая') });
+
+    const result = await knowledgeAsStep(box, ['check', '--publish', 'index_full'], undefined);
+
+    assert.notEqual(result.code, ExitCode.ok);
+    assert.match(result.stderr, /шага прогона/);
+  });
+
+  it('код возврата check без --publish не меняется на переполненном оглавлении', async () => {
+    const box = sandbox({
+      'knowledge/a.md': unit('a', 'Очень длинный заголовок'.repeat(20)),
+      '.stepcast/config.yml': OVERFLOWING_CONFIG,
+    });
+
+    const result = await knowledge(box, ['check']);
+
+    assert.equal(result.code, ExitCode.ok);
+    assert.match(result.stdout, /жёлтое/);
   });
 });

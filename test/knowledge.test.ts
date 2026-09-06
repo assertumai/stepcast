@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { globSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { estimateTokens } from '../src/core/context/assemble.js';
+import { evaluatePredicates } from '../src/core/expect/evaluate.js';
 import { createFsKnowledgeSource, globsIntersect, parseUnit } from '../src/core/knowledge/fs.js';
 import { createKnowledgeSource } from '../src/core/knowledge/source.js';
 import {
@@ -278,18 +279,22 @@ describe('knowledge-fs: оглавление', () => {
     assert.deepEqual(entry.scope, ['openspec/changes/some-change/**']);
   });
 
-  // Задача 3.2 / Сценарий: «Единицы знания переросли предел»
-  it('красное нарушение, когда записи единиц знания перерастают предел', () => {
+  // Задача 1.1 / Сценарий: «Единицы знания переросли предел»
+  //
+  // Жёлтым, а не красным (design.md, решение 1): переполненное оглавление не
+  // сломано, оно полно, и снимается слиянием — работой, отдельной от check.
+  it('жёлтое нарушение, когда записи единиц знания перерастают предел, называющее размер, ключ и слияние', () => {
     const box = repo({
       'knowledge/a.md': unit({ id: 'a', title: 'Очень длинный заголовок'.repeat(20) }),
     });
     const verdict = box.source({ indexMaxTokens: 10 }).check();
-    assert.equal(verdict.ok, false);
+    assert.equal(verdict.ok, true);
     const problem = verdict.problems.find((item) => item.kind === 'index-overflow');
     assert.ok(problem !== undefined, JSON.stringify(verdict.problems));
-    assert.equal(problem.level, 'red');
+    assert.equal(problem.level, 'yellow');
     assert.match(problem.detail, /единиц[аы] знания/i);
     assert.match(problem.detail, /index_max_tokens/);
+    assert.match(problem.detail, /слейте|слияни/i);
     assert.doesNotMatch(problem.detail, /каталог/i);
   });
 
@@ -980,6 +985,275 @@ describe('knowledge-fs: запись', () => {
     });
     assert.equal(result.ok, true);
     assert.equal(box.source().check().ok, true);
+  });
+
+  // Задача 1.2 / Сценарий: «Заход, которому не хватило места, сохраняет
+  // узнанное» — откат в write завязан на verdict.ok, то есть на красное:
+  // переполнение больше не откатывает запись (design.md, решение 5).
+  it('запись новой единицы в заведомо переполненное оглавление проходит и остаётся в дереве', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Очень длинный заголовок'.repeat(20) }),
+    });
+    const result = box.source({ indexMaxTokens: 10 }).write({
+      id: 'b',
+      title: 'Вторая',
+      scope: ['src/**'],
+      anchors: [],
+      body: 'Тело.',
+    });
+    assert.equal(result.ok, true);
+    assert.equal(readFileSync(join(box.root, 'knowledge/b.md'), 'utf8').includes('Вторая'), true);
+    assert.ok(result.problems.some((problem) => problem.kind === 'index-overflow' && problem.level === 'yellow'));
+  });
+
+  // Контраст с предыдущим: красное нарушение по-прежнему откатывает запись.
+  it('якорь в пустоту по-прежнему откатывает запись', () => {
+    const box = repo({});
+    const result = box.source().write({
+      id: 'a',
+      title: 'Первая',
+      scope: ['src/**'],
+      anchors: ['src/нет.ts'],
+      body: 'Тело.',
+    });
+    assert.equal(result.ok, false);
+    assert.throws(() => readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'));
+  });
+});
+
+describe('knowledge-fs: предикат видит переполнение жёлтым', () => {
+  // Задача 4.1 (продолжение): knowledge_valid проходит на переполненном
+  // оглавлении и показывает переполнение в отчёте жёлтых.
+  it('check().ok true, а knowledge_valid проходит с переполнением в detail', async () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Очень длинный заголовок'.repeat(20) }),
+    });
+    const source = box.source({ indexMaxTokens: 10 });
+    assert.equal(source.check().ok, true);
+
+    const [result] = await evaluatePredicates([{ kind: 'knowledge_valid' }], {
+      exitCode: 0,
+      text: '',
+      structured: undefined,
+      cwd: box.root,
+      env: { PATH: process.env['PATH'] ?? '' },
+      knowledge: source,
+    });
+    assert.equal(result?.passed, true);
+    assert.equal(result?.hard, true);
+    assert.match(result?.detail ?? '', /index-overflow/);
+  });
+});
+
+describe('knowledge-fs: отмена по supersedes', () => {
+  // Задача 4.3 / Сценарий: «Слияние описано одним объектом»
+  it('слияние: названные единицы получают status: superseded, тело и шапка прежние', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая', anchors: 'anchors:\n  - src/a.ts' }),
+      'knowledge/b.md': unit({ id: 'b', title: 'Вторая', scope: ['src/b/**'] }),
+    });
+    const beforeA = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
+    const beforeB = readFileSync(join(box.root, 'knowledge/b.md'), 'utf8');
+
+    const result = box.source().write({
+      id: 'merged',
+      title: 'Слитая',
+      scope: ['src/**'],
+      anchors: [],
+      supersedes: ['a', 'b'],
+      body: 'Слитое тело.',
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(
+      readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'),
+      beforeA.replace('status: active', 'status: superseded'),
+    );
+    assert.equal(
+      readFileSync(join(box.root, 'knowledge/b.md'), 'utf8'),
+      beforeB.replace('status: active', 'status: superseded'),
+    );
+
+    const source = box.source();
+    assert.deepEqual(
+      source.index().map((entry) => entry.id).sort(),
+      ['merged'],
+    );
+    assert.equal(source.select({ kind: 'scope', scope: ['src/**'] }).some((e) => e.id === 'a'), false);
+    assert.equal(source.select({ kind: 'id', id: ['a'] })[0]?.id, 'a');
+  });
+
+  // Задача 4.4 / Сценарий: «supersedes называет несуществующее»
+  it('supersedes в пустоту — отказ, ни один файл не изменён', () => {
+    const box = repo({ 'knowledge/a.md': unit({ id: 'a', title: 'Первая' }) });
+    const before = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
+
+    const result = box.source().write({
+      id: 'merged',
+      title: 'Слитая',
+      scope: ['src/**'],
+      anchors: [],
+      supersedes: ['a', 'нет-такой'],
+      body: 'Слитое тело.',
+    });
+
+    assert.equal(result.ok, false);
+    assert.ok(
+      result.problems.some((problem) => problem.id === 'нет-такой' && problem.level === 'red'),
+      JSON.stringify(result.problems),
+    );
+    assert.equal(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), before);
+    assert.throws(() => readFileSync(join(box.root, 'knowledge/merged.md'), 'utf8'));
+  });
+
+  // Задача 4.6: запрет самоотмены
+  it('единица не может отменять сама себя', () => {
+    const box = repo({ 'knowledge/a.md': unit({ id: 'a', title: 'Первая' }) });
+    const result = box.source().write({
+      id: 'a',
+      title: 'Первая',
+      scope: ['src/**'],
+      anchors: [],
+      supersedes: ['a'],
+      body: 'Тело.',
+    });
+    assert.equal(result.ok, false);
+    assert.ok(result.problems.some((problem) => problem.id === 'a' && problem.level === 'red'));
+  });
+
+  // Задача 4.6: идемпотентность
+  it('повторная отмена уже отменённой единицы не отказ', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая', status: 'superseded' }),
+    });
+    const before = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
+
+    const result = box.source().write({
+      id: 'merged',
+      title: 'Слитая',
+      scope: ['src/**'],
+      anchors: [],
+      supersedes: ['a'],
+      body: 'Тело.',
+    });
+
+    assert.equal(result.ok, true);
+    // Уже отменённая единица не переписывается вовсе — файл не тронут.
+    assert.equal(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), before);
+  });
+
+  // Задача 4.4 / Сценарий: «Отказ откатывает все задетые файлы»
+  it('слитое тело переросло unit_max_tokens — отказ, обе отменяемые единицы остаются активными', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      'knowledge/b.md': unit({ id: 'b', title: 'Вторая' }),
+    });
+    const beforeA = readFileSync(join(box.root, 'knowledge/a.md'), 'utf8');
+    const beforeB = readFileSync(join(box.root, 'knowledge/b.md'), 'utf8');
+
+    const result = box.source({ unitMaxTokens: 10 }).write({
+      id: 'merged',
+      title: 'Слитая',
+      scope: ['src/**'],
+      anchors: [],
+      supersedes: ['a', 'b'],
+      body: 'Очень длинное тело единицы знания. '.repeat(50),
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(readFileSync(join(box.root, 'knowledge/a.md'), 'utf8'), beforeA);
+    assert.equal(readFileSync(join(box.root, 'knowledge/b.md'), 'utf8'), beforeB);
+    assert.throws(() => readFileSync(join(box.root, 'knowledge/merged.md'), 'utf8'));
+  });
+
+  // Ревью: имя файла единицы не обязано совпадать с её идентификатором, и
+  // тогда запись метила в тот же файл, куда шла пометка отменяемой. Снимок
+  // прежнего содержимого затирал только что записанное, `check` красного не
+  // находил, и `write` возвращал зелёный ответ на запись, которой в дереве
+  // нет. Отказ — до первой правки дерева.
+  it('отменяемая единица в файле записываемой — отказ, дерево не тронуто', () => {
+    const box = repo({ 'knowledge/b.md': unit({ id: 'a', title: 'Первая' }) });
+    const before = readFileSync(join(box.root, 'knowledge/b.md'), 'utf8');
+
+    const result = box.source().write({
+      id: 'b',
+      title: 'Вторая',
+      scope: ['src/**'],
+      anchors: [],
+      supersedes: ['a'],
+      body: 'Тело.',
+    });
+
+    assert.equal(result.ok, false);
+    assert.ok(
+      result.problems.some(
+        (problem) =>
+          problem.id === 'a' &&
+          problem.level === 'red' &&
+          problem.detail.includes('knowledge/b.md'),
+      ),
+      JSON.stringify(result.problems),
+    );
+    assert.equal(readFileSync(join(box.root, 'knowledge/b.md'), 'utf8'), before);
+  });
+
+  // Задача 2.4: откат идёт по одному списку задетых файлов, а не по
+  // записываемому отдельно и отменяемым отдельно, — после отказа каталог
+  // знания обязан быть побайтово прежним целиком.
+  it('после отказа каталог знания побайтово равен исходному', () => {
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: 'Первая' }),
+      'knowledge/b.md': unit({ id: 'b', title: 'Вторая' }),
+      'knowledge/вложенная/c.md': unit({ id: 'c', title: 'Третья' }),
+    });
+    const snapshot = (): Record<string, string> =>
+      Object.fromEntries(
+        (globSync('**/*.md', { cwd: join(box.root, 'knowledge') }) as string[])
+          .sort()
+          .map((name) => [name, readFileSync(join(box.root, 'knowledge', name), 'utf8')]),
+      );
+    const before = snapshot();
+
+    const result = box.source().write({
+      id: 'merged',
+      title: 'Слитая',
+      scope: ['src/**'],
+      anchors: ['src/нет.ts'],
+      supersedes: ['a', 'b', 'c'],
+      body: 'Слитое тело.',
+    });
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(snapshot(), before);
+  });
+
+  // Задача 4.5: слитая единица уменьшает записи единиц знания и снимает
+  // переполнение оглавления.
+  it('слияние по группе снимает жёлтое нарушение index-overflow', () => {
+    const longTitle = 'Очень длинный заголовок единицы номер '.repeat(10);
+    const box = repo({
+      'knowledge/a.md': unit({ id: 'a', title: `${longTitle}1` }),
+      'knowledge/b.md': unit({ id: 'b', title: `${longTitle}2` }),
+      'knowledge/c.md': unit({ id: 'c', title: `${longTitle}3` }),
+    });
+    const overflowing = box.source({ indexMaxTokens: 200 }).check();
+    assert.ok(overflowing.problems.some((problem) => problem.kind === 'index-overflow'));
+
+    const before = box.source({ indexMaxTokens: 200 }).index().length;
+
+    const result = box.source({ indexMaxTokens: 200 }).write({
+      id: 'merged',
+      title: 'Слитая',
+      scope: ['src/**'],
+      anchors: [],
+      supersedes: ['a', 'b', 'c'],
+      body: 'Слитое тело.',
+    });
+    assert.equal(result.ok, true);
+
+    const source = box.source({ indexMaxTokens: 200 });
+    assert.ok(source.index().length < before);
+    assert.ok(!result.problems.some((problem) => problem.kind === 'index-overflow'), JSON.stringify(result.problems));
   });
 });
 

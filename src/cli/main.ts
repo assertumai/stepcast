@@ -157,6 +157,11 @@ export const COMMANDS: Record<string, CommandSpec> = {
       file: { kind: 'string', description: 'write: файл с описанием единицы знания' },
       stdin: { kind: 'boolean', description: 'write: читать описание со стандартного ввода' },
       json: { kind: 'boolean', description: 'вывести ответ источника как есть, машинным JSON' },
+      publish: {
+        kind: 'string',
+        description:
+          'check: опубликовать данными работы ключом true/false — есть ли среди нарушений index-overflow; только внутри шага прогона',
+      },
     },
   },
   backlog: {

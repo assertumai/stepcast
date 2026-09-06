@@ -7,6 +7,7 @@ import { resolveConfig } from '../../core/config/resolve.js';
 import { renderIndex } from '../../core/knowledge/fs.js';
 import { createKnowledgeSource } from '../../core/knowledge/source.js';
 import { KnowledgeWriteRequestSchema, type KnowledgeSource } from '../../core/knowledge/types.js';
+import { mergeJobData } from '../../core/journal/data.js';
 import type { KnowledgeDeclaration } from '../../core/pipeline/model.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
 import type { ParsedArgs } from '../args.js';
@@ -57,6 +58,7 @@ export function runKnowledgeCommand(
   args: ParsedArgs,
   write: (line: string) => void,
   cwd: string,
+  env: Readonly<Record<string, string | undefined>> = process.env,
 ): ExitCodeValue {
   const action = args.positional[0] as Action | undefined;
   if (action === undefined || !ACTIONS.includes(action)) {
@@ -98,7 +100,7 @@ export function runKnowledgeCommand(
     case 'select':
       return runSelect(source, args, asJson, write, cwd);
     case 'check':
-      return runCheck(source, asJson, write);
+      return runCheck(source, asJson, write, args, env);
     case 'write':
       return runWrite(source, args, asJson, write);
   }
@@ -151,7 +153,23 @@ function runSelect(
   return ExitCode.ok;
 }
 
-function runCheck(source: KnowledgeSource, asJson: boolean, write: (line: string) => void): ExitCodeValue {
+function runCheck(
+  source: KnowledgeSource,
+  asJson: boolean,
+  write: (line: string) => void,
+  args: ParsedArgs,
+  env: Readonly<Record<string, string | undefined>>,
+): ExitCodeValue {
+  // Отказ до вызова check: --publish вне шага прогона не имеет куда писать, и
+  // это стоит сказать раньше, чем проверка вообще начнётся.
+  const publishKey = stringFlag(args.flags, 'publish');
+  const jobDir = env.STEPCAST_JOB_DIR;
+  if (publishKey !== undefined && (jobDir === undefined || jobDir.trim() === '')) {
+    throw new StepcastError('Флаг --publish работает только внутри шага прогона', {
+      hint: 'Целевая работа берётся из переменной STEPCAST_JOB_DIR, которую движок инжектирует в каждый шаг; вне прогона публиковать некуда',
+    });
+  }
+
   const verdict = source.check();
 
   if (asJson) {
@@ -165,8 +183,18 @@ function runCheck(source: KnowledgeSource, asJson: boolean, write: (line: string
     }
   }
 
+  if (publishKey !== undefined) {
+    const overflowing = verdict.problems.some((problem) => problem.kind === 'index-overflow');
+    // Необъявленный ключ отказывает саму команду (`mergeJobData` бросает) — в
+    // отличие от `backlog pick`, здесь публикация не сопутствует уже
+    // состоявшемуся эффекту: назвать флаг и тихо не сделать названного значило
+    // бы оставить переполнение неразрешённым при зелёном заходе.
+    mergeJobData(jobDir as string, { [publishKey]: overflowing ? 'true' : 'false' });
+  }
+
   // Код возврата отражает исход: команда встаёт гейтом в CI, и гейт, всегда
-  // возвращающий ноль, ничем не отличается от отсутствующего.
+  // возвращающий ноль, ничем не отличается от отсутствующего. Публикация на
+  // него не влияет.
   return verdict.ok ? ExitCode.ok : ExitCode.jobFailed;
 }
 
@@ -197,9 +225,12 @@ function runWrite(
     throw new StepcastError('Описание единицы знания не разбирается как JSON', { cause: error });
   }
 
-  // Список наравне с одиночным описанием: отмена единицы — это две записи
-  // разом (новая и та же старая со `status: superseded`), и без списка их
-  // пришлось бы звать двумя командами, из которых вторая может не случиться.
+  // Список наравне с одиночным описанием: слияние освобождает место группами,
+  // и одной группы хватает не всегда — без списка вторую пришлось бы звать
+  // второй командой, из которых вторая может не случиться. Отмена в список не
+  // входит: она — поле `supersedes` того же описания, и записывается вместе с
+  // ним одной транзакцией. Каждое описание списка — своя транзакция: они
+  // независимы, и общий откат по ним склеил бы несвязанные слияния.
   const parsed = z.array(KnowledgeWriteRequestSchema).safeParse(
     Array.isArray(payload) ? payload : [payload],
   );

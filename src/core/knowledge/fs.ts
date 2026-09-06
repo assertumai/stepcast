@@ -35,7 +35,8 @@ import type {
  * 2. **Три независимых предела, а не один.** `index_max_tokens` кладётся на
  *    записи единиц знания в оглавлении: стоимость новой единицы для читателя
  *    перестаёт быть нулевой, и упёршееся в предел оглавление вынуждает
- *    единицы сливать. `spec_index_max_tokens` — на производную часть
+ *    единицы сливать — работой слияния петли, жёлтым нарушением, а не
+ *    отказом записи. `spec_index_max_tokens` — на производную часть
  *    оглавления (каталоги практики спецификации), число которых память не
  *    контролирует. `unit_max_tokens` — на тело одной единицы, которое
  *    оплачивает каждый отбор по области. Подробности — `docs/knowledge.md`.
@@ -58,6 +59,16 @@ interface Unit {
   readonly anchors: readonly Anchor[];
   readonly status: 'active' | 'superseded';
   readonly body: string;
+}
+
+/**
+ * Файл, задетый одной записью: что в нём было и что станет. Прежнее состояние
+ * `undefined` — файла не было вовсе, и откат его удаляет.
+ */
+interface TouchedFile {
+  readonly absolute: string;
+  readonly previous: string | undefined;
+  readonly next: string;
 }
 
 export interface FsSourceOptions {
@@ -290,9 +301,14 @@ class FsKnowledgeSource implements KnowledgeSource {
     const unitEntries = this.unitEntries();
     const unitsTokens = estimateTokens(renderIndex(unitEntries));
     if (unitsTokens > this.options.indexMaxTokens) {
+      // Жёлтым, а не красным: переполненное оглавление не сломано, оно полно
+      // — отбор работает, тела читаются, единицы на месте. Красным здесь
+      // останавливало бы гейт того захода, который переполнения не создавал и
+      // снять его не вправе; снимается оно слиянием, работой отдельной от
+      // записи (design.md, решение 1).
       problems.push({
         kind: 'index-overflow',
-        level: 'red',
+        level: 'yellow',
         detail: `Единицы знания в оглавлении: ${formatTokens(unitsTokens)} против предела ${formatTokens(this.options.indexMaxTokens)} (index_max_tokens) — слейте единицы знания`,
       });
     }
@@ -325,9 +341,61 @@ class FsKnowledgeSource implements KnowledgeSource {
       });
     }
 
+    const supersedes = request.supersedes ?? [];
     const file = join(this.options.dir, `${request.id}.md`);
     const absolute = resolvePath(this.options.root, file);
-    const existed = exists(absolute);
+
+    // Самоотмена, ссылка в пустоту и совпадение путей проверяются раньше, чем
+    // тронут первый файл: ни при чтении дерева, ни при `check` этого не видно,
+    // а откатывать без единой правки не от чего (design.md, решение 2).
+    const problems: KnowledgeProblem[] = [];
+    if (supersedes.includes(request.id)) {
+      problems.push({
+        id: request.id,
+        kind: 'supersedes-self',
+        level: 'red',
+        detail: `Единица не может отменять сама себя полем supersedes: ${request.id}`,
+      });
+    }
+    const unitsById = new Map(this.units().map((unit) => [unit.id, unit]));
+    for (const id of supersedes) {
+      if (id === request.id) continue;
+      const target = unitsById.get(id);
+      if (target === undefined) {
+        problems.push({
+          id,
+          kind: 'supersedes-missing',
+          level: 'red',
+          detail: `supersedes называет единицу, которой в каталоге знания нет: ${id}`,
+        });
+        continue;
+      }
+      // Имя файла единицы не обязано совпадать с её идентификатором: `check`
+      // этого не требует, и `knowledge/b.md` с `id: a` — законное дерево.
+      // Тогда запись единицы `b`, отменяющей `a`, метит в тот же файл двумя
+      // разными содержимыми, и любой порядок записи теряет одно из них молча:
+      // либо отменённая единица исчезает вместо пометки, либо записанной
+      // единицы не оказывается в дереве при зелёном ответе. Отказ, а не выбор
+      // порядка: противоречие здесь настоящее, и разрешить его вправе только
+      // тот, кто пишет, — переименованием файла или другим идентификатором.
+      if (resolvePath(this.options.root, target.file) === absolute) {
+        problems.push({
+          id,
+          kind: 'supersedes-same-file',
+          level: 'red',
+          detail: `supersedes называет единицу, лежащую в файле записываемой: ${id} в ${target.file}`,
+        });
+      }
+    }
+    if (problems.length > 0) return { ok: false, problems };
+
+    // Уже отменённые не трогаются: отмена идемпотентна, а запись их файла
+    // ради статуса, который у них и так стоит, была бы лишней правкой дерева.
+    const targets = new Map<string, Unit>();
+    for (const id of supersedes) {
+      const target = unitsById.get(id) as Unit;
+      if (target.status === 'active') targets.set(id, target);
+    }
 
     const anchors = request.anchors.map((path) => {
       const last = lastCommit(this.options.root, path);
@@ -348,19 +416,46 @@ class FsKnowledgeSource implements KnowledgeSource {
       ...(request.supersedes === undefined ? {} : { supersedes: request.supersedes }),
     };
 
-    const previous = existed ? readFileSync(absolute, 'utf8') : undefined;
     const text = `---\n${stringifyYaml(head)}---\n\n${request.body.trimEnd()}\n`;
 
-    mkdirSync(dirname(absolute), { recursive: true });
-    writeFileSync(absolute, text, 'utf8');
+    // Задетые файлы — одним списком, а не записываемый файл отдельно и
+    // отменяемые отдельно: по этому списку идут и запись, и откат, поэтому ни
+    // один задетый файл не может быть забыт при откате, а совпадение путей
+    // видно по построению — оно отказано выше (design.md, решение 3).
+    // Прежнее состояние снимается целиком до первой правки: `undefined`
+    // значит «файла не было», и откат такой файл удаляет.
+    const touched: TouchedFile[] = [
+      {
+        absolute,
+        previous: exists(absolute) ? readFileSync(absolute, 'utf8') : undefined,
+        next: text,
+      },
+    ];
+    for (const target of targets.values()) {
+      const targetAbsolute = resolvePath(this.options.root, target.file);
+      const previous = readFileSync(targetAbsolute, 'utf8');
+      touched.push({
+        absolute: targetAbsolute,
+        previous,
+        next: withSupersededStatus(previous, target.file),
+      });
+    }
+
+    for (const item of touched) {
+      mkdirSync(dirname(item.absolute), { recursive: true });
+      writeFileSync(item.absolute, item.next, 'utf8');
+    }
 
     const verdict = this.check();
     if (!verdict.ok) {
-      // Откат до состояния «как было»: отказ, оставивший файл, сделал бы
-      // следующий вызов check красным по чужой вине, и петля встала бы на
-      // мусоре, который сама и создала.
-      if (previous === undefined) rmSync(absolute, { force: true });
-      else writeFileSync(absolute, previous, 'utf8');
+      // Откат до состояния «как было» — по каждому задетому файлу: отказ,
+      // оставивший половину отменённых единиц без слитой, потерял бы знание
+      // тем же способом, против которого инвалидация и заведена (design.md,
+      // решение 3).
+      for (const item of touched) {
+        if (item.previous === undefined) rmSync(item.absolute, { force: true });
+        else writeFileSync(item.absolute, item.previous, 'utf8');
+      }
       return { ok: false, problems: verdict.problems.filter((problem) => problem.level === 'red') };
     }
 
@@ -402,9 +497,9 @@ class FsKnowledgeSource implements KnowledgeSource {
    * оглавление: усечение обязано быть посимвольно воспроизводимым, потому что
    * текст уезжает в промпт. Единицы знания в укладке не участвуют вовсе — они
    * показаны все и всегда (design.md, решение 4): усечение спрятало бы
-   * нарушение дисциплины, ради которого нарушение и красное. Уложенные записи
-   * каталогов и записи единиц сливаются тем же порядком, каким их сливает
-   * глагол `index`.
+   * нарушение дисциплины, ради которого нарушение и заведено. Уложенные
+   * записи каталогов и записи единиц сливаются тем же порядком, каким их
+   * сливает глагол `index`.
    */
   private renderContextIndex(): string {
     const unitEntries = this.unitEntries();
@@ -574,6 +669,28 @@ function literalPrefix(pattern: string): string {
 
 function isPrefixPath(head: string, path: string): boolean {
   return path === head || path.startsWith(`${head}/`);
+}
+
+const HEAD_BOUNDARY = /^(---\r?\n)([\s\S]*?)(\r?\n---\r?\n?[\s\S]*)$/;
+
+/**
+ * Отмена единицы точечной правкой шапки: строка `status` меняется на
+ * `superseded`, а тело, заголовок, область и якоря (включая их ревизии)
+ * остаются байт в байт прежними. YAML не пересериализуется — знание не
+ * зависит от того, дословно ли движок воспроизводит чужой текст (design.md,
+ * решение 2).
+ */
+function withSupersededStatus(text: string, file: string): string {
+  const match = HEAD_BOUNDARY.exec(text);
+  if (match === null) {
+    throw new StepcastError(`Единица знания без шапки: ${file}`, { file });
+  }
+  const [open, header, rest] = [match[1], match[2], match[3]] as [string, string, string];
+  const statusLine = /^status:.*$/m;
+  const nextHeader = statusLine.test(header)
+    ? header.replace(statusLine, 'status: superseded')
+    : `${header}\nstatus: superseded`;
+  return `${open}${nextHeader}${rest}`;
 }
 
 /** Разбор единицы знания. Неполная шапка — отказ, а не молчаливый пропуск. */
