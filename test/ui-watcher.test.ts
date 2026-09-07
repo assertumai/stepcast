@@ -1,13 +1,20 @@
 import assert from 'node:assert/strict';
 import { readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { createWatcher } from '../src/ui/watcher.js';
 import { cleanupRun, removeRunWithStats } from '../src/core/run/cleanup.js';
 import { projectKey } from '../src/core/journal/paths.js';
 import { removeUsageRecords } from '../src/core/journal/usageStore.js';
+import type { BacklogOverview } from '../src/ui/backlog.js';
 import type { Overview } from '../src/ui/overview.js';
 import { makeJournalBed, seedRun } from './helpers.js';
+
+/** Минимальный, но валидный текст очереди с одним пунктом. */
+function backlogText(status: string): string {
+  return `# Очередь\n\n## work-item\n\nstatus: ${status}\ntitle: т\nwhy: з\ndone_when: к\n`;
+}
 
 describe('ui-dashboard: наблюдатель за корнем прогонов', () => {
   // Сценарий: «Новый прогон появляется сам»
@@ -248,6 +255,104 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
     assert.equal(lines.length, 1, 'сводка расхода — такой же файл журнала, как манифест');
     assert.match(lines[0] ?? '', /usage\.json/);
     assert.match(lines[0] ?? '', /bogus_field/);
+    watcher.dispose();
+  });
+
+  // Сценарий: «Статус пункта меняется на лету»
+  it('правка файла очереди проекта будит подписчика и доводит до него новое содержимое', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const file = join(projectRoot, 'backlog.md');
+    writeFileSync(file, backlogText('pending'));
+
+    const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+    const seen: Array<{ overview: Overview; backlog: BacklogOverview }> = [];
+    watcher.subscribe((overview, backlog) => seen.push({ overview, backlog }));
+
+    writeFileSync(file, backlogText('done'));
+    watcher.poll();
+
+    assert.equal(seen.length, 1, 'правка очереди должна дойти до подписчика');
+    assert.equal(seen[0]?.backlog.projects[0]?.items[0]?.status, 'done');
+    watcher.dispose();
+  });
+
+  // Сценарий: «Неизменный файл не перечитывается»
+  it('такт опроса без изменений подписчика не будит и очередь заново не разбирается', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+
+    const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+    const before = watcher.currentBacklog();
+    let calls = 0;
+    watcher.subscribe(() => (calls += 1));
+
+    watcher.poll();
+    watcher.poll();
+
+    assert.equal(calls, 0, 'неизменившийся файл очереди не должен порождать уведомлений');
+    assert.equal(
+      watcher.currentBacklog(),
+      before,
+      'без смены отпечатка очередь обязана остаться тем же значением, а не пересобираться заново',
+    );
+    watcher.dispose();
+  });
+
+  // Сценарий: «Изменение прогона не перечитывает очередь»
+  it('такт, где изменился прогон, а файл очереди нет, оставляет прежнее значение очереди', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+
+    const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+    const before = watcher.currentBacklog();
+    const seen: BacklogOverview[] = [];
+    watcher.subscribe((_overview, backlog) => seen.push(backlog));
+
+    // Прогон появился, очередь не тронута: отпечаток корня разошёлся, отпечаток
+    // очередей — нет.
+    seedRun(runsRoot, projectRoot, { runId: 'b' });
+    watcher.poll();
+
+    assert.equal(seen.length, 1, 'появление прогона обязано разбудить подписчика');
+    assert.equal(
+      seen[0],
+      before,
+      'очередь не менялась — разбирать сотни килобайт заново незачем, значение обязано остаться тем же',
+    );
+    assert.equal(watcher.currentBacklog(), before);
+    watcher.dispose();
+  });
+
+  it('проект, впервые появившийся в обзоре, получает свою очередь тем же тактом', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    // Файл очереди написан до первого прогона: сам по себе он проект в обзоре
+    // не заводит, и раздела у него нет, пока прогонов нет.
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+
+    const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+    assert.deepEqual(watcher.currentBacklog().projects, [], 'проекта без прогонов в очереди нет');
+
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    watcher.poll();
+
+    assert.equal(
+      watcher.currentBacklog().projects[0]?.items[0]?.slug,
+      'work-item',
+      'смена состава проектов обзора обязана пересобрать очередь, даже если файлы её не менялись',
+    );
+    watcher.dispose();
+  });
+
+  it('currentBacklog() отдаёт очередь без ожидания следующего опроса', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+
+    const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+    assert.equal(watcher.currentBacklog().projects[0]?.items[0]?.slug, 'work-item');
     watcher.dispose();
   });
 });

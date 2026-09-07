@@ -31,8 +31,13 @@ describe('ui-routes: разбор адресов', () => {
 
   it('экраны меню разбираются каждый в свой маршрут', () => {
     assert.deepEqual(parseRoute('/pipelines'), { page: 'pipelines' });
+    assert.deepEqual(parseRoute('/backlog'), { page: 'backlog' });
     assert.deepEqual(parseRoute('/settings'), { page: 'settings' });
     assert.deepEqual(parseRoute('/cleanup'), { page: 'cleanup' });
+  });
+
+  it('хвост за адресом экрана очереди ведёт на первый экран', () => {
+    assert.deepEqual(parseRoute('/backlog/что-то'), { page: 'runs' });
   });
 
   it('адрес каждого пункта меню ведёт на его же экран', () => {

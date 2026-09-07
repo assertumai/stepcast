@@ -14,6 +14,7 @@
 export type Route =
   | { readonly page: 'runs' }
   | { readonly page: 'pipelines' }
+  | { readonly page: 'backlog' }
   | { readonly page: 'usage'; readonly days?: number }
   | { readonly page: 'settings' }
   | { readonly page: 'cleanup' }
@@ -60,6 +61,7 @@ export const MENU: readonly {
 }[] = [
   { page: 'runs', href: '/', title: 'Прогоны', pages: ['runs', 'run'] },
   { page: 'pipelines', href: '/pipelines', title: 'Пайплайны', pages: ['pipelines'] },
+  { page: 'backlog', href: '/backlog', title: 'Бэклог', pages: ['backlog'] },
   { page: 'usage', href: '/usage', title: 'Расход', pages: ['usage'] },
   { page: 'cleanup', href: '/cleanup', title: 'Уборка', pages: ['cleanup'] },
   { page: 'settings', href: '/settings', title: 'Настройки', pages: ['settings'] },
@@ -100,6 +102,7 @@ export function parseRoute(pathname: string): Route {
 
   if (parts.length === 1) {
     if (parts[0] === 'pipelines') return { page: 'pipelines' };
+    if (parts[0] === 'backlog') return { page: 'backlog' };
     if (parts[0] === 'settings') return { page: 'settings' };
     if (parts[0] === 'cleanup') return { page: 'cleanup' };
     // Голый `/usage` — умолчание в 30 дней, тот же период, что и пресет `30d`.

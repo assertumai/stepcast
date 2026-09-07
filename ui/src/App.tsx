@@ -3,6 +3,7 @@ import type { JSX } from 'react';
 import { MENU } from '../../src/ui/routes';
 import { useLive } from './live';
 import { useRoute } from './router';
+import { Backlog } from './pages/Backlog';
 import { Cleanup } from './pages/Cleanup';
 import { Pipelines } from './pages/Pipelines';
 import { RunDetail } from './pages/RunDetail';
@@ -27,7 +28,7 @@ import { Usage } from './pages/Usage';
 export function App(): JSX.Element {
   const { route, navigate } = useRoute();
   const followedAddress = route.page === 'run' ? `${route.projectKey}/${route.runId}` : undefined;
-  const { overview, snapshot, state } = useLive(followedAddress);
+  const { overview, backlog, snapshot, state } = useLive(followedAddress);
   const liveLabel = {
     connecting: 'подключение к демону…',
     live: 'живое обновление',
@@ -72,6 +73,7 @@ export function App(): JSX.Element {
       <main className="content">
         {route.page === 'runs' ? <Runs overview={overview} navigate={navigate} /> : null}
         {route.page === 'pipelines' ? <Pipelines overview={overview} navigate={navigate} /> : null}
+        {route.page === 'backlog' ? <Backlog backlog={backlog} /> : null}
         {route.page === 'usage' ? (
           <Usage overview={overview} {...(route.days === undefined ? {} : { days: route.days })} navigate={navigate} />
         ) : null}

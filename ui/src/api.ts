@@ -269,6 +269,41 @@ export interface PipelinesOverview {
   readonly generatedAt: string;
 }
 
+/** Сверено построчно с `src/ui/backlog.ts`. */
+export interface BacklogItemView {
+  readonly slug: string;
+  readonly status: 'pending' | 'in_progress' | 'done' | 'failed';
+  readonly title: string;
+  /** Абзацы текста — раскрываются по требованию, а не занимают строку списка. */
+  readonly why: string;
+  readonly doneWhen: string;
+  /** Объявленная группа либо, если пункт её не назвал, слаг самого пункта. */
+  readonly group: string;
+  /** Объявленный вес пункта; пусто, когда поле не заполнено — без слова по умолчанию. */
+  readonly track: string;
+  readonly startedAt?: string;
+  readonly reason?: string;
+}
+
+export interface BacklogProjectView {
+  readonly projectKey: string;
+  readonly projectPath: string;
+  /** Пункты в порядке файла — тот же порядок и есть приоритет отбора. */
+  readonly items: readonly BacklogItemView[];
+  /**
+   * Файл очереди не разбирается: текст, файл и место внутри документа. Подсказки
+   * (`errorHint` у `PipelineView`) здесь нет — ядро очереди её не даёт.
+   */
+  readonly error?: string;
+  readonly errorFile?: string;
+  readonly errorAt?: string;
+}
+
+export interface BacklogOverview {
+  readonly projects: readonly BacklogProjectView[];
+  readonly generatedAt: string;
+}
+
 /** Сверено построчно с `UsageMeasure` (`src/ui/usage.ts`). */
 export interface UsageMeasure {
   readonly billableTokens: number;
@@ -516,6 +551,15 @@ export async function fetchStepOutput(options: {
 
 export async function fetchPipelines(): Promise<PipelinesOverview> {
   return json<PipelinesOverview>(await fetch('/api/pipelines'));
+}
+
+/**
+ * Прямой запрос очереди: типизированный клиент маршрута. Экран очереди его
+ * не зовёт — живой поток (`live.ts`) присылает то же самое событием `backlog`
+ * первым же кадром, и второй запрос дублировал бы уже пришедшее.
+ */
+export async function fetchBacklog(): Promise<BacklogOverview> {
+  return json<BacklogOverview>(await fetch('/api/backlog'));
 }
 
 /** Без `days` — весь период наблюдений. */

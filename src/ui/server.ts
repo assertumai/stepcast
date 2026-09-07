@@ -24,6 +24,7 @@ import { isStepcastError } from '../core/errors.js';
 import { parseDuration } from '../core/units.js';
 import type { Config } from '../core/config/resolve.js';
 import { dashboardHtml } from './assets.js';
+import type { BacklogOverview } from './backlog.js';
 import { readJournalFile } from './file.js';
 import { buildPipelines, createRegistryCache, type RegistryCache } from './pipelines.js';
 import { isApiPath, isSafeSegment } from './routes.js';
@@ -723,8 +724,20 @@ function handleEvents(
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
+  // Последняя отправленная очередь: пока наблюдатель отдаёт то же значение,
+  // слать её заново незачем. Обзор меняется по ходу прогона примерно
+  // ежесекундно, очередь — куда реже, а весит она сотни килобайт, и гнать её
+  // каждым кадром в каждую вкладку (включая страницу прогона, где она не
+  // нужна) — ровно то, чего избегает отдельное событие (design.md, Решение 5).
+  let sent: BacklogOverview | undefined;
+
   const push = (): void => {
     send('overview', watcher.current());
+    const backlog = watcher.currentBacklog();
+    if (backlog !== sent) {
+      sent = backlog;
+      send('backlog', backlog);
+    }
     if (followed === undefined) return;
     const snapshot = snapshotOrRecord(runsRoot, followed.key, followed.runId);
     if (snapshot !== undefined) send('run', snapshot);
@@ -806,6 +819,9 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
     switch (url.pathname) {
       case '/api/overview':
         sendJson(res, 200, watcher.current());
+        return;
+      case '/api/backlog':
+        sendJson(res, 200, watcher.currentBacklog());
         return;
       case '/api/run':
         handleSnapshot(runsRoot, url.searchParams.get('run'), res);

@@ -106,8 +106,13 @@ h2.project:first-of-type { margin-top: 0; }
   color: var(--dim);
   white-space: nowrap;
 }
-.badge.running { color: var(--run); border-color: var(--run); }
-.badge.success { color: var(--accent); border-color: var(--accent); }
+/* Статусы прогона и статусы пункта очереди делят одни и те же три цвета:
+   идущее — цветом хода, завершённое — цветом успеха, отказавшее — цветом
+   отказа. Ожидающий пункт (`pending`) остаётся серым бейджем по умолчанию. */
+.badge.running,
+.badge.in_progress { color: var(--run); border-color: var(--run); }
+.badge.success,
+.badge.done { color: var(--accent); border-color: var(--accent); }
 .badge.failed,
 .badge.budget_exceeded,
 .badge.canceled { color: var(--fail); border-color: var(--fail); }

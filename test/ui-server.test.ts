@@ -443,15 +443,16 @@ describe('ui-dashboard: HTTP-витрина', () => {
     const stream = openStream(t, server, '/api/events');
     await settle();
 
-    assert.equal(stream.events.length, 1);
-    assert.equal(stream.events[0]?.event, 'overview');
+    // Каждый кадр несёт и обзор, и очередь — тем же потоком, той же подпиской.
+    assert.deepEqual(stream.events.map((event) => event.event), ['overview', 'backlog']);
     assert.deepEqual(pick(stream.events[0]?.data, 'projects'), []);
 
     seedRun(runsRoot, projectRoot, { runId: 'новый' });
     await settle(300);
 
-    assert.ok(stream.events.length > 1, 'появление прогона должно дойти до клиента');
-    assert.equal(pick(stream.events.at(-1)?.data, 'projects', 0, 'runs', 0, 'runId'), 'новый');
+    const overviews = stream.events.filter((event) => event.event === 'overview');
+    assert.ok(overviews.length > 1, 'появление прогона должно дойти до клиента');
+    assert.equal(pick(overviews.at(-1)?.data, 'projects', 0, 'runs', 0, 'runId'), 'новый');
   });
 
   it('при подписке на прогон присылает и его снимок', async (t) => {
@@ -465,9 +466,9 @@ describe('ui-dashboard: HTTP-витрина', () => {
 
     assert.deepEqual(
       stream.events.map((item) => item.event),
-      ['overview', 'run'],
+      ['overview', 'backlog', 'run'],
     );
-    assert.equal(pick(stream.events[1]?.data, 'runId'), 'a');
+    assert.equal(pick(stream.events[2]?.data, 'runId'), 'a');
   });
 
   // Сценарий: «Закрытая вкладка не роняет демон»
@@ -507,6 +508,84 @@ describe('ui-dashboard: HTTP-витрина', () => {
     });
 
     assert.equal(code, 405);
+  });
+});
+
+const BACKLOG_ITEM = (status: string): string =>
+  `# Очередь\n\n## work-item\n\nstatus: ${status}\ntitle: т\nwhy: з\ndone_when: к\n`;
+
+describe('ui-dashboard: маршрут и поток очереди', () => {
+  it('отдаёт очереди проектов маршрутом и страницу экрана своим адресом', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), BACKLOG_ITEM('pending'));
+    const dashboard = ensureDashboard(t);
+    const server = await startServer(t, { runsRoot });
+
+    const backlog = await fetchJson(server, '/api/backlog');
+    assert.equal(backlog.code, 200);
+    assert.equal(pick(backlog.json, 'projects', 0, 'items', 0, 'slug'), 'work-item');
+
+    const page = await fetchPath(server, '/backlog');
+    assert.equal(page.code, 200);
+    assert.equal(page.body, readFileSync(dashboard, 'utf8'));
+  });
+
+  // Сценарий: «Статус пункта меняется на лету»
+  it('шлёт по SSE событие backlog первым кадром и после правки файла очереди', async (t) => {
+    // Прогон и файл очереди заводятся уже после старта наблюдателя — иначе
+    // первый же такт `backfillUsageStore` (запускается в createUiServer)
+    // сам меняет отпечаток хранилища расхода и даёт лишний кадр, не связанный
+    // с очередью вовсе.
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const watcher = startWatcher(t, runsRoot, 20);
+    const server = await startServer(t, { runsRoot, watcher });
+
+    const stream = openStream(t, server, '/api/events');
+    await settle();
+
+    assert.deepEqual(
+      stream.events.map((event) => event.event),
+      ['overview', 'backlog'],
+    );
+    assert.deepEqual(pick(stream.events[1]?.data, 'projects'), []);
+
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), BACKLOG_ITEM('pending'));
+    await settle(300);
+
+    const events = stream.events.filter((event) => event.event === 'backlog');
+    assert.equal(
+      pick(events.at(-1)?.data, 'projects', 0, 'items', 0, 'status'),
+      'pending',
+      'появление файла очереди должно дойти без перезагрузки',
+    );
+  });
+
+  // Сценарий: «Изменение прогона не перечитывает очередь»
+  it('не повторяет кадр очереди, когда изменился только прогон', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), BACKLOG_ITEM('pending'));
+    const watcher = startWatcher(t, runsRoot, 20);
+    const server = await startServer(t, { runsRoot, watcher });
+
+    const stream = openStream(t, server, '/api/events');
+    await settle();
+
+    // Очередь не трогаем — меняется только корень прогонов.
+    seedRun(runsRoot, projectRoot, { runId: 'b' });
+    await settle(300);
+
+    assert.ok(
+      stream.events.filter((event) => event.event === 'overview').length > 1,
+      'появление прогона обязано дойти обзором',
+    );
+    assert.equal(
+      stream.events.filter((event) => event.event === 'backlog').length,
+      1,
+      'очередь весит сотни килобайт: неизменной её шлют один раз, первым кадром',
+    );
   });
 });
 
