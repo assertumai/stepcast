@@ -12,6 +12,9 @@
  * обзора лишь те поля, по которым он фильтрует и сортирует.
  */
 
+import type { FilterOption } from './filters.js';
+export type { FilterOption } from './filters.js';
+
 /** Прогон обзора — в объёме, нужном отбору и порядку. */
 export interface RunLike {
   readonly runId: string;
@@ -72,11 +75,6 @@ export function describePipelineFilterValue(value: string): string {
   if (value === 'unnamed') return 'без имени';
   const sep = value.indexOf(':');
   return sep === -1 ? value : value.slice(sep + 1);
-}
-
-export interface FilterOption {
-  readonly value: string;
-  readonly label: string;
 }
 
 export interface RunFilterValues {

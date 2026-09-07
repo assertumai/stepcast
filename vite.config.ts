@@ -40,7 +40,9 @@ export default defineConfig({
       // демоном модули (`routes.ts` — разбор адресов, `grouping.ts` — склейка
       // прогонов с пайплайнами, `format.ts` — форматирование величин,
       // `transcript.ts` — разбор потока шага в записи хода, `runsView.ts` —
-      // фильтры и порядок списка прогонов).
+      // фильтры и порядок списка прогонов, `filters.ts` — общее обоим экранам
+      // правило «выбранное значение фильтра не исчезает», `backlogView.ts` —
+      // нумерация, фильтры и порядок очереди улучшений).
       // Целый корень репозитория здесь означал бы,
       // что любая открытая в браузере страница читает через `/@fs/` что
       // угодно из рабочего дерева.
@@ -52,6 +54,8 @@ export default defineConfig({
         join(ROOT, 'src', 'ui', 'format.ts'),
         join(ROOT, 'src', 'ui', 'transcript.ts'),
         join(ROOT, 'src', 'ui', 'runsView.ts'),
+        join(ROOT, 'src', 'ui', 'filters.ts'),
+        join(ROOT, 'src', 'ui', 'backlogView.ts'),
       ],
     },
   },

@@ -226,6 +226,10 @@ table.runs td.check-cell { width: 1.6rem; text-align: center; padding-left: .3re
 table.runs td.check-cell input,
 table.runs th.check-cell input { accent-color: var(--accent); }
 
+/* Колонка планового номера очереди: узкая и числовая, подпись называет план, а не строку. */
+table.runs th.plan-no,
+table.runs td.plan-no { width: 3rem; }
+
 /*
  * Колонка проекта: длинный путь сокращён на глаз, полный — в `title`.
  *

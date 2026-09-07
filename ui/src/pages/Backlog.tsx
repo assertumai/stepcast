@@ -1,29 +1,53 @@
-import type { JSX } from 'react';
+import { useMemo, useState, type JSX } from 'react';
 
 import type { BacklogItemView, BacklogOverview, BacklogProjectView } from '../api';
 import { fmtTime } from '../format';
+import { SortHeader } from '../SortHeader';
+import {
+  viewBacklog,
+  DEFAULT_ORDER,
+  EMPTY_BACKLOG_FILTERS,
+  type BacklogFilters,
+  type BacklogOrderDirection,
+  type BacklogSectionView,
+} from '../../../src/ui/backlogView';
 
 /**
  * Экран очереди улучшений: раздел на проект, внутри — пункты в порядке
- * файла (design.md, Решение 3). Данные приходят живым потоком (`live.ts`,
- * событие `backlog`) — отдельного запроса экран не делает: первый кадр
- * потока и есть первая загрузка.
+ * файла, с полосой фильтров по статусу и проекту и выбираемым направлением
+ * планового порядка (design.md изменения ui-backlog-filters-sort). Данные
+ * приходят живым потоком (`live.ts`, событие `backlog`) — отдельного запроса
+ * экран не делает: первый кадр потока и есть первая загрузка.
+ *
+ * Отбор, нумерация и порядок считает чистый модуль `src/ui/backlogView.ts` —
+ * здесь только состояние экрана (что выбрано) и отрисовка, тем же разделением,
+ * что у списка прогонов (`Runs.tsx`).
  */
+
+// Единственная сортируемая величина очереди (design.md, Решение 2): имя
+// метрики нужно только затем, что `SortHeader` — общий с прогонами компонент.
+const PLAN_METRIC = 'plan';
 
 /**
  * Отказ разбора: текст, файл и место — тем же приёмом, каким показана карточка
  * неразбираемого пайплайна (`src/ui/pipelines.ts`, `PipelineError`). Подсказки
  * в этом составе нет: ядро очереди её не заполняет (`src/ui/backlog.ts`).
  */
-function BacklogError({ project }: { readonly project: BacklogProjectView }): JSX.Element {
+function BacklogError({
+  error,
+  detail,
+}: {
+  readonly error: string;
+  readonly detail: { readonly errorFile?: string; readonly errorAt?: string } | undefined;
+}): JSX.Element {
   return (
     <>
-      <p className="error">{project.error}</p>
-      {project.errorFile === undefined && project.errorAt === undefined ? null : (
+      <p className="error">{error}</p>
+      {detail === undefined || (detail.errorFile === undefined && detail.errorAt === undefined) ? null : (
         <p className="note dim">
-          где: {project.errorFile === undefined ? null : <span className="mono">{project.errorFile}</span>}
-          {project.errorFile === undefined || project.errorAt === undefined ? null : ' · '}
-          {project.errorAt === undefined ? null : <span className="mono">{project.errorAt}</span>}
+          где: {detail.errorFile === undefined ? null : <span className="mono">{detail.errorFile}</span>}
+          {detail.errorFile === undefined || detail.errorAt === undefined ? null : ' · '}
+          {detail.errorAt === undefined ? null : <span className="mono">{detail.errorAt}</span>}
         </p>
       )}
     </>
@@ -33,8 +57,8 @@ function BacklogError({ project }: { readonly project: BacklogProjectView }): JS
 /**
  * Заголовок — сворачиваемая подробность: `why` и `done_when` — абзацы текста,
  * которые список из многих пунктов сделали бы нечитаемым, будь они колонкой
- * (design.md, Решение 3). Раскрытие держится в самой ячейке заголовка, а не
- * отдельной строкой списка.
+ * (design.md изменения ui-backlog-view, Решение 3). Раскрытие держится в самой
+ * ячейке заголовка, а не отдельной строкой списка.
  */
 function TitleCell({ item }: { readonly item: BacklogItemView }): JSX.Element {
   return (
@@ -57,14 +81,24 @@ function OutcomeCell({ item }: { readonly item: BacklogItemView }): JSX.Element 
   return null;
 }
 
-function ProjectSection({ project }: { readonly project: BacklogProjectView }): JSX.Element {
+function ProjectSection({
+  section,
+  errorDetail,
+  order,
+  onSort,
+}: {
+  readonly section: BacklogSectionView<BacklogItemView>;
+  readonly errorDetail: { readonly errorFile?: string; readonly errorAt?: string } | undefined;
+  readonly order: BacklogOrderDirection;
+  readonly onSort: () => void;
+}): JSX.Element {
   return (
     <section>
-      <h2 className="project">{project.projectPath}</h2>
+      <h2 className="project">{section.projectPath}</h2>
 
-      {project.error !== undefined ? (
-        <BacklogError project={project} />
-      ) : project.items.length === 0 ? (
+      {section.error !== undefined ? (
+        <BacklogError error={section.error} detail={errorDetail} />
+      ) : section.items.length === 0 ? (
         // Файл очереди есть, но пунктов в нём нет — например, все разобраны в
         // архив. Таблица из одних заголовков колонок об этом не говорит ничего.
         <p className="empty">Очередь пуста: в файле нет ни одного пункта.</p>
@@ -73,6 +107,13 @@ function ProjectSection({ project }: { readonly project: BacklogProjectView }): 
           <table className="runs">
             <thead>
               <tr>
+                <SortHeader
+                  label="План"
+                  metric={PLAN_METRIC}
+                  order={{ metric: PLAN_METRIC, direction: order }}
+                  onSort={onSort}
+                  className="num plan-no"
+                />
                 <th>Слаг</th>
                 <th>Статус</th>
                 <th>Заголовок</th>
@@ -82,8 +123,9 @@ function ProjectSection({ project }: { readonly project: BacklogProjectView }): 
               </tr>
             </thead>
             <tbody>
-              {project.items.map((item) => (
+              {section.items.map(({ planNumber, item }) => (
                 <tr key={item.slug}>
+                  <td className="num mono small plan-no">{planNumber}</td>
                   <td className="mono small">{item.slug}</td>
                   <td>
                     <span className={`badge ${item.status}`}>{item.status}</span>
@@ -106,7 +148,46 @@ function ProjectSection({ project }: { readonly project: BacklogProjectView }): 
   );
 }
 
+// Поле фильтра не пишет `undefined` явно (`exactOptionalPropertyTypes`):
+// пустой выбор убирает ключ через деструктуризацию, а не обнуляет значение.
+function setStatusFilter(filters: BacklogFilters, value: string): BacklogFilters {
+  if (value === '') {
+    const { status: _status, ...rest } = filters;
+    return rest;
+  }
+  return { ...filters, status: value };
+}
+
+function setProjectFilter(filters: BacklogFilters, value: string): BacklogFilters {
+  if (value === '') {
+    const { project: _project, ...rest } = filters;
+    return rest;
+  }
+  return { ...filters, project: value };
+}
+
 export function Backlog({ backlog }: { readonly backlog: BacklogOverview | undefined }): JSX.Element {
+  const [filters, setFilters] = useState<BacklogFilters>(EMPTY_BACKLOG_FILTERS);
+  const [order, setOrder] = useState<BacklogOrderDirection>(DEFAULT_ORDER);
+
+  const projects = backlog?.projects ?? [];
+  const view = useMemo(() => viewBacklog(projects, filters, order), [projects, filters, order]);
+  // `backlogView.ts` знает раздел лишь в объёме, нужном отбору (`error`, без
+  // места внутри документа): файл и место для подсказки «где» берутся отсюда,
+  // из уже пришедшего обзора, по ключу проекта.
+  const errorDetails = useMemo(() => {
+    const map = new Map<string, Pick<BacklogProjectView, 'errorFile' | 'errorAt'>>();
+    for (const project of projects) {
+      if (project.errorFile !== undefined || project.errorAt !== undefined) {
+        map.set(project.projectKey, {
+          ...(project.errorFile === undefined ? {} : { errorFile: project.errorFile }),
+          ...(project.errorAt === undefined ? {} : { errorAt: project.errorAt }),
+        });
+      }
+    }
+    return map;
+  }, [projects]);
+
   if (backlog === undefined) return <p className="empty">Загрузка…</p>;
 
   if (backlog.projects.length === 0) {
@@ -118,12 +199,80 @@ export function Backlog({ backlog }: { readonly backlog: BacklogOverview | undef
     );
   }
 
+  // Умолчание экрана — все статусы, все проекты, порядок файла (design.md,
+  // Решение 6): тем же правилом, что у списка прогонов, сброс возвращает все
+  // три сразу.
+  const isDefaultView = filters.status === undefined && filters.project === undefined && order === DEFAULT_ORDER;
+  const resetView = (): void => {
+    setFilters(EMPTY_BACKLOG_FILTERS);
+    setOrder(DEFAULT_ORDER);
+  };
+  const onSort = (): void => setOrder((current) => (current === 'asc' ? 'desc' : 'asc'));
+
   return (
     <>
       <h1>Бэклог</h1>
-      {backlog.projects.map((project) => (
-        <ProjectSection key={project.projectKey} project={project} />
-      ))}
+
+      <div className="filters">
+        <select
+          aria-label="Статус"
+          value={filters.status ?? ''}
+          onChange={(event) => setFilters((current) => setStatusFilter(current, event.target.value))}
+        >
+          <option value="">все статусы</option>
+          {view.statusCounts.map((entry) => (
+            <option key={entry.status} value={entry.status}>
+              {entry.status} ({entry.count})
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label="Проект"
+          value={filters.project ?? ''}
+          onChange={(event) => setFilters((current) => setProjectFilter(current, event.target.value))}
+        >
+          <option value="">все проекты</option>
+          {view.projectOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        {isDefaultView ? null : (
+          <>
+            {/* Сброс стоит, пока вид не умолчание; числа — пока список и вправду
+                сужен: «показано 73 из 73» при одном лишь обратном порядке не
+                сообщает ничего (design.md, Решение 6). */}
+            {view.shown === view.total ? null : (
+              <span className="small dim">
+                показано {view.shown} из {view.total}
+              </span>
+            )}
+            <button className="plain" onClick={resetView} title="Снять фильтры и вернуть порядок файла">
+              сбросить
+            </button>
+          </>
+        )}
+      </div>
+
+      {view.sections.length === 0 ? (
+        <p className="empty">
+          Под фильтры не подошёл ни один пункт.{' '}
+          <button className="plain" onClick={resetView}>
+            Сбросить фильтры
+          </button>
+        </p>
+      ) : (
+        view.sections.map((section) => (
+          <ProjectSection
+            key={section.projectKey}
+            section={section}
+            errorDetail={errorDetails.get(section.projectKey)}
+            order={order}
+            onSort={onSort}
+          />
+        ))
+      )}
     </>
   );
 }

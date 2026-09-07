@@ -26,6 +26,8 @@
     "../src/ui/format.ts",
     "../src/ui/transcript.ts",
     "../src/ui/runsView.ts",
+    "../src/ui/filters.ts",
+    "../src/ui/backlogView.ts",
     "../vite.config.ts"
   ]
 }

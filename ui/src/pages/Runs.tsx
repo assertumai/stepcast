@@ -12,6 +12,7 @@ import {
 } from '../api';
 import { fmtBytes, fmtDuration, fmtMoney, fmtTime, fmtTokens, pluralRuns } from '../format';
 import { runHref } from '../router';
+import { withCurrentOption } from '../../../src/ui/filters';
 import {
   collectFilterValues,
   describePipelineFilterValue,
@@ -19,11 +20,11 @@ import {
   viewRuns,
   DEFAULT_SORT,
   EMPTY_FILTERS,
-  type FilterOption,
   type RunFilters,
   type SortMetric,
   type SortOrder,
 } from '../../../src/ui/runsView';
+import { SortHeader } from '../SortHeader';
 
 /**
  * Прогоны таблицей — всех проектов разом.
@@ -256,20 +257,6 @@ function lastSegment(path: string): string {
   return idx === -1 ? trimmed : trimmed.slice(idx + 1);
 }
 
-/**
- * Список значений фильтра с текущим выбором внутри, даже если обзор его уже
- * не содержит (Решение 6): молча переключить линзу на другое значение —
- * значит показать не то, что выбрал человек.
- */
-function withCurrentOption(
-  options: readonly FilterOption[],
-  current: string | undefined,
-  labelFor: (value: string) => string,
-): readonly FilterOption[] {
-  if (current === undefined || options.some((option) => option.value === current)) return options;
-  return [...options, { value: current, label: labelFor(current) }];
-}
-
 // Поле фильтра не пишет `undefined` явно (`exactOptionalPropertyTypes`):
 // пустой выбор убирает ключ через деструктуризацию, а не обнуляет значение.
 function setProjectFilter(filters: RunFilters, value: string): RunFilters {
@@ -294,38 +281,6 @@ function setStatusFilter(filters: RunFilters, value: string): RunFilters {
     return rest;
   }
   return { ...filters, status: value };
-}
-
-/**
- * Заголовок сортируемой колонки: первое нажатие — порядок по ней, повторное —
- * обратный. Текущая колонка и направление видны не только цветом — знаком и
- * `aria-sort`, тот же индикатор, что читает программа чтения с экрана.
- */
-function SortHeader({
-  label,
-  metric,
-  order,
-  onSort,
-  className,
-}: {
-  readonly label: string;
-  readonly metric: SortMetric;
-  readonly order: SortOrder;
-  readonly onSort: (metric: SortMetric) => void;
-  readonly className?: string;
-}): JSX.Element {
-  const active = order.metric === metric;
-  const ariaSort = active ? (order.direction === 'asc' ? 'ascending' : 'descending') : 'none';
-  const arrow = active ? (order.direction === 'asc' ? '▲' : '▼') : '';
-  const classes = ['sortable', active ? 'active' : '', className ?? ''].filter((value) => value !== '').join(' ');
-  return (
-    <th className={classes} aria-sort={ariaSort}>
-      <button type="button" className="plain sort-button" onClick={() => onSort(metric)}>
-        {label}
-        {arrow === '' ? '' : ` ${arrow}`}
-      </button>
-    </th>
-  );
 }
 
 const OUTCOME_TITLE: Readonly<Record<string, string>> = {
@@ -569,11 +524,14 @@ export function Runs({
     });
   };
 
-  const onSort = (metric: SortMetric): void => {
+  // `SortHeader` знает величину лишь строкой (она общая с колонкой планового
+  // номера очереди); здесь она всегда одно из четырёх значений `SortMetric`.
+  const onSort = (metric: string): void => {
+    const next = metric as SortMetric;
     setOrder((current) =>
-      current.metric === metric
-        ? { metric, direction: current.direction === 'desc' ? 'asc' : 'desc' }
-        : { metric, direction: 'desc' },
+      current.metric === next
+        ? { metric: next, direction: current.direction === 'desc' ? 'asc' : 'desc' }
+        : { metric: next, direction: 'desc' },
     );
   };
 
