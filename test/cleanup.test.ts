@@ -314,7 +314,7 @@ describe('run-cleanup: отбор по признаку', () => {
     });
     makeStatusRun(runsRoot, projectRoot, 'done', 'success');
 
-    const selected = selectCandidates(runsRoot, { abandoned: true });
+    const { selected } = selectCandidates(runsRoot, { abandoned: true });
 
     assert.deepEqual(
       selected.map((c) => c.address),
@@ -331,7 +331,7 @@ describe('run-cleanup: отбор по признаку', () => {
     makeStatusRun(runsRoot, projectRoot, 'canceled', 'canceled');
     makeStatusRun(runsRoot, projectRoot, 'success', 'success');
 
-    const selected = selectCandidates(runsRoot, { failed: true });
+    const { selected } = selectCandidates(runsRoot, { failed: true });
 
     assert.deepEqual(
       selected.map((c) => c.address).sort(),
@@ -357,7 +357,7 @@ describe('run-cleanup: отбор по признаку', () => {
       finished_at: '2026-08-19T12:00:00.000Z',
     });
 
-    const selected = selectCandidates(runsRoot, { olderThanMs: 10 * 86_400_000 }, { now });
+    const { selected } = selectCandidates(runsRoot, { olderThanMs: 10 * 86_400_000 }, { now });
 
     assert.deepEqual(
       selected.map((c) => c.address).sort(),
@@ -375,7 +375,7 @@ describe('run-cleanup: отбор по признаку', () => {
       finished_at: '2026-07-11T00:00:00.000Z', // 40 дней назад
     });
 
-    const selected = selectCandidates(
+    const { selected } = selectCandidates(
       runsRoot,
       { failed: true, olderThanMs: 7 * 86_400_000 },
       { now },
@@ -398,7 +398,7 @@ describe('run-cleanup: отбор по признаку', () => {
     makeStatusRun(runsRoot, otherProjectRoot, 'failed-b', 'failed');
     makeStatusRun(runsRoot, otherProjectRoot, 'success-b', 'success');
 
-    const selected = selectCandidates(runsRoot, { failed: true });
+    const { selected } = selectCandidates(runsRoot, { failed: true });
 
     assert.deepEqual(
       selected.map((c) => c.address).sort(),
@@ -416,7 +416,7 @@ describe('run-cleanup: отбор по признаку', () => {
     makeStatusRun(runsRoot, projectRoot, 'failed-a', 'failed');
     makeStatusRun(runsRoot, otherProjectRoot, 'failed-b', 'failed');
 
-    const selected = selectCandidates(runsRoot, { failed: true }, { project: key });
+    const { selected } = selectCandidates(runsRoot, { failed: true }, { project: key });
 
     assert.deepEqual(
       selected.map((c) => c.address),
@@ -431,7 +431,7 @@ describe('run-cleanup: отбор по признаку', () => {
     const journal = makeRun(runsRoot, projectRoot, 'run-a');
     writeFileSync(join(journal.paths.dir, 'груз.bin'), 'x'.repeat(10_000));
 
-    const [selected] = selectCandidates(runsRoot, { olderThanMs: 0 });
+    const { selected: [selected] } = selectCandidates(runsRoot, { olderThanMs: 0 });
 
     assert.ok(selected !== undefined);
     assert.ok(selected.sizeBytes >= 10_000, 'размер должен считаться обходом содержимого');
@@ -444,7 +444,7 @@ describe('run-cleanup: отбор по признаку', () => {
     const journal = makeRun(runsRoot, projectRoot, 'broken');
     writeFileSync(journal.paths.manifest, '{ не json');
 
-    const selected = selectCandidates(runsRoot, { olderThanMs: 0 });
+    const { selected } = selectCandidates(runsRoot, { olderThanMs: 0 });
 
     assert.deepEqual(
       selected.map((c) => c.address),
@@ -463,13 +463,101 @@ describe('run-cleanup: отбор по признаку', () => {
     });
     writeFileSync(journal.paths.status, '{ не json');
 
-    const selected = selectCandidates(runsRoot, { failed: true });
+    const { selected } = selectCandidates(runsRoot, { failed: true });
 
     assert.deepEqual(
       selected.map((c) => c.address),
       [`${key}/broken-state`],
     );
     assert.equal(selected[0]?.unreadable, false, 'манифест цел — прогон читаем');
+  });
+
+  // Сценарий спеки run-cleanup «Прогон с испорченным состоянием при отборе по
+  // признаку»: журнал не читается ни состоянием, ни манифестом — `statusOf`
+  // отдаёт undefined, и признаки «оборванные»/«отказавшие» его не берут.
+  it('прогон с нечитаемым журналом не отбирается по признаку и считается непроверенным', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = makeStatusRun(runsRoot, projectRoot, 'unknown', 'failed');
+    writeFileSync(journal.paths.manifest, '{ не json');
+    writeFileSync(journal.paths.status, '{ не json');
+
+    const { selected, uncheckedCount } = selectCandidates(runsRoot, { abandoned: true, failed: true });
+
+    assert.deepEqual(selected, []);
+    assert.equal(uncheckedCount, 1);
+  });
+
+  // Сценарий «Тот же прогон при отборе по сроку»: непроверенный статусом
+  // прогон остаётся кандидатом по сроку — возраст берётся по каталогу, — и
+  // непроверенным уже не числится: он в списке, и говорить о нём отдельно
+  // значило бы посчитать его дважды.
+  it('тот же прогон с нечитаемым журналом отобран по сроку и в непроверенные не попадает', () => {
+    const { runsRoot, projectRoot } = bed();
+    const key = projectKey(projectRoot);
+    const journal = makeStatusRun(runsRoot, projectRoot, 'unknown', 'failed');
+    writeFileSync(journal.paths.manifest, '{ не json');
+    writeFileSync(journal.paths.status, '{ не json');
+
+    const { selected, uncheckedCount } = selectCandidates(runsRoot, { olderThanMs: 0 });
+
+    assert.deepEqual(
+      selected.map((c) => c.address),
+      [`${key}/unknown`],
+    );
+    assert.equal(uncheckedCount, 0, 'отобранный прогон не считается непроверенным');
+  });
+
+  // Признак и срок вместе: непроверенный прогон, которого взял срок, в счёт не
+  // идёт, а тот, до кого срок не дотянулся, — идёт. Возраст такого прогона
+  // считается по времени каталога, поэтому «взял» и «не взял» задаются
+  // порогом: нулевой берёт оба, годовой — ни одного.
+  it('при отборе признаком и сроком непроверенным числится только не отобранный', () => {
+    const { runsRoot, projectRoot } = bed();
+    for (const runId of ['первый', 'второй']) {
+      const journal = makeStatusRun(runsRoot, projectRoot, runId, 'failed');
+      writeFileSync(journal.paths.manifest, '{ не json');
+      writeFileSync(journal.paths.status, '{ не json');
+    }
+
+    const takenByAge = selectCandidates(runsRoot, { failed: true, olderThanMs: 0 });
+    assert.equal(takenByAge.selected.length, 2, 'нулевой порог берёт оба каталога');
+    assert.equal(takenByAge.uncheckedCount, 0, 'отобранные непроверенными не числятся');
+
+    const notTaken = selectCandidates(runsRoot, { failed: true, olderThanMs: 365 * 86_400_000 });
+    assert.deepEqual(notTaken.selected, []);
+    assert.equal(notTaken.uncheckedCount, 2, 'срок их не достал — оба остались непроверенными');
+  });
+
+  // Сценарий «Читаемые прогоны непроверенными не считаются».
+  it('на корне с читаемыми журналами число непроверенных нулевое', () => {
+    const { runsRoot, projectRoot } = bed();
+    makeStatusRun(runsRoot, projectRoot, 'ok', 'success');
+
+    const { uncheckedCount } = selectCandidates(runsRoot, { failed: true });
+
+    assert.equal(uncheckedCount, 0);
+  });
+
+  // Число непроверенных считается по той же области, что и отбор: один
+  // проект — если назван, все проекты корня — если нет.
+  it('число непроверенных считается по области отбора, а не по всему корню', () => {
+    const { runsRoot, projectRoot } = bed();
+    const otherProjectRoot = otherProject();
+    const key = projectKey(projectRoot);
+
+    const own = makeStatusRun(runsRoot, projectRoot, 'broken', 'failed');
+    writeFileSync(own.paths.manifest, '{ не json');
+    writeFileSync(own.paths.status, '{ не json');
+
+    const other = makeStatusRun(runsRoot, otherProjectRoot, 'broken-other', 'failed');
+    writeFileSync(other.paths.manifest, '{ не json');
+    writeFileSync(other.paths.status, '{ не json');
+
+    const whole = selectCandidates(runsRoot, { failed: true });
+    assert.equal(whole.uncheckedCount, 2);
+
+    const scoped = selectCandidates(runsRoot, { failed: true }, { project: key });
+    assert.equal(scoped.uncheckedCount, 1);
   });
 
   // Сценарий: «Отбор ничего не трогает»
@@ -492,7 +580,7 @@ describe('run-cleanup: отбор по явным адресам', () => {
     writeFileSync(join(journal.paths.dir, 'груз.bin'), 'x'.repeat(10_000));
 
     const now = new Date();
-    const byTrait = selectCandidates(runsRoot, { failed: true }, { now });
+    const { selected: byTrait } = selectCandidates(runsRoot, { failed: true }, { now });
     const byAddress = selectByAddresses(runsRoot, [{ key, runId: 'failed' }], now);
 
     assert.equal(byAddress.length, 1);

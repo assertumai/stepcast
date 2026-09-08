@@ -163,31 +163,101 @@ function parseRecordLine(line: string): UsageRecord | undefined {
 /** Хранилища, перенос которых уже выполнен в этом процессе (Решение 9). */
 const backfilled = new Set<string>();
 
+export interface CatchUpUsageStoreOptions {
+  /** Сузить обход до одного проекта — иначе обходятся все проекты корня. */
+  readonly project?: string;
+}
+
 /**
- * Перенести в хранилище прогоны, которые есть на диске корня прогонов, но
- * которых в хранилище ещё нет. Выполняется не чаще одного раза за время жизни
- * процесса на хранилище (ключ — путь файла хранилища): повторный вызов —
- * дешёвый no-op, поэтому вызывать функцию можно откуда угодно, где хранилище
- * открывается, не думая, кто уже успел его открыть раньше.
+ * Перенести в хранилище прогоны, которые есть на диске области, но которых в
+ * хранилище ещё нет, — без защёлки: вызывать можно на каждый отбор, а не
+ * только на открытие хранилища (design.md изменения
+ * cleanup-selection-returns-empty, Решение 1).
+ *
+ * Отличие от `backfillUsageStore` — не в переносе (он тот же), а в том, когда
+ * его можно повторить: `backfillUsageStore` защищён множеством `backfilled` и
+ * годится для горячих путей (`GET /api/usage`, сборка обзора), где повторный
+ * полный обход корня был бы дорог и не нужен — хранилище пополняется редко.
+ * Отбор, который человек запросил и ждёт, — не горячий путь: он уже обходит
+ * каждый каталог прогона рекурсивно ради размера, и место, где отставание
+ * хранилища от диска видно и вредно. Обеим функциям нужны разные имена, чтобы
+ * разница была видна в местах вызова, а не только в комментарии здесь.
  *
  * Переносятся и незавершённые прогоны — оборванные, застрявшие в `running`:
  * их расход накоплен и реален, а исход берётся из состояния как есть. Если
  * прогон впоследствии завершится, его запись перезапишется терминальной
  * (Решение 6) — перенос её не защищает от этого и не должен.
  */
+export function catchUpUsageStore(runsRoot: string, options: CatchUpUsageStoreOptions = {}): void {
+  const present = usageRecordAddresses(runsRoot);
+  const keys =
+    options.project !== undefined
+      ? [options.project]
+      : listProjects(runsRoot).map((project) => project.key);
+
+  for (const key of keys) {
+    for (const runId of listRunsByKey(runsRoot, key)) {
+      if (!catchUpRun(runsRoot, key, runId, present)) return;
+    }
+  }
+}
+
+/**
+ * Догон по явному списку прогонов: областью служит сам список, обходить корень
+ * незачем. Нужен отбору по названным адресам (`GET /api/runs?run=…`), которому
+ * хранилище нужно только ради метки «записи нет» у этих самых прогонов.
+ */
+export function catchUpUsageRecords(
+  runsRoot: string,
+  addresses: readonly { readonly key: string; readonly runId: string }[],
+): void {
+  const present = usageRecordAddresses(runsRoot);
+  for (const { key, runId } of addresses) {
+    if (!catchUpRun(runsRoot, key, runId, present)) return;
+  }
+}
+
+/**
+ * Один шаг догона. Отвечает, можно ли догону продолжать: `false` — дозапись
+ * отказала.
+ *
+ * Догон дописывает производное (хранилище выводится из каталогов прогонов) и
+ * зовётся с путей, которые сами по себе — чтение: отбор, который человек
+ * запросил и ждёт. Отказ дозаписи — корень только для чтения, кончилось место,
+ * `usage.ndjson` заведён другим пользователем — обязан вырождать догон в
+ * «отбор без свежих записей», а не в отказ отбора и не в падение демона:
+ * маршруты витрины синхронны, и брошенное отсюда исключение уронило бы весь
+ * процесс. Обход при этом прекращается на первом же отказе: причина у всех
+ * записей одна, и пятьсот одинаковых отказов подряд — только задержка ответа.
+ *
+ * Дозапись по просьбе удаления (`ensureUsageRecord`) этой пощады не знает и не
+ * должна: там запись обязана лечь на диск до `rmSync`, и молчание стоило бы
+ * статистики прогона.
+ */
+function catchUpRun(runsRoot: string, key: string, runId: string, present: Set<string>): boolean {
+  const address = `${key}/${runId}`;
+  if (present.has(address)) return true;
+  try {
+    if (appendIfSummarized(runsRoot, key, runId)) present.add(address);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Перенести в хранилище прогоны всего корня, не чаще одного раза за время
+ * жизни процесса на хранилище (ключ — путь файла хранилища): повторный вызов —
+ * дешёвый no-op, поэтому вызывать функцию можно откуда угодно, где хранилище
+ * открывается, не думая, кто уже успел его открыть раньше. Однократный вход
+ * для старта демона и `gc`; отбор, которому нужен свежий диск на каждый
+ * запрос, зовёт догон `catchUpUsageStore` напрямую.
+ */
 export function backfillUsageStore(runsRoot: string): void {
   const path = usageStorePath(runsRoot);
   if (backfilled.has(path)) return;
   backfilled.add(path);
-
-  const { records } = readUsageStore(runsRoot);
-
-  for (const project of listProjects(runsRoot)) {
-    for (const runId of listRunsByKey(runsRoot, project.key)) {
-      if (records.has(`${project.key}/${runId}`)) continue;
-      appendIfSummarized(runsRoot, project.key, runId);
-    }
-  }
+  catchUpUsageStore(runsRoot);
 }
 
 /**

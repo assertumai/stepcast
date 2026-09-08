@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { appendFileSync, existsSync, statSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import { projectKey, usageStorePath } from '../src/core/journal/paths.js';
@@ -8,6 +8,8 @@ import type { RunManifest, RunStatus, UsageReport } from '../src/core/journal/sc
 import {
   appendUsageRecord,
   backfillUsageStore,
+  catchUpUsageRecords,
+  catchUpUsageStore,
   ensureUsageRecord,
   mergeAppendedTail,
   readUsageStore,
@@ -264,6 +266,114 @@ describe('usage-store: хранилище расхода', () => {
     backfillUsageStore(runsRoot);
     const sizeAfter = statSync(usageStorePath(runsRoot)).size;
     assert.equal(sizeBefore, sizeAfter, 'повторный перенос не должен дописывать строк');
+  });
+
+  // Сценарий «Прогон появился после первого переноса»: `backfillUsageStore`
+  // защищён защёлкой на весь процесс, а прогон, появившийся на диске после
+  // неё, обязан дойти до хранилища через догон — без него отбор витрины на
+  // демоне, поднятом давно, его не увидит никогда (design.md, Решение 1).
+  it('перенос уже был в этом процессе — догон дописывает прогон, появившийся после него', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    backfillUsageStore(runsRoot);
+
+    seedRun(runsRoot, projectRoot, {
+      runId: 'после-переноса',
+      usage: usageOf('после-переноса', { total: { tokens_in: 0, tokens_out: 0, cache_read: 0, cache_write: 0, billable_tokens: 5, wallclock_ms: 5 } }),
+    });
+    assert.equal(
+      readUsageStore(runsRoot).records.has(`${key}/после-переноса`),
+      false,
+      'сам по себе прогон в хранилище не появляется — только через перенос',
+    );
+
+    catchUpUsageStore(runsRoot);
+
+    const { records } = readUsageStore(runsRoot);
+    const record = records.get(`${key}/после-переноса`);
+    assert.ok(record !== undefined, 'догон обязан дописать появившийся прогон');
+    assert.equal(record.total.billable_tokens, 5);
+  });
+
+  // Сценарий «Догон сужен проектом».
+  it('догон, сужённый проектом, дописывает только его и не трогает чужого', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const other = makeJournalBed();
+    const key = projectKey(projectRoot);
+    const otherKey = projectKey(other.projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'свой' });
+    seedRun(runsRoot, other.projectRoot, { runId: 'чужой' });
+
+    catchUpUsageStore(runsRoot, { project: key });
+
+    const { records } = readUsageStore(runsRoot);
+    assert.ok(records.has(`${key}/свой`));
+    assert.equal(records.has(`${otherKey}/чужой`), false, 'догон, сужённый проектом, чужого не касается');
+  });
+
+  // Сценарий «Догон ничего не портит».
+  it('догон не переписывает и не удаляет прежних строк хранилища и не трогает каталогов', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, { runId: 'a' });
+    backfillUsageStore(runsRoot);
+    const before = readFileSync(usageStorePath(runsRoot), 'utf8');
+
+    catchUpUsageStore(runsRoot);
+
+    assert.equal(readFileSync(usageStorePath(runsRoot), 'utf8'), before, 'догон без нового на диске не меняет файла');
+    assert.ok(existsSync(journal.paths.dir));
+    assert.ok(existsSync(journal.paths.manifest));
+  });
+
+  // Догон по явному списку адресов: областью служит сам список — обходить
+  // корень незачем, когда прогоны названы поимённо.
+  it('догон по списку адресов дописывает названные прогоны и не касается прочих', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'названный' });
+    seedRun(runsRoot, projectRoot, { runId: 'прочий' });
+
+    catchUpUsageRecords(runsRoot, [{ key, runId: 'названный' }]);
+
+    const { records } = readUsageStore(runsRoot);
+    assert.ok(records.has(`${key}/названный`), 'названный прогон обязан дойти до хранилища');
+    assert.equal(records.has(`${key}/прочий`), false, 'неназванный прогон догон не обходит');
+  });
+
+  // Догон дописывает производное и зовётся с путей, которые сами по себе —
+  // чтение (отбор витрины). Отказ дозаписи обязан выродить его в «без свежих
+  // записей», а неброситься в вызывающего: маршруты витрины синхронны, и
+  // исключение отсюда уронило бы демона целиком.
+  it('догон переживает отказ дозаписи молча — обеими своими формами', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+
+    // Корень без права на запись: завести в нём `usage.ndjson` нельзя, а
+    // читать каталоги прогонов по-прежнему можно.
+    chmodSync(runsRoot, 0o500);
+    try {
+      catchUpUsageStore(runsRoot);
+      catchUpUsageStore(runsRoot, { project: key });
+      catchUpUsageRecords(runsRoot, [{ key, runId: 'a' }]);
+    } finally {
+      chmodSync(runsRoot, 0o700);
+    }
+
+    assert.equal(existsSync(usageStorePath(runsRoot)), false, 'записать было нечем и нечего');
+  });
+
+  // Сценарий «Повторный догон впустую».
+  it('повторный догон при неизменном диске не дописывает ничего', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+
+    catchUpUsageStore(runsRoot);
+    const sizeBefore = statSync(usageStorePath(runsRoot)).size;
+    catchUpUsageStore(runsRoot);
+    const sizeAfter = statSync(usageStorePath(runsRoot)).size;
+
+    assert.equal(sizeBefore, sizeAfter, 'второй вызов подряд не должен дописывать строк');
   });
 
   // 1.7 — снятие по возрасту/исходу/проекту снимает только отобранное, не

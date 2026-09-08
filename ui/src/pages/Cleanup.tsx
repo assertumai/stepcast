@@ -90,29 +90,40 @@ function RecordCandidate({ record }: { readonly record: UsageRecordCandidate }):
   );
 }
 
-/** Поле «старше» и «проект» — общий вид для обоих разделов уборки. */
+/**
+ * Поле «старше» и «проект» — общий вид для обоих разделов уборки.
+ *
+ * `idPrefix` строит собственные `id` для каждого раздела (`files-cleanup-age`,
+ * `stats-cleanup-age`): без него оба вызова компонента называли бы поля
+ * одинаковым `id`, и подпись нижнего раздела ставила бы курсор в поле
+ * верхнего (design.md, Решение 5).
+ */
 function AgeAndProjectFields({
+  idPrefix,
   olderThan,
   onOlderThan,
   project,
   onProject,
   projects,
 }: {
+  readonly idPrefix: string;
   readonly olderThan: string;
   readonly onOlderThan: (value: string) => void;
   readonly project: string;
   readonly onProject: (value: string) => void;
   readonly projects: readonly { readonly key: string; readonly path?: string }[];
 }): JSX.Element {
+  const ageId = `${idPrefix}-cleanup-age`;
+  const projectId = `${idPrefix}-cleanup-project`;
   return (
     <>
       <div className="field">
-        <label className="label" htmlFor="cleanup-age">
+        <label className="label" htmlFor={ageId}>
           старше
         </label>
         <div className="field-body">
           <input
-            id="cleanup-age"
+            id={ageId}
             className="mono narrow"
             value={olderThan}
             placeholder="7d, 12h, 30m"
@@ -123,11 +134,11 @@ function AgeAndProjectFields({
       </div>
 
       <div className="field">
-        <label className="label" htmlFor="cleanup-project">
+        <label className="label" htmlFor={projectId}>
           проект
         </label>
         <div className="field-body">
-          <select id="cleanup-project" value={project} onChange={(event) => onProject(event.target.value)}>
+          <select id={projectId} value={project} onChange={(event) => onProject(event.target.value)}>
             <option value="">все проекты</option>
             {projects.map((item) => (
               <option key={item.key} value={item.key}>
@@ -221,6 +232,7 @@ function FilesSection({
       </div>
 
       <AgeAndProjectFields
+        idPrefix="files"
         olderThan={olderThan}
         onOlderThan={(value) => {
           setOlderThan(value);
@@ -260,6 +272,17 @@ function FilesSection({
               {selection.count === 0 ? '' : ` · записей хранилища: ${recordCount}`}
             </span>
           </div>
+
+          {/* Прогоны, которых отбор не назвал и проверить не смог: у отбора по
+              сроку таких нет — срок берёт их по времени каталога, и они уже в
+              списке (`uncheckedCount` в `src/core/run/cleanup.ts`). */}
+          {selection.uncheckedCount === 0 ? null : (
+            <p className="note dim">
+              Ещё {selection.uncheckedCount} прогон(ов) сюда не попали — журнал не читается, статус
+              проверить не удалось. Признак о них ничего не говорит; отбираются они сроком (поле
+              «старше»).
+            </p>
+          )}
 
           {selection.count === 0 ? (
             <p className="note dim">Под условия не подошёл ни один прогон. Ничего не удалено.</p>
@@ -416,6 +439,7 @@ function StatsSection({
       </div>
 
       <AgeAndProjectFields
+        idPrefix="stats"
         olderThan={olderThan}
         onOlderThan={(value) => {
           setOlderThan(value);

@@ -120,6 +120,14 @@ function candidateOf(paths: RunPaths, runId: string, now: Date): RunCandidate {
  * Статус прогона: состояние точнее манифеста у идущего, но у прогона с
  * испорченным `status.json` манифест — единственное, что о нём известно.
  * Молчаливое «статуса нет» увело бы такой прогон из-под признаков.
+ *
+ * «Статуса нет» (`undefined`) — не то же самое, что «признак не подошёл»:
+ * прогон, о котором ничего не известно, не отвечает ни «оборванным», ни
+ * «отказавшим» (оба признака — утверждения о конкретном статусе), но
+ * по-прежнему остаётся кандидатом по сроку — `candidateOf` его не теряет и
+ * считает возраст по времени каталога. `selectCandidates` называет число
+ * таких прогонов отдельно — но только тех, кого сам не отобрал, — чтобы
+ * пустой отбор по признаку не выглядел чистым корнем.
  */
 function statusOf(paths: RunPaths): StatusValue | undefined {
   try {
@@ -172,6 +180,23 @@ export interface SelectOptions {
   readonly now?: Date;
 }
 
+export interface CandidateSelection {
+  readonly selected: readonly AddressedCandidate[];
+  /**
+   * Число прогонов области отбора, у которых `statusOf` не дал статуса —
+   * прочитать не удалось ни состояние, ни манифест, — **и которые в отбор не
+   * попали**. Считается по той же области, что и отбор (design.md изменения
+   * cleanup-selection-returns-empty, Решение 3): ответ «пусто» обязан
+   * отличаться от «не смогли проверить».
+   *
+   * Отобранный прогон отсюда исключён намеренно: срок берёт его по времени
+   * каталога (`candidateOf`), и он уже назван в списке — счётчик, считающий
+   * его вторым разом, прибавлял бы к итогу то, что в итоге уже посчитано, и
+   * советовал бы отобрать сроком то, что сроком только что и отобрано.
+   */
+  readonly uncheckedCount: number;
+}
+
 /**
  * Отбор прогонов корня к полному снятию по признакам — оборванные, отказавшие,
  * старше срока, — объединённым по «или». Прогон под несколькими признаками
@@ -181,7 +206,7 @@ export function selectCandidates(
   runsRoot: string,
   traits: SelectTraits,
   options: SelectOptions = {},
-): AddressedCandidate[] {
+): CandidateSelection {
   const now = options.now ?? new Date();
   const keys =
     options.project !== undefined
@@ -189,6 +214,7 @@ export function selectCandidates(
       : listProjects(runsRoot).map((project) => project.key);
 
   const selected: AddressedCandidate[] = [];
+  let uncheckedCount = 0;
   for (const key of keys) {
     for (const runId of listRunsByKey(runsRoot, key)) {
       const paths = runPaths(runsRoot, key, runId);
@@ -202,11 +228,16 @@ export function selectCandidates(
         (traits.failed === true && status !== undefined && isFailure(status)) ||
         (traits.olderThanMs !== undefined && candidate.ageMs >= traits.olderThanMs);
 
-      if (!matches) continue;
+      if (!matches) {
+        // Непроверенным считается только тот, кого отбор не назвал: названный
+        // сроком прогон стоит в списке, и говорить о нём отдельно нечего.
+        if (status === undefined) uncheckedCount += 1;
+        continue;
+      }
       selected.push({ ...candidate, key, address: `${key}/${runId}` });
     }
   }
-  return selected;
+  return { selected, uncheckedCount };
 }
 
 /**

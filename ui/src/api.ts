@@ -445,6 +445,14 @@ export interface RunSelection {
   readonly runs: readonly RunCandidate[];
   readonly count: number;
   readonly totalBytes: number;
+  /**
+   * Число прогонов области отбора, чей статус демон не смог прочитать ни из
+   * состояния, ни из манифеста и которых поэтому не назвал (`selectCandidates`
+   * в `src/core/run/cleanup.ts`). Отобранные сюда не входят: срок берёт такой
+   * прогон по времени каталога, и он уже стоит в `runs`. У отбора по явному
+   * списку адресов всегда 0 — проверять там нечего.
+   */
+  readonly uncheckedCount: number;
 }
 
 export type RemovalOutcomeKind = 'removed' | 'skipped_missing' | 'skipped_alive' | 'failed';

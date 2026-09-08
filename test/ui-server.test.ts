@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { get, request } from 'node:http';
 import { describe, it, type TestContext } from 'node:test';
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 
 import { dashboardPath } from '../src/ui/assets.js';
@@ -11,10 +11,16 @@ import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
 import { runHref } from '../src/ui/routes.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
-import { projectKey, runPaths, stepDir } from '../src/core/journal/paths.js';
+import { projectKey, runPaths, shortRunId, stepDir, usageStorePath } from '../src/core/journal/paths.js';
 import { MAX_FILE_BYTES } from '../src/ui/file.js';
-import { makeJournalBed, seedRun } from './helpers.js';
+import { runGcCommand } from '../src/cli/commands/gc.js';
+import type { ParsedArgs } from '../src/cli/args.js';
+import { makeJournalBed, seedRun, withHome } from './helpers.js';
 import { tempDir } from './tmp.js';
+
+function gcArgs(flags: ParsedArgs['flags'] = {}): ParsedArgs {
+  return { command: 'gc', positional: [], flags };
+}
 
 /**
  * Сервер с закрытием, зарегистрированным сразу. Без этого упавшая проверка
@@ -1445,6 +1451,196 @@ describe('ui-dashboard: отбор и снятие записей хранили
       body: JSON.stringify({ records: Array.from({ length: 501 }, (_, i) => `${key}/нет-${i}`) }),
     });
     assert.equal(tooMany.code, 413);
+  });
+});
+
+describe('ui-dashboard: согласие отбора витрины с диском и с терминалом', () => {
+  // Сценарий спеки ui-dashboard «Прогон, не дописавший своей записи»: демон
+  // поднят раньше, чем прогон появился на диске, — без догона хранилище так и
+  // осталось бы снимком на момент старта (design.md, Решение 2).
+  it('видит прогон, засеянный после старта демона, в отборе записей хранилища', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    seedRun(runsRoot, projectRoot, { runId: 'после-старта' });
+
+    const selected = await fetchJson(server, `/api/usage-records?older-than=0s&project=${key}`);
+    assert.deepEqual(
+      (selected.json.records as Array<{ address: string }>).map((r) => r.address),
+      [`${key}/после-старта`],
+    );
+  });
+
+  // Сценарий спеки ui-dashboard «Метка „записи нет“ говорит о прогоне»: за
+  // меткой стоит кнопка «вместе со статистикой», то есть разрушительное
+  // действие, и врать ею опаснее, чем списком (design.md, Решение 2).
+  it('называет прогон, засеянный после старта демона, прогоном с записью в хранилище', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    seedRun(runsRoot, projectRoot, { runId: 'после-старта', status: 'failed' });
+
+    const selected = await fetchJson(server, `/api/runs?trait=failed&project=${key}`);
+    const runs = selected.json.runs as Array<{ address: string; hasUsageRecord: boolean }>;
+    assert.deepEqual(
+      runs.map((run) => run.address),
+      [`${key}/после-старта`],
+    );
+    assert.equal(
+      runs[0]?.hasUsageRecord,
+      true,
+      'сводка расхода у прогона подведена — сохранять при удалении есть что',
+    );
+  });
+
+  // Риск design.md «Догон пишет в хранилище на GET-запросе»: дозапись может
+  // отказать (корень только для чтения, кончилось место, чужой файл
+  // хранилища), а маршруты витрины синхронны — брошенное исключение уронило бы
+  // весь демон. Отбор обязан выродиться в «без свежих записей», а не в отказ.
+  it('переживает отказ дозаписи хранилища на отборе и отвечает тем, что есть', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    // Демон поднят на пустом корне: файла хранилища ещё нет, и догону
+    // придётся заводить его в корне, куда писать нельзя.
+    const server = await startServer(t, { runsRoot });
+    seedRun(runsRoot, projectRoot, { runId: 'после-старта', status: 'failed' });
+
+    // Каталог без права на запись — тот же способ вызвать отказ, что и в
+    // test/scratch.test.ts; читать содержимое корня он не мешает.
+    chmodSync(runsRoot, 0o500);
+    try {
+      const byTrait = await fetchJson(server, `/api/runs?trait=failed&project=${key}`);
+      assert.equal(byTrait.code, 200);
+      const runs = byTrait.json.runs as Array<{ address: string; hasUsageRecord: boolean }>;
+      assert.deepEqual(
+        runs.map((run) => run.address),
+        [`${key}/после-старта`],
+        'отбор идёт по каталогам и от отказа дозаписи не зависит',
+      );
+      assert.equal(runs[0]?.hasUsageRecord, false, 'записи не появилось — метка обязана это признать');
+
+      const byRecords = await fetchJson(server, `/api/usage-records?trait=failed&project=${key}`);
+      assert.equal(byRecords.code, 200);
+      assert.deepEqual(byRecords.json.records, []);
+
+      const byAddress = await fetchJson(server, `/api/runs?run=${address(key, 'после-старта')}`);
+      assert.equal(byAddress.code, 200);
+      assert.equal(byAddress.json.count, 1);
+    } finally {
+      chmodSync(runsRoot, 0o700);
+    }
+  });
+
+  // Сценарий спеки «Срок в витрине и в терминале» (design.md, Решение 4):
+  // сначала отбор витрины (только смотрит), затем `stepcast gc --older-than`
+  // (удаляет) на том же корне — множества обязаны совпасть.
+  it('согласие по сроку: отбор витрины называет тот же набор, что удаляет stepcast gc', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    const old = {
+      started_at: '2020-01-01T00:00:00.000Z',
+      finished_at: '2020-01-01T00:05:00.000Z',
+    };
+    const server = await startServer(t, { runsRoot });
+
+    // Прогоны появляются после старта демона — спека требует согласия
+    // «независимо от того, как давно поднят демон». Отбор каталогов на
+    // хранилище не опирается вовсе, и красным до правки этот сценарий не
+    // бывает: он сторожит согласие двух реализаций отбора по сроку, а
+    // отставание хранилища ловит сценарий по записям ниже.
+    seedRun(runsRoot, projectRoot, { runId: 'old-a', manifest: old });
+    seedRun(runsRoot, projectRoot, { runId: 'old-b', manifest: old });
+    seedRun(runsRoot, projectRoot, { runId: 'recent' });
+
+    // Витрина — первой: отбор ничего не трогает.
+    const selected = await fetchJson(server, `/api/runs?older-than=365d&project=${key}`);
+    const shownShortIds = new Set(
+      (selected.json.runs as Array<{ address: string }>).map((r) => shortRunId(r.address.slice(key.length + 1))),
+    );
+    assert.equal(shownShortIds.size, 2, 'сценарий обязан застать непустой отбор, иначе согласие тривиально');
+
+    // Команда — второй: она и удаляет.
+    const lines: string[] = [];
+    withHome(home, () =>
+      runGcCommand(gcArgs({ 'older-than': '365d' }), (line) => lines.push(line), projectRoot),
+    );
+    const removedShortIds = new Set(
+      lines
+        .filter((line) => line.startsWith('удалён: '))
+        .map((line) => line.slice('удалён: '.length).split(' ')[0]!),
+    );
+
+    assert.deepEqual(shownShortIds, removedShortIds);
+  });
+
+  // Сценарий «Записи в витрине и в терминале»: то же согласие, но для цели
+  // «записи хранилища» и `stepcast gc --stats`.
+  it('согласие по записям: отбор витрины называет тот же набор, что снимает stepcast gc --stats', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    const server = await startServer(t, { runsRoot });
+
+    // Прогоны появляются после старта демона и своих записей не дописывают:
+    // перенос при старте их не застал. Без догона в маршруте витрина назовёт
+    // пустой набор — на этом сценарий и падает до правки. Команде в этом же
+    // процессе перенос достаётся уже сделанным догоном витрины (её
+    // собственный `backfillUsageStore` защёлкнут стартом демона); в своём
+    // процессе она переносит сама, и согласие проверяется то же.
+    seedRun(runsRoot, projectRoot, { runId: 'failed-a', status: 'failed' });
+    seedRun(runsRoot, projectRoot, { runId: 'failed-b', status: 'failed' });
+    seedRun(runsRoot, projectRoot, { runId: 'ok', status: 'success' });
+
+    const selected = await fetchJson(server, `/api/usage-records?trait=failed&project=${key}`);
+    const shownAddresses = new Set(
+      (selected.json.records as Array<{ address: string }>).map((r) => r.address),
+    );
+    assert.equal(shownAddresses.size, 2, 'сценарий обязан застать непустой отбор, иначе согласие тривиально');
+
+    const lines: string[] = [];
+    withHome(home, () =>
+      runGcCommand(gcArgs({ stats: true, failed: true }), (line) => lines.push(line), projectRoot),
+    );
+    const removedAddresses = new Set(
+      lines
+        .filter((line) => line.startsWith('снята запись: '))
+        .map((line) => line.slice('снята запись: '.length)),
+    );
+
+    assert.deepEqual(shownAddresses, removedAddresses);
+  });
+
+  it('GET /api/runs называет число прогонов, чей статус не удалось прочитать', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, { runId: 'broken', status: 'failed' });
+    writeFileSync(journal.paths.manifest, '{ не json');
+    writeFileSync(journal.paths.status, '{ не json');
+    const server = await startServer(t, { runsRoot });
+
+    const selected = await fetchJson(server, '/api/runs?trait=failed');
+    assert.deepEqual(selected.json.runs, []);
+    assert.equal(selected.json.uncheckedCount, 1);
+  });
+
+  // Ни отбор по признаку, ни отбор по записям, ни отбор по явному адресу не
+  // должны снимать каталоги или строки хранилища — отбор только показывает,
+  // что удалится, а удаляет отдельный запрос (design.md, Решение 2, риск
+  // «Догон пишет в хранилище на GET-запросе»).
+  it('любой отбор не удаляет каталогов и не убавляет строк хранилища', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const key = projectKey(projectRoot);
+    const journal = seedRun(runsRoot, projectRoot, { runId: 'a', status: 'failed' });
+    const server = await startServer(t, { runsRoot });
+    const before = readFileSync(usageStorePath(runsRoot), 'utf8');
+
+    await fetchJson(server, '/api/runs?trait=failed');
+    await fetchJson(server, `/api/usage-records?trait=failed&project=${key}`);
+    await fetchJson(server, `/api/runs?run=${address(key, 'a')}`);
+
+    assert.ok(existsSync(journal.paths.dir), 'каталог прогона обязан остаться');
+    const after = readFileSync(usageStorePath(runsRoot), 'utf8');
+    assert.ok(after.startsWith(before), 'отбор может дописать хранилище, но не переписать и не урезать его');
   });
 });
 

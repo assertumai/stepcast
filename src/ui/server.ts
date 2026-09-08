@@ -15,6 +15,8 @@ import {
 } from '../core/run/cleanup.js';
 import {
   backfillUsageStore,
+  catchUpUsageRecords,
+  catchUpUsageStore,
   readUsageStore,
   removeUsageRecords,
   selectUsageRecords,
@@ -354,8 +356,18 @@ function handleDelete(runsRoot: string, url: URL, watcher: Watcher, res: ServerR
  * каталога, возраст, число прогонов и суммарный объём. Общая точка, потому
  * что подтверждению группового удаления нужен ровно этот состав независимо
  * от того, чем прогоны названы.
+ *
+ * `uncheckedCount` — число прогонов области отбора, чей статус прочитать не
+ * удалось и которых отбор поэтому не назвал (`selectCandidates`); у отбора по
+ * явному списку адресов проверять нечего — область и так весь список,
+ * названный пользователем, — и вызывающий передаёт ноль.
  */
-function sendRunSelection(res: ServerResponse, runsRoot: string, selected: readonly AddressedCandidate[]): void {
+function sendRunSelection(
+  res: ServerResponse,
+  runsRoot: string,
+  selected: readonly AddressedCandidate[],
+  uncheckedCount: number,
+): void {
   // Читается один раз на весь отбор: подтверждение должно отличать прогон, у
   // которого есть что сохранить сверх файлов, от того, у которого нет
   // (ui-dashboard, «Прогон без записи в хранилище»).
@@ -374,6 +386,7 @@ function sendRunSelection(res: ServerResponse, runsRoot: string, selected: reado
     })),
     count: selected.length,
     totalBytes: selected.reduce((sum, candidate) => sum + candidate.sizeBytes, 0),
+    uncheckedCount,
   });
 }
 
@@ -425,7 +438,12 @@ function handleSelectRuns(runsRoot: string, url: URL, res: ServerResponse): void
       addresses.push(address);
     }
 
-    sendRunSelection(res, runsRoot, selectByAddresses(runsRoot, addresses));
+    // Список адресов уже называет свою область целиком: догон идёт по нему, а
+    // не по всем проектам корня (design.md, Решение 2). Полный обход стоил бы
+    // подтверждению группового удаления чтения каждого прогона установки ради
+    // метки у пяти названных.
+    catchUpUsageRecords(runsRoot, addresses);
+    sendRunSelection(res, runsRoot, selectByAddresses(runsRoot, addresses), 0);
     return;
   }
 
@@ -462,8 +480,20 @@ function handleSelectRuns(runsRoot: string, url: URL, res: ServerResponse): void
     return;
   }
 
-  const selected = selectCandidates(runsRoot, traits, project === null ? {} : { project });
-  sendRunSelection(res, runsRoot, selected);
+  // Догон перед отбором — ради hasUsageRecord и счётчика записей ниже по
+  // потоку (design.md, Решение 2): отбор сам идёт по каталогам и от
+  // отставания хранилища не зависит, а вот `sendRunSelection` читает
+  // хранилище тоже, и метка «записи нет» обязана отвечать за диск, а не за
+  // снимок хранилища на момент запуска демона.
+  //
+  // Отбор без единого признака не назовёт ни одного прогона (все ветви
+  // `matches` в `selectCandidates` ложны), и обходить ради него корень
+  // незачем: проект — область отбора каталогов, а не признак.
+  const asked =
+    traits.abandoned === true || traits.failed === true || traits.olderThanMs !== undefined;
+  if (asked) catchUpUsageStore(runsRoot, project === null ? {} : { project });
+  const { selected, uncheckedCount } = selectCandidates(runsRoot, traits, project === null ? {} : { project });
+  sendRunSelection(res, runsRoot, selected, uncheckedCount);
 }
 
 /**
@@ -567,6 +597,16 @@ function handleSelectUsageRecords(runsRoot: string, url: URL, res: ServerRespons
     return;
   }
 
+  // Догон перед отбором: отбор по хранилищу обязан отвечать за диск сейчас, а
+  // не за снимок, перенесённый при старте демона (design.md, Решение 2).
+  //
+  // Тот же ранний выход, что и у `selectUsageRecords` (`usageStore.ts`): отбор
+  // без признака, срока и проекта не отбирает ничего, и обход всего корня с
+  // дозаписью ради заведомо пустого ответа — работа впустую.
+  const narrowing = traits.failed === true || traits.olderThanMs !== undefined;
+  if (narrowing || project !== null) {
+    catchUpUsageStore(runsRoot, project === null ? {} : { project });
+  }
   const selected = selectUsageRecords(runsRoot, traits, project === null ? {} : { project });
 
   sendJson(res, 200, {
