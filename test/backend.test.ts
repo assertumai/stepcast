@@ -1317,6 +1317,8 @@ describe('agent-backend: исполнение шага', () => {
 function createBackendIssuedSessionAdapter(options: {
   readonly lines: readonly string[] | ((invocationIndex: number) => readonly string[]);
   readonly exitCode?: number | ((invocationIndex: number) => number);
+  /** `thread.started` отдаётся как `init` с `sessionId`, а не как `session_started`. */
+  readonly threadStartsInit?: boolean;
 }): { readonly adapter: BackendAdapter; readonly invocations: AgentInvocation[] } {
   const invocations: AgentInvocation[] = [];
   const adapter: BackendAdapter = {
@@ -1347,7 +1349,12 @@ function createBackendIssuedSessionAdapter(options: {
         return { kind: 'unparsed', line: trimmed };
       }
       if (record.type === 'thread.started' && typeof record.id === 'string') {
-        return { kind: 'session_started', sessionId: record.id };
+        // Две формы одной записи: отдельным событием о начале сессии либо
+        // событием инициализации с идентификатором (Codex: `thread.started`
+        // — и начало разговора, и единственное место, где назван `thread_id`).
+        return options.threadStartsInit === true
+          ? { kind: 'init', data: record, sessionId: record.id }
+          : { kind: 'session_started', sessionId: record.id };
       }
       if (record.type === 'init') return { kind: 'init', data: record };
       if (record.type === 'result') {
@@ -1583,6 +1590,77 @@ jobs:
 
     assert.equal(backend.invocations[1]?.sessionId, undefined, 'следующая попытка идёт без идентификатора');
     assert.equal(backend.invocations[1]?.resumeSession, false);
+  });
+});
+
+describe('agent-backend: запись инициализации несёт идентификатор сессии', () => {
+  // Сценарий: «Начало нити одной записью»
+  it('init с sessionId засевает сессию и записывает сведения инициализации', async () => {
+    const dir = tempDir('backend-');
+    const backend = createBackendIssuedSessionAdapter({
+      threadStartsInit: true,
+      lines: (index) =>
+        index === 0
+          ? [JSON.stringify({ type: 'thread.started', id: 'thread-7' }), JSON.stringify({ type: 'result', text: 'ок' })]
+          : [JSON.stringify({ type: 'thread.started', id: 'thread-7' }), JSON.stringify({ type: 'result', text: 'ок' })],
+    });
+    const sessions = createSessionRegistry();
+
+    const first = await executeAgentStep({
+      step: makeAgentStep({ id: 'read', session: 'default' }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions,
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(first.sessionId, 'thread-7', 'идентификатор из init стал сессией шага');
+    assert.deepEqual(first.last?.backendInit, { type: 'thread.started', id: 'thread-7' });
+
+    await executeAgentStep({
+      step: makeAgentStep({ id: 'draft', session: 'default' }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions,
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+
+    assert.equal(backend.invocations[1]?.sessionId, 'thread-7');
+    assert.equal(backend.invocations[1]?.resumeSession, true);
+  });
+
+  // Сценарий: «Неудавшееся продолжение на бэкенде со своими идентификаторами»
+  it('продолжение, открытое init с идентификатором, но упавшее турном, засев не снимает', async () => {
+    const dir = tempDir('backend-');
+    const backend = createBackendIssuedSessionAdapter({
+      threadStartsInit: true,
+      lines: [JSON.stringify({ type: 'thread.started', id: 'thread-9' })],
+      exitCode: 1,
+    });
+    const sessions = createSessionRegistry();
+    sessions.seed('default', 'thread-9');
+    let failedContinuation = 0;
+
+    await executeAgentStep({
+      step: makeAgentStep({ id: 'read', session: 'default' }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions,
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+      onFailedContinuation: () => {
+        failedContinuation += 1;
+        sessions.unseed('default');
+      },
+    });
+
+    assert.equal(failedContinuation, 0, 'нить открылась — продолжение состоялось, упал сам турн');
+    assert.equal(sessions.peek('default'), 'thread-9');
   });
 });
 

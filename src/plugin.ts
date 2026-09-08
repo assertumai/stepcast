@@ -32,6 +32,15 @@ export type {
 
 export { describeRefusal, emptyUsage, mergeUsage, sumUsage } from './core/backend/types.js';
 
+/**
+ * Правила слияния политики доступа шага с политикой из конфигурации бэкенда.
+ * Понадобились адаптеру Codex: без экспорта плагин переписал бы их у себя, и
+ * второй бэкенд применял бы `enforce` иначе, чем встроенный.
+ */
+export { effectivePermissions } from './core/backend/permissions.js';
+/** Формы объявлений, которые `AgentInvocation` несёт адаптеру: политика и MCP-серверы. */
+export type { McpServer, McpServers, Permissions } from './core/pipeline/model.js';
+
 export type { BackendConfig, Config } from './core/config/resolve.js';
 export type { EvaluationInput } from './core/expect/evaluate.js';
 export type { PredicateResult, Usage } from './core/journal/schema.js';

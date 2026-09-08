@@ -10,6 +10,8 @@ import { StepcastError } from '../src/core/errors.js';
 import { loadPlugins, pluginDeclarations } from '../src/core/plugins/load.js';
 import { availableNames, predicateNames } from '../src/core/plugins/registry.js';
 import { resolveWithPlugins, type ResolvedWithPlugins } from '../src/core/plugins/resolve.js';
+import { resolveAdapter } from '../src/core/backend/registry.js';
+import { builtinRegistry } from '../src/core/plugins/builtin.js';
 import { tempDir } from './tmp.js';
 
 interface Bed {
@@ -325,5 +327,45 @@ describe('plugin-contributions: подпуть stepcast/plugin', () => {
     // Внутренние пути ядра подпуть не публикует: что экспортировано, то и обещано.
     assert.equal(plugin.runPipeline, undefined);
     assert.equal(plugin.expandPipeline, undefined);
+  });
+});
+
+describe('codex-backend: загрузка плагина пакета', () => {
+  // Собранный модуль — тот же, что отдаёт подпуть `stepcast/backends/codex`;
+  // из теста он берётся путём, потому что самоссылка пакета разрешается через
+  // `dist/`, а тесты и так исполняются из него.
+  const MODULE = fileURLToPath(new URL('../src/backends/codex/index.js', import.meta.url));
+
+  // Сценарий: «Плагин объявлен»
+  it('объявленный ключом plugins, плагин даёт адаптер codex с умолчаниями вклада', async () => {
+    const place = bed();
+    writeFileSync(place.projectPath, `plugins: [${JSON.stringify(MODULE)}]\n`);
+    const { resolved, registry } = await resolveWithPlugins(
+      { cwd: place.root, home: place.home, globalPath: place.globalPath, projectPath: place.projectPath },
+      {},
+    );
+
+    assert.deepEqual(availableNames(registry, 'backends'), ['claude', 'codex']);
+    assert.equal(registry.plugins[0]?.name, 'codex');
+    assert.equal(resolved.config.backends.codex?.command, 'codex');
+    assert.equal(resolved.config.backends.codex?.sessions, true);
+    assert.equal(resolved.config.backends.codex?.structuredOutput, true);
+    assert.equal(resolved.config.backends.codex?.strictPermissions, false);
+    assert.equal(resolved.config.backends.codex?.mcp, true);
+    assert.equal(resolved.config.backends.codex?.cacheReadWeight, 0.1);
+    assert.deepEqual(resolved.provenance.get('backends.codex.sessions'), { kind: 'plugin', name: 'codex' });
+
+    const adapter = resolveAdapter('codex', resolved.config, registry);
+    assert.equal(adapter.capabilities.sessionIdSource, 'backend');
+  });
+
+  // Сценарий: «Плагин не объявлен»
+  it('без объявления бэкенд codex не существует', () => {
+    const place = bed();
+    const config = resolved(place, { global: 'backends:\n  codex:\n    command: codex\n' });
+    assert.throws(
+      () => resolveAdapter('codex', config.config, builtinRegistry()),
+      (error: unknown) => error instanceof StepcastError && /не предоставлен ни встроенно, ни плагином/.test(error.message),
+    );
   });
 });

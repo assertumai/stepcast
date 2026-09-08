@@ -210,3 +210,63 @@ jobs:
     assert.match(outcome.stdout, /неизвестный ключ always_ok/);
   });
 });
+
+describe('plugin-contributions: умолчания бэкенда плагина через CLI', () => {
+  /**
+   * Точка входа разрешает конфигурацию вместе с плагинами, и `stepcast config`
+   * показывает `backends.<имя>` плагина источником `plugin:<имя>`. Команды,
+   * читавшие конфигурацию заново сами, этот слой теряли: `lint` и `run`
+   * отказывали «неизвестный бэкенд», хотя плагин загружен, а его умолчания
+   * напечатаны строкой выше. Нашёл это первый настоящий адаптер (Codex).
+   */
+  const BACKEND_PLUGIN = `
+export default {
+  name: 'probe-backend',
+  backends: {
+    probe: {
+      create: (config) => ({
+        name: 'probe',
+        capabilities: { sessions: false, structuredOutput: false, strictPermissions: false, mcp: false, sessionIdSource: 'engine' },
+        launch: (invocation) => ({ command: [config.command], stdin: invocation.prompt }),
+        parseLine: () => ({ kind: 'ignored' }),
+      }),
+      defaults: { command: 'probe-cli', sessions: false, structured_output: false },
+    },
+  },
+};
+`;
+
+  const PIPELINE = `
+version: 1
+kind: pipeline
+name: проба-бэкенда
+jobs:
+  ask:
+    steps:
+      - id: say
+        agent: probe
+        prompt: "привет"
+        expect: [{ exit_code: 0 }]
+`;
+
+  function project(): Project {
+    const box = withPlugin(BACKEND_PLUGIN, 'plugins: ["./plugins/hello.mjs"]\n');
+    writeFileSync(join(box.root, 'stepcast.yml'), PIPELINE);
+    return box;
+  }
+
+  it('stepcast lint видит бэкенд, объявленный умолчаниями плагина', async () => {
+    const outcome = await cli(project(), ['lint', 'stepcast.yml']);
+
+    assert.equal(outcome.code, ExitCode.ok, outcome.stdout + outcome.stderr);
+    assert.match(outcome.stdout, /^ok: /m);
+  });
+
+  it('stepcast run --dry-run доходит до проверки с тем же бэкендом', async () => {
+    const outcome = await cli(project(), ['run', 'stepcast.yml', '--dry-run']);
+
+    assert.equal(outcome.code, ExitCode.ok, outcome.stdout + outcome.stderr);
+    assert.match(outcome.stdout, /проверка пройдена/);
+  });
+});
+

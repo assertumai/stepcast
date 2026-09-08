@@ -264,6 +264,12 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
           case 'init':
             backendInit = event.data;
             mcpServerStatus = event.mcpServers;
+            // Запись, что одновременно открывает разговор и называет его нить,
+            // — то же, что `session_started` (см. `BackendEvent`).
+            if (event.sessionId !== undefined) {
+              sessionId = event.sessionId;
+              options.sessions.seed(alias, event.sessionId);
+            }
             break;
           case 'tool_use':
             if (READING_TOOLS.has(event.name)) {

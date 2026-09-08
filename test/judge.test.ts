@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -413,3 +413,37 @@ describe('agent-backend: вызов судьи', () => {
     assert.equal(usages.at(-1)?.peak_prefix_tokens, 920);
   });
 });
+
+describe('judge: окружение шага доходит до процесса судьи', () => {
+  /**
+   * Бинарник, доступный только через `PATH` из окружения шага: как `codex` в
+   * `~/.local/bin` или Claude Code в нестандартном префиксе npm. Поддельный
+   * бэкенд этого не ловил — он зовёт узел абсолютным путём.
+   */
+  function pathOnlyAdapter(): { adapter: BackendAdapter; bin: string } {
+    const bin = tempDir('judge-bin-');
+    const script = join(bin, 'judge-cli');
+    writeFileSync(script, `#!/bin/sh\necho '${resultLine({ structured: { pass: true, reason: 'ок' } })}'\n`);
+    chmodSync(script, 0o755);
+    const fake = createFakeBackend({ lines: [] }).adapter;
+    return { bin, adapter: { ...fake, launch: (invocation) => ({ command: ['judge-cli'], stdin: invocation.prompt }) } };
+  }
+
+  it('с PATH из окружения шага судья запускается и выносит вердикт', async () => {
+    const { stepDir } = bed();
+    const { adapter, bin } = pathOnlyAdapter();
+
+    const results = await runJudgePass({ ...baseOptions({ adapter, stepDir }), env: { PATH: bin } });
+    assert.equal(results[1]?.passed, true, results[1]?.detail);
+  });
+
+  it('без окружения шага тот же судья не запускается — причина называет запуск', async () => {
+    const { stepDir } = bed();
+    const { adapter } = pathOnlyAdapter();
+
+    const results = await runJudgePass(baseOptions({ adapter, stepDir }));
+    assert.equal(results[1]?.passed, false);
+    assert.match(results[1]?.detail ?? '', /не удалось запустить/);
+  });
+});
+

@@ -12,7 +12,8 @@
   },
   "exports": {
     ".": "./dist/src/core/index.js",
-    "./plugin": "./dist/src/plugin.js"
+    "./plugin": "./dist/src/plugin.js",
+    "./backends/codex": "./dist/src/backends/codex/index.js"
   },
   "files": [
     "dist",

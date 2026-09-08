@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a07fca-7c36-7a21-91c7-ecd5565366d2"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Проверяю `probe.echo` с сообщением `ping`."}}
+{"type":"item.started","item":{"id":"item_1","type":"mcp_tool_call","server":"probe","tool":"echo","arguments":{"message":"ping"},"result":null,"error":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"mcp_tool_call","server":"probe","tool":"echo","arguments":{"message":"ping"},"result":{"content":[{"type":"text","text":"Echo: ping"}],"structured_content":null},"error":null,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"ping"}}
+{"type":"turn.completed","usage":{"input_tokens":70410,"cached_input_tokens":54272,"cache_write_input_tokens":0,"output_tokens":706,"reasoning_output_tokens":366}}

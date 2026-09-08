@@ -14,15 +14,23 @@ import { renderProgressLine } from '../progress.js';
 import { formatDiagnostic } from './lint.js';
 import type { ParsedArgs } from '../args.js';
 
+/**
+ * Конфигурация приходит из окружения команды, когда точка входа уже разрешила
+ * её вместе с плагинами: повторный `resolveConfig({ cwd })` терял бы слой
+ * умолчаний плагинных бэкендов, и `backends.<имя>` плагина не существовало бы
+ * для команды, хотя `stepcast config` его показывает. Без `config` (прямой
+ * вызов из тестов) команда разрешает конфигурацию сама, как прежде.
+ */
 export async function runRunCommand(
   args: ParsedArgs,
   write: (line: string) => void,
   cwd: string,
   registry?: Registry,
+  resolvedConfig?: Config,
 ): Promise<ExitCodeValue> {
   const target = args.positional[0] ?? 'stepcast.yml';
   const pipelinePath = resolvePath(cwd, target);
-  const { config } = resolveConfig({ cwd });
+  const config = resolvedConfig ?? resolveConfig({ cwd }).config;
   const inputs = (args.flags.input as Record<string, string> | undefined) ?? {};
 
   const expanded = expandPipeline({ pipelinePath, config, inputs, ...(registry === undefined ? {} : { registry }) });

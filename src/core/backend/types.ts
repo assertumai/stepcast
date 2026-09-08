@@ -96,6 +96,15 @@ export type BackendEvent =
        * тогда нечего (design.md, решение 7).
        */
       readonly mcpServers?: readonly McpServerStatus[];
+      /**
+       * Идентификатор сессии, если бэкенд называет его той же записью, что и
+       * начало разговора (Codex: `thread.started` с `thread_id`). `parseLine`
+       * отдаёт одно событие на строку и состояния между строками не держит —
+       * экземпляр адаптера один на прогон и обслуживает одновременные шаги, —
+       * поэтому разнести такую запись на `init` и `session_started` нечем.
+       * Движок обрабатывает поле так же, как `session_started`.
+       */
+      readonly sessionId?: string;
     }
   | {
       readonly kind: 'tool_use';

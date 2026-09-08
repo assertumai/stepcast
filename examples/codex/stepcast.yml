@@ -1,0 +1,64 @@
+# Приёмка адаптера Codex на живом CLI. Как запускать — README.md рядом:
+# плагин объявляется во временном проекте, а не в конфигурации этого
+# репозитория.
+#
+# Пайплайн намеренно дёшев: четыре коротких вызова (два шага, судья и два
+# шага общей сессии), промпты в одну строку, песочница только на чтение.
+#
+# Что проверяется: структурированный вывод по схеме (output.json), судья на том
+# же бэкенде, продолжение нити вторым шагом общей сессии без деградации, расход
+# с чтением кеша и идентификатор сессии, равный thread_id из потока.
+
+version: 1
+kind: pipeline
+name: acceptance-codex
+
+workspace:
+  mode: cwd
+
+budget:
+  tokens: 400k
+  wallclock: 10m
+
+defaults:
+  agent: codex
+  session: shared
+
+jobs:
+
+  отвечает:
+    description: Структурированный вывод по схеме и судья на Codex
+    budget: { tokens: 200k }
+    steps:
+      - id: по-схеме
+        agent: codex
+        prompt: "Какого цвета ясное дневное небо? Ответь по схеме: word — одно слово, confidence — уверенность в процентах. Инструменты не используй."
+        output_schema: ./schemas/answer.json
+        permissions: { mode: read-only }
+        timeout: 3m
+        expect:
+          - schema: ./schemas/answer.json
+          - judge: "Ответ называет голубой или синий цвет"
+            hard: true
+            agent: codex
+
+  продолжает:
+    description: Два шага в общей сессии — второй ссылается на сказанное в первом
+    needs: [отвечает]
+    session: shared
+    budget: { tokens: 200k }
+    steps:
+      - id: загадывает
+        agent: codex
+        prompt: "Запомни кодовое слово: сельдерей. Ответь ровно одним словом: запомнил. Инструменты не используй."
+        permissions: { mode: read-only }
+        timeout: 3m
+        expect:
+          - matches: "/запомнил/i"
+      - id: вспоминает
+        agent: codex
+        prompt: "Какое кодовое слово я просил запомнить? Ответь ровно одним словом. Инструменты не используй."
+        permissions: { mode: read-only }
+        timeout: 3m
+        expect:
+          - matches: "/сельдерей/i"

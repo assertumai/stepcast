@@ -50,6 +50,15 @@ export interface JudgePassOptions {
   readonly stallTimeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly onStall?: (silentMs: number) => void;
+  /**
+   * Окружение шага — то же, что получает процесс самого шага (`buildStepEnv`).
+   * Процесс запускается без наследования окружения (`extendEnv: false`), и без
+   * этого поля судья шёл бы с одним `launch.env` бэкенда — то есть без `PATH`.
+   * Бэкенд, чей бинарник лежит вне системного пути по умолчанию (`~/.local/bin`
+   * у Codex, нестандартный префикс npm у Claude Code), не запускался бы вовсе:
+   * «Процесс судьи не удалось запустить» при исправно отработавшем шаге.
+   */
+  readonly env?: Readonly<Record<string, string>>;
   readonly adapterFor: (name: string) => BackendAdapter;
   readonly defaultAgent: string;
   /** Место бэкенда: судья занимает его на общих основаниях с агентским шагом. */
@@ -97,6 +106,7 @@ export async function runJudgePass(
       ...(options.stallTimeoutMs === undefined ? {} : { stallTimeoutMs: options.stallTimeoutMs }),
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.onStall === undefined ? {} : { onStall: options.onStall }),
+      ...(options.env === undefined ? {} : { env: options.env }),
       adapter: options.adapterFor(predicate.agent ?? options.defaultAgent),
       ...(options.backendSlots === undefined ? {} : { backendSlots: options.backendSlots }),
       journal: options.journal,
@@ -136,6 +146,7 @@ interface CallJudgeOptions {
   readonly stallTimeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly onStall?: (silentMs: number) => void;
+  readonly env?: Readonly<Record<string, string>>;
   readonly adapter: BackendAdapter;
   readonly backendSlots?: BackendSlots;
   readonly journal: RunJournal;
@@ -211,7 +222,8 @@ async function callJudge(options: CallJudgeOptions): Promise<CallJudgeResult> {
     runProcess({
       command: launch.command,
       cwd: options.cwd,
-      env: launch.env ?? {},
+      // Тем же порядком, что у агентского шага: окружение шага, поверх — бэкенда.
+      env: { ...(options.env ?? {}), ...(launch.env ?? {}) },
       stdin: launch.stdin,
       timeoutMs: options.timeoutMs,
       ...(options.stallTimeoutMs === undefined ? {} : { stallTimeoutMs: options.stallTimeoutMs }),

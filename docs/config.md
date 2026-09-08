@@ -39,7 +39,8 @@ limits:                        # потолки, которые пайплайн
   iterations: 10
 
 plugins:                       # расширения движка, см. docs/plugins.md
-  - ./plugins/codex.mjs        # путь — от файла, в котором объявлен
+  - stepcast/backends/codex    # адаптер Codex, поставляемый пакетом
+  - ./plugins/local.mjs        # путь — от файла, в котором объявлен
   - stepcast-plugin-http       # имя — пакет из node_modules проекта
 
 env_deny:                      # SSH_* здесь нет: он ловит SSH_AUTH_SOCK
@@ -75,9 +76,10 @@ backends:
       enforce: inherit
     env:
       DISABLE_AUTOUPDATER: "1"
-  codex:
-    command: codex
-    enabled: false
+  codex:                       # запись появляется умолчаниями плагина (plugin:codex):
+    default_model: gpt-5       # command, sessions, structured_output, mcp, concurrency,
+    permissions:               # cache_read_weight — переписывать не нужно
+      mode: workspace-write    # словарь Codex: read-only | workspace-write | danger-full-access
 
 ui:
   port: 7717
@@ -552,6 +554,15 @@ repos` (см. `docs/backlog.md`), — а не подстановка докум�
 
 `cache_read_weight` — с каким весом чтение кеша идёт в бюджет токенов. Чтение
 дешевле обычного ввода примерно вдесятеро, отсюда умолчание `0.1`.
+
+Бэкенд `codex` (плагин `stepcast/backends/codex`, `docs/plugins.md`) приносит
+свою запись умолчаниями вклада: `strict_permissions: false` — жёсткого режима у
+CLI нет, а `permissions.allow`/`deny` он выразить не умеет и отказывает на них
+до запуска процесса; `permissions.mode` принимает только словарь песочницы CLI.
+Если Codex аутентифицирован ключом, а не входом через ChatGPT, переменная
+`OPENAI_API_KEY` попадает под встроенный `env_deny` (`*_KEY`) и до процесса не
+дойдёт — разрешите её точечно записью `backends.codex.env` (она ложится поверх
+отфильтрованного окружения) либо войдите через `codex login`.
 
 `concurrency` — сколько вызовов этого бэкенда (агентских шагов и судей) может
 идти одновременно, независимо от того, сколько работ пайплайн ведёт разом.

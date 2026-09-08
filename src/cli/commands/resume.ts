@@ -1,4 +1,4 @@
-import { resolveConfig } from '../../core/config/resolve.js';
+import { resolveConfig, type Config } from '../../core/config/resolve.js';
 import type { Registry } from '../../core/plugins/registry.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { findProjectRoot, shortRunId } from '../../core/journal/paths.js';
@@ -8,13 +8,15 @@ import { runPipeline } from '../../core/run/runner.js';
 import { formatDiagnostic } from './lint.js';
 import type { ParsedArgs } from '../args.js';
 
+/** Конфигурация — из окружения команды, см. комментарий у `runRunCommand`. */
 export async function runResumeCommand(
   args: ParsedArgs,
   write: (line: string) => void,
   cwd: string,
   registry?: Registry,
+  resolvedConfig?: Config,
 ): Promise<ExitCodeValue> {
-  const { config } = resolveConfig({ cwd });
+  const config = resolvedConfig ?? resolveConfig({ cwd }).config;
   const projectRoot = findProjectRoot(cwd);
 
   try {
