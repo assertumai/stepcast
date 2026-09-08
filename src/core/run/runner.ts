@@ -1430,10 +1430,16 @@ async function runJobSteps(
    * итерации было бы нечего — предыдущие работы группы уже закончились. Работе
    * группы цикл `until` поэтому и запрещён (см. линт).
    */
-  const sessionKey = (alias: string): string =>
-    job.sessionGroup === undefined
-      ? `${job.id}#${iteration ?? 1}/${alias}`
-      : `${job.sessionGroup}/${alias}`;
+  // Псевдоним принадлежит адаптеру: одинаковое `session: default` у Claude
+  // и Codex означает два разных диалога, а идентификатор одной стороны другая
+  // продолжить не умеет. Имя агента входит и в обычное пространство работы, и
+  // в явную группу сессий.
+  const sessionKey = (agent: string, alias: string): string => {
+    const scope = job.sessionGroup === undefined
+      ? `${job.id}#${iteration ?? 1}`
+      : job.sessionGroup;
+    return `${scope}/${agent}/${alias}`;
+  };
 
   // Сессии, в которые уже отправлен контекст самой работы и выходы
   // предшественников. Отслеживание живёт в работе, а не в прогоне, в отличие
@@ -1520,7 +1526,7 @@ async function runJobSteps(
     const continuing = planned?.decision.kind === 'continue' ? planned.decision : undefined;
     const continuationSourceId = context.resume?.source.manifest.run_id ?? 'неизвестно';
     if (continuing !== undefined && step.kind === 'agent') {
-      const key = sessionKey(step.session);
+      const key = sessionKey(step.agent, step.session);
       context.sessions.seed(key, continuing.sessionId);
       context.pipelineContextSent.add(key);
       jobContextSent.add(key);
@@ -2119,8 +2125,8 @@ async function runAgentStep(
   context: RunContext,
   stepDirPath: string,
   sessions: ReturnType<typeof createSessionRegistry>,
-  /** Псевдоним шага в пространстве имён сессий его работы (см. `sessionKey`). */
-  sessionKey: (alias: string) => string,
+  /** Псевдоним шага в пространстве имён агента и его работы (см. `sessionKey`). */
+  sessionKey: (agent: string, alias: string) => string,
   jobContextSent: Set<string>,
   budgetScopes: () => BudgetScope[],
   changedPaths: () => readonly string[] | undefined,
@@ -2169,7 +2175,7 @@ async function runAgentStep(
       stepDir: stepDirPath,
       scratchDir: jobScratchDir(journal.paths, job.id),
       sessions,
-      sessionAlias: sessionKey(step.session),
+      sessionAlias: sessionKey(step.agent, step.session),
       backendSlots: context.backendSlots,
       stallTimeoutMs: config.defaults.stallTimeoutMs,
       signal: abort.controller.signal,
@@ -2177,7 +2183,7 @@ async function runAgentStep(
       buildPrompt: (_plan, previousFailure) => {
         // Унаследованный контекст уходит в первое сообщение сессии: повторять
         // агенту то, что он уже прочитал в этой же сессии, незачем.
-        const key = sessionKey(step.session);
+        const key = sessionKey(step.agent, step.session);
         // Контекст пайплайна — один раз на диалог; контекст работы и выходы
         // предшественников — один раз на работу внутри диалога. У работы без
         // объявленной группы оба совпадают, и поведение прежнее.
@@ -2412,7 +2418,7 @@ async function runAgentStep(
       // начать разговор заново — с новой сессией и полным контекстом, ровно
       // как первая попытка любого другого переисполняемого шага.
       onFailedContinuation: () => {
-        const key = sessionKey(step.session);
+        const key = sessionKey(step.agent, step.session);
         sessions.unseed(key);
         context.pipelineContextSent.delete(key);
         jobContextSent.delete(key);

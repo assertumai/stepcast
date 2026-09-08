@@ -30,7 +30,7 @@ import type { BacklogOverview } from './backlog.js';
 import { readJournalFile } from './file.js';
 import { buildPipelines, createRegistryCache, type RegistryCache } from './pipelines.js';
 import { isApiPath, isSafeSegment } from './routes.js';
-import { readSettings, writeSettings, type SettingsPatch } from './settings.js';
+import { readSettings, writeSettings } from './settings.js';
 import { buildSnapshot, buildSnapshotFromRecord } from './snapshot.js';
 import { readStepOutput } from './stepOutput.js';
 import { MAX_USAGE_DAYS, buildUsage } from './usage.js';
@@ -698,16 +698,16 @@ async function handleSettingsWrite(
     return;
   }
 
-  let patch: SettingsPatch;
+  let patch: unknown;
   try {
-    patch = JSON.parse(body === '' ? '{}' : body) as SettingsPatch;
+    patch = JSON.parse(body === '' ? '{}' : body) as unknown;
   } catch {
     sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
     return;
   }
 
   try {
-    sendJson(res, 200, home === undefined ? writeSettings(patch) : writeSettings(patch, home));
+    sendJson(res, 200, await writeSettings(patch, home));
   } catch (error) {
     const message = isStepcastError(error) ? error.message : (error as Error).message;
     sendJson(res, isStepcastError(error) ? 400 : 500, { error: message });
@@ -882,7 +882,9 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
         void handlePipelines(runsRoot, config, home, registryCache, res);
         return;
       case '/api/settings':
-        sendJson(res, 200, home === undefined ? readSettings() : readSettings(home));
+        void readSettings(home)
+          .then((settings) => sendJson(res, 200, settings))
+          .catch((error: Error) => sendJson(res, 500, { error: error.message }));
         return;
       case '/api/usage':
         handleUsage(runsRoot, watcher, url, res);

@@ -1,3 +1,4 @@
+import type { ModelTier } from '../config/modelTiers.js';
 /**
  * Раскрытая модель пайплайна: то, что получается после подстановок, раскрытия
  * `uses` и применения умолчаний. Дальше по конвейеру движок работает только с
@@ -358,11 +359,13 @@ export type SubstitutionMap = ReadonlyMap<string, readonly Substitution[]>;
 
 /**
  * Звено цепочки, давшее модель агентского шага: объявление самого шага,
- * умолчания документа пайплайна, умолчания конфигурации, умолчание бэкенда
- * (с его именем) либо отсутствие модели во всех четырёх.
+ * работа, пайплайн, конфигурация, карта tier выбранного агента, умолчание
+ * бэкенда либо отсутствие модели. Происхождение не входит в исполняемый шаг.
  */
 export type ModelOrigin =
   | { readonly layer: 'step' }
+  | { readonly layer: 'job' }
+  | { readonly layer: 'tier'; readonly backend: string; readonly tier: ModelTier; readonly tierLayer: 'pipeline' | 'job' | 'step'; readonly fallback?: true }
   | { readonly layer: 'pipeline' }
   | { readonly layer: 'config' }
   | { readonly layer: 'backend'; readonly backend: string }

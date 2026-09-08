@@ -33,6 +33,7 @@ describe('ui-routes: разбор адресов', () => {
     assert.deepEqual(parseRoute('/pipelines'), { page: 'pipelines' });
     assert.deepEqual(parseRoute('/backlog'), { page: 'backlog' });
     assert.deepEqual(parseRoute('/settings'), { page: 'settings' });
+    assert.deepEqual(parseRoute('/agents'), { page: 'agents' });
     assert.deepEqual(parseRoute('/cleanup'), { page: 'cleanup' });
   });
 

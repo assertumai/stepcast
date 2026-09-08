@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   CheckCommandSchema,
+  ModelTierSchema,
   RawKnowledgeSchema,
   RawSpecSchema,
   RelativeRepoPathSchema,
@@ -20,6 +21,16 @@ const amount = z.union([z.string(), z.number()]);
  * подстановок, а до него строка `${params.n}` не проходит ни одну из них.
  */
 const count = z.union([z.string(), z.number()]);
+
+// Значение параметра проверяется после подстановки, до выбора модели.
+const SelectionShape = {
+  agent: z.string().optional(),
+  model: z.string().optional(),
+  model_tier: z.union([
+    ModelTierSchema,
+    z.string().regex(/^\$\{[^}]+\}$/, 'model_tier: ожидается max, deep, balance, fast, mini или подстановка'),
+  ]).optional(),
+};
 
 const ContextEntrySchema = z.union([
   z.string(),
@@ -206,8 +217,7 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
   const AgentStepSchema = z
     .object({
       ...StepCommonShape,
-      agent: z.string().optional(),
-      model: z.string().optional(),
+      ...SelectionShape,
       session: z.string().optional(),
       prompt: z.string(),
       output_schema: z.string().optional(),
@@ -248,6 +258,7 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
 
   /** Тело работы — общая часть для отдельного файла и описания на месте. */
   const JobBodyShape = {
+    ...SelectionShape,
     name: z.string().optional(),
     description: z.string().optional(),
     session: z.enum(['shared', 'per_step']).optional(),
@@ -318,6 +329,7 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
 
   const JobUseSchema = z
     .object({
+      ...SelectionShape,
       uses: z.string(),
       with: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
       ...WiringShape,
@@ -374,6 +386,7 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
     .object({
       version: z.literal(1).optional(),
       kind: z.literal('pipeline').optional(),
+      ...SelectionShape,
       name: z.string().optional(),
       inputs: z.record(z.string(), ParamSchema).optional(),
       workspace: WorkspaceSchema.optional(),
@@ -386,8 +399,7 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
       project: ProjectSchema.optional(),
       defaults: z
         .object({
-          agent: z.string().optional(),
-          model: z.string().optional(),
+          ...SelectionShape,
           session: z.enum(['shared', 'per_step']).optional(),
           workspace: WorkspaceSchema.optional(),
         })

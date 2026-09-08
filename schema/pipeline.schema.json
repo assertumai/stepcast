@@ -11,6 +11,30 @@
       "type": "string",
       "const": "pipeline"
     },
+    "agent": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "model_tier": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "max",
+            "deep",
+            "balance",
+            "fast",
+            "mini"
+          ]
+        },
+        {
+          "type": "string",
+          "pattern": "^\\$\\{[^}]+\\}$"
+        }
+      ]
+    },
     "name": {
       "type": "string"
     },
@@ -376,6 +400,24 @@
         "model": {
           "type": "string"
         },
+        "model_tier": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "max",
+                "deep",
+                "balance",
+                "fast",
+                "mini"
+              ]
+            },
+            {
+              "type": "string",
+              "pattern": "^\\$\\{[^}]+\\}$"
+            }
+          ]
+        },
         "session": {
           "type": "string",
           "enum": [
@@ -536,6 +578,30 @@
           {
             "type": "object",
             "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "model_tier": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "max",
+                      "deep",
+                      "balance",
+                      "fast",
+                      "mini"
+                    ]
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^\\$\\{[^}]+\\}$"
+                  }
+                ]
+              },
               "uses": {
                 "type": "string"
               },
@@ -866,6 +932,30 @@
               },
               "budget_exempt": {
                 "type": "boolean"
+              },
+              "agent": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "model_tier": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "max",
+                      "deep",
+                      "balance",
+                      "fast",
+                      "mini"
+                    ]
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^\\$\\{[^}]+\\}$"
+                  }
+                ]
               },
               "name": {
                 "type": "string"
@@ -1726,6 +1816,24 @@
                         },
                         "model": {
                           "type": "string"
+                        },
+                        "model_tier": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "max",
+                                "deep",
+                                "balance",
+                                "fast",
+                                "mini"
+                              ]
+                            },
+                            {
+                              "type": "string",
+                              "pattern": "^\\$\\{[^}]+\\}$"
+                            }
+                          ]
                         },
                         "session": {
                           "type": "string"

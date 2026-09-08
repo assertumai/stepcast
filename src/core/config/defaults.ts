@@ -65,6 +65,7 @@ export const BUILTIN_CONFIG: RawConfig = {
   backends: {
     claude: {
       command: 'claude',
+      default_model: 'sonnet',
       enabled: true,
       concurrency: 2,
       // Чтение кеша дешевле обычного ввода примерно вдесятеро; считать его

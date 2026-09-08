@@ -27,7 +27,7 @@ import { layoutJobs, type JobGraph } from './graph.js';
  */
 
 /**
- * Слой, из которого пришла модель шага, — то же пятизвенное деление, что и
+ * Слой, из которого пришла модель шага, — то же деление, что и
  * `ModelOrigin` раскрытия, но с именем файла на месте слоя `config`: витрина
  * уже держит на руках разрешение конфигурации показываемого проекта
  * (`provenance.get('defaults.model')`), и подписывать слой обязана она, а не
@@ -36,6 +36,8 @@ import { layoutJobs, type JobGraph } from './graph.js';
  */
 export type PipelineModelOrigin =
   | { readonly layer: 'step' }
+  | { readonly layer: 'job' }
+  | { readonly layer: 'tier'; readonly backend: string; readonly tier: string; readonly tierLayer: 'pipeline' | 'job' | 'step'; readonly fallback?: true }
   | { readonly layer: 'pipeline' }
   | { readonly layer: 'config'; readonly file: string }
   | { readonly layer: 'backend'; readonly backend: string }

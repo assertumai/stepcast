@@ -47,6 +47,10 @@ function stepsOf(job: PipelineJobView): string {
  */
 function modelOriginLabel(origin: PipelineModelOrigin): string {
   switch (origin.layer) {
+    case 'job':
+      return 'модель работы';
+    case 'tier':
+      return `tier ${origin.tier} (${origin.tierLayer}, ${origin.backend})${origin.fallback ? ' → модель агента по умолчанию' : ''}`;
     case 'step':
       return 'объявлена шагом';
     case 'pipeline':

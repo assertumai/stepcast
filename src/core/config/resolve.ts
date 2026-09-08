@@ -14,6 +14,7 @@ import {
   type RawConfig,
 } from './schema.js';
 import { BUILTIN_CONFIG } from './defaults.js';
+import type { ModelTiers } from './modelTiers.js';
 import {
   flatten,
   matchesKeyPattern,
@@ -41,6 +42,7 @@ export interface BackendConfig {
   readonly command: string;
   readonly enabled: boolean;
   readonly defaultModel: string | undefined;
+  readonly modelTiers?: ModelTiers;
   readonly concurrency: number;
   readonly cacheReadWeight: number;
   readonly sessions: boolean;
@@ -371,6 +373,7 @@ function buildBackends(
       command,
       enabled: raw.enabled !== false,
       defaultModel: typeof raw.default_model === 'string' ? raw.default_model : undefined,
+      modelTiers: (raw.model_tiers as ModelTiers | undefined) ?? {},
       concurrency: typeof raw.concurrency === 'number' ? raw.concurrency : 1,
       cacheReadWeight: typeof raw.cache_read_weight === 'number' ? raw.cache_read_weight : 1,
       sessions: raw.sessions === true,

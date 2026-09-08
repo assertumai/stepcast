@@ -227,7 +227,27 @@
             "type": "boolean"
           },
           "default_model": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "model_tiers": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "enum": [
+                "max",
+                "deep",
+                "balance",
+                "fast",
+                "mini"
+              ]
+            },
+            "additionalProperties": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
           },
           "concurrency": {
             "type": "integer",

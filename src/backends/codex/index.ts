@@ -18,6 +18,7 @@ const plugin: StepcastPlugin = {
       create: (config) => createCodexAdapter(config),
       defaults: {
         command: 'codex',
+        default_model: 'gpt-5.6-terra',
         sessions: true,
         structured_output: true,
         // Ни пооперационного запрета, ни отсечения чужих серверов у CLI нет.

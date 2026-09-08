@@ -2334,7 +2334,7 @@ jobs:
     assert.deepEqual(pick(step, 'modelOrigin'), { layer: 'backend', backend: 'claude' });
   });
 
-  it('слой none: модель не задана ни на одном из четырёх звеньев', async (t) => {
+  it('слой backend: встроенная модель Claude действует без пользовательских настроек', async (t) => {
     const { runsRoot, projectRoot, home } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(
@@ -2354,8 +2354,8 @@ jobs:
 
     const pipelines = await fetchJson(server, '/api/pipelines');
     const step = pick(pipelines.json, 'pipelines', 0, 'jobs', 0, 'steps', 0);
-    assert.equal(pick(step, 'model'), undefined);
-    assert.deepEqual(pick(step, 'modelOrigin'), { layer: 'none' });
+    assert.equal(pick(step, 'model'), 'sonnet');
+    assert.deepEqual(pick(step, 'modelOrigin'), { layer: 'backend', backend: 'claude' });
   });
 
   it('нечитаемая конфигурация проекта не выдаёт слой модели, а даёт карточку с объяснением', async (t) => {
@@ -2854,5 +2854,70 @@ describe('ui-dashboard: вывод шага', () => {
       outputPath(key, 'a', 'build', 'compile', { stdoutOffset: 0 }),
     );
     assert.equal(stdoutOnly.json.stderr, undefined);
+  });
+});
+
+describe('ui-dashboard: конфигурация агентов и tier', () => {
+  it('сохраняет модели каждого агента и подключает поставляемый Codex', async (t) => {
+    const { runsRoot, home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+    const file = join(home, '.stepcast', 'config.yml');
+    writeFileSync(file, `# сохранить комментарий\n${readFileSync(file, 'utf8')}`);
+    const saved = await sendJson(server, {
+      method: 'PUT', path: '/api/settings',
+      body: JSON.stringify({
+        agent: 'codex', connectCodex: true,
+        backends: {
+          claude: { defaultModel: 'opus', modelTiers: { deep: 'opus', mini: 'haiku' } },
+          codex: { defaultModel: 'gpt-5.6-terra', modelTiers: { deep: 'codex-deep' } },
+        },
+      }),
+    });
+    assert.equal(saved.code, 200, JSON.stringify(saved.json));
+    const backends = saved.json.backends as Array<{ name: string; defaultModel: string; modelTiers: Record<string, string>; available: boolean }>;
+    assert.equal(backends.find((b) => b.name === 'claude')?.defaultModel, 'opus');
+    assert.equal(backends.find((b) => b.name === 'codex')?.modelTiers.deep, 'codex-deep');
+    assert.equal(backends.find((b) => b.name === 'codex')?.available, true);
+    assert.equal(pick(saved.json, 'agent', 'value'), 'codex');
+    assert.match(readFileSync(file, 'utf8'), /# сохранить комментарий/);
+    assert.match(readFileSync(file, 'utf8'), /stepcast\/backends\/codex/);
+
+    const cleared = await sendJson(server, {
+      method: 'PUT', path: '/api/settings',
+      body: JSON.stringify({ backends: { claude: { defaultModel: null, modelTiers: { deep: null } } } }),
+    });
+    assert.equal(cleared.code, 200);
+    const claude = (cleared.json.backends as typeof backends).find((b) => b.name === 'claude');
+    assert.equal(claude?.defaultModel, 'sonnet');
+    assert.equal(claude?.modelTiers.deep, undefined);
+    assert.equal(claude?.modelTiers.mini, 'haiku');
+  });
+
+  it('отклоняет неправильные правки целиком, не меняя файл', async (t) => {
+    const { runsRoot, home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+    const file = join(home, '.stepcast', 'config.yml');
+    const before = readFileSync(file, 'utf8');
+    for (const patch of [
+      null, [], { backends: { claude: { modelTiers: { typo: 'opus' } } } },
+      { backends: { claude: { modelTiers: { deep: 123 } } } },
+      { backends: { claude: { defaultModel: '   ' } } },
+      { backends: { missing: { defaultModel: 'x' } } }, { agent: 'codex' },
+    ]) {
+      const result = await sendJson(server, { method: 'PUT', path: '/api/settings', body: JSON.stringify(patch) });
+      assert.equal(result.code, 400, JSON.stringify(patch));
+      assert.equal(readFileSync(file, 'utf8'), before);
+    }
+  });
+
+  it('показывает Claude и доступный к подключению Codex с исходными моделями', async (t) => {
+    const { runsRoot, home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+    const result = await fetchJson(server, '/api/settings');
+    assert.equal(result.code, 200);
+    const backends = result.json.backends as Array<{ name: string; defaultModel: string; available: boolean }>;
+    assert.equal(backends.find((b) => b.name === 'claude')?.defaultModel, 'sonnet');
+    assert.equal(backends.find((b) => b.name === 'codex')?.defaultModel, 'gpt-5.6-terra');
+    assert.equal(backends.find((b) => b.name === 'codex')?.available, false);
   });
 });

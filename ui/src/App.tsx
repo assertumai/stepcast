@@ -8,6 +8,7 @@ import { Cleanup } from './pages/Cleanup';
 import { Pipelines } from './pages/Pipelines';
 import { RunDetail } from './pages/RunDetail';
 import { Runs } from './pages/Runs';
+import { Agents } from './pages/Agents';
 import { Settings } from './pages/Settings';
 import { Usage } from './pages/Usage';
 
@@ -78,6 +79,7 @@ export function App(): JSX.Element {
           <Usage overview={overview} {...(route.days === undefined ? {} : { days: route.days })} navigate={navigate} />
         ) : null}
         {route.page === 'cleanup' ? <Cleanup overview={overview} /> : null}
+        {route.page === 'agents' ? <Agents /> : null}
         {route.page === 'settings' ? <Settings /> : null}
         {route.page === 'run' ? (
           <RunDetail

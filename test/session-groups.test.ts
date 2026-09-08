@@ -93,6 +93,44 @@ describe('session_group: диалог живёт дольше работы', () 
     assert.notEqual(second?.sessionId, first?.sessionId);
   });
 
+  it('два агента с одним псевдонимом не продолжают сессию друг друга', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  work:
+    steps:
+      - id: claude
+        agent: claude
+        prompt: первый
+      - id: codex
+        agent: codex
+        prompt: второй
+`,
+      '.stepcast/config.yml': `
+backends:
+  codex:
+    command: codex
+    sessions: true
+    structured_output: true
+`,
+    });
+    const claude = createFakeBackend({ lines: () => [initLine(), resultLine({ text: 'claude' })] });
+    const codex = createFakeBackend({ lines: () => [initLine(), resultLine({ text: 'codex' })] });
+    const result = await runPipeline({
+      expanded: expand(project),
+      config: { ...project.config, runs: { ...project.config.runs, root: tempDir('runs-') } },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: (name) => (name === 'claude' ? claude.adapter : codex.adapter),
+    });
+
+    assert.equal(result.status, 'success');
+    assert.equal(claude.invocations[0]?.resumeSession, false);
+    assert.equal(codex.invocations[0]?.resumeSession, false);
+    assert.notEqual(codex.invocations[0]?.sessionId, claude.invocations[0]?.sessionId);
+  });
+
   /**
    * Свод правил пайплайна агент читает один раз на диалог, а собственный
    * контекст второй работы — новое знание: умолчать о нём потому, что диалог

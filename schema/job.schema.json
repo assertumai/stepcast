@@ -50,6 +50,30 @@
         "additionalProperties": false
       }
     },
+    "agent": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "model_tier": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "max",
+            "deep",
+            "balance",
+            "fast",
+            "mini"
+          ]
+        },
+        {
+          "type": "string",
+          "pattern": "^\\$\\{[^}]+\\}$"
+        }
+      ]
+    },
     "name": {
       "type": "string"
     },
@@ -909,6 +933,24 @@
               },
               "model": {
                 "type": "string"
+              },
+              "model_tier": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "max",
+                      "deep",
+                      "balance",
+                      "fast",
+                      "mini"
+                    ]
+                  },
+                  {
+                    "type": "string",
+                    "pattern": "^\\$\\{[^}]+\\}$"
+                  }
+                ]
               },
               "session": {
                 "type": "string"

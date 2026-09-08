@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 
+import { ModelTierSchema } from '../config/schema.js';
+import type { ModelTier } from '../config/modelTiers.js';
 import type { Config } from '../config/resolve.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
@@ -619,16 +621,29 @@ function recordPromptSubstitutions(
   substitutions.set(key, [...(substitutions.get(key) ?? []), ...extra]);
 }
 
+function parseModelTier(value: unknown, file: string, at: string): ModelTier | undefined {
+  if (value === undefined) return undefined;
+  const parsed = ModelTierSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new StepcastError(`Недопустимый model_tier: ${String(value)}`, {
+      file, at, hint: 'Допустимы max, deep, balance, fast, mini',
+    });
+  }
+  return parsed.data;
+}
+
 interface StepDefaults {
   readonly agent: string;
   readonly model: string | undefined;
   /**
-   * Слой, давший `model`, — `pipeline` либо `config`, не определён, когда
+   * Слой, давший `model`, — `job`, `pipeline` либо `config`; не определён, когда
    * `model` тоже не определена. Разрешается один раз в `expandPipeline`, рядом
    * со значением: сравнивать строки задним числом нельзя, одинаковое значение
    * законно прийти с разных слоёв.
    */
-  readonly modelLayer: 'pipeline' | 'config' | undefined;
+  readonly modelLayer: 'job' | 'pipeline' | 'config' | undefined;
+  readonly modelTier: ModelTier | undefined;
+  readonly tierLayer: 'pipeline' | 'job';
   readonly timeoutMs: number;
   readonly sessionMode: 'shared' | 'per_step';
   /** Политика доступа, объявленная работой — применяется к шагу без своей. */
@@ -699,16 +714,24 @@ function toStep(
   recordPromptSubstitutions(substitutions, promptKey, prompt.substitutions);
   const agent = raw.agent ?? defaults.agent;
   const backend = config.backends[agent];
-  const model = raw.model ?? defaults.model ?? backend?.defaultModel;
+  const tier = parseModelTier(raw.model_tier, declaringFile, `${at}.model_tier`) ?? defaults.modelTier;
+  const tierModel = tier === undefined ? undefined : backend?.modelTiers?.[tier];
+  const model = raw.model ?? defaults.model ?? tierModel ?? backend?.defaultModel;
 
   const modelOrigin: ModelOrigin =
     raw.model !== undefined
       ? { layer: 'step' }
       : defaults.modelLayer !== undefined
         ? { layer: defaults.modelLayer }
-        : backend?.defaultModel !== undefined
-          ? { layer: 'backend', backend: agent }
-          : { layer: 'none' };
+        : tier !== undefined
+          ? {
+              layer: 'tier', backend: agent, tier,
+              tierLayer: raw.model_tier !== undefined ? 'step' : defaults.tierLayer,
+              ...(tierModel === undefined ? { fallback: true as const } : {}),
+            }
+          : backend?.defaultModel !== undefined
+            ? { layer: 'backend', backend: agent }
+            : { layer: 'none' };
 
   return {
     step: {
@@ -813,13 +836,17 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   };
 
   const defaultSession = doc.defaults?.session ?? config.defaults.session;
-  const defaultAgent = doc.defaults?.agent ?? config.defaults.agent;
-  const defaultModel = doc.defaults?.model ?? config.defaults.model;
+  const defaultAgent = doc.agent ?? doc.defaults?.agent ?? config.defaults.agent;
+  const defaultModel = doc.model ?? doc.defaults?.model ?? config.defaults.model;
+  const defaultModelTier = parseModelTier(
+    doc.model_tier ?? doc.defaults?.model_tier, pipelinePath,
+    doc.model_tier !== undefined ? 'model_tier' : 'defaults.model_tier',
+  );
   // Слой умолчания разрешается здесь же, рядом со значением: сравнивать
   // строки задним числом в toStep нельзя — документ пайплайна и конфигурация
   // законно объявляют одну и ту же модель, и слои должны остаться различимы.
   const defaultModelLayer: 'pipeline' | 'config' | undefined =
-    doc.defaults?.model !== undefined ? 'pipeline' : config.defaults.model !== undefined ? 'config' : undefined;
+    doc.model !== undefined || doc.defaults?.model !== undefined ? 'pipeline' : config.defaults.model !== undefined ? 'config' : undefined;
 
   // Объявление пайплайна — верхний из трёх уровней (design.md, решение 2):
   // разбирается один раз здесь, а не в цикле работ, чтобы работы, его не
@@ -908,6 +935,9 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       };
       const overrides = interpolateTree(
         {
+          ...(entry.agent === undefined ? {} : { agent: entry.agent }),
+          ...(entry.model === undefined ? {} : { model: entry.model }),
+          ...(entry.model_tier === undefined ? {} : { model_tier: entry.model_tier }),
           ...(entry.description === undefined ? {} : { description: entry.description }),
           ...(entry.session === undefined ? {} : { session: entry.session }),
           ...(entry.workspace === undefined ? {} : { workspace: entry.workspace }),
@@ -943,6 +973,11 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       body = interpolated.value;
     }
 
+    const jobModelTier = parseModelTier(
+      body.model_tier,
+      'uses' in entry && entry.model_tier !== undefined ? pipelinePath : declaringFile,
+      `${at}.model_tier`,
+    );
     const sessionMode = (body.session as 'shared' | 'per_step' | undefined) ?? defaultSession;
     // Слияние, а не замена: работа обычно переопределяет только `inherit`
     // (или только `path`), а режим объявлен один раз на пайплайне. Полная
@@ -1069,9 +1104,11 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
           declaringFile,
           bodyScope,
           {
-            agent: defaultAgent,
-            model: defaultModel,
-            modelLayer: defaultModelLayer,
+            agent: (body.agent as string | undefined) ?? defaultAgent,
+            model: (body.model as string | undefined) ?? defaultModel,
+            modelLayer: body.model !== undefined ? 'job' : defaultModelLayer,
+            modelTier: jobModelTier ?? defaultModelTier,
+            tierLayer: jobModelTier !== undefined ? 'job' : 'pipeline',
             timeoutMs: config.defaults.stepTimeoutMs,
             sessionMode,
             permissions: jobPermissions,

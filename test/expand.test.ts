@@ -657,7 +657,11 @@ jobs:
 `,
       });
 
-      const { pipeline, modelOrigins } = expand(project);
+      const config: Config = {
+        ...project.config,
+        backends: { claude: { ...project.config.backends.claude!, defaultModel: undefined } },
+      };
+      const { pipeline, modelOrigins } = expandWith(project, config);
       assert.equal(asAgent(pipeline.jobs[0]!.steps[0]!).model, undefined);
       assert.deepEqual(modelOrigins.get('ask/a'), { layer: 'none' });
     });
@@ -2171,6 +2175,7 @@ jobs:
         attempts:
           max: 1
         agent: claude
+        model: sonnet
         session: default
         prompt: сделай
 `;

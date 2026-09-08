@@ -41,7 +41,7 @@ function scopeOf(pipelines: readonly PipelineView[], settingsFile: string): Mode
       for (const step of job.steps) {
         const origin = step.modelOrigin;
         if (origin === undefined) continue;
-        if (origin.layer === 'step' || origin.layer === 'pipeline') unaffected += 1;
+        if (origin.layer === 'step' || origin.layer === 'job' || origin.layer === 'pipeline') unaffected += 1;
         else if (origin.layer !== 'config') affected += 1;
         else if (origin.file === settingsFile) affected += 1;
         else overridden += 1;
@@ -114,7 +114,7 @@ export function Settings(): JSX.Element {
       .finally(() => setSaving(false));
   };
 
-  const enabled = settings.backends.filter((backend) => backend.enabled);
+  const enabled = settings.backends.filter((backend) => backend.enabled && backend.available);
   const chosen = settings.backends.find((backend) => backend.name === agent);
 
   return (
@@ -175,7 +175,7 @@ export function Settings(): JSX.Element {
           <div className="field-body">
             <p className="note dim">
               Значение применяется только к шагам, которые не объявили модель сами — ни в самом
-              шаге, ни в умолчаниях пайплайна.{' '}
+              шаге, ни в работе, ни в умолчаниях пайплайна.{' '}
               {pipelines === undefined ? (
                 'Область действия ещё считается…'
               ) : pipelines === null ? (

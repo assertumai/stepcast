@@ -22,7 +22,7 @@ runs:
 
 defaults:
   agent: claude
-  model: sonnet
+  # model: sonnet             # общее явное переопределение; побеждает model_tier
   workspace: { mode: cwd }
   session: shared
   concurrency: 1
@@ -77,7 +77,7 @@ backends:
     env:
       DISABLE_AUTOUPDATER: "1"
   codex:                       # запись появляется умолчаниями плагина (plugin:codex):
-    default_model: gpt-5       # command, sessions, structured_output, mcp, concurrency,
+    default_model: gpt-5.6-terra # command, sessions, structured_output, mcp, concurrency,
     permissions:               # cache_read_weight — переписывать не нужно
       mode: workspace-write    # словарь Codex: read-only | workspace-write | danger-full-access
 
@@ -94,6 +94,52 @@ project:
     check: openspec validate "$SPEC_CHANGE" --strict
   edit_paths: [src/**, test/**, docs/**, package.json]  # границы правок, см. «Границы правок»
 ```
+
+## Агенты и модели
+
+Страница **Агенты** (`/agents`) задаёт `defaults.agent`, модель по умолчанию и
+модели для пяти tier каждого агента: `max`, `deep`, `balance`, `fast`, `mini`.
+Она пишет `~/.stepcast/config.yml`, сохраняет комментарии и показывает источник
+значений. Можно подключить поставляемый плагин Codex; для запуска нужен
+установленный и авторизованный Codex CLI. Подключённые плагины других агентов
+также появляются на странице.
+
+Встроенный агент по умолчанию — `claude`. Его модель — `sonnet`; у плагина
+`codex` — `gpt-5.6-terra` (GPT 5.6 Terra). Карты tier изначально пусты: пользователь
+сам выбирает модели, и один tier у разных агентов может обозначать разные модели.
+
+```yaml
+plugins: [stepcast/backends/codex]
+defaults:
+  agent: codex
+backends:
+  claude:
+    default_model: sonnet
+    model_tiers:
+      max: opus
+      deep: opus
+      balance: sonnet
+      fast: haiku
+      mini: haiku
+  codex:
+    default_model: gpt-5.6-terra
+    model_tiers:
+      balance: gpt-5.6-terra
+```
+
+Это пример пользовательских назначений, а не встроенная таблица соответствий.
+Проект может переопределить отдельные значения `backends.<agent>.default_model`
+и `backends.<agent>.model_tiers.<tier>`, сохранив остальные из глобального файла.
+На странице пустое поле удаляет глобальное переопределение. Если tier не задан
+ни одним слоем, используется модель агента по умолчанию.
+
+Старое `defaults.model` остаётся общим явным переопределением: оно имеет приоритет
+над tier и моделью агента. Страница «Агенты» показывает его, если оно задано;
+снять его можно на странице «Настройки». При одновременном использовании Claude
+и Codex удобнее задавать модели отдельно в `backends`.
+
+Порядок выбора и примеры уровней pipeline/job/step описаны в
+[формате пайплайна](pipeline-format.md#агент-модель-и-tier).
 
 ## Единицы
 

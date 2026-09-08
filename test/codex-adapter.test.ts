@@ -372,6 +372,7 @@ describe('codex-backend: возможности и манифест плагин
     assert.equal(codexPlugin.name, 'codex');
     assert.deepEqual(codexPlugin.backends?.codex?.defaults, {
       command: 'codex',
+      default_model: 'gpt-5.6-terra',
       sessions: true,
       structured_output: true,
       strict_permissions: false,

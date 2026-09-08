@@ -1,6 +1,8 @@
 import { createRequire } from 'node:module';
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+import { findPackageRoot } from '../package-schema.js';
 
 import type { ResolvedConfig } from '../config/resolve.js';
 import { isStepcastError, StepcastError } from '../errors.js';
@@ -77,7 +79,7 @@ export function resolveModulePath(declaration: PluginDeclaration, options: LoadO
   // Пакет — зависимость проекта: разрешается от его корня. Каталог движка —
   // запасной путь для глобальной установки, где плагин лежит рядом с самим
   // stepcast, а не в репозитории.
-  const roots = [options.projectRoot, ...(options.engineRoot === undefined ? [] : [options.engineRoot])];
+  const roots = [options.projectRoot, options.engineRoot ?? findPackageRoot(fileURLToPath(new URL('.', import.meta.url)))];
   const failures: string[] = [];
   for (const root of roots) {
     try {

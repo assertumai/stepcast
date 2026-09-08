@@ -2,29 +2,18 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { parseDocument } from 'yaml';
+import { z } from 'zod';
 
+import codexPlugin from '../backends/codex/index.js';
 import { describeSource } from '../core/config/merge.js';
-import { resolveConfig } from '../core/config/resolve.js';
-import { RawConfigSchema } from '../core/config/schema.js';
+import type { ModelTiers } from '../core/config/modelTiers.js';
+import type { ResolvedConfig } from '../core/config/resolve.js';
+import { ModelNameSchema, ModelTierSchema, RawConfigSchema } from '../core/config/schema.js';
 import { StepcastError } from '../core/errors.js';
-
-/**
- * Дефолтные агент и модель, какими их видит витрина.
- *
- * Читается вся разрешённая конфигурация, пишется только глобальный файл:
- * витрина охватывает все проекты сразу, и её настройка — это настройка «по
- * умолчанию везде». Проектный слой в чтении сознательно отключён — демон не
- * привязан к проекту, и подхватить чужой `.stepcast/config.yml` по случайному
- * рабочему каталогу значило бы показать настройку, которой у пользователя нет.
- *
- * Правка идёт по документу, а не по разобранному дереву: конфигурация пишется
- * человеком и полна комментариев, а перезапись файла из объекта стёрла бы их
- * молча.
- */
+import { resolveWithPlugins } from '../core/plugins/resolve.js';
 
 export interface SettingsValue {
   readonly value: string | undefined;
-  /** Откуда взято значение: встроенное умолчание или путь файла. */
   readonly source: string;
 }
 
@@ -32,74 +21,107 @@ export interface BackendView {
   readonly name: string;
   readonly command: string;
   readonly enabled: boolean;
+  /** Есть адаптер; настройки неподключённого Codex можно заполнить заранее. */
+  readonly available: boolean;
   readonly defaultModel: string | undefined;
+  readonly defaultModelSource: string;
+  readonly modelTiers: ModelTiers;
+  readonly modelTierSources: Readonly<Record<string, string>>;
 }
 
 export interface Settings {
   readonly agent: SettingsValue;
+  /** Старое общее переопределение модели сохраняется для совместимости. */
   readonly model: SettingsValue;
   readonly backends: readonly BackendView[];
-  /** Файл, в который витрина пишет. Пользователь должен знать, что правит. */
   readonly file: string;
 }
 
-export interface SettingsPatch {
-  readonly agent?: string;
-  /** `null` — снять значение и вернуться к модели бэкенда. */
-  readonly model?: string | null;
-}
+const BackendPatchSchema = z.object({
+  defaultModel: ModelNameSchema.nullable().optional(),
+  modelTiers: z.partialRecord(ModelTierSchema, ModelNameSchema.nullable()).optional(),
+}).strict();
+
+const SettingsPatchSchema = z.object({
+  agent: ModelNameSchema.optional(),
+  model: z.string().trim().nullable().optional(),
+  backends: z.record(z.string(), BackendPatchSchema).optional(),
+  /** Явное подключение адаптера из поставки, без установки внешнего пакета. */
+  connectCodex: z.literal(true).optional(),
+}).strict();
+
+export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
 
 export function globalConfigPath(home: string = homedir()): string {
   return join(home, '.stepcast', 'config.yml');
 }
 
-function valueOf(
-  resolved: ReturnType<typeof resolveConfig>,
-  path: string,
-  value: string | undefined,
-): SettingsValue {
+function valueOf(resolved: ResolvedConfig, path: string, value: string | undefined): SettingsValue {
   const source = resolved.provenance.get(path);
-  return {
-    ...(value === undefined ? { value: undefined } : { value }),
-    source: source === undefined ? 'встроенное умолчание' : describeSource(source),
-  };
+  return { value, source: source === undefined ? 'встроенное умолчание' : describeSource(source) };
 }
 
-export function readSettings(home: string = homedir()): Settings {
-  const file = globalConfigPath(home);
-  const resolved = resolveConfig({ cwd: home, home, projectPath: null });
+/** Витрина правит глобальный файл; проектный слой отключён независимо от cwd. */
+export async function readSettings(home: string = homedir()): Promise<Settings> {
+  const { resolved, registry } = await resolveWithPlugins({ cwd: home, home, projectPath: null }, {});
   const { config } = resolved;
+  const backends: BackendView[] = Object.entries(config.backends).map(([name, backend]) => ({
+    name,
+    command: backend.command,
+    enabled: backend.enabled,
+    available: registry.backends.has(name),
+    defaultModel: backend.defaultModel,
+    defaultModelSource: valueOf(resolved, `backends.${name}.default_model`, backend.defaultModel).source,
+    modelTiers: backend.modelTiers ?? {},
+    modelTierSources: Object.fromEntries(Object.entries(backend.modelTiers ?? {}).map(([tier, model]) => [
+      tier, valueOf(resolved, `backends.${name}.model_tiers.${tier}`, model).source,
+    ])),
+  }));
+
+  // Codex поставляется как opt-in плагин: карточка видна и до подключения,
+  // но агентом по умолчанию он может стать только вместе с адаптером.
+  if (!backends.some((backend) => backend.name === 'codex')) {
+    backends.push({
+      name: 'codex', command: 'codex', enabled: true, available: false,
+      defaultModel: codexPlugin.backends!.codex!.defaults!.default_model,
+      defaultModelSource: 'plugin:codex', modelTiers: {}, modelTierSources: {},
+    });
+  } else {
+    const codex = backends.find((backend) => backend.name === 'codex')!;
+    if (!codex.available && codex.defaultModel === undefined) {
+      backends[backends.indexOf(codex)] = {
+        ...codex, defaultModel: codexPlugin.backends!.codex!.defaults!.default_model,
+        defaultModelSource: 'plugin:codex',
+      };
+    }
+  }
 
   return {
     agent: valueOf(resolved, 'defaults.agent', config.defaults.agent),
     model: valueOf(resolved, 'defaults.model', config.defaults.model),
-    backends: Object.entries(config.backends).map(([name, backend]) => ({
-      name,
-      command: backend.command,
-      enabled: backend.enabled,
-      defaultModel: backend.defaultModel,
-    })),
-    file,
+    backends, file: globalConfigPath(home),
   };
 }
 
-/**
- * Записать дефолты в глобальную конфигурацию.
- *
- * Проверка агента по списку бэкендов — не придирка: `defaults.agent`, не
- * названный ни одним бэкендом, валит не эту запись, а следующий прогон, уже
- * после раскрытия пайплайна.
- */
-export function writeSettings(patch: SettingsPatch, home: string = homedir()): Settings {
-  const current = readSettings(home);
-
+/** Проверить всю правку до записи; менять YAML-документ, сохраняя комментарии. */
+export async function writeSettings(input: unknown, home: string = homedir()): Promise<Settings> {
+  const parsedPatch = SettingsPatchSchema.safeParse(input);
+  if (!parsedPatch.success) {
+    const issue = parsedPatch.error.issues[0]!;
+    throw new StepcastError(`Некорректная правка настроек ${issue.path.join('.')}: ${issue.message}`);
+  }
+  const patch = parsedPatch.data;
+  const current = await readSettings(home);
+  const known = new Map(current.backends.map((backend) => [backend.name, backend]));
+  for (const name of Object.keys(patch.backends ?? {})) {
+    if (!known.has(name)) throw new StepcastError(`Неизвестный агент ${name}`);
+  }
   if (patch.agent !== undefined) {
-    const known = current.backends.map((backend) => backend.name);
-    if (!known.includes(patch.agent)) {
-      throw new StepcastError(
-        `Неизвестный агент ${patch.agent}: бэкенды с таким именем не объявлены`,
-        { hint: `Объявленные бэкенды: ${known.join(', ')}` },
-      );
+    const backend = known.get(patch.agent);
+    if (backend === undefined) throw new StepcastError(`Неизвестный агент ${patch.agent}`);
+    if (!backend.enabled) throw new StepcastError(`Агент ${patch.agent} выключен`);
+    if (!backend.available && !(patch.agent === 'codex' && patch.connectCodex === true)) {
+      throw new StepcastError(`Агент ${patch.agent} не подключён: сначала подключите его плагин`);
     }
   }
 
@@ -107,32 +129,43 @@ export function writeSettings(patch: SettingsPatch, home: string = homedir()): S
   let text = '';
   try {
     text = readFileSync(file, 'utf8');
-  } catch {
-    // Файла ещё нет: витрина заводит его первой правкой.
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-
   const document = parseDocument(text);
+  if (patch.connectCodex === true) {
+    const plugins = (document.toJS() as { plugins?: string[] } | null)?.plugins ?? [];
+    if (!plugins.includes('stepcast/backends/codex')) {
+      if (!document.has('plugins')) document.set('plugins', document.createNode([]));
+      document.addIn(['plugins'], 'stepcast/backends/codex');
+    }
+  }
   if (patch.agent !== undefined) document.setIn(['defaults', 'agent'], patch.agent);
   if (patch.model !== undefined) {
     if (patch.model === null || patch.model === '') document.deleteIn(['defaults', 'model']);
     else document.setIn(['defaults', 'model'], patch.model);
   }
+  for (const [name, backend] of Object.entries(patch.backends ?? {})) {
+    const path = ['backends', name];
+    if (backend.defaultModel !== undefined) {
+      if (backend.defaultModel === null) document.deleteIn([...path, 'default_model']);
+      else document.setIn([...path, 'default_model'], backend.defaultModel);
+    }
+    for (const [tier, model] of Object.entries(backend.modelTiers ?? {})) {
+      if (model === null) document.deleteIn([...path, 'model_tiers', tier]);
+      else document.setIn([...path, 'model_tiers', tier], model);
+    }
+  }
 
   const next = document.toString();
   const parsed = RawConfigSchema.safeParse(parseDocument(next).toJS() ?? {});
   if (!parsed.success) {
-    throw new StepcastError(
-      `Правка не проходит схему конфигурации: ${parsed.error.issues[0]?.message ?? 'неизвестная ошибка'}`,
-      { file },
-    );
+    throw new StepcastError(`Правка не проходит схему конфигурации: ${parsed.error.issues[0]?.message ?? 'неизвестная ошибка'}`, { file });
   }
 
   mkdirSync(dirname(file), { recursive: true });
-  // Через временный файл: оборванная запись не должна оставить пользователя с
-  // испорченной конфигурацией.
   const temporary = `${file}.tmp`;
   writeFileSync(temporary, next);
   renameSync(temporary, file);
-
   return readSettings(home);
 }

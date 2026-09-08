@@ -2,6 +2,12 @@ import { isAbsolute } from 'node:path';
 
 import { z } from 'zod';
 
+import { MODEL_TIERS } from './modelTiers.js';
+
+export const ModelTierSchema = z.enum(MODEL_TIERS);
+export const ModelNameSchema = z.string().trim().min(1).regex(/\S/);
+export const ModelTiersSchema = z.partialRecord(ModelTierSchema, ModelNameSchema);
+
 /**
  * Схема конфигурации в «сыром» виде: величины ещё строки, всё необязательно,
  * потому что каждый источник задаёт только свою часть. Приведение к числам
@@ -74,7 +80,8 @@ export const RawBackendSchema = z
   .object({
     command: z.string().optional(),
     enabled: z.boolean().optional(),
-    default_model: z.string().optional(),
+    default_model: ModelNameSchema.optional(),
+    model_tiers: ModelTiersSchema.optional(),
     concurrency: z.number().int().positive().optional(),
     cache_read_weight: z.number().min(0).optional(),
     sessions: z.boolean().optional(),

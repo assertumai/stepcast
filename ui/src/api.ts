@@ -1,3 +1,5 @@
+import type { ModelTier, ModelTiers } from '../../src/core/config/modelTiers.js';
+
 /**
  * Договор витрины с демоном.
  *
@@ -220,6 +222,8 @@ export interface RunSnapshot {
 /** Слой, из которого пришла модель шага. Слой `config` несёт файл, победивший в этом проекте. */
 export type PipelineModelOrigin =
   | { readonly layer: 'step' }
+  | { readonly layer: 'job' }
+  | { readonly layer: 'tier'; readonly backend: string; readonly tier: string; readonly tierLayer: 'pipeline' | 'job' | 'step'; readonly fallback?: true }
   | { readonly layer: 'pipeline' }
   | { readonly layer: 'config'; readonly file: string }
   | { readonly layer: 'backend'; readonly backend: string }
@@ -411,6 +415,10 @@ export interface BackendView {
   readonly command: string;
   readonly enabled: boolean;
   readonly defaultModel?: string;
+  readonly available: boolean;
+  readonly defaultModelSource: string;
+  readonly modelTiers: ModelTiers;
+  readonly modelTierSources: Readonly<Record<string, string>>;
 }
 
 export interface Settings {
@@ -422,6 +430,11 @@ export interface Settings {
 }
 
 export interface SettingsPatch {
+  readonly connectCodex?: true;
+  readonly backends?: Readonly<Record<string, {
+    readonly defaultModel?: string | null;
+    readonly modelTiers?: Readonly<Partial<Record<ModelTier, string | null>>>;
+  }>>;
   readonly agent?: string;
   /** `null` — снять значение и вернуться к модели бэкенда. */
   readonly model?: string | null;
