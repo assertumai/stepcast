@@ -330,6 +330,69 @@ describe('plugin-contributions: подпуть stepcast/plugin', () => {
   });
 });
 
+describe('plugin-contributions: перечисление моделей вклада бэкенда', () => {
+  const WITH_MODELS = `
+export default {
+  name: 'with-models',
+  backends: {
+    codex: {
+      create: () => ({ name: 'codex' }),
+      models: {
+        probe: (config) => ({ command: [config.command, '--help'], stdin: '' }),
+        parse: () => [{ name: 'gpt' }],
+      },
+    },
+  },
+};
+`;
+
+  const BROKEN_PROBE = `
+export default {
+  name: 'broken-probe',
+  backends: {
+    codex: {
+      create: () => ({ name: 'codex' }),
+      models: { probe: 'not-a-function', parse: () => [] },
+    },
+  },
+};
+`;
+
+  it('вклад, объявивший models с probe и parse, загружается', async () => {
+    const place = bed();
+    writeModule(join(place.root, '.stepcast', 'plugins', 'models.mjs'), WITH_MODELS);
+    const config = resolved(place, { project: 'plugins: ["./plugins/models.mjs"]\n' });
+
+    const registry = await loadPlugins(config, { projectRoot: place.root });
+
+    assert.equal(registry.backends.get('codex')?.models?.parse({ stdout: '', stderr: '', exitCode: 0 })[0]?.name, 'gpt');
+  });
+
+  it('вклад, где probe не функция, отклоняется отказом с именем бэкенда и поля', async () => {
+    const place = bed();
+    writeModule(join(place.root, '.stepcast', 'plugins', 'broken.mjs'), BROKEN_PROBE);
+    const config = resolved(place, { project: 'plugins: ["./plugins/broken.mjs"]\n' });
+
+    await assert.rejects(
+      () => loadPlugins(config, { projectRoot: place.root }),
+      (error: unknown) =>
+        error instanceof StepcastError &&
+        /backends\.codex\.models\.probe/.test(error.message) &&
+        /должна быть функцией/.test(error.message),
+    );
+  });
+
+  it('вклад без models загружается как прежде', async () => {
+    const place = bed();
+    writeModule(join(place.root, '.stepcast', 'plugins', 'local.mjs'), PLUGIN_BODY);
+    const config = resolved(place, { project: 'plugins: ["./plugins/local.mjs"]\n' });
+
+    const registry = await loadPlugins(config, { projectRoot: place.root });
+
+    assert.equal(registry.backends.get('codex')?.models, undefined);
+  });
+});
+
 describe('codex-backend: загрузка плагина пакета', () => {
   // Собранный модуль — тот же, что отдаёт подпуть `stepcast/backends/codex`;
   // из теста он берётся путём, потому что самоссылка пакета разрешается через

@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
-import { createClaudeAdapter, parseResetAt } from '../src/core/backend/claude.js';
+import { claudeModelDiscovery, createClaudeAdapter, parseResetAt } from '../src/core/backend/claude.js';
 import {
   authRefusalLine,
   createFakeBackend,
@@ -64,6 +65,34 @@ function makeAgentStep(overrides: Partial<AgentStep> = {}): AgentStep {
     ...overrides,
   } as AgentStep;
 }
+
+const MODELS_FIXTURES = fileURLToPath(new URL('../../test/fixtures/models/', import.meta.url));
+
+describe('agent-backend: перечисление моделей claude', () => {
+  it('проба — `<command> --help`, без оболочки, без объявленного окружения сверх записи', () => {
+    const launch = claudeModelDiscovery.probe(BACKEND);
+    assert.deepEqual(launch.command, ['claude', '--help']);
+    assert.equal(launch.stdin, '');
+  });
+
+  it('разбор настоящей справки даёт имена, названные описанием --model', () => {
+    const help = readFileSync(join(MODELS_FIXTURES, 'claude-help.txt'), 'utf8');
+
+    const models = claudeModelDiscovery.parse({ stdout: help, stderr: '', exitCode: 0 });
+
+    assert.deepEqual(models.map((model) => model.name), ['fable', 'opus', 'sonnet', 'claude-fable-5']);
+  });
+
+  it('текст без описания --model даёт пустой список — unparsed, а не выдуманные имена', () => {
+    const models = claudeModelDiscovery.parse({
+      stdout: 'Usage: claude [options]\n\n  -h, --help  Display help\n',
+      stderr: '',
+      exitCode: 0,
+    });
+
+    assert.deepEqual(models, []);
+  });
+});
 
 describe('agent-backend: возможность жёсткого режима прав', () => {
   it('адаптер Claude читает возможность из конфигурации бэкенда', () => {

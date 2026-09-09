@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
@@ -7,8 +7,11 @@ import { describe, it } from 'node:test';
 import codexPlugin, { createCodexAdapter, SANDBOX_MODES } from '../src/backends/codex/index.js';
 import type { BackendConfig } from '../src/plugin.js';
 import type { AgentInvocation, BackendAdapter, BackendEvent } from '../src/core/backend/types.js';
+import { discoverModels } from '../src/core/backend/models.js';
+import { resolveConfig } from '../src/core/config/resolve.js';
 import { createSessionRegistry, executeAgentStep } from '../src/core/exec/agentStep.js';
 import { StepcastError } from '../src/core/errors.js';
+import { createRegistry } from '../src/core/plugins/registry.js';
 import type { AgentStep } from '../src/core/pipeline/model.js';
 import { tempDir } from './tmp.js';
 
@@ -381,6 +384,24 @@ describe('codex-backend: возможности и манифест плагин
       cache_read_weight: 0.1,
     });
     assert.equal(codexPlugin.backends?.codex?.create(CONFIG).name, 'codex');
+  });
+
+  // Codex CLI не разрешено запускать ни в одной песочнице, где писался этот
+  // пункт очереди (design.md, решение 10; test/fixtures/models/README.md):
+  // настоящего вывода `codex --help` снять неоткуда, а сочинять его запрещено
+  // практикой каталога фикстур. Вклад codex поэтому пробы не объявляет вовсе
+  // — карточка на странице «Агенты» ведёт себя как до этого изменения.
+  it('вклад codex не объявляет перечисление моделей: CLI недоступен ни одной песочнице этого прогона', async () => {
+    assert.equal(codexPlugin.backends?.codex?.models, undefined);
+
+    const home = tempDir('codex-models-home-');
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    const globalPath = join(home, '.stepcast', 'config.yml');
+    writeFileSync(globalPath, 'backends:\n  codex:\n    command: codex\n');
+    const { config } = resolveConfig({ cwd: home, home, globalPath, projectPath: null });
+
+    const registry = createRegistry({ name: 'codex-registry-test', backends: { codex: codexPlugin.backends!.codex! } });
+    assert.deepEqual(await discoverModels('codex', config, registry), { status: 'unsupported' });
   });
 
   it('подпуть пакета ведёт на собранный модуль', () => {

@@ -429,6 +429,33 @@ export interface Settings {
   readonly file: string;
 }
 
+/** Одна модель, названная CLI, — подсказка, а не перечень допустимого. */
+export interface ModelOption {
+  readonly name: string;
+  readonly title?: string;
+}
+
+/**
+ * Итог перечисления моделей одного агента — те же имена причин, что у
+ * `discoverModels` демона (`src/core/backend/models.ts`): `unsupported` —
+ * бэкенд перечислять не умеет, `not_installed` — команда не найдена,
+ * `timeout` — не ответил за отпущенное время, `failed` — ответил отказом
+ * (текст CLI как есть), `unparsed` — ответ не разобран, `probe_error` — код
+ * бэкенда, собирающий пробу или разбирающий её вывод, сорвался исключением.
+ */
+export type ModelsForBackend =
+  | { readonly status: 'ok'; readonly models: readonly ModelOption[] }
+  | { readonly status: 'unsupported' }
+  | { readonly status: 'not_installed'; readonly command: string }
+  | { readonly status: 'timeout' }
+  | { readonly status: 'failed'; readonly message: string }
+  | { readonly status: 'unparsed' }
+  | { readonly status: 'probe_error'; readonly message: string };
+
+export interface ModelsResult {
+  readonly backends: Readonly<Record<string, ModelsForBackend>>;
+}
+
 export interface SettingsPatch {
   readonly connectCodex?: true;
   readonly backends?: Readonly<Record<string, {
@@ -591,6 +618,17 @@ export async function fetchUsage(days?: number): Promise<UsageResult> {
 
 export async function fetchSettings(): Promise<Settings> {
   return json<Settings>(await fetch('/api/settings'));
+}
+
+/**
+ * Списки моделей — отдельным запросом после настроек (design.md, решение 5):
+ * пробы поднимают дочерние процессы демона и могут занять секунды на агента,
+ * поэтому страница не должна ждать их ответа, чтобы отрисоваться.
+ * `refresh: true` обходит удержанное демоном и перечисляет заново.
+ */
+export async function fetchModels(refresh?: boolean): Promise<ModelsResult> {
+  const query = refresh === true ? '?refresh=1' : '';
+  return json<ModelsResult>(await fetch(`/api/models${query}`));
 }
 
 /**

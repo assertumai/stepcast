@@ -7,11 +7,14 @@ import type {
   AgentInvocation,
   BackendAdapter,
   BackendEvent,
+  BackendModel,
   BackendRefusal,
   BackendRefusalClass,
   LaunchSpec,
   McpServerStatus,
+  ModelDiscovery,
   PermissionDenial,
+  ProbeOutput,
 } from './types.js';
 import type { McpServer, McpServers } from '../pipeline/model.js';
 
@@ -179,6 +182,68 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
       return { kind: 'ignored' };
     },
   };
+}
+
+/**
+ * Перечисление моделей Claude Code.
+ *
+ * У CLI нет ни подкоманды, ни флага перечисления (проверено на
+ * `claude --help`, `test/fixtures/models/README.md`); единственное место,
+ * где он сам называет модели, — описание `--model` в собственной справке:
+ * псевдонимы (`fable`, `opus`, `sonnet`) и пример полного имени
+ * (`claude-fable-5`). Источник слабый и признаётся слабым (design.md,
+ * решение 4): список заведомо неполон, поэтому «имя вне списка» на странице
+ * «Агенты» — обычный случай, а не ошибка.
+ *
+ * Проба — `<command> --help`: тот же процесс, которым устроена справка
+ * пользователю, без обращения к API и без аутентификации.
+ */
+export const claudeModelDiscovery: ModelDiscovery = {
+  probe(config: BackendConfig): LaunchSpec {
+    return { command: [config.command, '--help'], stdin: '' };
+  },
+  parse(output: ProbeOutput): readonly BackendModel[] {
+    return parseModelFlagSection(output.stdout).map((name) => ({ name }));
+  },
+};
+
+/**
+ * Секция `--model` в тексте справки: строка флага и её продолжение —
+ * commander.js переносит длинное описание на следующие строки с отступом
+ * глубже отступа самого флага (см. фикстуру `claude-help.txt`). Следующая
+ * строка флага начинается ровно двумя пробелами; всё глубже — продолжение
+ * описания этого же флага.
+ */
+function extractModelFlagSection(help: string): string | undefined {
+  const lines = help.split('\n');
+  const start = lines.findIndex((line) => /^ {2}--model\b/.test(line));
+  if (start === -1) return undefined;
+
+  const section = [lines[start]];
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    if (!/^ {3,}\S/.test(line)) break;
+    section.push(line);
+  }
+  return section.join(' ');
+}
+
+/**
+ * Имена моделей — ровно то, что CLI заключил в одинарные кавычки в описании
+ * `--model`: псевдонимы и пример полного имени, в порядке появления в тексте.
+ * Класс символов внутри кавычек — слово, точка, дефис, без пробела: текст
+ * описания несёт и притяжательный апостроф («model's full name»), и
+ * `[^']+` принял бы его за открывающую кавычку, слив соседние имена в один
+ * обрывок. Апостроф не заканчивается словом внутри `[\w.-]`, и попытка на нём
+ * не находит закрывающей кавычки — регэксп просто идёт к следующей настоящей.
+ *
+ * Формат справки сменится — секция не найдётся или кавычек в ней не будет, и
+ * список останется пустым (честное «не распознано», а не выдумка).
+ */
+function parseModelFlagSection(help: string): readonly string[] {
+  const section = extractModelFlagSection(help);
+  if (section === undefined) return [];
+  return [...section.matchAll(/'([\w.-]+)'/g)].map((match) => match[1]!);
 }
 
 /**

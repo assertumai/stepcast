@@ -6,6 +6,7 @@ import { describe, it, type TestContext } from 'node:test';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 
+import { resetModelDiscoveryCache } from '../src/core/backend/models.js';
 import { dashboardPath } from '../src/ui/assets.js';
 import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
 import { runHref } from '../src/ui/routes.js';
@@ -1721,6 +1722,94 @@ describe('ui-dashboard: настройки дефолтов', () => {
     assert.equal(refused.code, 400);
     assert.match(String(refused.json.error), /нет-такого/);
     assert.doesNotMatch(readFileSync(join(home, '.stepcast', 'config.yml'), 'utf8'), /agent:/);
+  });
+});
+
+/**
+ * Двойник `claude --help`: скрипт-заглушка на месте `backends.claude.command`.
+ * Аргумент `--help` даёт разбираемую справку с описанием `--model`, и каждый
+ * настоящий запуск дописывает метку в `COUNTER_FILE` — так тест видит, сколько
+ * раз демон действительно поднял процесс, не читая память демона напрямую.
+ */
+function writeStubClaude(home: string, counterFile: string): string {
+  const path = join(home, 'stub-claude.js');
+  writeFileSync(
+    path,
+    [
+      '#!/usr/bin/env node',
+      `const fs = require('fs');`,
+      `fs.appendFileSync(${JSON.stringify(counterFile)}, 'x');`,
+      `const n = fs.readFileSync(${JSON.stringify(counterFile)}, 'utf8').length;`,
+      `process.stdout.write("  --model <model>  используйте 'run-" + n + "'\\n");`,
+    ].join('\n'),
+  );
+  chmodSync(path, 0o755);
+  return path;
+}
+
+/** Двойник CLI, который никогда не отвечает: для проверки, что /api/settings его не ждёт. */
+function writeStubHangingClaude(home: string): string {
+  const path = join(home, 'stub-hanging-claude.js');
+  writeFileSync(path, ['#!/usr/bin/env node', 'setTimeout(() => {}, 60_000);'].join('\n'));
+  chmodSync(path, 0o755);
+  return path;
+}
+
+describe('ui-dashboard: перечисление моделей агентов', () => {
+  it('по каждому агенту — список либо причина; codex до подключения — unsupported; ?refresh=1 перечисляет заново', async (t) => {
+    resetModelDiscoveryCache();
+    const { runsRoot, home } = makeJournalBed();
+    const counterFile = join(home, 'counter');
+    writeFileSync(counterFile, '');
+    const stub = writeStubClaude(home, counterFile);
+    writeFileSync(
+      join(home, '.stepcast', 'config.yml'),
+      `runs:\n  root: ${runsRoot}\nbackends:\n  claude:\n    command: ${stub}\n`,
+    );
+    const server = await startServer(t, { runsRoot, home });
+
+    const first = await fetchJson(server, '/api/models');
+    assert.equal(first.code, 200);
+    const firstBackends = first.json.backends as Record<string, { status: string; models?: { name: string }[] }>;
+    assert.equal(firstBackends.codex?.status, 'unsupported', 'codex до подключения — перечислять не умеет');
+    assert.equal(firstBackends.claude?.status, 'ok');
+    assert.deepEqual(firstBackends.claude?.models, [{ name: 'run-1' }]);
+
+    const cached = await fetchJson(server, '/api/models');
+    assert.deepEqual(
+      (cached.json.backends as typeof firstBackends).claude?.models,
+      [{ name: 'run-1' }],
+      'без ?refresh — удержанный ответ, процесс заново не поднимается',
+    );
+
+    const refreshed = await fetchJson(server, '/api/models?refresh=1');
+    assert.deepEqual(
+      (refreshed.json.backends as typeof firstBackends).claude?.models,
+      [{ name: 'run-2' }],
+      '?refresh=1 обходит удержание и перечисляет заново',
+    );
+  });
+
+  it('GET /api/settings отвечает прежним телом и не ждёт пробы, даже когда CLI зависает', async (t) => {
+    resetModelDiscoveryCache();
+    const { runsRoot, home } = makeJournalBed();
+    const hanging = writeStubHangingClaude(home);
+    writeFileSync(
+      join(home, '.stepcast', 'config.yml'),
+      `runs:\n  root: ${runsRoot}\nbackends:\n  claude:\n    command: ${hanging}\n`,
+    );
+    const server = await startServer(t, { runsRoot, home });
+
+    const started = Date.now();
+    const settings = await fetchJson(server, '/api/settings');
+    const elapsedMs = Date.now() - started;
+
+    assert.equal(settings.code, 200);
+    assert.equal(pick(settings.json, 'agent', 'value'), 'claude');
+    assert.ok(
+      elapsedMs < 2_000,
+      `/api/settings обязан отвечать не дожидаясь пробы (заняло ${elapsedMs} мс — зависший CLI ответил бы не раньше 60с)`,
+    );
   });
 });
 

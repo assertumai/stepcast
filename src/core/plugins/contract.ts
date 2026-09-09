@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import type { ExitCodeValue } from '../errors.js';
-import type { BackendAdapter } from '../backend/types.js';
+import type { BackendAdapter, ModelDiscovery } from '../backend/types.js';
 import type { BackendConfig, Config } from '../config/resolve.js';
 import type { RawBackend } from '../config/schema.js';
 import type { EvaluationInput } from '../expect/evaluate.js';
@@ -38,6 +38,18 @@ export interface BackendContribution {
    * `sessions`/`structured_output` из его README себе в конфигурацию.
    */
   readonly defaults?: Partial<RawBackend>;
+  /**
+   * Перечисление моделей CLI: проба и разбор её вывода (`docs/plugins.md`).
+   *
+   * Необязательно — в отличие от `sessionIdSource` и `mcp` в
+   * `BackendCapabilities`, где молчание запрещено намеренно. Там отсутствие
+   * поля было бы тихой деградацией исполнения: движок повёл бы шаг иначе, чем
+   * думал автор адаптера, и заметить это было бы негде. Здесь отсутствие поля
+   * не меняет ни одного прогона — оно даёт странице «Агенты» честную фразу
+   * «этот агент перечислять модели не умеет» вместо списка (design.md,
+   * решение 3).
+   */
+  readonly models?: ModelDiscovery;
 }
 
 /** Где объявлен предикат: адрес для диагностики статической проверки. */
@@ -120,12 +132,24 @@ export interface LoadedPlugin {
 
 const SLUG = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
 
+const ModelDiscoverySchema = z
+  .object({
+    probe: z.custom<ModelDiscovery['probe']>((value) => typeof value === 'function', {
+      message: 'должна быть функцией',
+    }),
+    parse: z.custom<ModelDiscovery['parse']>((value) => typeof value === 'function', {
+      message: 'должна быть функцией',
+    }),
+  })
+  .loose();
+
 const BackendContributionSchema = z
   .object({
     create: z.custom<BackendContribution['create']>((value) => typeof value === 'function', {
       message: 'должна быть функцией',
     }),
     defaults: z.record(z.string(), z.unknown()).optional(),
+    models: ModelDiscoverySchema.optional(),
   })
   .loose();
 

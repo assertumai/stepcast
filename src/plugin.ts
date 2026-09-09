@@ -24,10 +24,13 @@ export type {
   BackendAdapter,
   BackendCapabilities,
   BackendEvent,
+  BackendModel,
   BackendRefusal,
   BackendRefusalClass,
   LaunchSpec,
+  ModelDiscovery,
   PermissionDenial,
+  ProbeOutput,
 } from './core/backend/types.js';
 
 export { describeRefusal, emptyUsage, mergeUsage, sumUsage } from './core/backend/types.js';

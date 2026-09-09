@@ -1,3 +1,4 @@
+import type { BackendConfig } from '../config/resolve.js';
 import type { McpServers, Permissions } from '../pipeline/model.js';
 import type { Usage } from '../journal/schema.js';
 
@@ -181,6 +182,42 @@ export interface BackendAdapter {
    * и падать от нового поля недопустимо.
    */
   parseLine(line: string): BackendEvent;
+}
+
+/** Одна модель, которую CLI назвал сам, — подсказка странице, а не перечень допустимого. */
+export interface BackendModel {
+  /** Имя, которое уйдёт в `--model` / `-m` и ляжет в конфигурацию. */
+  readonly name: string;
+  /** Пояснение от CLI, если оно было: показывается рядом, но не сохраняется. */
+  readonly title?: string;
+}
+
+/** Ответ пробы перечисления моделей — то же, что отдаёт исполненный процесс. */
+export interface ProbeOutput {
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number | null;
+}
+
+/**
+ * Перечисление моделей бэкенда — необязательный вклад рядом с `defaults`
+ * (`BackendContribution.models`), а не метод адаптера: список спрашивают, не
+ * исполняя ни одного шага, и заводить ради него адаптер незачем.
+ *
+ * `probe` только описывает запуск — как `launch` — и ничего не исполняет: его
+ * ведёт движок под тем же надзором, что и шаг (`runProcess`, argv без
+ * оболочки, таймаут). Плагин, заведший собственный `spawn`, мог бы подвесить
+ * демон, который его опрашивает (design.md, решение 2).
+ *
+ * Разбор при этом остаётся у вклада: формат ответа CLI — знание вклада, а не
+ * движка. Пустой список от `parse` — честное «не распознано», а не «моделей
+ * нет» (design.md, решение 6).
+ */
+export interface ModelDiscovery {
+  /** Чем спросить у CLI. Та же форма, что у запуска шага. */
+  probe(config: BackendConfig): LaunchSpec;
+  /** Разобрать ответ. Пустой список — «не распознано». */
+  parse(output: ProbeOutput): readonly BackendModel[];
 }
 
 /** Пустой расход: несообщаемые поля остаются null, а не нулём. */

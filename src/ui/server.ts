@@ -28,6 +28,7 @@ import type { Config } from '../core/config/resolve.js';
 import { dashboardHtml } from './assets.js';
 import type { BacklogOverview } from './backlog.js';
 import { readJournalFile } from './file.js';
+import { readModels } from './models.js';
 import { buildPipelines, createRegistryCache, type RegistryCache } from './pipelines.js';
 import { isApiPath, isSafeSegment } from './routes.js';
 import { readSettings, writeSettings } from './settings.js';
@@ -715,6 +716,21 @@ async function handleSettingsWrite(
 }
 
 /**
+ * Списки моделей агентов — отдельный проход от `/api/settings` (design.md,
+ * решение 5): страница отрисовывается по настройкам сразу, а списки
+ * приходят вторым запросом, когда пробы отработают. `?refresh=1` обходит
+ * удержанное демоном и перечисляет заново.
+ */
+async function handleModels(home: string | undefined, url: URL, res: ServerResponse): Promise<void> {
+  try {
+    const refresh = url.searchParams.get('refresh') === '1';
+    sendJson(res, 200, await readModels(home, { refresh }));
+  } catch (error) {
+    sendJson(res, 500, { error: (error as Error).message });
+  }
+}
+
+/**
  * Пайплайны проектов: реестр каждого проекта собирается импортом чужого кода
  * (`buildPipelines` асинхронна), поэтому маршрут обёрнут так же, как запись
  * настроек, — `void` в диспетчере и отдельный `catch` здесь, а не необработанный
@@ -885,6 +901,9 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
         void readSettings(home)
           .then((settings) => sendJson(res, 200, settings))
           .catch((error: Error) => sendJson(res, 500, { error: error.message }));
+        return;
+      case '/api/models':
+        void handleModels(home, url, res);
         return;
       case '/api/usage':
         handleUsage(runsRoot, watcher, url, res);

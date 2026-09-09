@@ -1,4 +1,4 @@
-import { createClaudeAdapter } from '../backend/claude.js';
+import { claudeModelDiscovery, createClaudeAdapter } from '../backend/claude.js';
 import type { CommandContribution, StepcastPlugin } from './contract.js';
 import { createRegistry, type Registry } from './registry.js';
 
@@ -46,7 +46,7 @@ export function builtinPlugin(commands: readonly CommandContribution[] = []): St
   return {
     name: 'stepcast',
     backends: {
-      claude: { create: (config) => createClaudeAdapter(config) },
+      claude: { create: (config) => createClaudeAdapter(config), models: claudeModelDiscovery },
     },
     ...(commands.length === 0 ? {} : { commands }),
   };
