@@ -56,13 +56,48 @@ describe('ui-dashboard: сборка вида очереди (src/ui/backlog.ts)
     );
   });
 
-  it('проект без backlog.md остаётся без раздела и это не считается ошибкой', () => {
+  it('объединяет пункты backlog.md и resolved.md одним списком, backlog.md первым', () => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
-    // Файл очереди не пишется вовсе.
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText(item('open-two', BASE), item('open-one', BASE)));
+    writeFileSync(
+      join(projectRoot, 'resolved.md'),
+      backlogText(item('done-two', { ...BASE, status: 'done' }), item('done-one', { ...BASE, status: 'done' })),
+    );
+
+    const backlog = buildBacklog(buildOverview(runsRoot));
+    assert.equal(backlog.projects.length, 1);
+    assert.deepEqual(
+      backlog.projects[0]?.items.map((entry) => entry.slug),
+      ['open-two', 'open-one', 'done-two', 'done-one'],
+      'сперва пункты backlog.md в его порядке, затем resolved.md в его',
+    );
+    assert.deepEqual(
+      backlog.projects[0]?.items.map((entry) => entry.sourceFile),
+      ['backlog.md', 'backlog.md', 'resolved.md', 'resolved.md'],
+    );
+    assert.deepEqual(backlog.projects[0]?.failures, []);
+  });
+
+  it('проект без backlog.md и без resolved.md остаётся без раздела и это не считается ошибкой', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    // Ни один файл очереди не пишется вовсе.
 
     const backlog = buildBacklog(buildOverview(runsRoot));
     assert.deepEqual(backlog.projects, []);
+  });
+
+  it('отсутствие resolved.md при наличии backlog.md не считается ошибкой', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText(item('only', BASE)));
+    // resolved.md не пишется вовсе.
+
+    const backlog = buildBacklog(buildOverview(runsRoot));
+    assert.equal(backlog.projects.length, 1);
+    assert.deepEqual(backlog.projects[0]?.items.map((entry) => entry.slug), ['only']);
+    assert.deepEqual(backlog.projects[0]?.failures, []);
   });
 
   it('проект без пути в указателе projects.json пропускается', () => {
@@ -142,16 +177,67 @@ describe('ui-dashboard: сборка вида очереди (src/ui/backlog.ts)
 
     const broken = backlog.projects.find((project) => project.projectPath === projectRoot);
     assert.equal(broken?.items.length, 0);
-    assert.equal(typeof broken?.error, 'string');
-    assert.equal(broken?.errorFile, 'backlog.md');
-    assert.equal(broken?.errorAt, 'broken');
+    assert.equal(broken?.failures.length, 1);
+    assert.equal(typeof broken?.failures[0]?.error, 'string');
+    assert.equal(broken?.failures[0]?.sourceFile, 'backlog.md');
+    assert.equal(broken?.failures[0]?.errorAt, 'broken');
 
     const healthy = backlog.projects.find((project) => project.projectPath === projectRoot2);
-    assert.equal(healthy?.error, undefined);
+    assert.deepEqual(healthy?.failures, []);
     assert.deepEqual(
       healthy?.items.map((entry) => entry.slug),
       ['healthy'],
       'отказ разбора одного проекта не должен отменять показ другого',
+    );
+  });
+
+  it('resolved.md не разбирается, backlog.md исправен: пункты backlog.md показаны, отказ назван по resolved.md', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText(item('healthy', BASE)));
+    writeFileSync(join(projectRoot, 'resolved.md'), `${backlogText(item('broken', BASE))}просто текст\n`);
+
+    const backlog = buildBacklog(buildOverview(runsRoot));
+    const project = backlog.projects[0];
+    assert.deepEqual(
+      project?.items.map((entry) => entry.slug),
+      ['healthy'],
+      'отказ разбора resolved.md не должен скрывать пункты backlog.md',
+    );
+    assert.equal(project?.failures.length, 1);
+    assert.equal(project?.failures[0]?.sourceFile, 'resolved.md');
+  });
+
+  it('backlog.md не разбирается, resolved.md исправен: пункты resolved.md показаны, отказ назван по backlog.md', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), `${backlogText(item('broken', BASE))}просто текст\n`);
+    writeFileSync(join(projectRoot, 'resolved.md'), backlogText(item('healthy', { ...BASE, status: 'done' })));
+
+    const backlog = buildBacklog(buildOverview(runsRoot));
+    const project = backlog.projects[0];
+    assert.deepEqual(
+      project?.items.map((entry) => entry.slug),
+      ['healthy'],
+      'отказ разбора backlog.md не должен скрывать пункты resolved.md',
+    );
+    assert.equal(project?.failures.length, 1);
+    assert.equal(project?.failures[0]?.sourceFile, 'backlog.md');
+  });
+
+  it('оба файла не разбираются: два независимых отказа и ни одного пункта', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), `${backlogText(item('broken-open', BASE))}просто текст\n`);
+    writeFileSync(join(projectRoot, 'resolved.md'), `${backlogText(item('broken-done', BASE))}тоже текст\n`);
+
+    const backlog = buildBacklog(buildOverview(runsRoot));
+    const project = backlog.projects[0];
+    assert.deepEqual(project?.items, []);
+    assert.equal(project?.failures.length, 2);
+    assert.deepEqual(
+      new Set(project?.failures.map((failure) => failure.sourceFile)),
+      new Set(['backlog.md', 'resolved.md']),
     );
   });
 
@@ -165,7 +251,7 @@ describe('ui-dashboard: сборка вида очереди (src/ui/backlog.ts)
     const backlog = buildBacklog(buildOverview(runsRoot));
     assert.equal(backlog.projects.length, 1, 'файл есть — раздел проекта должен быть');
     assert.deepEqual(backlog.projects[0]?.items, []);
-    assert.equal(backlog.projects[0]?.error, undefined, 'пустая очередь — не отказ разбора');
+    assert.deepEqual(backlog.projects[0]?.failures, [], 'пустая очередь — не отказ разбора');
   });
 
   it('пункт с неизвестным полем показан, а не отвергнут', () => {

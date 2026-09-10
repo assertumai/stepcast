@@ -1,6 +1,6 @@
 import { useMemo, useState, type JSX } from 'react';
 
-import type { BacklogItemView, BacklogOverview, BacklogProjectView } from '../api';
+import type { BacklogFailure, BacklogItemView, BacklogOverview } from '../api';
 import { fmtTime } from '../format';
 import { SortHeader } from '../SortHeader';
 import {
@@ -29,27 +29,28 @@ import {
 const PLAN_METRIC = 'plan';
 
 /**
- * Отказ разбора: текст, файл и место — тем же приёмом, каким показана карточка
- * неразбираемого пайплайна (`src/ui/pipelines.ts`, `PipelineError`). Подсказки
- * в этом составе нет: ядро очереди её не заполняет (`src/ui/backlog.ts`).
+ * Отказы разбора раздела — по одному на не разобравшийся файл: текст, файл и
+ * место, тем же приёмом, каким показана карточка неразбираемого пайплайна
+ * (`src/ui/pipelines.ts`, `PipelineError`). Подсказки в этом составе нет: ядро
+ * очереди её не заполняет (`src/ui/backlog.ts`).
  */
-function BacklogError({
-  error,
-  detail,
-}: {
-  readonly error: string;
-  readonly detail: { readonly errorFile?: string; readonly errorAt?: string } | undefined;
-}): JSX.Element {
+function BacklogFailures({ failures }: { readonly failures: readonly BacklogFailure[] }): JSX.Element {
   return (
     <>
-      <p className="error">{error}</p>
-      {detail === undefined || (detail.errorFile === undefined && detail.errorAt === undefined) ? null : (
-        <p className="note dim">
-          где: {detail.errorFile === undefined ? null : <span className="mono">{detail.errorFile}</span>}
-          {detail.errorFile === undefined || detail.errorAt === undefined ? null : ' · '}
-          {detail.errorAt === undefined ? null : <span className="mono">{detail.errorAt}</span>}
-        </p>
-      )}
+      {failures.map((failure) => (
+        <div key={failure.sourceFile}>
+          <p className="error">{failure.error}</p>
+          <p className="note dim">
+            где: <span className="mono">{failure.sourceFile}</span>
+            {failure.errorAt === undefined ? null : (
+              <>
+                {' · '}
+                <span className="mono">{failure.errorAt}</span>
+              </>
+            )}
+          </p>
+        </div>
+      ))}
     </>
   );
 }
@@ -83,12 +84,10 @@ function OutcomeCell({ item }: { readonly item: BacklogItemView }): JSX.Element 
 
 function ProjectSection({
   section,
-  errorDetail,
   order,
   onSort,
 }: {
-  readonly section: BacklogSectionView<BacklogItemView>;
-  readonly errorDetail: { readonly errorFile?: string; readonly errorAt?: string } | undefined;
+  readonly section: BacklogSectionView<BacklogItemView, BacklogFailure>;
   readonly order: BacklogOrderDirection;
   readonly onSort: () => void;
 }): JSX.Element {
@@ -96,12 +95,15 @@ function ProjectSection({
     <section>
       <h2 className="project">{section.projectPath}</h2>
 
-      {section.error !== undefined ? (
-        <BacklogError error={section.error} detail={errorDetail} />
-      ) : section.items.length === 0 ? (
-        // Файл очереди есть, но пунктов в нём нет — например, все разобраны в
-        // архив. Таблица из одних заголовков колонок об этом не говорит ничего.
-        <p className="empty">Очередь пуста: в файле нет ни одного пункта.</p>
+      {section.failures.length > 0 ? <BacklogFailures failures={section.failures} /> : null}
+
+      {section.items.length === 0 ? (
+        // Файл(ы) очереди есть, но пунктов в них нет — например, все разобраны
+        // в архив. Раздел с отказом уже объяснил себя выше и второго сообщения
+        // не получает — «пусто» верно только когда ни один файл не отказал.
+        section.failures.length === 0 ? (
+          <p className="empty">Очередь пуста: в файле нет ни одного пункта.</p>
+        ) : null
       ) : (
         <div className="table-scroll">
           <table className="runs">
@@ -115,6 +117,7 @@ function ProjectSection({
                   className="num plan-no"
                 />
                 <th>Слаг</th>
+                <th>Файл</th>
                 <th>Статус</th>
                 <th>Заголовок</th>
                 <th>Группа</th>
@@ -127,6 +130,7 @@ function ProjectSection({
                 <tr key={item.slug}>
                   <td className="num mono small plan-no">{planNumber}</td>
                   <td className="mono small">{item.slug}</td>
+                  <td className="mono small dim">{item.sourceFile}</td>
                   <td>
                     <span className={`badge ${item.status}`}>{item.status}</span>
                   </td>
@@ -172,21 +176,6 @@ export function Backlog({ backlog }: { readonly backlog: BacklogOverview | undef
 
   const projects = backlog?.projects ?? [];
   const view = useMemo(() => viewBacklog(projects, filters, order), [projects, filters, order]);
-  // `backlogView.ts` знает раздел лишь в объёме, нужном отбору (`error`, без
-  // места внутри документа): файл и место для подсказки «где» берутся отсюда,
-  // из уже пришедшего обзора, по ключу проекта.
-  const errorDetails = useMemo(() => {
-    const map = new Map<string, Pick<BacklogProjectView, 'errorFile' | 'errorAt'>>();
-    for (const project of projects) {
-      if (project.errorFile !== undefined || project.errorAt !== undefined) {
-        map.set(project.projectKey, {
-          ...(project.errorFile === undefined ? {} : { errorFile: project.errorFile }),
-          ...(project.errorAt === undefined ? {} : { errorAt: project.errorAt }),
-        });
-      }
-    }
-    return map;
-  }, [projects]);
 
   if (backlog === undefined) return <p className="empty">Загрузка…</p>;
 
@@ -264,13 +253,7 @@ export function Backlog({ backlog }: { readonly backlog: BacklogOverview | undef
         </p>
       ) : (
         view.sections.map((section) => (
-          <ProjectSection
-            key={section.projectKey}
-            section={section}
-            errorDetail={errorDetails.get(section.projectKey)}
-            order={order}
-            onSort={onSort}
-          />
+          <ProjectSection key={section.projectKey} section={section} order={order} onSort={onSort} />
         ))
       )}
     </>

@@ -273,6 +273,9 @@ export interface PipelinesOverview {
   readonly generatedAt: string;
 }
 
+/** Файл, из которого пришёл пункт очереди — открытые либо решённые (`docs/backlog.md`). */
+export type BacklogSourceFile = 'backlog.md' | 'resolved.md';
+
 /** Сверено построчно с `src/ui/backlog.ts`. */
 export interface BacklogItemView {
   readonly slug: string;
@@ -287,20 +290,27 @@ export interface BacklogItemView {
   readonly track: string;
   readonly startedAt?: string;
   readonly reason?: string;
+  readonly sourceFile: BacklogSourceFile;
+}
+
+/**
+ * Отказ разбора одного файла очереди проекта: текст, файл и место внутри
+ * документа. Подсказки (`errorHint` у `PipelineView`) здесь нет — ядро
+ * очереди её не даёт.
+ */
+export interface BacklogFailure {
+  readonly sourceFile: BacklogSourceFile;
+  readonly error: string;
+  readonly errorAt?: string;
 }
 
 export interface BacklogProjectView {
   readonly projectKey: string;
   readonly projectPath: string;
-  /** Пункты в порядке файла — тот же порядок и есть приоритет отбора. */
+  /** Пункты обоих файлов одним списком: сперва `backlog.md`, затем `resolved.md`. */
   readonly items: readonly BacklogItemView[];
-  /**
-   * Файл очереди не разбирается: текст, файл и место внутри документа. Подсказки
-   * (`errorHint` у `PipelineView`) здесь нет — ядро очереди её не даёт.
-   */
-  readonly error?: string;
-  readonly errorFile?: string;
-  readonly errorAt?: string;
+  /** Отказ разбора — по одному на не разобравшийся файл; пустой список — оба разобрались (или отсутствуют). */
+  readonly failures: readonly BacklogFailure[];
 }
 
 export interface BacklogOverview {

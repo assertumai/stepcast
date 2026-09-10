@@ -44,11 +44,12 @@ OpenSpec-изменения. Под ним плоские поля `ключ: з
 
 ## ui-backlog-reads-resolved
 
-status: pending
+status: done
 title: Экран «Очередь» читает и backlog.md, и resolved.md
 track: express
 why: Закрытые пункты вынесены из `backlog.md` в `resolved.md`, чтобы очередь не тонула в `done`, — но экран «Очередь» (`src/ui/backlog.ts`, `ui/src/pages/Backlog.tsx`) читает только `backlog.md` проекта, и история решённого пропала из витрины вместе с фильтром по статусу `done`, ради которого делался `ui-backlog-filters-sort`.
 done_when: экран «Очередь» читает оба файла проекта — `backlog.md` и `resolved.md` — и показывает их пункты одним списком с прежними фильтрами и сортировкой; у каждого пункта виден файл-источник; отсутствие `resolved.md` не ошибка; ошибка разбора одного файла не скрывает пункты другого и показана с именем файла; чтение обоих файлов покрыто тестом; `docs/backlog.md` описывает `resolved.md`
+started_at: 2026-09-10T21:34:03.549Z
 
 ## script-step-runners
 

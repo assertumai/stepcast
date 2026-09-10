@@ -62,6 +62,28 @@ describe('backlogView: нумерация', () => {
       [[1, 2], [1, 2, 3]],
     );
   });
+
+  it('пункты из двух файлов очереди, объединённые в один список, фильтруются и нумеруются как один', () => {
+    // Модуль вида не знает о `backlog.md`/`resolved.md` — `sourceFile` для него
+    // всего лишь ещё одно поле пункта, и на отбор с нумерацией не влияет.
+    interface ItemWithSource extends BacklogItemLike {
+      readonly sourceFile: string;
+    }
+    const merged: readonly ItemWithSource[] = [
+      { slug: 'a', status: 'pending', sourceFile: 'backlog.md' },
+      { slug: 'b', status: 'done', sourceFile: 'backlog.md' },
+      { slug: 'c', status: 'pending', sourceFile: 'resolved.md' },
+    ];
+    const sections: readonly BacklogSectionLike<ItemWithSource>[] = [
+      { projectKey: 'p1', projectPath: '/repo/p1', items: merged },
+    ];
+    const view = viewBacklog(sections, { status: 'pending' });
+    assert.deepEqual(
+      view.sections[0]?.items.map((entry) => [entry.item.slug, entry.item.sourceFile, entry.planNumber]),
+      [['a', 'backlog.md', 1], ['c', 'resolved.md', 3]],
+      'план-номер продолжает нумеровать оба файла как один список, sourceFile переживает отбор',
+    );
+  });
 });
 
 describe('backlogView: перечень статусов', () => {
@@ -148,16 +170,24 @@ describe('backlogView: порядок', () => {
 
 describe('backlogView: видимость разделов', () => {
   it('раздел с отказом разбора виден при выбранном статусе', () => {
-    const sections = [section('p1', [], { error: 'не распознан' })];
+    const sections = [section('p1', [], { failures: [{ error: 'не распознан' }] })];
     const view = viewBacklog(sections, { status: 'pending' });
     assert.equal(view.sections.length, 1);
-    assert.equal(view.sections[0]?.error, 'не распознан');
+    assert.deepEqual(view.sections[0]?.failures, [{ error: 'не распознан' }]);
+  });
+
+  it('раздел с отказом одного файла несёт пункты другого, прошедшие фильтр по статусу', () => {
+    const sections = [section('p1', [item('a', 'pending'), item('b', 'done')], { failures: [{ error: 'не распознан' }] })];
+    const view = viewBacklog(sections, { status: 'pending' });
+    assert.equal(view.sections.length, 1);
+    assert.deepEqual(view.sections[0]?.failures, [{ error: 'не распознан' }]);
+    assert.deepEqual(view.sections[0]?.items.map((entry) => entry.item.slug), ['a']);
   });
 
   it('отбор по чужому проекту скрывает сломанный раздел', () => {
-    const sections = [section('p1', [], { error: 'не распознан' }), section('p2', [item('a')])];
+    const sections = [section('p1', [], { failures: [{ error: 'не распознан' }] }), section('p2', [item('a')])];
     const view = viewBacklog(sections, { project: 'p2' });
-    assert.equal(view.sections.some((s) => s.error !== undefined), false);
+    assert.equal(view.sections.some((s) => s.failures.length > 0), false);
   });
 
   it('раздел, где ни один пункт не прошёл статус, скрыт, а прошедшие разделы остаются', () => {
@@ -173,7 +203,7 @@ describe('backlogView: видимость разделов', () => {
     const sections = [section('p1', [])];
     const atDefault = viewBacklog(sections, EMPTY_BACKLOG_FILTERS);
     assert.equal(atDefault.sections.length, 1);
-    assert.equal(atDefault.sections[0]?.error, undefined);
+    assert.deepEqual(atDefault.sections[0]?.failures, []);
 
     const narrowed = viewBacklog(sections, { status: 'pending' });
     assert.deepEqual(narrowed.sections, []);

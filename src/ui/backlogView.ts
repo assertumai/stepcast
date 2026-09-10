@@ -32,13 +32,22 @@ export interface BacklogItemLike {
   readonly status: string;
 }
 
-export interface BacklogSectionLike<I extends BacklogItemLike> {
+/** Отбор не смотрит внутрь отказа — ему важно только, есть ли он у файла. */
+export interface BacklogFailureLike {
+  readonly error: string;
+}
+
+export interface BacklogSectionLike<I extends BacklogItemLike, F extends BacklogFailureLike = BacklogFailureLike> {
   readonly projectKey: string;
   readonly projectPath: string;
   /** Пункты в порядке файла — тот же порядок, из которого выводится плановый номер. */
   readonly items: readonly I[];
-  /** Очередь проекта не разобралась: пунктов нет вовсе, раздел не то же самое, что пустой файл. */
-  readonly error?: string;
+  /**
+   * Отказ разбора — по одному на не разобравшийся файл очереди проекта.
+   * Раздел с непустым списком не то же самое, что раздел с пустым файлом, и
+   * может нести пункты одного файла наравне с отказом другого.
+   */
+  readonly failures?: readonly F[];
 }
 
 /** Пункт с плановым номером — местом в файле своего проекта, считая с единицы. */
@@ -47,10 +56,10 @@ export interface NumberedItem<I extends BacklogItemLike> {
   readonly item: I;
 }
 
-export interface BacklogSectionView<I extends BacklogItemLike> {
+export interface BacklogSectionView<I extends BacklogItemLike, F extends BacklogFailureLike = BacklogFailureLike> {
   readonly projectKey: string;
   readonly projectPath: string;
-  readonly error?: string;
+  readonly failures: readonly F[];
   readonly items: readonly NumberedItem<I>[];
 }
 
@@ -72,8 +81,8 @@ export interface StatusCount {
   readonly count: number;
 }
 
-export interface BacklogView<I extends BacklogItemLike> {
-  readonly sections: readonly BacklogSectionView<I>[];
+export interface BacklogView<I extends BacklogItemLike, F extends BacklogFailureLike = BacklogFailureLike> {
+  readonly sections: readonly BacklogSectionView<I, F>[];
   /** Все четыре статуса формата очереди — всегда, с числом пунктов, посчитанным по остальным действующим фильтрам. */
   readonly statusCounts: readonly StatusCount[];
   readonly projectOptions: readonly FilterOption[];
@@ -96,8 +105,8 @@ function matchesStatus<I extends BacklogItemLike>(numbered: NumberedItem<I>, fil
 }
 
 /** Значения фильтра проектов — из пришедших разделов, с текущим выбором внутри (Решение 6). */
-function projectOptionsOf<I extends BacklogItemLike>(
-  sections: readonly BacklogSectionLike<I>[],
+function projectOptionsOf<I extends BacklogItemLike, F extends BacklogFailureLike>(
+  sections: readonly BacklogSectionLike<I, F>[],
   filters: BacklogFilters,
 ): readonly FilterOption[] {
   const base = sections.map((section) => ({ value: section.projectKey, label: section.projectPath }));
@@ -108,11 +117,11 @@ function projectOptionsOf<I extends BacklogItemLike>(
  * Пункты очереди, отобранные, пронумерованные и упорядоченные разделами по
  * проекту, — вид, который рисует экран «Бэклог».
  */
-export function viewBacklog<I extends BacklogItemLike>(
-  allSections: readonly BacklogSectionLike<I>[],
+export function viewBacklog<I extends BacklogItemLike, F extends BacklogFailureLike>(
+  allSections: readonly BacklogSectionLike<I, F>[],
   filters: BacklogFilters,
   order: BacklogOrderDirection = DEFAULT_ORDER,
-): BacklogView<I> {
+): BacklogView<I, F> {
   const projectOptions = projectOptionsOf(allSections, filters);
 
   // Отбор по проекту сужает набор разделов; порядок разделов между собой —
@@ -124,11 +133,11 @@ export function viewBacklog<I extends BacklogItemLike>(
   // Числа по статусам считаются по пунктам, прошедшим остальные действующие
   // фильтры, чтобы совпадать с тем, что даст выбор (design.md, Решение 4):
   // отбор по проекту уже сузил `inScope`, а сам статус здесь не применяется —
-  // иначе каждое значение меню называло бы число только себе самому. Раздел с
-  // отказом разбора пунктов не даёт.
+  // иначе каждое значение меню называло бы число только себе самому. Пункты
+  // берутся как есть: раздел с отказом одного файла несёт пункты другого, и
+  // они считаются наравне с прочими.
   const countsByStatus = new Map<string, number>(BACKLOG_STATUSES.map((status) => [status, 0]));
   for (const section of inScope) {
-    if (section.error !== undefined) continue;
     for (const item of section.items) {
       const count = countsByStatus.get(item.status);
       if (count !== undefined) countsByStatus.set(item.status, count + 1);
@@ -149,21 +158,18 @@ export function viewBacklog<I extends BacklogItemLike>(
   for (const section of allSections) total += section.items.length;
 
   let shown = 0;
-  const sections: BacklogSectionView<I>[] = [];
+  const sections: BacklogSectionView<I, F>[] = [];
   for (const section of inScope) {
-    if (section.error !== undefined) {
-      // Раздел с отказом разбора переживает любой выбранный статус: пунктов у
-      // него нет вовсе, и скрытие выдало бы сломанную очередь за очередь без
-      // пунктов этого статуса (design.md, Решение 7).
-      sections.push({ projectKey: section.projectKey, projectPath: section.projectPath, error: section.error, items: [] });
-      continue;
-    }
+    const failures = section.failures ?? [];
+    const hasFailures = failures.length > 0;
 
     if (section.items.length === 0) {
-      // Файл есть, но пуст: видим только в умолчании статуса — суженный статус
-      // прячет его вместе с прочими непопавшими (design.md, Решение 7).
-      if (filters.status !== undefined) continue;
-      sections.push({ projectKey: section.projectKey, projectPath: section.projectPath, items: [] });
+      // Файл пуст либо не читается вовсе — в обоих случаях пунктов нет.
+      // Отказ переживает любой выбранный статус: скрытие выдало бы сломанную
+      // очередь за очередь без пунктов этого статуса (design.md, Решение 7).
+      // Раздел без отказов суженный статус прячет вместе с прочими непопавшими.
+      if (!hasFailures && filters.status !== undefined) continue;
+      sections.push({ projectKey: section.projectKey, projectPath: section.projectPath, failures, items: [] });
       continue;
     }
 
@@ -172,12 +178,13 @@ export function viewBacklog<I extends BacklogItemLike>(
     // тем же правилом, что и пустой файл: сообщение «пусто» верно про файл, а
     // не про отбор, и повторённое в каждом непопавшем разделе — шум
     // (design.md, Решение 7; требование «Сломанная очередь не скрывается
-    // фильтром по статусу»). Раздел с отказом разбора сюда не доходит — он
-    // возвращён выше.
-    if (numbered.length === 0) continue;
+    // фильтром по статусу»). Раздел с отказом хотя бы одного файла остаётся
+    // видимым и без пунктов, подошедших фильтру, — отказ сам по себе причина
+    // не прятать раздел.
+    if (numbered.length === 0 && !hasFailures) continue;
     const ordered = order === 'asc' ? numbered : [...numbered].reverse();
     shown += ordered.length;
-    sections.push({ projectKey: section.projectKey, projectPath: section.projectPath, items: ordered });
+    sections.push({ projectKey: section.projectKey, projectPath: section.projectPath, failures, items: ordered });
   }
 
   return { sections, statusCounts, projectOptions, shown, total };
