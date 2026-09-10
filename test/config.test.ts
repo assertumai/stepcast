@@ -120,9 +120,9 @@ describe('stepcast-configuration', () => {
     assert.equal(resolveIn(loosened).config.limits.tokens, 5_000_000);
   });
 
-  it('limits.cost по умолчанию $50 и участвует в слиянии как потолок', () => {
+  it('limits.cost по умолчанию $100 и участвует в слиянии как потолок', () => {
     const builtin = resolveIn(sandbox({}));
-    assert.equal(builtin.config.limits.costMicroUsd, 50_000_000);
+    assert.equal(builtin.config.limits.costMicroUsd, 100_000_000);
 
     const tightened = sandbox({
       global: 'limits:\n  cost: 20\n',
@@ -135,12 +135,15 @@ describe('stepcast-configuration', () => {
       project: 'limits:\n  cost: 100\n',
     });
     assert.equal(resolveIn(loosened).config.limits.costMicroUsd, 20_000_000);
+
+    const aboveBuiltin = sandbox({ project: 'limits:\n  cost: 120\n' });
+    assert.equal(resolveIn(aboveBuiltin).config.limits.costMicroUsd, 100_000_000);
   });
 
   it('печатает limits.cost в отчёте stepcast config', () => {
     const resolved = resolveIn(sandbox({}));
     const lines = renderConfigReport(resolved);
-    assert.ok(lines.some((line) => line.includes('limits.cost') && line.includes('$50.00')));
+    assert.ok(lines.some((line) => line.includes('limits.cost') && line.includes('$100.00')));
   });
 
   it('предел ожидания разбирается как длительность и переопределяется слоем', () => {
