@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 
 import { createAnchorer, detectAnchorKind, manifestStore } from '../src/core/anchor/index.js';
 import { createFakeBackend, initLine, resultLine, toolUseLine } from '../src/core/backend/fake.js';
-import type { BackendConfig } from '../src/core/config/resolve.js';
+import type { BackendConfig, Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { findStepDir, readEvents, readStatus, readUsage, resolveRun } from '../src/core/journal/reader.js';
 import {
@@ -1753,6 +1753,97 @@ steps:
       (plan.steps[0]?.decision as { reason: string }).reason,
       /изменилось определение шага/,
     );
+  });
+});
+
+describe('run-resume: правка скрипта и раннера обесценивает переиспользование шага script', () => {
+  const SCRIPT_PIPELINE = `
+version: 1
+kind: pipeline
+name: script-key-sensitivity
+jobs:
+  build:
+    session: per_step
+    inputs: [неподходящее.txt]
+    steps:
+      - id: task
+        script: task.sh
+        expect: [{ exit_code: 0 }]
+`;
+
+  /** Тот же план, что строит planFor, но с подменённой конфигурацией — раскрытие видит другой раннер. */
+  function planWithConfig(b: Bed, source: RunResult, config: Config): ResumePlan {
+    const expanded = expandPipeline({ pipelinePath: b.project.path('stepcast.yml'), config });
+    const nested = config.project.nestedRepos;
+    const anchorKind = detectAnchorKind(b.project.root, nested);
+    const stateDir = tempDir('plan-');
+    const anchorer = createAnchorer({
+      dir: b.project.root,
+      stateDir,
+      kind: anchorKind,
+      scope: 'plan',
+      ...(nested === undefined ? {} : { nested }),
+      readStores: [manifestStore(source.journal.paths.anchors)],
+    });
+    const sourceStatus = readSourceRun(source.journal.paths).status;
+    const changed = changedSince(anchorer, finalAnchorOf(sourceStatus, anchorKind), anchorer.capture());
+    const plan = buildResumePlan({
+      expanded,
+      config,
+      source: readSourceRun(source.journal.paths),
+      changed,
+      cwd: b.project.root,
+      producedPaths: (step) => producedBy(anchorer, step),
+    });
+    anchorer.dispose();
+    return plan;
+  }
+
+  // Сценарий: «Переписанный скрипт даёт другой ключ»
+  it('правка содержимого файла при неизменном пути обесценивает шаг', async () => {
+    const b = bed({ 'stepcast.yml': SCRIPT_PIPELINE });
+    b.project.write('.stepcast/scripts/task.sh', '#!/bin/sh\nexit 0\n');
+
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+    assert.equal(planFor(b, first).steps[0]?.decision.kind, 'reuse');
+
+    b.project.write('.stepcast/scripts/task.sh', '#!/bin/sh\n# другой код\nexit 0\n');
+    assert.equal(planFor(b, first).steps[0]?.decision.kind, 'rerun');
+  });
+
+  // Сценарий: «Смена раннера даёт другой ключ»
+  it('смена command раннера в конфигурации обесценивает шаг', async () => {
+    const b = bed({ 'stepcast.yml': SCRIPT_PIPELINE });
+    b.project.write('.stepcast/scripts/task.sh', '#!/bin/sh\nexit 0\n');
+
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+    assert.equal(planFor(b, first).steps[0]?.decision.kind, 'reuse');
+
+    const changedConfig: Config = {
+      ...b.project.config,
+      runners: {
+        ...b.project.config.runners,
+        sh: { command: ['sh', '-x'], extensions: ['.sh'] },
+      },
+    };
+    assert.equal(planWithConfig(b, first, changedConfig).steps[0]?.decision.kind, 'rerun');
+  });
+
+  // Сценарий: «Узкие inputs дыры не оставляют»
+  it('inputs, не покрывающие каталог скриптов, дыры в ключе не оставляют', async () => {
+    // Работа объявляет inputs: [неподходящее.txt] — отпечаток входов считается
+    // только по нему, и .stepcast/scripts/ в него не входит вовсе.
+    const b = bed({ 'stepcast.yml': SCRIPT_PIPELINE, 'неподходящее.txt': 'исходно' });
+    b.project.write('.stepcast/scripts/task.sh', '#!/bin/sh\nexit 0\n');
+
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+    assert.equal(planFor(b, first).steps[0]?.decision.kind, 'reuse');
+
+    b.project.write('.stepcast/scripts/task.sh', '#!/bin/sh\n# правка вне объявленных inputs\nexit 0\n');
+    assert.equal(planFor(b, first).steps[0]?.decision.kind, 'rerun');
   });
 });
 

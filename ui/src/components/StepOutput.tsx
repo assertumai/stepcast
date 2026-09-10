@@ -132,7 +132,7 @@ export function StepOutput({
   readonly address: string;
   readonly jobId: string;
   readonly stepId: string;
-  readonly kind: 'agent' | 'run';
+  readonly kind: 'agent' | 'run' | 'script';
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -174,7 +174,7 @@ export function StepOutput({
         stepId,
         ...(targetAttempt === undefined ? {} : { attempt: targetAttempt }),
         stdoutOffset: offsetsRef.current.stdout,
-        ...(kind === 'run' ? { stderrOffset: offsetsRef.current.stderr } : {}),
+        ...(kind !== 'agent' ? { stderrOffset: offsetsRef.current.stderr } : {}),
       });
       if (generationRef.current !== generation) return;
 
@@ -195,7 +195,7 @@ export function StepOutput({
           setEntries((prev) => mergeToolOutcomes([...(restarted ? [] : prev), ...fresh]));
         }
       }
-      if (kind === 'run' && result.stderr !== undefined) {
+      if (kind !== 'agent' && result.stderr !== undefined) {
         offsetsRef.current.stderr = result.stderr.offset;
         setStderr((prev) => appendRaw(prev, result.stderr));
       }
@@ -289,7 +289,7 @@ export function StepOutput({
             </div>
           ) : null}
 
-          {loaded && attempts.length > 0 && kind === 'run' ? (
+          {loaded && attempts.length > 0 && kind !== 'agent' ? (
             <>
               <StreamBlock name="stdout" stream={stdout} />
               <StreamBlock name="stderr" stream={stderr} />

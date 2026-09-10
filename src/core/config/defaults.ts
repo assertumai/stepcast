@@ -69,6 +69,16 @@ export const BUILTIN_CONFIG: RawConfig = {
     note_max_tokens: '4k',
     deny: ['**/.env*', '**/*.pem', '**/*.key', '**/id_rsa*', '**/.git/**'],
   },
+  // Встроенный слой таблицы раннеров (design.md, решение 4). `node-ts`
+  // отдельной записью, а не флагом, который `node` добавляет при виде `.ts`:
+  // `--experimental-strip-types` неприменим на Node 22.0-22.5 и не нужен на
+  // новых — приписывать его всякому `node` нельзя (design.md, Context).
+  runners: {
+    node: { command: ['node'], extensions: ['.js', '.mjs', '.cjs'] },
+    'node-ts': { command: ['node', '--experimental-strip-types'], extensions: ['.ts', '.mts'] },
+    python3: { command: ['python3'], extensions: ['.py'] },
+    sh: { command: ['sh'], extensions: ['.sh'] },
+  },
   backends: {
     claude: {
       command: 'claude',

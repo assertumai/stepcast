@@ -1168,3 +1168,138 @@ describe('stepcast-configuration: практика памяти', () => {
     assert.throws(() => resolveIn(box), StepcastError);
   });
 });
+
+describe('stepcast-configuration: таблица раннеров', () => {
+  // Сценарий: «Встроенная таблица есть без всякой конфигурации»
+  it('встроенная таблица содержит node, node-ts, python3 и sh', () => {
+    const box = sandbox({});
+    const { config, provenance } = resolveIn(box);
+    assert.deepEqual(config.runners.node, { command: ['node'], extensions: ['.js', '.mjs', '.cjs'] });
+    assert.deepEqual(config.runners['node-ts'], {
+      command: ['node', '--experimental-strip-types'],
+      extensions: ['.ts', '.mts'],
+    });
+    assert.deepEqual(config.runners.python3, { command: ['python3'], extensions: ['.py'] });
+    assert.deepEqual(config.runners.sh, { command: ['sh'], extensions: ['.sh'] });
+    assert.equal(describeSource(provenance.get('runners.python3.command')!), 'встроенное умолчание');
+  });
+
+  // Сценарий: «Проект пополняет таблицу»
+  it('проектный конфиг пополняет таблицу своей записью', () => {
+    const box = sandbox({
+      project: 'runners:\n  uv:\n    command: [uv, run, --script]\n    extensions: [".py"]\n',
+    });
+    const { config, provenance } = resolveIn(box);
+    assert.deepEqual(config.runners.uv, { command: ['uv', 'run', '--script'], extensions: ['.py'] });
+    assert.ok('python3' in config.runners);
+    assert.equal(describeSource(provenance.get('runners.uv.command')!), box.projectPath);
+  });
+
+  // Сценарий: «Слияние по листьям»
+  it('домашняя запись, назвавшая только command, сохраняет встроенные extensions', () => {
+    const box = sandbox({ global: 'runners:\n  python3:\n    command: [python3.12]\n' });
+    const { config } = resolveIn(box);
+    assert.deepEqual(config.runners.python3, { command: ['python3.12'], extensions: ['.py'] });
+  });
+
+  // Сценарий: «Слияние по листьям» — то же в обратную сторону
+  it('домашняя запись, назвавшая только extensions, сохраняет встроенную command', () => {
+    const box = sandbox({ global: 'runners:\n  python3:\n    extensions: [".py", ".py3"]\n' });
+    const { config, provenance } = resolveIn(box);
+    assert.deepEqual(config.runners.python3, { command: ['python3'], extensions: ['.py', '.py3'] });
+    assert.equal(config.runnersByExtension.get('.py3'), 'python3');
+    assert.equal(describeSource(provenance.get('runners.python3.command')!), 'встроенное умолчание');
+  });
+
+  // Сценарий: «Запись без команды»
+  it('раннер, ни в одном слое не назвавший command, — отказ разбора с его именем', () => {
+    const box = sandbox({ project: 'runners:\n  uv:\n    extensions: [".uv"]\n' });
+    assert.throws(() => resolveIn(box), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /uv/);
+      assert.equal(error.at, 'runners.uv.command');
+      return true;
+    });
+  });
+
+  // Та же проверка — единственное, что стоит между неполной записью из
+  // умолчаний плагина (схему файлов они не проходят) и запуском файла напрямую.
+  it('неполная запись из умолчаний плагина отказывает так же', () => {
+    const box = sandbox({});
+    assert.throws(
+      () =>
+        resolveConfig({
+          cwd: box.cwd,
+          home: box.home,
+          globalPath: box.globalPath,
+          projectPath: box.projectPath,
+          pluginDefaults: [{ plugin: 'p', values: { runners: { bun: { extensions: ['.bun'] } } } }],
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /bun/);
+        return true;
+      },
+    );
+  });
+
+  // Сценарий: «Форма записи проверяется»
+  it('отклоняет command строкой', () => {
+    const box = sandbox({ project: 'runners:\n  uv:\n    command: "uv run"\n' });
+    assert.throws(() => resolveIn(box), StepcastError);
+  });
+
+  it('отклоняет расширение без точки', () => {
+    const box = sandbox({ project: 'runners:\n  uv:\n    command: [uv]\n    extensions: ["py"]\n' });
+    assert.throws(() => resolveIn(box), StepcastError);
+  });
+
+  // Сценарий: «Встроенная таблица есть без всякой конфигурации» — отчёт
+  // называет действующую команду и расширения, а не их количество: иначе
+  // единственная команда, отвечающая на вопрос «чем исполнится .py», ответа
+  // не даёт, и происхождение перехваченного расширения не с чем сверить.
+  it('stepcast config печатает команду раннера и его расширения значениями', () => {
+    const box = sandbox({
+      project: 'runners:\n  uv:\n    command: [uv, run, --script]\n    extensions: [".py"]\n',
+    });
+    const lines = renderConfigReport(resolveIn(box));
+
+    const command = lines.find((line) => line.startsWith('runners.node-ts.command'));
+    assert.match(command ?? '', /node --experimental-strip-types/);
+    assert.match(command ?? '', /встроенное умолчание/);
+
+    const extensions = lines.find((line) => line.startsWith('runners.node.extensions'));
+    assert.match(extensions ?? '', /\.js, \.mjs, \.cjs/);
+
+    const overridden = lines.find((line) => line.startsWith('runners.uv.extensions'));
+    assert.match(overridden ?? '', /\.py/);
+    assert.match(overridden ?? '', new RegExp(box.projectPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+    assert.deepEqual(lines.filter((line) => line.startsWith('runners.') && /шаблонов/.test(line)), []);
+  });
+
+  // Сценарий: «Проект перехватывает расширение»
+  it('расширение, названное проектным конфигом, перехватывает его у встроенной записи', () => {
+    const box = sandbox({
+      project: 'runners:\n  uv:\n    command: [uv, run, --script]\n    extensions: [".py"]\n',
+    });
+    const { config } = resolveIn(box);
+    assert.equal(config.runnersByExtension.get('.py'), 'uv');
+  });
+
+  // Сценарий: «Спор внутри одного слоя»
+  it('два раннера одного слоя с одним расширением — отказ с обоими именами', () => {
+    const box = sandbox({
+      project:
+        'runners:\n' +
+        '  uv:\n    command: [uv, run, --script]\n    extensions: [".py"]\n' +
+        '  rye:\n    command: [rye, run]\n    extensions: [".py"]\n',
+    });
+    assert.throws(() => resolveIn(box), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /rye/);
+      assert.match(error.message, /uv/);
+      return true;
+    });
+  });
+});

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { RunJournal } from '../src/core/journal/writer.js';
 import type { RunManifest, RunStatus, StatusValue, UsageReport } from '../src/core/journal/schema.js';
-import type { AgentStep, RunStep, Step } from '../src/core/pipeline/model.js';
+import type { AgentStep, RunStep, ScriptStep, Step } from '../src/core/pipeline/model.js';
 import { tempDir } from './tmp.js';
 
 export interface Project {
@@ -262,4 +262,10 @@ export function asRun(step: Step): RunStep {
 export function asAgent(step: Step): AgentStep {
   assert.equal(step.kind, 'agent', `шаг ${step.id} ожидался агентским`);
   return step as AgentStep;
+}
+
+/** Сузить шаг до script, заодно проверив тип. */
+export function asScript(step: Step): ScriptStep {
+  assert.equal(step.kind, 'script', `шаг ${step.id} ожидался script`);
+  return step as ScriptStep;
 }

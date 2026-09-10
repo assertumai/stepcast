@@ -18,7 +18,7 @@ import { parse as parseYaml } from 'yaml';
 
 export interface LockStep {
   readonly id: string;
-  readonly kind: 'agent' | 'run';
+  readonly kind: 'agent' | 'run' | 'script';
   /** Бэкенд агентского шага. */
   readonly agent?: string;
   /** Модель, если шаг её назвал; иначе действует модель бэкенда. */
@@ -27,6 +27,10 @@ export interface LockStep {
   readonly prompt?: string;
   /** Команда командного шага, как она записана: строкой или списком argv. */
   readonly command?: string;
+  /** Путь скрипта, объявленный документом, — у шага script. */
+  readonly scriptPath?: string;
+  /** Имя раннера, которым скрипт разрешён исполниться. */
+  readonly scriptRunner?: string;
   readonly context: readonly string[];
 }
 
@@ -113,16 +117,20 @@ function toStep(value: unknown): LockStep | undefined {
   const command = commandLabel(record.run);
   const agent = asString(record.agent);
   const model = asString(record.model);
+  const scriptPath = asString(record.script);
+  const scriptRunner = asString(asRecord(record.resolved)?.runner);
 
   return {
     id,
-    // Вид шага определяется тем, какое из двух взаимоисключающих полей есть:
-    // в локе `agent` и `run` не встречаются вместе.
-    kind: prompt !== undefined ? 'agent' : 'run',
+    // Вид шага определяется тем, какое из трёх взаимоисключающих полей есть:
+    // в локе `script`, `agent` и `run` не встречаются вместе.
+    kind: scriptPath !== undefined ? 'script' : prompt !== undefined ? 'agent' : 'run',
     ...(agent === undefined ? {} : { agent }),
     ...(model === undefined ? {} : { model }),
     ...(prompt === undefined ? {} : { prompt }),
     ...(command === undefined ? {} : { command }),
+    ...(scriptPath === undefined ? {} : { scriptPath }),
+    ...(scriptRunner === undefined ? {} : { scriptRunner }),
     context: contextLabels(record.context),
   };
 }

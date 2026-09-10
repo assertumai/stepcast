@@ -58,7 +58,7 @@ export interface AttemptModel {
 
 export interface StepSnapshot {
   readonly id: string;
-  readonly kind: 'agent' | 'run';
+  readonly kind: 'agent' | 'run' | 'script';
   readonly agent?: string;
   /** Модель, объявленная определением, — из `pipeline.lock.yml`. */
   readonly model?: string;
@@ -84,6 +84,10 @@ export interface StepSnapshot {
   readonly prompt?: string;
   /** Команда командного шага из лока. */
   readonly command?: string;
+  /** Путь скрипта, объявленный документом, — у шага script. */
+  readonly scriptPath?: string;
+  /** Имя раннера, которым скрипт разрешён исполниться. */
+  readonly scriptRunner?: string;
   readonly context: readonly string[];
   /** Разрез контекста: есть только у исполнившегося агентского шага. */
   readonly contextBreakdown?: ContextBreakdown;
@@ -259,6 +263,8 @@ function buildStep(
     attemptModels: attemptModels(summary, jobId, id),
     ...(definition?.prompt === undefined ? {} : { prompt: definition.prompt }),
     ...(definition?.command === undefined ? {} : { command: definition.command }),
+    ...(definition?.scriptPath === undefined ? {} : { scriptPath: definition.scriptPath }),
+    ...(definition?.scriptRunner === undefined ? {} : { scriptRunner: definition.scriptRunner }),
     context: definition?.context ?? [],
     ...(breakdown === undefined ? {} : { contextBreakdown: breakdown }),
     files: stepFiles(paths.dir, dir),

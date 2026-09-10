@@ -311,6 +311,35 @@
         "additionalProperties": false
       }
     },
+    "runners": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9_-]+$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^\\.\\S+$"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "ui": {
       "type": "object",
       "properties": {

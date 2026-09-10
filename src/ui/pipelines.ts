@@ -45,7 +45,7 @@ export type PipelineModelOrigin =
 
 export interface PipelineStepView {
   readonly id: string;
-  readonly kind: 'agent' | 'run';
+  readonly kind: 'agent' | 'run' | 'script';
   /** Агент шага: он и есть ответ на вопрос «чем это будет исполняться». */
   readonly agent?: string;
   /** Модель, которой шаг исполнится. Отсутствует у шага без модели ни на одном слое. */
@@ -53,6 +53,10 @@ export interface PipelineStepView {
   /** Слой, давший `model`, — только у агентских шагов. */
   readonly modelOrigin?: PipelineModelOrigin;
   readonly command?: string;
+  /** Путь скрипта, объявленный в документе, — у шага script. */
+  readonly scriptPath?: string;
+  /** Имя раннера, которым скрипт исполнится, — только у разрешённого шага. */
+  readonly scriptRunner?: string;
 }
 
 export interface PipelineJobView {
@@ -169,6 +173,10 @@ function toJobView(
         : {}),
       ...(step.kind === 'run'
         ? { command: Array.isArray(step.command) ? step.command.join(' ') : String(step.command) }
+        : {}),
+      ...(step.kind === 'script' ? { scriptPath: step.path } : {}),
+      ...(step.kind === 'script' && step.resolved !== undefined
+        ? { scriptRunner: step.resolved.runner }
         : {}),
     })),
   };

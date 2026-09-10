@@ -1461,6 +1461,413 @@
               "run"
             ],
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "env": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "context": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "type": "string"
+                        },
+                        "mode": {
+                          "type": "string",
+                          "enum": [
+                            "inline",
+                            "reference",
+                            "auto"
+                          ]
+                        },
+                        "required": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "path"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "text"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "knowledge": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "index"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "scope": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  ]
+                                },
+                                "id": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "string"
+                                      }
+                                    }
+                                  ]
+                                },
+                                "budget": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string"
+                                    },
+                                    {
+                                      "type": "number"
+                                    }
+                                  ]
+                                }
+                              },
+                              "additionalProperties": false
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "knowledge"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "context_inherit": {
+                "type": "boolean"
+              },
+              "context_exclude": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "context_max_tokens": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "timeout": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "number"
+                  }
+                ]
+              },
+              "budget": {
+                "type": "object",
+                "properties": {
+                  "tokens": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
+                  },
+                  "cost": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
+                  },
+                  "wallclock": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
+                  },
+                  "rate_limit_pct": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
+                  },
+                  "on_exceed": {
+                    "type": "string",
+                    "enum": [
+                      "wait",
+                      "stop"
+                    ]
+                  }
+                },
+                "additionalProperties": false
+              },
+              "expect": {
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "exit_code": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "number"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "exit_code"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "file_exists": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "file_exists"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "schema": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "schema"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "matches": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "matches"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "not_matches": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "not_matches"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "changed_only": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "changed_only"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "knowledge_valid": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "knowledge_valid"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "cmd": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "cmd"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "judge": {
+                          "type": "string"
+                        },
+                        "hard": {
+                          "type": "boolean"
+                        },
+                        "agent": {
+                          "type": "string"
+                        },
+                        "model": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "judge"
+                      ],
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              },
+              "attempts": {
+                "type": "object",
+                "properties": {
+                  "max": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "number"
+                      }
+                    ]
+                  },
+                  "escalation": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "include_failure": {
+                          "type": "boolean"
+                        },
+                        "model": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "max"
+                ],
+                "additionalProperties": false
+              },
+              "script": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "runner": {
+                "type": "string"
+              },
+              "on_fail": {
+                "type": "object",
+                "properties": {
+                  "analyze": {
+                    "type": "string"
+                  },
+                  "prompt": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "analyze",
+                  "prompt"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "id",
+              "script"
+            ],
+            "additionalProperties": false
           }
         ]
       }

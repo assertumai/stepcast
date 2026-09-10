@@ -13,6 +13,7 @@ import { buildPublishedSchemas } from '../src/core/pipeline/published-schema.js'
 import { hasErrors, lintPipeline, type Diagnostic } from '../src/core/lint.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
 import { gitCommit, gitInit, makeProject, withHome, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 function lint(project: Project, inputs?: Record<string, string>): Diagnostic[] {
   return lintWithConfig(project, project.config, inputs);
@@ -30,6 +31,23 @@ function lintWithConfig(project: Project, config: Config, inputs?: Record<string
 /** Тот же проект, но с объявленным составом `project.nested_repos`, будто он объявлен в `.stepcast/config.yml`. */
 function withNestedRepos(project: Project, nestedRepos: readonly string[]): Config {
   return { ...project.config, project: { ...project.config.project, nestedRepos } };
+}
+
+/**
+ * Корни трёх слоёв script, изолированные от машины: `home` и `builtin` —
+ * пустые временные каталоги, а не настоящие `homedir()` и пакет stepcast.
+ */
+function isolatedScriptRoots(project: Project): { project: string; home: string; builtin: string } {
+  return { project: project.root, home: tempDir('script-home-'), builtin: tempDir('script-builtin-') };
+}
+
+function lintScript(
+  project: Project,
+  scriptRoots: { project: string; home: string; builtin: string },
+  config: Config = project.config,
+): Diagnostic[] {
+  const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config, scriptRoots });
+  return lintPipeline(expanded, { config });
 }
 
 function errors(diagnostics: readonly Diagnostic[]): string[] {
@@ -2820,5 +2838,131 @@ jobs:
       warnings(diagnostics).filter((text) => /Схема проекта/.test(text)),
       [],
     );
+  });
+});
+
+describe('pipeline-definition: статическая проверка шага script', () => {
+  // Сценарий: «Файла нет ни в одном слое»
+  it('ненайденный файл — ошибка с перечнем просмотренных каталогов', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, script: cleanup.py }]
+`,
+    });
+    const roots = isolatedScriptRoots(project);
+    const diagnostics = lintScript(project, roots);
+
+    const message = errors(diagnostics).find((text) => /не найден/.test(text));
+    assert.ok(message !== undefined, errors(diagnostics).join('\n'));
+    const diagnostic = diagnostics.find((item) => item.message === message);
+    assert.match(diagnostic?.hint ?? '', new RegExp(join(roots.project, '.stepcast', 'scripts').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  });
+
+  // Сценарий: «Неизвестное имя раннера»
+  it('неизвестный runner — ошибка с перечнем известных', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, script: build.py, runner: bun }]
+`,
+    });
+    const roots = isolatedScriptRoots(project);
+    project.write('.stepcast/scripts/build.py', 'print(1)\n');
+    const diagnostics = lintScript(project, roots);
+
+    const message = errors(diagnostics).find((text) => /неизвестный раннер bun/.test(text));
+    assert.ok(message !== undefined, errors(diagnostics).join('\n'));
+    const diagnostic = diagnostics.find((item) => item.message === message);
+    assert.match(diagnostic?.hint ?? '', /python3/);
+  });
+
+  // Сценарий: «Раннер не определяется»
+  it('нераспознаваемое расширение без shebang — ошибка с перечнем известных расширений', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, script: mystery.rb }]
+`,
+    });
+    const roots = isolatedScriptRoots(project);
+    project.write('.stepcast/scripts/mystery.rb', 'puts 1\n');
+    const diagnostics = lintScript(project, roots);
+
+    const message = errors(diagnostics).find((text) => /не определяется/.test(text));
+    assert.ok(message !== undefined, errors(diagnostics).join('\n'));
+    const diagnostic = diagnostics.find((item) => item.message === message);
+    assert.match(diagnostic?.hint ?? '', /\.py/);
+  });
+
+  // Сценарий: «Путь с подстановкой не проверяется»
+  it('путь с подстановкой ${inputs.*} не проверяется статически', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+inputs:
+  name: { type: string, default: cleanup }
+jobs:
+  build:
+    steps: [{ id: c, script: "./generated/\${inputs.name}.py" }]
+`,
+    });
+    const diagnostics = lintScript(project, isolatedScriptRoots(project));
+    assert.deepEqual(
+      errors(diagnostics).filter((text) => /не найден/.test(text)),
+      [],
+    );
+  });
+
+  // Сценарий: «Путь с подстановкой не проверяется» — вторая половина того же
+  // правила `pathCheckSkipped`: значение с глобом линт тоже не проверяет.
+  it('путь с глобом не проверяется статически', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, script: "./tools/*.py", runner: python3 }]
+`,
+    });
+    const diagnostics = lintScript(project, isolatedScriptRoots(project));
+    assert.deepEqual(
+      errors(diagnostics).filter((text) => /не найден/.test(text)),
+      [],
+    );
+  });
+
+  // Сценарий: «Отсутствующий на машине интерпретатор линт не касается»
+  it('раннер, известный конфигурации, но отсутствующий в PATH, линт не задевает', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, script: build.py, runner: uv }]
+`,
+    });
+    project.write('.stepcast/scripts/build.py', 'print(1)\n');
+    const config: Config = {
+      ...project.config,
+      runners: {
+        ...project.config.runners,
+        uv: { command: ['stepcast-test-runner-that-does-not-exist-xyz'], extensions: [] },
+      },
+    };
+    const diagnostics = lintScript(project, isolatedScriptRoots(project), config);
+    assert.deepEqual(diagnostics, []);
   });
 });

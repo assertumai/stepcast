@@ -69,6 +69,7 @@ import type {
   ExpandedPipeline,
   Job,
   Pipeline,
+  ScriptUnresolved,
   Step,
 } from '../pipeline/model.js';
 import type {
@@ -1492,7 +1493,7 @@ async function runJobSteps(
       const dataViolation = foldJobData(context, job);
       if (dataViolation !== undefined) return { status: 'failed', reason: dataViolation };
       if (
-        (step.kind === 'agent' || step.outputSchemaPath !== undefined) &&
+        (step.kind === 'agent' || (step.kind === 'run' && step.outputSchemaPath !== undefined)) &&
         planned.decision.record.status === 'success'
       ) {
         // Переиспользованный шаг не исполнялся, структурированного вывода у
@@ -1616,7 +1617,7 @@ async function runJobSteps(
     const outcome: StepOutcome =
       exceeded !== undefined
         ? { status: 'budget_exceeded', reason: describeExceeded(exceeded), attempts: [], results: [], exceeded }
-        : step.kind === 'run'
+        : step.kind === 'run' || step.kind === 'script'
           ? await runCommandStep(
               step,
               job,
@@ -1733,11 +1734,22 @@ async function runJobSteps(
         : { observed_inputs: [...outcome.observedInputs] }),
       ...(outcome.backendInit === undefined ? {} : { backend_init: outcome.backendInit }),
       ...(continuing === undefined ? {} : { continued_from: continuationSourceId }),
+      ...(step.kind === 'script' && step.resolved !== undefined
+        ? {
+            script: {
+              path: step.path,
+              layer: step.resolved.layer,
+              absolute_path: step.resolved.absolutePath,
+              runner: step.resolved.runner,
+              argv: [...step.resolved.argv],
+            },
+          }
+        : {}),
     };
     steps.push(stepRecord);
     journal.writeStepJson(stepDirPath, 'step.json', stepRecord);
 
-    if ((step.kind === 'agent' || step.outputSchemaPath !== undefined) && outcome.structured !== undefined) {
+    if ((step.kind === 'agent' || (step.kind === 'run' && step.outputSchemaPath !== undefined)) && outcome.structured !== undefined) {
       lastStructuredOutput = outcome.structured;
       journal.writeStepJson(stepDirPath, 'output.json', outcome.structured);
     }
@@ -1926,8 +1938,46 @@ function checkCostUnreported(context: RunContext, job: Job, step: Step, attempt:
   }
 }
 
+/** Текст причины отказа неразрешённого шага `script` — для журнала и для причины исхода. */
+function describeScriptUnresolved(unresolved: ScriptUnresolved): string {
+  switch (unresolved.reason) {
+    case 'file_not_found':
+      return `Файл скрипта не найден ни в одном слое. Искали: ${unresolved.searched.join(', ')}`;
+    case 'unknown_runner':
+      return `Неизвестный раннер ${unresolved.runner}. Известны: ${unresolved.known.join(', ')}`;
+    case 'runner_undetermined':
+      return `Раннер не определяется ни расширением, ни shebang. Известные расширения: ${unresolved.extensions.join(', ')}`;
+  }
+}
+
+/**
+ * Шаг с неразрешённым скриптом (design.md, решение 1): линт называет причину
+ * заранее, а прогон, дошедший до такого шага, отказывает ему тем же текстом —
+ * без попытки запуска, которую нечем было бы исполнить. Ровно одна запись
+ * попытки, терминальная, тем же приёмом, что и отказ бэкенда.
+ */
+function unresolvedScriptOutcome(step: Extract<Step, { kind: 'script' }>): StepOutcome {
+  const reason = describeScriptUnresolved(step.unresolved as ScriptUnresolved);
+  const startedAt = new Date().toISOString();
+  const record: StepRecord['attempts'][number] = {
+    attempt: 1,
+    status: 'failed',
+    reason,
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+    exit_code: null,
+  };
+  return {
+    status: 'failed',
+    reason,
+    attempts: [record],
+    results: [[{ predicate: 'spawn_failed', passed: false, hard: true, detail: reason }]],
+    cause: HaltCause.spawnFailed,
+  };
+}
+
 async function runCommandStep(
-  step: Extract<Step, { kind: 'run' }>,
+  step: Extract<Step, { kind: 'run' | 'script' }>,
   job: Job,
   context: RunContext,
   stepDirPath: string,
@@ -1935,6 +1985,10 @@ async function runCommandStep(
   budgetScopes: () => BudgetScope[],
   changedPaths: () => readonly string[] | undefined,
 ): Promise<StepOutcome> {
+  if (step.kind === 'script' && step.resolved === undefined) {
+    return unresolvedScriptOutcome(step);
+  }
+
   const { journal, config } = context;
   // Разобранный выход командного шага. Заполняется только когда объявлен
   // output_schema — без него у командного шага структурированного выхода
@@ -1971,7 +2025,7 @@ async function runCommandStep(
           // первого объекта и без склейки последней строки — вывод либо один
           // JSON-документ целиком, либо отказ попытки.
           let structured: unknown;
-          if (target.outputSchemaPath !== undefined) {
+          if (target.kind === 'run' && target.outputSchemaPath !== undefined) {
             try {
               structured = JSON.parse(process_.stdout.trim());
             } catch (error) {
@@ -2523,6 +2577,7 @@ async function runAgentStep(
 /** Задание шага без блока контекста — вход судьи на командном шаге. */
 function describeStepTask(step: Step): string {
   if (step.kind === 'agent') return step.prompt;
+  if (step.kind === 'script') return (step.resolved?.argv ?? [step.path, ...step.args]).join(' ');
   return typeof step.command === 'string' ? step.command : step.command.join(' ');
 }
 

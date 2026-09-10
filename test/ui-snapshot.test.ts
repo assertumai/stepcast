@@ -179,6 +179,44 @@ describe('ui-dashboard: детальный снимок прогона', () => {
     assert.equal(check?.command, 'echo ok');
   });
 
+  it('показывает путь и раннер шага script', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: витрина-script
+jobs:
+  build:
+    steps:
+      - id: cleanup
+        script: cleanup.sh
+`,
+    });
+    project.write('.stepcast/scripts/cleanup.sh', '#!/bin/sh\nexit 0\n');
+    const lock = serializeLock(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }).pipeline,
+    );
+
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-script',
+      lock,
+      jobs: [
+        {
+          id: 'build',
+          status: 'success',
+          steps: [{ id: 'cleanup', index: 1, kind: 'script', key: 'k1', status: 'success', attempts: [] }],
+        },
+      ],
+    });
+
+    const snapshot = buildSnapshot(journal.paths, projectKey(bed.projectRoot));
+    const step = snapshot.jobs.find((job) => job.id === 'build')?.steps[0];
+    assert.equal(step?.kind, 'script');
+    assert.equal(step?.scriptPath, 'cleanup.sh');
+    assert.equal(step?.scriptRunner, 'sh');
+  });
+
   // Сценарий: «Разрез контекста агентского шага»
   it('разбирает context.json агентского шага по четырём уровням', () => {
     const { journal, key } = seed();

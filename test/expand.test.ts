@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { parse as parseYaml } from 'yaml';
 
@@ -8,7 +10,9 @@ import { jobLockHash, serializeLock } from '../src/core/pipeline/lock.js';
 import { computeStepKey } from '../src/core/run/stepKey.js';
 import { StepcastError } from '../src/core/errors.js';
 import type { BackendConfig, Config } from '../src/core/config/resolve.js';
-import { asAgent, asRun, makeProject, MINIMAL_PIPELINE, type Project } from './helpers.js';
+import { asAgent, asRun, asScript, makeProject, MINIMAL_PIPELINE, type Project } from './helpers.js';
+import { tempDir } from './tmp.js';
+import type { ScriptRoots } from '../src/core/pipeline/expand.js';
 
 /** Бэкенд с умолчанием модели — для проверки слоя `backend`. */
 const BACKEND_WITH_DEFAULT_MODEL: BackendConfig = {
@@ -72,6 +76,29 @@ function expand(project: Project, file = 'stepcast.yml', inputs?: Record<string,
 
 function expandWith(project: Project, config: Config, file = 'stepcast.yml') {
   return expandPipeline({ pipelinePath: project.path(file), config });
+}
+
+/**
+ * Корни трёх слоёв script, изолированные от машины: `home` и `builtin` —
+ * пустые временные каталоги, а не настоящие `homedir()` и пакет stepcast.
+ * Тест, которому нужен непустой слой, дописывает в него файлом.
+ */
+function isolatedScriptRoots(project: Project): ScriptRoots {
+  return { project: project.root, home: tempDir('script-home-'), builtin: tempDir('script-builtin-') };
+}
+
+function expandScript(
+  project: Project,
+  scriptRoots: ScriptRoots,
+  file = 'stepcast.yml',
+) {
+  return expandPipeline({ pipelinePath: project.path(file), config: project.config, scriptRoots });
+}
+
+/** Записать файл вне дерева проекта — домашний и встроенный слои script туда и указывают. */
+function writeOutsideProject(dir: string, name: string, content: string): void {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, name), content);
 }
 
 /** Отказ, пойманный ради самого сообщения: `assert.throws` его не возвращает. */
@@ -3637,5 +3664,468 @@ jobs:
     const { pipeline } = expand(project);
     const step = pipeline.jobs[0]!.steps[0] as { outputSchemaPath?: string };
     assert.equal(step.outputSchemaPath, project.path('schemas/probe.json'));
+  });
+});
+
+describe('pipeline-definition: шаг script', () => {
+  // Сценарий: «Шаг объявлен файлом»
+  it('разбирается в шаг вида script с путём, args и разрешением', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: cleanup
+        script: cleanup.py
+        args: ['--dry-run']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    project.write('.stepcast/scripts/cleanup.py', '#!/usr/bin/env python3\nprint("hi")\n');
+
+    const { pipeline } = expandScript(project, isolatedScriptRoots(project));
+    const step = asScript(pipeline.jobs[0]!.steps[0]!);
+
+    assert.equal(step.kind, 'script');
+    assert.equal(step.path, 'cleanup.py');
+    assert.deepEqual(step.args, ['--dry-run']);
+    assert.equal(step.unresolved, undefined);
+    assert.equal(step.resolved?.layer, 'project');
+    assert.equal(step.resolved?.absolutePath, project.path('.stepcast/scripts/cleanup.py'));
+    assert.equal(step.resolved?.runner, 'python3');
+    assert.deepEqual(step.resolved?.argv, ['python3', project.path('.stepcast/scripts/cleanup.py'), '--dry-run']);
+    assert.match(step.resolved?.fingerprint ?? '', /^[0-9a-f]{16}$/);
+  });
+
+  // Сценарий: «Два вида шага сразу»
+  it('отклоняет шаг, объявивший script вместе с run', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: cleanup.py
+        run: [echo, hi]
+`,
+    });
+    assert.throws(() => expandScript(project, isolatedScriptRoots(project)), StepcastError);
+  });
+
+  it('отклоняет шаг, объявивший script вместе с prompt', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: cleanup.py
+        prompt: привет
+`,
+    });
+    assert.throws(() => expandScript(project, isolatedScriptRoots(project)), StepcastError);
+  });
+
+  // Сценарий: «Аргументы только списком»
+  it('отклоняет args строкой', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: cleanup.py
+        args: "--dry-run --verbose"
+`,
+    });
+    assert.throws(() => expandScript(project, isolatedScriptRoots(project)), StepcastError);
+  });
+
+  // Сценарий: «Структурированный выход не объявляется»
+  it('отклоняет output_schema у шага script', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: cleanup.py
+        output_schema: schema.json
+`,
+      'schema.json': JSON.stringify({ type: 'object' }),
+    });
+    assert.throws(() => expandScript(project, isolatedScriptRoots(project)), StepcastError);
+  });
+
+  it('отклоняет отложенную подстановку в значении script', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: a
+        run: [echo, ok]
+      - id: c
+        script: "\${jobs.a.output.path}"
+`,
+    });
+    const error = thrown(() => expandScript(project, isolatedScriptRoots(project)));
+    assert.match(error.message, /jobs/);
+  });
+
+  describe('слои пути', () => {
+    // Сценарий: «Проектный слой»
+    it('находит файл в проектном слое', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: cleanup.py
+`,
+      });
+      project.write('.stepcast/scripts/cleanup.py', 'print(1)\n');
+      const roots = isolatedScriptRoots(project);
+
+      const step = asScript(expandScript(project, roots).pipeline.jobs[0]!.steps[0]!);
+      assert.equal(step.resolved?.layer, 'project');
+      assert.equal(step.resolved?.absolutePath, project.path('.stepcast/scripts/cleanup.py'));
+    });
+
+    // Сценарий: «Домашний слой»
+    it('падает на домашний слой, когда в проекте файла нет', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: cleanup.py
+`,
+      });
+      const roots = isolatedScriptRoots(project);
+      const homeScript = join(roots.home, '.stepcast', 'scripts');
+      writeOutsideProject(homeScript, 'cleanup.py', 'print(1)\n');
+
+      const step = asScript(expandScript(project, roots).pipeline.jobs[0]!.steps[0]!);
+      assert.equal(step.resolved?.layer, 'home');
+      assert.equal(step.resolved?.absolutePath, join(homeScript, 'cleanup.py'));
+    });
+
+    // Сценарий: «Встроенный слой»
+    it('падает на встроенный слой, когда файла нет ни в проекте, ни дома', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: cleanup.py
+`,
+      });
+      const roots = isolatedScriptRoots(project);
+      writeOutsideProject(roots.builtin, 'cleanup.py', 'print(1)\n');
+
+      const step = asScript(expandScript(project, roots).pipeline.jobs[0]!.steps[0]!);
+      assert.equal(step.resolved?.layer, 'builtin');
+      assert.equal(step.resolved?.absolutePath, join(roots.builtin, 'cleanup.py'));
+    });
+
+    // Сценарий: «Явный путь слоёв не касается»
+    it('явный путь ./ разрешается от файла объявления и слоёв не касается', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  nightly:
+    uses: ./jobs/nightly.yml
+`,
+        'jobs/nightly.yml': `
+kind: job
+steps:
+  - id: cleanup
+    script: ../scripts/cleanup.py
+`,
+      });
+      // Файл лежит вне слоя .stepcast/scripts/ — если бы разрешение искало
+      // слоями, оно бы этот файл не нашло вовсе.
+      project.write('scripts/cleanup.py', 'print(1)\n');
+      const roots = isolatedScriptRoots(project);
+
+      const step = asScript(expandScript(project, roots).pipeline.jobs[0]!.steps[0]!);
+      assert.equal(step.resolved?.layer, 'explicit');
+      assert.equal(step.resolved?.absolutePath, project.path('scripts/cleanup.py'));
+    });
+
+    it('ненайденный файл оставляет шаг неразрешённым, называя просмотренные каталоги', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: cleanup.py
+`,
+      });
+      const roots = isolatedScriptRoots(project);
+
+      const step = asScript(expandScript(project, roots).pipeline.jobs[0]!.steps[0]!);
+      assert.equal(step.resolved, undefined);
+      assert.equal(step.unresolved?.reason, 'file_not_found');
+      if (step.unresolved?.reason === 'file_not_found') {
+        assert.equal(step.unresolved.searched.length, 3);
+        assert.ok(step.unresolved.searched.includes(join(roots.project, '.stepcast', 'scripts')));
+        assert.ok(step.unresolved.searched.includes(join(roots.home, '.stepcast', 'scripts')));
+        assert.ok(step.unresolved.searched.includes(roots.builtin));
+      }
+    });
+
+    // Каталог находкой не считается: иначе чтение содержимого упало бы
+    // системной ошибкой вместо названного отказа.
+    it('каталог на месте скрипта — тот же неразрешённый шаг, а не падение', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: tools
+`,
+      });
+      project.write('.stepcast/scripts/tools/cleanup.py', 'print(1)\n');
+      const roots = isolatedScriptRoots(project);
+
+      const step = asScript(expandScript(project, roots).pipeline.jobs[0]!.steps[0]!);
+      assert.equal(step.resolved, undefined);
+      assert.equal(step.unresolved?.reason, 'file_not_found');
+    });
+
+    it('каталог, названный явным путём, тоже не находка', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: ./tools
+`,
+      });
+      project.write('tools/cleanup.py', 'print(1)\n');
+
+      const step = asScript(
+        expandScript(project, isolatedScriptRoots(project)).pipeline.jobs[0]!.steps[0]!,
+      );
+      assert.equal(step.resolved, undefined);
+      assert.equal(step.unresolved?.reason, 'file_not_found');
+    });
+
+    // Пустое значение отклоняется разбором: внутри слоя оно дало бы сам
+    // каталог слоя, то есть находку на пустом месте.
+    it('отклоняет пустое значение script', () => {
+      for (const value of ['""', '"   "']) {
+        const project = makeProject({
+          'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: ${value}
+`,
+        });
+        assert.throws(() => expandScript(project, isolatedScriptRoots(project)), StepcastError, value);
+      }
+    });
+  });
+
+  describe('выбор раннера', () => {
+    // Сценарий: «Явное имя раннера побеждает»
+    it('явный runner побеждает расширение', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: build.py
+        runner: sh
+`,
+      });
+      project.write('.stepcast/scripts/build.py', 'print(1)\n');
+      const step = asScript(expandScript(project, isolatedScriptRoots(project)).pipeline.jobs[0]!.steps[0]!);
+      assert.equal(step.resolved?.runner, 'sh');
+      assert.equal(step.resolved?.argv[0], 'sh');
+    });
+
+    // Сценарий: «Выбор по расширению»
+    it('расширение побеждает shebang', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: report.ts
+`,
+      });
+      project.write('.stepcast/scripts/report.ts', '#!/usr/bin/env python3\nconsole.log(1)\n');
+      const step = asScript(expandScript(project, isolatedScriptRoots(project)).pipeline.jobs[0]!.steps[0]!);
+      assert.equal(step.resolved?.runner, 'node-ts');
+      assert.deepEqual(step.resolved?.argv.slice(0, 2), ['node', '--experimental-strip-types']);
+    });
+
+    // Сценарий: «Выбор по shebang»
+    it('файл без расширения выбирается по shebang', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: tool
+`,
+      });
+      project.write('.stepcast/scripts/tool', '#!/usr/bin/env python3\nprint(1)\n');
+      const step = asScript(expandScript(project, isolatedScriptRoots(project)).pipeline.jobs[0]!.steps[0]!);
+      assert.equal(step.resolved?.runner, 'python3');
+    });
+
+    // Сценарий: «Shebang не исполняется»
+    it('форма env -S даёт имя python3, а флаги в argv не попадают', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: tool
+`,
+      });
+      project.write('.stepcast/scripts/tool', '#!/usr/bin/env -S python3 -X utf8\nprint(1)\n');
+      const step = asScript(expandScript(project, isolatedScriptRoots(project)).pipeline.jobs[0]!.steps[0]!);
+      assert.equal(step.resolved?.runner, 'python3');
+      assert.deepEqual(step.resolved?.argv, ['python3', project.path('.stepcast/scripts/tool')]);
+    });
+
+    it('неразрешимый выбор оставляет шаг неразрешённым с перечнем известных расширений', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: mystery.rb
+`,
+      });
+      project.write('.stepcast/scripts/mystery.rb', 'puts 1\n');
+      const step = asScript(expandScript(project, isolatedScriptRoots(project)).pipeline.jobs[0]!.steps[0]!);
+      assert.equal(step.resolved, undefined);
+      assert.equal(step.unresolved?.reason, 'runner_undetermined');
+      if (step.unresolved?.reason === 'runner_undetermined') {
+        assert.deepEqual(step.unresolved.extensions, ['.js', '.mjs', '.mts', '.py', '.sh', '.ts', '.cjs'].sort());
+      }
+    });
+
+    it('неизвестное имя раннера оставляет шаг неразрешённым с перечнем известных', () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: build.py
+        runner: bun
+`,
+      });
+      project.write('.stepcast/scripts/build.py', 'print(1)\n');
+      const step = asScript(expandScript(project, isolatedScriptRoots(project)).pipeline.jobs[0]!.steps[0]!);
+      assert.equal(step.resolved, undefined);
+      assert.equal(step.unresolved?.reason, 'unknown_runner');
+      if (step.unresolved?.reason === 'unknown_runner') {
+        assert.equal(step.unresolved.runner, 'bun');
+        assert.deepEqual(step.unresolved.known, ['node', 'node-ts', 'python3', 'sh'].sort());
+      }
+    });
+  });
+});
+
+describe('pipeline.lock.yml: шаг script', () => {
+  it('несёт путь, слой, абсолютный путь, раннер, argv и отпечаток, но не содержимое', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: cleanup
+        script: cleanup.py
+        args: ['--dry-run']
+`,
+    });
+    project.write('.stepcast/scripts/cleanup.py', 'секретное содержимое, которого не должно быть в локе\n');
+
+    const { pipeline } = expandScript(project, isolatedScriptRoots(project));
+    const lock = serializeLock(pipeline);
+
+    assert.match(lock, /script: cleanup\.py/);
+    assert.match(lock, /layer: project/);
+    assert.match(lock, /runner: python3/);
+    assert.doesNotMatch(lock, /секретное содержимое/);
+  });
+
+  // Отпечаток и argv отдельного места в ключе не занимают — они уже часть
+  // `step.resolved`, а `computeStepKey` хеширует `step` целиком (stepKey.ts).
+  it('правка содержимого файла меняет ключ шага через хеширование step целиком', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: cleanup
+        script: cleanup.py
+`,
+    });
+    const roots = isolatedScriptRoots(project);
+    project.write('.stepcast/scripts/cleanup.py', 'print(1)\n');
+    const before = expandScript(project, roots);
+    const beforeStep = asScript(before.pipeline.jobs[0]!.steps[0]!);
+
+    project.write('.stepcast/scripts/cleanup.py', 'print(2)\n');
+    const after = expandScript(project, roots);
+    const afterStep = asScript(after.pipeline.jobs[0]!.steps[0]!);
+
+    assert.notEqual(beforeStep.resolved?.fingerprint, afterStep.resolved?.fingerprint);
+
+    const keyOf = (pipeline: typeof before.pipeline, step: typeof beforeStep) =>
+      computeStepKey({
+        lockHash: jobLockHash(pipeline, pipeline.jobs[0]!),
+        jobId: 'build',
+        step,
+        inputsFingerprint: undefined,
+        backendCommand: undefined,
+        upstream: [],
+      });
+
+    assert.notEqual(keyOf(before.pipeline, beforeStep), keyOf(after.pipeline, afterStep));
   });
 });

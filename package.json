@@ -17,7 +17,8 @@
   },
   "files": [
     "dist",
-    "schema"
+    "schema",
+    "src/builtin"
   ],
   "scripts": {
     "build:node": "tsc -p tsconfig.json",

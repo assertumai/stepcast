@@ -162,7 +162,7 @@ export const StepRecordSchema = z
   .object({
     id: z.string(),
     index: z.number().int().positive(),
-    kind: z.enum(['agent', 'run']),
+    kind: z.enum(['agent', 'run', 'script']),
     key: z.string(),
     status: StatusValueSchema,
     reason: z.string().optional(),
@@ -196,6 +196,23 @@ export const StepRecordSchema = z
     reused_from: z.string().optional(),
     /** Прогон, чью оборванную сессию продолжает этот шаг. */
     continued_from: z.string().optional(),
+    /**
+     * Разрешение шага `script`: объявленный путь, слой, абсолютный путь,
+     * раннер и действующий argv — то же, что несёт `pipeline.lock.yml`, но
+     * рядом с исходом попытки. Есть только у `kind: script` с разрешённым
+     * файлом; неразрешённый шаг отказывает до попытки, и разрешать ему
+     * нечего.
+     */
+    script: z
+      .object({
+        path: z.string(),
+        layer: z.enum(['project', 'home', 'builtin', 'explicit']),
+        absolute_path: z.string(),
+        runner: z.string(),
+        argv: z.array(z.string()),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

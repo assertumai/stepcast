@@ -69,6 +69,31 @@ function stepToPlain(step: Step): Record<string, unknown> {
     };
   }
 
+  if (step.kind === 'script') {
+    return {
+      ...common,
+      script: step.path,
+      ...(step.args.length === 0 ? {} : { args: step.args }),
+      ...(step.runner === undefined ? {} : { runner: step.runner }),
+      ...(step.onFail === undefined ? {} : { on_fail: step.onFail }),
+      // Разрешённое — путь, слой, раннер, argv, отпечаток — а не содержимое
+      // файла: замок читают глазами, отпечатка достаточно, чтобы отличить
+      // один файл от другого (design.md, решение 8).
+      ...(step.resolved === undefined
+        ? {}
+        : {
+            resolved: {
+              absolute_path: step.resolved.absolutePath,
+              layer: step.resolved.layer,
+              runner: step.resolved.runner,
+              argv: step.resolved.argv,
+              fingerprint: step.resolved.fingerprint,
+            },
+          }),
+      ...(step.unresolved === undefined ? {} : { unresolved: step.unresolved }),
+    };
+  }
+
   return {
     ...common,
     agent: step.agent,

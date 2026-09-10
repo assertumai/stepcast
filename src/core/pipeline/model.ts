@@ -184,7 +184,49 @@ export interface RunStep extends StepCommon {
   readonly outputSchemaPath?: string;
 }
 
-export type Step = AgentStep | RunStep;
+/**
+ * Слой, в котором найден файл скрипта (design.md, решение 3). `explicit` —
+ * значение с префиксом `./`, `../` либо абсолютное: слоёв не касается,
+ * разрешается от файла объявления или принимается как есть.
+ */
+export type ScriptLayer = 'project' | 'home' | 'builtin' | 'explicit';
+
+/** Успешно разрешённый скрипт: то, чем шаг исполнится (design.md, решение 8). */
+export interface ResolvedScript {
+  readonly absolutePath: string;
+  readonly layer: ScriptLayer;
+  readonly runner: string;
+  /** argv целиком: команда раннера, затем путь скрипта, затем `args` шага. */
+  readonly argv: readonly string[];
+  /** Короткий sha256 содержимого файла на момент раскрытия. */
+  readonly fingerprint: string;
+}
+
+/**
+ * Почему скрипт не разрешён: несуществующий файл, незнакомое имя раннера,
+ * раннер, не определённый ни расширением, ни shebang. Не исключение
+ * раскрытия (design.md, решение 1) — диагностику даёт `stepcast lint`, а
+ * прогон отказывает шагу названно (`src/core/run/runner.ts`).
+ */
+export type ScriptUnresolved =
+  | { readonly reason: 'file_not_found'; readonly searched: readonly string[] }
+  | { readonly reason: 'unknown_runner'; readonly runner: string; readonly known: readonly string[] }
+  | { readonly reason: 'runner_undetermined'; readonly extensions: readonly string[] };
+
+export interface ScriptStep extends StepCommon {
+  readonly kind: 'script';
+  /** Путь, объявленный в документе — до разрешения слоями. */
+  readonly path: string;
+  readonly args: readonly string[];
+  /** Имя раннера, объявленное на шаге явно — побеждает расширение и shebang. */
+  readonly runner?: string;
+  readonly onFail?: { readonly analyze: string; readonly prompt: string };
+  /** Ровно одно из двух: разрешённый скрипт либо причина, почему не вышло. */
+  readonly resolved?: ResolvedScript;
+  readonly unresolved?: ScriptUnresolved;
+}
+
+export type Step = AgentStep | RunStep | ScriptStep;
 
 export interface JobOutput {
   readonly from?: string;

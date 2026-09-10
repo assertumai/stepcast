@@ -91,11 +91,13 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
                 {step.model === undefined ? '' : ` · ${step.model}`}
               </span>
             )}
+            {step.scriptRunner === undefined ? null : <span className="kind">{step.scriptRunner}</span>}
             {step.modelOrigin === undefined ? null : (
               <span className="kind dim model-origin">{modelOriginLabel(step.modelOrigin)}</span>
             )}
           </div>
           {step.command === undefined ? null : <div className="ctx">$ {step.command}</div>}
+          {step.scriptPath === undefined ? null : <div className="ctx">script: {step.scriptPath}</div>}
         </div>
       ))}
     </div>

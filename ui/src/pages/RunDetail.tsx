@@ -78,6 +78,7 @@ function Step({
             {step.model === undefined ? '' : ` · ${step.model}`}
           </span>
         )}
+        {step.scriptRunner === undefined ? null : <span className="kind">{step.scriptRunner}</span>}
         {attemptModelsNote(step) === undefined ? null : (
           <span className="kind dim">{attemptModelsNote(step)}</span>
         )}
@@ -97,6 +98,7 @@ function Step({
 
       {step.reason === undefined ? null : <div className="desc">{step.reason}</div>}
       {step.command === undefined ? null : <div className="ctx">$ {step.command}</div>}
+      {step.scriptPath === undefined ? null : <div className="ctx">script: {step.scriptPath}</div>}
 
       {step.contextBreakdown === undefined ? null : (
         <div className="ctx">

@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 
 import { extractRefusal } from '../backend/types.js';
-import type { Predicate, RunStep } from '../pipeline/model.js';
+import type { Predicate, RunStep, ScriptStep } from '../pipeline/model.js';
 import type { AttemptRecord, PredicateResult, StatusValue } from '../journal/schema.js';
 import { planAttempt, runAttempts, type AttemptPlan } from './attempts.js';
 import { runProcess, type ProcessResult } from './process.js';
@@ -13,7 +13,20 @@ import { runProcess, type ProcessResult } from './process.js';
  * вычисляется только `exit_code`, а остальные предикаты подключаются через
  * `evaluate`. Разделение оставляет слои независимыми: цикл попыток не знает,
  * чем именно проверяется результат.
+ *
+ * Обобщён до «шаг, у которого есть argv» (design.md, решение 1): `RunStep`
+ * отдаёт сюда своё `command`, `ScriptStep` — argv, собранный на раскрытии
+ * (`step.resolved.argv`). Второго цикла попыток и второго вызова
+ * `runProcess` в движке не заводится — вид шага задаёт только источник argv.
  */
+
+/**
+ * Шаг с готовым к исполнению argv: `run` либо `script`. Вызывающий обязан
+ * передавать `script` только разрешённым (`step.resolved` определён) —
+ * неразрешённый шаг движок отказывает раньше, не доходя до исполнителя
+ * (`runner.ts`, `unresolvedScriptOutcome`).
+ */
+export type CommandStep = RunStep | ScriptStep;
 
 export interface StepAttemptContext {
   readonly plan: AttemptPlan;
@@ -22,7 +35,7 @@ export interface StepAttemptContext {
 }
 
 export interface RunStepOptions {
-  readonly step: RunStep;
+  readonly step: CommandStep;
   readonly cwd: string;
   readonly stepDir: string;
   /** Окружение на попытку: STEPCAST_ATTEMPT меняется от попытки к попытке. */
@@ -38,7 +51,7 @@ export interface RunStepOptions {
    * Может возвращать промис: судья внутри неё — асинхронный агентский вызов.
    */
   readonly evaluate?: (
-    step: RunStep,
+    step: CommandStep,
     result: ProcessResult,
     plan: AttemptPlan,
   ) => readonly PredicateResult[] | Promise<readonly PredicateResult[]>;
@@ -69,7 +82,9 @@ export async function executeRunStep(options: RunStepOptions): Promise<RunStepRe
 
       const suffix = plan.attempt === 1 ? '' : `.${plan.attempt}`;
       const result = await runProcess({
-        command: step.command,
+        // Неразрешённый script сюда не доходит: движок отказывает ему раньше
+        // (см. комментарий у CommandStep).
+        command: step.kind === 'script' ? step.resolved!.argv : step.command,
         cwd: options.cwd,
         env: options.env(plan),
         timeoutMs: step.timeoutMs,
@@ -91,7 +106,7 @@ export async function executeRunStep(options: RunStepOptions): Promise<RunStepRe
                 predicate: result.outcome,
                 passed: false,
                 hard: true,
-                detail: describeOutcome(result.outcome, step.timeoutMs, result.forceKilled),
+                detail: describeOutcome(result.outcome, step, result.forceKilled),
               } satisfies PredicateResult,
             ];
 
@@ -117,8 +132,13 @@ export async function executeRunStep(options: RunStepOptions): Promise<RunStepRe
 
       // Командный шаг сам бэкенд не зовёт: отказ добирается сюда только через
       // судью, вызванного из `evaluate`, — тем же именем предиката, что и у
-      // отказа агентского шага.
-      const terminal = extractRefusal(results) !== undefined;
+      // отказа агентского шага. Несостоявшийся запуск раннера шага `script`
+      // терминален тоже: интерпретатор, которого нет на машине, за оставшиеся
+      // попытки не появится (design.md, решение 7). `run` от этого правила не
+      // затронут — его сегодняшнее поведение не меняется.
+      const terminal =
+        extractRefusal(results) !== undefined ||
+        (step.kind === 'script' && result.outcome === 'spawn_failed');
 
       return { passed: passed && result.outcome === 'exited', value: record, terminal };
     },
@@ -136,18 +156,33 @@ export async function executeRunStep(options: RunStepOptions): Promise<RunStepRe
   };
 }
 
-/** Исход процесса, не дошедшего до собственного кода возврата. */
+/**
+ * Исход процесса, не дошедшего до собственного кода возврата.
+ *
+ * `spawn_failed` шага `script` называет раннер по имени, его команду и
+ * подсказку (design.md, решение 7): интерпретатор, которого нет на машине, —
+ * это не «код возврата 127», а именованный отказ, который отличим от отказа
+ * самого скрипта.
+ */
 function describeOutcome(
   outcome: Exclude<ProcessResult['outcome'], 'exited'>,
-  timeoutMs: number,
+  step: CommandStep,
   forceKilled: boolean,
 ): string {
   switch (outcome) {
     case 'timeout':
-      return `Шаг не завершился за ${timeoutMs} мс${forceKilled ? ' и был добит' : ''}`;
+      return `Шаг не завершился за ${step.timeoutMs} мс${forceKilled ? ' и был добит' : ''}`;
     case 'canceled':
       return 'Прогон отменён';
     case 'spawn_failed':
+      if (step.kind === 'script' && step.resolved !== undefined) {
+        const resolved = step.resolved;
+        const command = resolved.argv[0] ?? resolved.runner;
+        return (
+          `Раннер ${resolved.runner} не удалось запустить: команда «${command}» недоступна. ` +
+          `Установите ${resolved.runner} либо объявите runners.${resolved.runner}.command`
+        );
+      }
       return 'Процесс шага не удалось запустить: проверьте команду и её доступность';
   }
 }
@@ -162,7 +197,7 @@ function firstFailureReason(results: readonly PredicateResult[]): string | undef
  * Умолчание: шаг без объявленных предикатов считается пройденным при нулевом
  * коде возврата. Остальные предикаты подключит группа проверки результата.
  */
-export function evaluateExitCode(step: RunStep, result: ProcessResult): PredicateResult[] {
+export function evaluateExitCode(step: CommandStep, result: ProcessResult): PredicateResult[] {
   const declared = step.expect.filter(
     (predicate): predicate is Extract<Predicate, { kind: 'exit_code' }> =>
       predicate.kind === 'exit_code',

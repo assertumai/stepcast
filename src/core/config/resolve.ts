@@ -38,6 +38,12 @@ export interface NestedRepoDeclaration {
   };
 }
 
+/** Запись действующей таблицы раннеров: «имя → argv-префикс». */
+export interface RunnerConfig {
+  readonly command: readonly string[];
+  readonly extensions: readonly string[];
+}
+
 export interface BackendConfig {
   readonly command: string;
   readonly enabled: boolean;
@@ -100,6 +106,14 @@ export interface Config {
     readonly deny: readonly string[];
   };
   readonly backends: Readonly<Record<string, BackendConfig>>;
+  /** Таблица раннеров шага `script`, слои слиты по листьям (`buildRunners`). */
+  readonly runners: Readonly<Record<string, RunnerConfig>>;
+  /**
+   * Индекс «расширение → раннер», собранный из таблицы: ближний слой
+   * побеждает, спор внутри слоя — отказ разбора конфигурации
+   * (design.md, решение 6).
+   */
+  readonly runnersByExtension: ReadonlyMap<string, string>;
   readonly ui: { readonly port: number };
   readonly project: {
     /** Команда проверки репозитория. Нет встроенного умолчания: неверная угадка исполнялась бы в чужом дереве. */
@@ -389,6 +403,90 @@ function buildBackends(
 }
 
 /**
+ * Действующая таблица раннеров из слитых значений. Отдельный слой вправе
+ * назвать одни `extensions` (схема `RawRunnerSchema` этого не запрещает —
+ * слияние идёт по листьям), но запись, ни в одном слое не получившая
+ * `command`, — отказ разбора, а не пустой префикс argv: пустая команда дала
+ * бы argv из одного пути скрипта, то есть попытку запустить файл напрямую,
+ * ровно то, что запрещает правило выбора раннера. Слой умолчаний плагина
+ * схемы файлов не проходит вовсе, и эта проверка — единственное, что стоит
+ * между его неполной записью и таким запуском.
+ */
+function buildRunners(values: ReadonlyMap<string, unknown>): Record<string, RunnerConfig> {
+  const tree = unflatten(values);
+  const rawRunners = (tree.runners ?? {}) as Record<
+    string,
+    { readonly command?: readonly string[]; readonly extensions?: readonly string[] }
+  >;
+  const out: Record<string, RunnerConfig> = {};
+
+  for (const [name, raw] of Object.entries(rawRunners)) {
+    if (raw.command === undefined || raw.command.length === 0) {
+      throw new StepcastError(`Раннер ${name} объявлен без команды`, {
+        at: `runners.${name}.command`,
+        hint: 'Назовите command списком argv — например, command: [uv, run, --script]',
+      });
+    }
+    out[name] = {
+      command: raw.command,
+      extensions: raw.extensions ?? [],
+    };
+  }
+
+  return out;
+}
+
+/**
+ * Индекс «расширение → раннер»: собирается от происхождения записей, а не от
+ * порядка ключей объекта — происхождение известно из карты слияния и решает
+ * спор воспроизводимо (design.md, решение 6).
+ *
+ * Ранг записи — позиция слоя, задавшего `runners.<имя>.extensions`, в общем
+ * списке слоёв слияния: слой, объявленный позже (ближе к делу), имеет больший
+ * ранг. Две записи одного слоя, назвавшие одно расширение, несут одинаковый
+ * ранг — тот же объект источника, — и это и есть неразрешимый спор.
+ */
+function buildRunnersByExtension(
+  runners: Readonly<Record<string, RunnerConfig>>,
+  provenance: ReadonlyMap<string, Source>,
+  layers: readonly Layer[],
+): ReadonlyMap<string, string> {
+  const rank = new Map<Source, number>();
+  layers.forEach((layer, index) => rank.set(layer.source, index));
+
+  const claims = new Map<string, Array<{ readonly runner: string; readonly rank: number }>>();
+  for (const [name, runner] of Object.entries(runners)) {
+    if (runner.extensions.length === 0) continue;
+    const source = provenance.get(`runners.${name}.extensions`);
+    const claimRank = source === undefined ? -1 : (rank.get(source) ?? -1);
+    for (const extension of runner.extensions) {
+      const forExtension = claims.get(extension) ?? [];
+      forExtension.push({ runner: name, rank: claimRank });
+      claims.set(extension, forExtension);
+    }
+  }
+
+  const index = new Map<string, string>();
+  for (const [extension, contenders] of claims) {
+    const nearestRank = Math.max(...contenders.map((item) => item.rank));
+    const nearest = contenders.filter((item) => item.rank === nearestRank);
+    if (nearest.length > 1) {
+      const names = [...new Set(nearest.map((item) => item.runner))].sort();
+      throw new StepcastError(
+        `Расширение ${extension} закреплено за несколькими раннерами одного слоя конфигурации: ${names.join(', ')}`,
+        {
+          at: 'runners',
+          hint: 'Оставьте расширение ровно за одним раннером в этом слое — либо назовите runner на самом шаге',
+        },
+      );
+    }
+    index.set(extension, nearest[0]!.runner);
+  }
+
+  return index;
+}
+
+/**
  * Собрать действующую конфигурацию из встроенных умолчаний, глобального и
  * проектного файлов и флагов. Каждый следующий источник перекрывает
  * предыдущий; исключения — объединяемые списки запретов и потолки `limits`,
@@ -453,6 +551,8 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   const knowledgeDir = values.get('project.knowledge.dir');
   const knowledgeRules = values.get('project.knowledge.rules');
   const runsRoot = expandHome(requireString(values, 'runs.root'), home);
+  const runners = buildRunners(values);
+  const runnersByExtension = buildRunnersByExtension(runners, merged.provenance, layers);
 
   // Согласованность объявления проверяется здесь, а не схемой: схема видит
   // один файл, а `provider` и `command` могут прийти из разных слоёв —
@@ -509,6 +609,8 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
       deny: (values.get('context.deny') as string[] | undefined) ?? [],
     },
     backends: buildBackends(values, home),
+    runners,
+    runnersByExtension,
     ui: { port: requireNumber(values, 'ui.port') },
     project: {
       check: typeof projectCheck === 'string' ? projectCheck : undefined,

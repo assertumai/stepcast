@@ -1,5 +1,8 @@
-import { readFileSync } from 'node:fs';
-import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
+import { createHash } from 'node:crypto';
+import { readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, extname, isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { ModelTierSchema } from '../config/schema.js';
 import type { ModelTier } from '../config/modelTiers.js';
@@ -8,9 +11,10 @@ import { Ajv2020 } from 'ajv/dist/2020.js';
 
 import { StepcastError } from '../errors.js';
 import { assertDataKey } from '../journal/data.js';
+import { findProjectRoot } from '../journal/paths.js';
+import { findPackageRoot, packagedSchemaPath } from '../package-schema.js';
 import { builtinRegistry } from '../plugins/builtin.js';
 import { predicateNames, type Registry } from '../plugins/registry.js';
-import { packagedSchemaPath } from '../package-schema.js';
 import { parseCount, parseDuration, parseExitCode, parseMoney, parsePercent, parseTokens } from '../units.js';
 import { interpolateTree, placeholderNamespaces, type Scope } from './interpolate.js';
 import { readYamlDocument, rejectWiringKeys, validateDocument } from './load.js';
@@ -41,6 +45,9 @@ import type {
   ModelOrigin,
   Pipeline,
   Predicate,
+  ResolvedScript,
+  ScriptLayer,
+  ScriptUnresolved,
   Step,
   Permissions,
   Substitution,
@@ -211,6 +218,16 @@ function resolveKnowledge(
   };
 }
 
+/** Корни трёх слоёв разрешения шага `script` (design.md, решение 3). */
+export interface ScriptRoots {
+  /** `<project>/.stepcast/scripts/` ищется от этого каталога. */
+  readonly project: string;
+  /** `<home>/.stepcast/scripts/` ищется от этого каталога. */
+  readonly home: string;
+  /** Встроенный каталог пакета целиком — без `.stepcast/scripts/` внутри него. */
+  readonly builtin: string;
+}
+
 export interface ExpandOptions {
   readonly pipelinePath: string;
   readonly config: Config;
@@ -221,6 +238,13 @@ export interface ExpandOptions {
   readonly registry?: Registry;
   /** Значения `--input`, как их передал пользователь. */
   readonly inputs?: Readonly<Record<string, ParamValue>>;
+  /**
+   * Корни слоёв разрешения `script`. Тесты подставляют свои — умолчание
+   * (`findProjectRoot(dirname(pipelinePath))`, `homedir()`,
+   * `findPackageRoot` от расположения этого модуля) годится для настоящего
+   * прогона, но держит их на каталогах машины и повторяемости тестов не даёт.
+   */
+  readonly scriptRoots?: ScriptRoots;
 }
 
 /**
@@ -632,6 +656,161 @@ function parseModelTier(value: unknown, file: string, at: string): ModelTier | u
   return parsed.data;
 }
 
+/**
+ * Найти файл скрипта: явный путь (`./`, `../`, абсолютный) разрешается от
+ * файла объявления и слоёв не касается; голое имя ищется слоями — проектный,
+ * домашний, встроенный (design.md, решение 3). Возвращает найденный файл
+ * либо перечень каталогов, в которых его не было — не бросает исключение:
+ * ненайденный файл не прерывает раскрытие (design.md, решение 1).
+ */
+function resolveScriptFile(
+  value: string,
+  declaringFile: string,
+  roots: ScriptRoots,
+): { readonly absolutePath: string; readonly layer: ScriptLayer } | { readonly searched: readonly string[] } {
+  if (isAbsolute(value) || value.startsWith('./') || value.startsWith('../')) {
+    const absolutePath = resolveDeclaredPath(value, declaringFile);
+    if (isFile(absolutePath)) return { absolutePath, layer: 'explicit' };
+    return { searched: [dirname(absolutePath)] };
+  }
+
+  const layers: ReadonlyArray<readonly [ScriptLayer, string]> = [
+    ['project', join(roots.project, '.stepcast', 'scripts')],
+    ['home', join(roots.home, '.stepcast', 'scripts')],
+    ['builtin', roots.builtin],
+  ];
+  const searched: string[] = [];
+  for (const [layer, dir] of layers) {
+    searched.push(dir);
+    const candidate = join(dir, value);
+    if (isFile(candidate)) return { absolutePath: candidate, layer };
+  }
+  return { searched };
+}
+
+/**
+ * Находкой считается обычный файл, а не всякий существующий путь: значение,
+ * указавшее на каталог (`script: tools`, где `tools` — подкаталог слоя),
+ * иначе дошло бы до чтения содержимого и упало бы системной ошибкой вместо
+ * названного отказа. Символьная ссылка на файл — находка: `statSync` идёт по
+ * ссылке, и раннер получит ровно то, что получил бы вручную.
+ */
+function isFile(path: string): boolean {
+  return statSync(path, { throwIfNoEntry: false })?.isFile() === true;
+}
+
+/**
+ * Имя интерпретатора из строки shebang: последний сегмент пути, а для формы
+ * `#!/usr/bin/env <имя>` — первое слово за `env`, не начинающееся с дефиса
+ * (`-S` и подобные флаги `env` пропускаются). Сама строка в argv не попадает
+ * никогда — только имя, которым ищут запись таблицы раннеров (design.md,
+ * решение 5).
+ */
+function extractShebangName(content: string): string | undefined {
+  if (!content.startsWith('#!')) return undefined;
+  const newline = content.indexOf('\n');
+  const firstLine = (newline === -1 ? content : content.slice(0, newline)).slice(2).trim();
+  const parts = firstLine.split(/\s+/).filter((part) => part.length > 0);
+  const interpreter = parts[0];
+  if (interpreter === undefined) return undefined;
+
+  const interpreterName = interpreter.split('/').pop();
+  if (interpreterName !== 'env') return interpreterName === '' ? undefined : interpreterName;
+
+  return parts.slice(1).find((part) => !part.startsWith('-'));
+}
+
+/** Короткий отпечаток содержимого файла: тем же образцом, что и другие хеши движка. */
+function fingerprintContent(content: string): string {
+  return createHash('sha256').update(content).digest('hex').slice(0, 16);
+}
+
+/**
+ * Выбрать раннер шага `script` тремя правилами: явный `runner` → расширение
+ * файла → имя из shebang (design.md, решение 5). Возвращает либо имя и
+ * запись таблицы, либо причину, по которой выбор не состоялся, — тоже не
+ * исключение: диагностику даёт линт, а прогон отказывает названно.
+ */
+function selectRunner(
+  declaredRunner: string | undefined,
+  absolutePath: string,
+  content: string,
+  config: Config,
+): { readonly name: string; readonly command: readonly string[] } | ScriptUnresolved {
+  if (declaredRunner !== undefined) {
+    const runner = config.runners[declaredRunner];
+    if (runner === undefined) {
+      return {
+        reason: 'unknown_runner',
+        runner: declaredRunner,
+        known: Object.keys(config.runners).sort(),
+      };
+    }
+    return { name: declaredRunner, command: runner.command };
+  }
+
+  const extension = extname(absolutePath);
+  const byExtension = extension === '' ? undefined : config.runnersByExtension.get(extension);
+  if (byExtension !== undefined) {
+    return { name: byExtension, command: config.runners[byExtension]!.command };
+  }
+
+  const shebangName = extractShebangName(content);
+  const byShebang = shebangName === undefined ? undefined : config.runners[shebangName];
+  if (byShebang !== undefined) {
+    return { name: shebangName as string, command: byShebang.command };
+  }
+
+  return {
+    reason: 'runner_undetermined',
+    extensions: [...config.runnersByExtension.keys()].sort(),
+  };
+}
+
+/**
+ * Разрешить шаг `script` целиком: путь, раннер, argv, отпечаток. Отложенная
+ * подстановка (`jobs`, `run`, `env`) в значении `script` отклоняется здесь же
+ * — отпечаток и argv обязаны попасть в замок и ключ шага, а не остаться
+ * текстом до прогона (design.md, решение 1б).
+ */
+function resolveScript(
+  path: string,
+  args: readonly string[],
+  declaredRunner: string | undefined,
+  declaringFile: string,
+  config: Config,
+  roots: ScriptRoots,
+  at: string,
+): { readonly resolved: ResolvedScript } | { readonly unresolved: ScriptUnresolved } {
+  const deferred = placeholderNamespaces(path).filter((namespace) => DEFERRED_NAMESPACES.has(namespace));
+  if (deferred.length > 0) {
+    throw new StepcastError(`Значение script ссылается на отложенное пространство ${deferred.join(', ')}`, {
+      file: declaringFile,
+      at,
+      hint: 'Пространства jobs, run и env известны только в прогоне — путь скрипта разрешается при раскрытии пайплайна',
+    });
+  }
+
+  const located = resolveScriptFile(path, declaringFile, roots);
+  if ('searched' in located) {
+    return { unresolved: { reason: 'file_not_found', searched: located.searched } };
+  }
+
+  const content = readFileSync(located.absolutePath, 'utf8');
+  const runner = selectRunner(declaredRunner, located.absolutePath, content, config);
+  if ('reason' in runner) return { unresolved: runner };
+
+  return {
+    resolved: {
+      absolutePath: located.absolutePath,
+      layer: located.layer,
+      runner: runner.name,
+      argv: [...runner.command, located.absolutePath, ...args],
+      fingerprint: fingerprintContent(content),
+    },
+  };
+}
+
 interface StepDefaults {
   readonly agent: string;
   readonly model: string | undefined;
@@ -666,6 +845,7 @@ function toStep(
   substitutions: Map<string, readonly Substitution[]>,
   at: string,
   registry: Registry,
+  scriptRoots: ScriptRoots,
 ): { readonly step: Step; readonly modelOrigin?: ModelOrigin } {
   const common = {
     id: raw.id,
@@ -705,6 +885,37 @@ function toStep(
         ...(raw.output_schema === undefined
           ? {}
           : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
+      },
+    };
+  }
+
+  if ('script' in raw) {
+    let onFail: { readonly analyze: string; readonly prompt: string } | undefined;
+    if (raw.on_fail !== undefined) {
+      const onFailKey = `${at}.on_fail.prompt`;
+      const onFailPrompt = readPrompt(raw.on_fail.prompt, declaringFile, scope, onFailKey);
+      recordPromptSubstitutions(substitutions, onFailKey, onFailPrompt.substitutions);
+      onFail = { analyze: raw.on_fail.analyze, prompt: onFailPrompt.text };
+    }
+    const args = raw.args ?? [];
+    const outcome = resolveScript(
+      raw.script,
+      args,
+      raw.runner,
+      declaringFile,
+      config,
+      scriptRoots,
+      `${at}.script`,
+    );
+    return {
+      step: {
+        ...common,
+        kind: 'script',
+        path: raw.script,
+        args,
+        ...(raw.runner === undefined ? {} : { runner: raw.runner }),
+        ...(onFail === undefined ? {} : { onFail }),
+        ...('resolved' in outcome ? { resolved: outcome.resolved } : { unresolved: outcome.unresolved }),
       },
     };
   }
@@ -777,6 +988,11 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   const { config } = options;
   const pipelinePath = resolvePath(options.pipelinePath);
   const registry = options.registry ?? builtinRegistry();
+  const scriptRoots: ScriptRoots = options.scriptRoots ?? {
+    project: findProjectRoot(dirname(pipelinePath)),
+    home: homedir(),
+    builtin: join(findPackageRoot(fileURLToPath(new URL('.', import.meta.url))), 'src', 'builtin', 'scripts'),
+  };
   // Схемы документа зависят от загруженных плагинов: ключ предиката —
   // закрытое объединение, и без плагинных ветвей их предикат отклонялся бы
   // как опечатка.
@@ -1118,6 +1334,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
           substitutions,
           `${at}.steps.${index}`,
           registry,
+          scriptRoots,
         );
         if (expanded.modelOrigin !== undefined) {
           modelOrigins.set(`${id}/${expanded.step.id}`, expanded.modelOrigin);

@@ -235,7 +235,28 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
     })
     .strict();
 
-  const StepSchema = z.union([AgentStepSchema, RunStepSchema]);
+  /**
+   * Шаг `script`: файл со своим кодом, а не команда (`docs/pipeline-format.md`).
+   * Строковой формы нет — оболочка в исполнении не участвует, и `args`
+   * поэтому только список. `output_schema` здесь не заводится: структурного
+   * выхода у `script` в этом изменении нет (design.md, Non-Goals).
+   *
+   * Пустое значение `script` отклоняется здесь, а не разрешением пути: пустая
+   * строка внутри слоя даёт сам каталог слоя, и шаг молча указал бы на него
+   * вместо файла. Требование записано парой `.min(1).regex(/\S/)` — образец
+   * переносится в публикуемую JSON Schema, где `.trim()` выразить нечем.
+   */
+  const ScriptStepSchema = z
+    .object({
+      ...StepCommonShape,
+      script: z.string().min(1).regex(/\S/),
+      args: z.array(z.string()).optional(),
+      runner: z.string().optional(),
+      on_fail: z.object({ analyze: z.string(), prompt: z.string() }).strict().optional(),
+    })
+    .strict();
+
+  const StepSchema = z.union([AgentStepSchema, RunStepSchema, ScriptStepSchema]);
 
   const ParamSchema = z
     .object({

@@ -101,15 +101,32 @@ interface DeclaredPath {
  * опечатку в объявлении: файл, названный `project.spec.rules`, иначе не
  * проверяет никто, и промах виден только отказом работы посреди прогона.
  */
+/**
+ * Ключи карты подстановок несут значение с подстановкой из пространства, чьё
+ * значение известно только в прогоне (`jobs`, `run`, `env` — всегда) либо
+ * известно только для примера, а не для настоящих данных (`inputs`,
+ * `params` — линт гоняют и без реальных значений). Пропускается и явный глоб:
+ * пустой результат поиска не ошибка. `${project.*}` — исключение: это
+ * пространство объявляет то, что в репозитории есть до прогона, и опечатка в
+ * нём иначе не поймана никем.
+ */
+function pathCheckSkipped(
+  path: string,
+  keys: readonly string[],
+  substitutions: ExpandedPipeline['substitutions'],
+): boolean {
+  const applied = keys.flatMap((key) => [...(substitutions.get(key) ?? [])]);
+  if (applied.some((item) => item.deferred || item.namespace !== 'project')) return true;
+  return path.includes('${') || GLOB.test(path);
+}
+
 function checkDeclaredPath(
   declared: DeclaredPath,
   substitutions: ExpandedPipeline['substitutions'],
   push: (diagnostic: Diagnostic) => void,
 ): void {
   const keys = declared.keys ?? [declared.declaredAt];
-  const applied = keys.flatMap((key) => [...(substitutions.get(key) ?? [])]);
-  if (applied.some((item) => item.deferred || item.namespace !== 'project')) return;
-  if (declared.path.includes('${') || GLOB.test(declared.path)) return;
+  if (pathCheckSkipped(declared.path, keys, substitutions)) return;
 
   const full =
     declared.base === undefined ? declared.path : resolvePath(declared.base, declared.path);
@@ -1302,7 +1319,7 @@ function checkStep(
     }
   }
 
-  if (step.outputSchemaPath !== undefined) {
+  if ((step.kind === 'agent' || step.kind === 'run') && step.outputSchemaPath !== undefined) {
     checkDeclaredPath(
       {
         path: step.outputSchemaPath,
@@ -1314,6 +1331,8 @@ function checkStep(
       push,
     );
   }
+
+  if (step.kind === 'script') checkScriptStep(job, step, at, substitutions, push);
 
   checkContext(step.context, base, job.source, `${at}.context`, substitutions, push, knowledgeDeclared);
 
@@ -1404,6 +1423,57 @@ function checkStep(
       hint: 'Он проверяет границы изменений, но не факт работы: шаг, не сделавший ничего, его пройдёт',
     });
   }
+}
+
+/**
+ * Диагностика неразрешённого шага `script` — по тому, какой из трёх шагов
+ * разрешения не сработал (`resolveScript` в `expand.ts`). Ненайденный файл
+ * пропускает ту же проверку, что и прочие объявленные пути
+ * (`pathCheckSkipped`): значение с подстановкой или глобом линт не проверяет.
+ * Неизвестный раннер и неразрешимый выбор от этого правила не зависят — они
+ * возникают только когда файл уже найден, и способ, каким собран его путь,
+ * на них не влияет.
+ */
+function checkScriptStep(
+  job: Job,
+  step: Extract<Step, { kind: 'script' }>,
+  at: string,
+  substitutions: ExpandedPipeline['substitutions'],
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  const unresolved = step.unresolved;
+  if (unresolved === undefined) return;
+
+  if (unresolved.reason === 'file_not_found') {
+    if (pathCheckSkipped(step.path, [`${at}.script`], substitutions)) return;
+    push({
+      severity: 'error',
+      message: `Файл скрипта шага ${job.id}/${step.id} не найден ни в одном слое`,
+      file: job.source,
+      at: `${at}.script`,
+      hint: `Искали: ${unresolved.searched.join(', ')}`,
+    });
+    return;
+  }
+
+  if (unresolved.reason === 'unknown_runner') {
+    push({
+      severity: 'error',
+      message: `Шаг ${job.id}/${step.id} называет неизвестный раннер ${unresolved.runner}`,
+      file: job.source,
+      at: `${at}.runner`,
+      hint: `Известны: ${unresolved.known.join(', ') || '(таблица раннеров пуста)'}`,
+    });
+    return;
+  }
+
+  push({
+    severity: 'error',
+    message: `Раннер шага ${job.id}/${step.id} не определяется ни расширением, ни shebang`,
+    file: job.source,
+    at: `${at}.script`,
+    hint: `Известные расширения таблицы раннеров: ${unresolved.extensions.join(', ') || '(таблица раннеров пуста)'}. Назовите runner явно`,
+  });
 }
 
 function isChangedOnly(predicate: Predicate | undefined): boolean {

@@ -50,12 +50,17 @@ function renderValue(path: string, value: unknown): string {
   }
   // Списки запретов (env_deny, context.deny) сводятся к счётчику намеренно:
   // сами шаблоны читатель видит в столбце вклада каждого слоя. Объявления
-  // (project.tools, project.edit_paths, project.nested_repos) — не запреты,
-  // а состав, и счётчик скрыл бы единственное, что в отчёте имеет смысл, —
-  // сами значения.
+  // (project.tools, project.edit_paths, project.nested_repos, записи таблицы
+  // раннеров) — не запреты, а состав, и счётчик скрыл бы единственное, что в
+  // отчёте имеет смысл, — сами значения. Для раннеров это ещё и единственный
+  // ответ на вопрос «чем исполнится .py»: команда и закреплённые расширения
+  // видны рядом с тем слоем, который их назвал.
   if (Array.isArray(value)) {
     if (path === 'project.tools' || path === 'project.edit_paths') return value.join(', ');
     if (path === 'project.nested_repos') return value.map(describeNestedRepoEntry).join(', ');
+    // Команда печатается пробелами — так её и набирают в оболочке; список
+    // расширений остаётся списком.
+    if (path.startsWith('runners.')) return value.join(path.endsWith('.command') ? ' ' : ', ');
     return `${value.length} шаблонов`;
   }
   return String(value);

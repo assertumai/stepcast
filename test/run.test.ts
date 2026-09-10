@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { getEventListeners } from 'node:events';
@@ -48,6 +48,46 @@ async function runWithConfig(
 /** Тот же проект, но с объявленным составом `project.nested_repos`, будто он объявлен в `.stepcast/config.yml`. */
 function withNestedRepos(project: Project, nestedRepos: readonly string[]): Config {
   return { ...project.config, project: { ...project.config.project, nestedRepos } };
+}
+
+/** Тот же проект, но с добавленными раннерами, будто они объявлены в `.stepcast/config.yml`. */
+function withRunners(
+  project: Project,
+  runners: Readonly<Record<string, { readonly command: readonly string[]; readonly extensions?: readonly string[] }>>,
+): Config {
+  const merged: Record<string, { command: readonly string[]; extensions: readonly string[] }> = {
+    ...project.config.runners,
+  };
+  for (const [name, runner] of Object.entries(runners)) {
+    merged[name] = { command: runner.command, extensions: runner.extensions ?? [] };
+  }
+  return { ...project.config, runners: merged };
+}
+
+/**
+ * Корни трёх слоёв script, изолированные от машины: `home` и `builtin` —
+ * пустые временные каталоги, а не настоящие `homedir()` и пакет stepcast.
+ */
+function isolatedScriptRoots(project: Project): { project: string; home: string; builtin: string } {
+  return { project: project.root, home: tempDir('script-home-'), builtin: tempDir('script-builtin-') };
+}
+
+/** Прогнать пайплайн проекта целиком с заданными конфигурацией и корнями слоёв script. */
+async function runWithScriptRoots(
+  project: Project,
+  config: Config,
+  scriptRoots: { project: string; home: string; builtin: string },
+  options: { readonly signal?: AbortSignal } = {},
+): Promise<RunResult> {
+  const runsRoot = tempDir('runs-');
+  const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config, scriptRoots });
+  return runPipeline({
+    expanded,
+    config: { ...config, runs: { ...config.runs, root: runsRoot } },
+    projectRoot: project.root,
+    cwd: project.root,
+    ...(options.signal === undefined ? {} : { signal: options.signal }),
+  });
 }
 
 /** Якорь, который не умеет ничего: подставляется, чтобы проверить границы. */
@@ -883,6 +923,226 @@ jobs:
     const status = readStatus(result.journal.paths);
     const job = status.jobs.find((entry) => entry.id === 'probe');
     assert.equal(job?.output, undefined);
+  });
+});
+
+describe('step-execution: шаг script', () => {
+  // Сценарий: «Рабочая директория и окружение»
+  it('исполняется на sh в рабочей директории работы, с STEPCAST_* и логами', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: greet
+        script: greet.sh
+        args: ['world']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    project.write('.stepcast/scripts/greet.sh', '#!/bin/sh\necho "job=$STEPCAST_JOB arg=$1"\npwd\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+
+    const stepDir = findStepDir(result.journal.paths, 'build', 'greet');
+    assert.ok(stepDir !== undefined);
+    const stdout = readFileSync(join(stepDir!, 'stdout.log'), 'utf8');
+    assert.match(stdout, /job=build arg=world/);
+    assert.match(stdout, new RegExp(project.root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  });
+
+  it('исполняется на python3, разрешённом расширением .py', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: report
+        script: report.py
+        args: ['a', 'b']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    project.write(
+      '.stepcast/scripts/report.py',
+      'import os, sys\nprint("job", os.environ.get("STEPCAST_JOB"), "args", sys.argv[1:])\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+
+    const stepDir = findStepDir(result.journal.paths, 'build', 'report');
+    const stdout = readFileSync(join(stepDir!, 'stdout.log'), 'utf8');
+    assert.match(stdout, /job build args \['a', 'b'\]/);
+  });
+
+  // Сценарий: «Файл без бита исполнения»
+  it('исполняется обычным порядком, даже когда файл не помечен исполняемым', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: noexec
+        script: noexec.py
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    const path = project.write('.stepcast/scripts/noexec.py', 'print("ok")\n');
+    chmodSync(path, 0o644);
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+  });
+
+  // Сценарий: «Предикаты и попытки действуют так же»
+  it('повторяет попытку по STEPCAST_ATTEMPT и проходит вторым разом', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: flaky
+        script: flaky.sh
+        attempts: { max: 2 }
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    project.write(
+      '.stepcast/scripts/flaky.sh',
+      '#!/bin/sh\n[ "$STEPCAST_ATTEMPT" = "1" ] && exit 1\nexit 0\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'flaky');
+    assert.equal(step?.attempts.length, 2);
+  });
+
+  // Сценарий: «Таймаут и отмена действуют так же». Исполнитель общий, но вид
+  // шага различается ровно там, где исход процесса не 'exited'
+  // (`describeOutcome`), — то есть рядом с таймаутом и отменой.
+  it('таймаут отказывает шагу script тем же порядком, что и шагу run', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: slow
+        script: slow.sh
+        timeout: 1s
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    project.write('.stepcast/scripts/slow.sh', '#!/bin/sh\nsleep 30\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'failed');
+
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'slow');
+    assert.equal(step?.status, 'failed');
+    assert.match(step?.reason ?? '', /не завершился/);
+  });
+
+  it('отмена прогона снимает шаг script с причиной отмены', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: sleep
+        script: sleep.sh
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    project.write('.stepcast/scripts/sleep.sh', '#!/bin/sh\nsleep 30\n');
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 200).unref();
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project), {
+      signal: controller.signal,
+    });
+    assert.equal(result.status, 'canceled');
+
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'sleep');
+    assert.equal(step?.status, 'canceled');
+  });
+
+  // Шаг с неразрешённым скриптом. `stepcast run` линтует заранее, но заход
+  // сюда достижим и без линта: `resume`, программный вызов `runPipeline` и
+  // файл, исчезнувший между линтом и заходом.
+  it('неразрешённый скрипт отказывает названно, не запуская процесса', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: gone
+        script: gone.py
+        attempts: { max: 3 }
+`,
+    });
+
+    const roots = isolatedScriptRoots(project);
+    const result = await runWithScriptRoots(project, project.config, roots);
+    assert.equal(result.status, 'failed');
+
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'gone');
+    assert.equal(step?.attempts.length, 1, 'запускать нечего — попытка одна и терминальная');
+    assert.match(step?.reason ?? '', /Файл скрипта не найден/);
+    assert.match(step?.reason ?? '', new RegExp(join(roots.project, '.stepcast', 'scripts').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(step?.cause, HaltCause.spawnFailed);
+  });
+
+  // Сценарий: «Интерпретатора нет на машине»
+  it('отсутствующий на машине раннер отказывает названно и расходует одну попытку из трёх', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: build
+        script: build.py
+        runner: uv
+        attempts: { max: 3 }
+`,
+    });
+    project.write('.stepcast/scripts/build.py', 'print(1)\n');
+    const config = withRunners(project, {
+      uv: { command: ['stepcast-test-runner-that-does-not-exist-xyz'] },
+    });
+
+    const result = await runWithScriptRoots(project, config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'failed');
+
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'build');
+    assert.equal(step?.attempts.length, 1, 'попытка терминальна и не расходует оставшиеся две');
+    assert.match(step?.reason ?? '', /uv/);
+    assert.match(step?.reason ?? '', /stepcast-test-runner-that-does-not-exist-xyz/);
+    assert.equal(step?.cause, HaltCause.spawnFailed);
   });
 });
 

@@ -104,6 +104,32 @@ describe('stepcast schema: без плагинов', () => {
     assert.equal(readFileSync(pipelinePath, 'utf8'), readFileSync(`${ROOT}schema/pipeline.schema.json`, 'utf8'));
     assert.equal(readFileSync(jobPath, 'utf8'), readFileSync(`${ROOT}schema/job.schema.json`, 'utf8'));
   });
+
+  // Ветвь шага script: печатаемая схема принимает и отклоняет те же
+  // документы, что и разбор движка (`toStep` в `src/core/pipeline/expand.ts`).
+  it('печатаемая схема пайплайна признаёт шаг script и отклоняет script вместе с run', async () => {
+    const project = makeProject({});
+    const outcome = await cli(project, ['schema']);
+    assert.equal(outcome.code, ExitCode.ok, outcome.stderr);
+
+    const pipelinePath = project.path(join('.stepcast', 'schema', 'pipeline.schema.json'));
+    const schema = JSON.parse(readFileSync(pipelinePath, 'utf8')) as object;
+    const validate = new Ajv2020({ allErrors: true, strict: false }).compile(schema);
+
+    const valid = {
+      version: 1,
+      kind: 'pipeline',
+      jobs: { build: { steps: [{ id: 'c', script: 'cleanup.py', args: ['--dry-run'] }] } },
+    };
+    assert.equal(validate(valid), true, JSON.stringify(validate.errors));
+
+    const invalid = {
+      version: 1,
+      kind: 'pipeline',
+      jobs: { build: { steps: [{ id: 'c', script: 'cleanup.py', run: ['echo', 'hi'] }] } },
+    };
+    assert.equal(validate(invalid), false);
+  });
 });
 
 describe('stepcast schema: проект с плагином', () => {

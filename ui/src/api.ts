@@ -154,7 +154,7 @@ export interface AttemptModel {
 
 export interface StepSnapshot {
   readonly id: string;
-  readonly kind: 'agent' | 'run';
+  readonly kind: 'agent' | 'run' | 'script';
   readonly agent?: string;
   /** Модель, объявленная определением. */
   readonly model?: string;
@@ -168,6 +168,10 @@ export interface StepSnapshot {
   readonly finishedAt?: string;
   readonly prompt?: string;
   readonly command?: string;
+  /** Путь скрипта, объявленный документом, — у шага script. */
+  readonly scriptPath?: string;
+  /** Имя раннера, которым скрипт разрешён исполниться. */
+  readonly scriptRunner?: string;
   readonly context: readonly string[];
   readonly contextBreakdown?: ContextBreakdown;
   readonly files: readonly JournalFileRef[];
@@ -231,13 +235,17 @@ export type PipelineModelOrigin =
 
 export interface PipelineStepView {
   readonly id: string;
-  readonly kind: 'agent' | 'run';
+  readonly kind: 'agent' | 'run' | 'script';
   readonly agent?: string;
   /** Модель, которой шаг исполнится. Отсутствует у шага без модели ни на одном слое. */
   readonly model?: string;
   /** Слой, давший `model`, — только у агентских шагов. */
   readonly modelOrigin?: PipelineModelOrigin;
   readonly command?: string;
+  /** Путь скрипта, объявленный в документе, — у шага script. */
+  readonly scriptPath?: string;
+  /** Имя раннера, которым скрипт исполнится, — только у разрешённого шага. */
+  readonly scriptRunner?: string;
 }
 
 export interface PipelineJobView {

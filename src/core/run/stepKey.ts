@@ -44,6 +44,15 @@ export function upstreamForKey(
     .sort((left, right) => (left.job === right.job ? 0 : left.job < right.job ? -1 : 1));
 }
 
+/**
+ * Отпечаток скрипта и действующий argv раннера отдельного места в ключе не
+ * занимают — они уже часть `step.resolved` (`ScriptStep`), а `step` ниже
+ * хешируется целиком. Правка скрипта или `runners.<имя>.command` меняет
+ * `resolved.fingerprint`/`resolved.argv` при раскрытии, и один этот факт
+ * пробрасывает изменение сквозь `JSON.stringify(step)` — тем же путём, каким
+ * ключ агентского шага уже чувствителен к тексту промпта (design.md, решение
+ * 8; test/expand.test.ts, `pipeline.lock.yml: шаг script`).
+ */
 export function computeStepKey(input: StepKeyInput): string {
   const { step } = input;
 
