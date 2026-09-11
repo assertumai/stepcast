@@ -137,6 +137,55 @@ export default {
     assert.match(outcome.stderr, /где: .*\.stepcast[/\\]config\.yml: plugins/);
   });
 
+  it('отчёт config отсылает к команде, печатающей итоговое дерево со слоями', async () => {
+    const project = withPlugin(HELLO_PLUGIN);
+
+    const outcome = await cli(project, ['config']);
+
+    assert.equal(outcome.code, ExitCode.ok, outcome.stderr);
+    assert.match(outcome.stdout, /Плагины \(полное дерево со слоями и порядком — stepcast plugins\)/);
+  });
+
+  it('строка, отключённая патчем, не числится в отчёте действующей, но вклад её слоя показан объявленным', async () => {
+    const project = withPlugin(HELLO_PLUGIN);
+    writeFileSync(
+      join(project.root, '.stepcast', 'plugins.patch.yml'),
+      'version: 1\nkind: plugins-patch\nplugins:\n  - id: ./plugins/hello.mjs\n    use: ./plugins/hello.mjs\n    enabled: false\n',
+    );
+
+    const outcome = await cli(project, ['config']);
+
+    assert.equal(outcome.code, ExitCode.ok, outcome.stderr);
+    const line = outcome.stdout.split('\n').find((entry) => entry.startsWith('plugins'));
+    assert.ok(line !== undefined, outcome.stdout);
+    // Действующее значение — проекция дерева: отключённой строки в нём нет.
+    assert.ok(!line.includes('hello.mjs'), line);
+    assert.match(line, /нет/);
+    // Вклад слоя — объявленное: конфигурация плагин называла, и отчёт это показывает.
+    assert.match(line, /config\.yml \(1\)/);
+    // Раздела о загруженных плагинах нет вовсе — загружать было нечего.
+    assert.ok(!outcome.stdout.includes('hello-plugin'), outcome.stdout);
+  });
+
+  it('строка, добавленная одним лишь патчем, числится в отчёте действующей', async () => {
+    const project = makeProject({});
+    const path = join(project.root, '.stepcast', 'plugins', 'hello.mjs');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, HELLO_PLUGIN);
+    writeFileSync(
+      join(project.root, '.stepcast', 'plugins.patch.yml'),
+      'version: 1\nkind: plugins-patch\nplugins:\n  - id: hello\n    use: ./plugins/hello.mjs\n',
+    );
+
+    const outcome = await cli(project, ['config']);
+
+    assert.equal(outcome.code, ExitCode.ok, outcome.stderr);
+    // Ключ `plugins` не объявлял ни один слой — строку принёс патч, и отчёт
+    // всё равно обязан назвать её среди действующих.
+    const line = outcome.stdout.split('\n').find((entry) => entry.startsWith('plugins'));
+    assert.match(line ?? '', /\.\/plugins\/hello\.mjs/);
+  });
+
   it('без объявленных плагинов CLI работает как прежде', async () => {
     const project = makeProject({});
 

@@ -7,10 +7,10 @@ import { expandPipeline } from '../core/pipeline/expand.js';
 import { isStepcastError, StepcastError } from '../core/errors.js';
 import { describeSource } from '../core/config/merge.js';
 import { resolveConfig, type Config, type ResolveOptions } from '../core/config/resolve.js';
-import { pluginDeclarations, type PluginDeclaration } from '../core/plugins/load.js';
 import { resolveWithPlugins, type ResolvedWithPlugins } from '../core/plugins/resolve.js';
 import type { Kernel } from '../core/plugins/kernel.js';
 import { kernelFromRegistry, registryFromKernel, type Registry } from '../core/plugins/registry.js';
+import type { TreeRow } from '../core/plugins/tree.js';
 import type { Job, ModelOrigin, Pipeline } from '../core/pipeline/model.js';
 import { layoutJobs, type JobGraph } from './graph.js';
 
@@ -314,24 +314,50 @@ interface ProjectOverrides {
   readonly registry: Registry;
 }
 
-/** Список объявлений плагинов совпал: тот же спецификатор и тот же файл, в том же порядке. */
-function declarationsEqual(a: readonly PluginDeclaration[], b: readonly PluginDeclaration[]): boolean {
+/** Слой-источник строки совпал: тот же вид и тот же файл. */
+function sourceEqual(a: TreeRow['source'], b: TreeRow['source']): boolean {
+  if (a.kind !== b.kind) return false;
+  return a.kind !== 'file' || b.kind !== 'file' || a.path === b.path;
+}
+
+/**
+ * Дерево плагинов совпало: тот же `id`, тот же модуль, тот же признак
+ * включённости, тот же слой-источник, в том же порядке (`plugin-tree`,
+ * design.md, Решение 10).
+ *
+ * Слой-источник входит в сравнение наравне с модулем: относительный `use`
+ * разрешается от файла, объявившего строку (`resolveModulePath`), и строка,
+ * перекочевавшая с тем же `./x.mjs` из домашнего патча в проектный, называет
+ * уже другой файл на диске. Ядро, удержанное по «равному» дереву, держало бы
+ * модуль прежнего каталога (`ui-daemon`: правка любого файла, участвующего в
+ * сборке дерева, действует со следующего запроса).
+ */
+export function treeEqual(a: readonly TreeRow[], b: readonly TreeRow[]): boolean {
   if (a.length !== b.length) return false;
-  return a.every((item, i) => item.spec === b[i]?.spec && item.declaredIn === b[i]?.declaredIn);
+  return a.every((row, i) => {
+    const other = b[i];
+    return (
+      other !== undefined &&
+      row.id === other.id &&
+      row.use === other.use &&
+      row.enabled === other.enabled &&
+      sourceEqual(row.source, other.source)
+    );
+  });
 }
 
 export interface KernelCacheEntry {
-  readonly declarations: readonly PluginDeclaration[];
+  readonly tree: readonly TreeRow[];
   readonly kernel: Kernel;
 }
 
 /**
  * Ядра, поднятые по корню проекта, — переживают отдельный запрос (design.md,
  * Решение 3 и 6). Ключ — сам корень проекта; совпадение записи проверяется
- * списком объявлений плагинов проекта (спецификатор и файл объявления, в
- * порядке объявления), а не временем правки файлов конфигурации: правка
- * соседнего ключа не обязана сбрасывать ядро, а два разных содержимого с
- * одной меткой времени неразличимы.
+ * деревом плагинов проекта (`id`, модуль, включённость, порядок —
+ * `plugin-tree`), а не временем правки файлов конфигурации: правка соседнего
+ * ключа не обязана сбрасывать ядро, а два разных содержимого с одной меткой
+ * времени неразличимы.
  *
  * Отдельный корневой контекст на проект, а не форк общего корня: сервис,
  * заведённый плагином одного проекта, не виден другому и не конфликтует с
@@ -392,10 +418,13 @@ async function disposeKernel(kernel: Kernel, cache: KernelCache): Promise<void> 
 
 /**
  * Разрешить конфигурацию с плагинами, взяв ядро из кеша либо подняв заново,
- * если объявления плагинов разошлись с закешированными, — общий приём для
- * реестра каждого проекта (`projectSection`) и для собственного ядра демона
+ * если дерево плагинов разошлось с закешированным, — общий приём для реестра
+ * каждого проекта (`projectSection`) и для собственного ядра демона
  * (`src/ui/settings.ts`, `src/ui/models.ts`, design.md Решение 6): ключ кеша
- * там — не корень проекта, а домашний каталог, но правило то же самое.
+ * там — не корень проекта, а домашний каталог, но правило то же самое. Правка
+ * `plugins.patch.yml` действует тем же путём, что и правка `plugins:` раньше
+ * (`plugin-tree`, ui-daemon): дерево строится заново на каждый обход,
+ * расхождение с закешированным снимает прежнее ядро и поднимает новое.
  *
  * Отдельное разрешение перед основным нужно ровно для одного: сверить ключ
  * кеша с записью, которая уже есть. Записи нет — сверять не с чем, и лишнего
@@ -408,9 +437,9 @@ export async function resolveWithCachedKernel(
   cache: KernelCache | undefined,
 ): Promise<ResolvedWithPlugins> {
   const cached = cache?.entries.get(key);
-  const declared = cached === undefined ? undefined : pluginDeclarations(resolveConfig(options));
+  const tree = cached === undefined ? undefined : resolveConfig(options).pluginTree;
   const cachedRegistry =
-    cached !== undefined && declared !== undefined && declarationsEqual(cached.declarations, declared)
+    cached !== undefined && tree !== undefined && treeEqual(cached.tree, tree)
       ? registryFromKernel(cached.kernel)
       : undefined;
 
@@ -423,7 +452,7 @@ export async function resolveWithCachedKernel(
   // отказа загрузки не было. Совпавшая запись не перезаписывается — иначе
   // объект реестра на каждый запрос был бы новым, хотя и с тем же содержимым.
   if (cachedRegistry === undefined && cache !== undefined) {
-    // Объявления разошлись — или записи не было вовсе. Прежнее ядро, если оно
+    // Дерево разошлось — или записи не было вовсе. Прежнее ядро, если оно
     // было, осталось не у дел: снимаем его сразу, а не откладываем до
     // `close()`, иначе оно текло бы всё время жизни демона (design.md, Риск 4).
     // Снимается оно независимо от того, кто его поднял: из кеша запись ушла, и
@@ -435,7 +464,7 @@ export async function resolveWithCachedKernel(
     const kernel = kernelFromRegistry(result.registry);
     cache.raised.add(kernel);
     cache.entries.set(key, {
-      declarations: declared ?? pluginDeclarations(result.resolved),
+      tree: tree ?? result.resolved.pluginTree,
       kernel,
     });
   }

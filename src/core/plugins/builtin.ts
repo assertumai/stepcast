@@ -14,6 +14,12 @@ import { registryFromKernel, type Registry } from './registry.js';
  * вклада выходит «встроенным», а не «плагином» (kernel.ts, идентичность
  * корневой области).
  *
+ * Встроенные вклады описываются строками того же формата, что и вклады
+ * плагинов (`plugin-tree`, design.md, Решение 5): таблица `id → фабрика`
+ * ниже — и есть встроенный слой дерева. Загрузчик (`load.ts`) находит фабрику
+ * по имени формы `use: stepcast:<id>`, а не по диску: строка, заменённая
+ * патчем, эту таблицу не спрашивает вовсе и потому не применяется.
+ *
  * Встроенные предикаты — исключение, и оно осознанное. Их модель
  * (`Predicate`) — размеченное объединение с типизированными полями, а
  * вычисление — `switch` по `kind`, полноту которого проверяет компилятор.
@@ -24,7 +30,9 @@ import { registryFromKernel, type Registry } from './registry.js';
  * делается через ядро (`kernel.reservePredicate`), а не через сервис: сервис
  * виден плагину, и публичный `reserve` на нём дал бы любому плагину занять
  * произвольное имя несъёмным резервом. Ветви схемы документа остаются в
- * `pipeline/schema.ts`, где и были.
+ * `pipeline/schema.ts`, где и были. Строками дерева имена предикатов не
+ * становятся: заменить или отключить их патчем нельзя (`plugin-tree`,
+ * design.md, Решение 5).
  */
 
 /**
@@ -43,20 +51,57 @@ export const BUILTIN_PREDICATE_NAMES: readonly string[] = [
   'judge',
 ];
 
+/** Встроенная строка дерева: id и фабрика, вносящая вклады на корневой области ядра. */
+export interface BuiltinRow {
+  readonly id: string;
+  apply(kernel: Kernel): void;
+}
+
+export const BUILTIN_ROWS: readonly BuiltinRow[] = [
+  {
+    id: 'backend-claude',
+    apply(kernel) {
+      kernel.ctx.backends.register('claude', {
+        create: (config) => createClaudeAdapter(config),
+        models: claudeModelDiscovery,
+      });
+    },
+  },
+];
+
+/** Id встроенных строк — то, чем `config/resolve.ts` заводит семя дерева (design.md, Решение 5). */
+export const BUILTIN_ROW_IDS: readonly string[] = BUILTIN_ROWS.map((row) => row.id);
+
+/** Найти фабрику встроенной строки по имени формы `stepcast:<имя>` (задача 3.2, `load.ts`). */
+export function findBuiltinRow(id: string): BuiltinRow | undefined {
+  return BUILTIN_ROWS.find((row) => row.id === id);
+}
+
 /**
- * Ядро со встроенными вкладами. Команды приходят параметром, а не объявлены
- * здесь: они живут в `src/cli`, а ядру запрещено зависеть от поверхности.
- * Точка входа передаёт их при сборке; ядро, вызванное как библиотека,
- * обходится без них.
+ * Ядро без применённых строк встроенного слоя: предикаты зарезервированы,
+ * команды внесены, но ни одна фабрика `BUILTIN_ROWS` не вызвана. Загрузчик
+ * (`load.ts`) применяет их сам, построчно, по дереву — иначе строка,
+ * заменённая патчем, всё равно получила бы своё встроенное умолчание.
  */
-export function createBuiltinKernel(commands: readonly CommandContribution[] = []): Kernel {
+export function createKernelShell(commands: readonly CommandContribution[] = []): Kernel {
   const kernel = createKernel();
   for (const name of BUILTIN_PREDICATE_NAMES) kernel.reservePredicate(name);
-  kernel.ctx.backends.register('claude', {
-    create: (config) => createClaudeAdapter(config),
-    models: claudeModelDiscovery,
-  });
   for (const command of commands) kernel.ctx.commands.register(command.name, command);
+  return kernel;
+}
+
+/**
+ * Ядро со всеми встроенными вкладами. Команды приходят параметром, а не
+ * объявлены здесь: они живут в `src/cli`, а ядру запрещено зависеть от
+ * поверхности.
+ *
+ * Библиотечное умолчание (задача 3.4): `expand.ts`, `lint.ts`,
+ * `backend/registry.ts`, `runner.ts` и тесты зовут его без чтения файлов и
+ * получают полное встроенное дерево, как и до появления патчей.
+ */
+export function createBuiltinKernel(commands: readonly CommandContribution[] = []): Kernel {
+  const kernel = createKernelShell(commands);
+  for (const row of BUILTIN_ROWS) row.apply(kernel);
   return kernel;
 }
 

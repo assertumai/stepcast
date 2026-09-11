@@ -6,7 +6,7 @@ import { findPackageRoot } from '../package-schema.js';
 
 import type { ResolvedConfig } from '../config/resolve.js';
 import { isStepcastError, StepcastError } from '../errors.js';
-import { createBuiltinKernel } from './builtin.js';
+import { BUILTIN_ROW_IDS, createKernelShell, findBuiltinRow } from './builtin.js';
 import {
   isContextPlugin,
   StepcastPluginSchema,
@@ -17,17 +17,26 @@ import {
 } from './contract.js';
 import { translateReservedNameConflict, unresolvedFibers, type Fiber, type Kernel } from './kernel.js';
 import { registryFromKernel, type Registry } from './registry.js';
+import { BUILTIN_USE_PREFIX, isBuiltinUse, type TreeRow } from './tree.js';
 
 /**
  * Загрузка плагинов.
  *
  * Плагины загружаются один раз на вызов команды — после разрешения
- * конфигурации (она их и называет) и до разбора аргументов: команда плагина
- * обязана попасть в перечень раньше, чем разбор объявит её неизвестной.
+ * конфигурации (она собирает дерево плагинов) и до разбора аргументов:
+ * команда плагина обязана попасть в перечень раньше, чем разбор объявит её
+ * неизвестной.
  *
- * Отказ загрузки прекращает команду целиком, а не пропускает плагин молча:
+ * Вход загрузчика — дерево плагинов (`ResolvedConfig.pluginTree`,
+ * `plugin-tree`), а не список объявлений: строки идут по порядку дерева,
+ * отключённые пропускаются, встроенные разрешаются таблицей `builtin.ts`, а
+ * не диском.
+ *
+ * Отказ загрузки прекращает команду целиком, а не пропускает строку молча:
  * пайплайн, объявивший предикат плагина, без него разбирается неверно, а
  * `stepcast config` без него печатает конфигурацию, которой не будет.
+ * Исключение — команда осмотра дерева (`stepcast plugins`, `plugin-tree`):
+ * она переживает отказ загрузки одной из строк (`inspectPluginTree` ниже).
  *
  * Плагин применяется областью контекста (`kernel.ctx.plugin`), а не полем
  * реестра: снятие области снимает вклад без единой строки учёта здесь
@@ -36,36 +45,20 @@ import { registryFromKernel, type Registry } from './registry.js';
  * типах установленной версии cordis (design.md, Решение 9).
  */
 
-/** Строка объявления вместе с файлом, в котором она объявлена. */
-export interface PluginDeclaration {
-  readonly spec: string;
-  /** Файл конфигурации либо `undefined`, если источник — не файл. */
-  readonly declaredIn?: string;
+/** Файл, объявивший строку, — только для строк файлового слоя. */
+function declaredIn(row: TreeRow): string | undefined {
+  return row.source.kind === 'file' ? row.source.path : undefined;
 }
 
 /**
- * Объявления плагинов с их источниками. Берутся из вклада слоёв, а не из
- * `Config.plugins`: относительный путь разрешается от файла, в котором
- * объявлен, и знать этот файл обязан именно загрузчик.
+ * `{ file }`, если строка пришла из файла, иначе пустой объект — спред в
+ * опции `StepcastError`. Отдельная функция, а не повторный вызов
+ * `declaredIn(row)` в самом спреде: `exactOptionalPropertyTypes` не умеет
+ * сузить второй вызов той же функции по проверке первого.
  */
-export function pluginDeclarations(resolved: ResolvedConfig): PluginDeclaration[] {
-  const contributions = resolved.denyContributions.get('plugins') ?? [];
-  const seen = new Set<string>();
-  const declarations: PluginDeclaration[] = [];
-
-  for (const contribution of contributions) {
-    for (const spec of contribution.patterns) {
-      // Дубликат между слоями — не ошибка: глобальный и проектный конфиг
-      // вправе назвать один и тот же адаптер. Загрузка при этом одна.
-      if (seen.has(spec)) continue;
-      seen.add(spec);
-      declarations.push({
-        spec,
-        ...(contribution.source.kind === 'file' ? { declaredIn: contribution.source.path } : {}),
-      });
-    }
-  }
-  return declarations;
+function fileOption(row: TreeRow): { readonly file: string } | Record<string, never> {
+  const file = declaredIn(row);
+  return file === undefined ? {} : { file };
 }
 
 export interface LoadOptions {
@@ -79,14 +72,19 @@ export interface LoadOptions {
   readonly builtinCommands?: readonly CommandContribution[];
 }
 
-/** Путь модуля: относительный — от файла объявления, иначе — пакет. */
-export function resolveModulePath(declaration: PluginDeclaration, options: LoadOptions): string {
-  const { spec } = declaration;
+/**
+ * Путь модуля строки: относительный — от файла объявления, иначе — пакет.
+ * Форма `stepcast:<имя>` сюда не доходит: её разрешает таблица встроенных
+ * строк (`applyTreeRow`), а не диск.
+ */
+export function resolveModulePath(row: TreeRow, options: LoadOptions): string {
+  const spec = row.use;
 
   if (isAbsolute(spec)) return spec;
 
   if (spec.startsWith('./') || spec.startsWith('../')) {
-    const base = declaration.declaredIn === undefined ? options.projectRoot : dirname(declaration.declaredIn);
+    const file = declaredIn(row);
+    const base = file === undefined ? options.projectRoot : dirname(file);
     return resolvePath(base, spec);
   }
 
@@ -104,7 +102,7 @@ export function resolveModulePath(declaration: PluginDeclaration, options: LoadO
   }
 
   throw new StepcastError(`Модуль плагина ${spec} не найден`, {
-    ...(declaration.declaredIn === undefined ? {} : { file: declaration.declaredIn }),
+    ...fileOption(row),
     at: 'plugins',
     hint: `Искали от: ${roots.join(', ')}. Установите пакет в проект либо назовите путь, начав его с ./`,
   });
@@ -121,11 +119,11 @@ export type Recognized =
  * `StepcastPluginSchema` до исполнения кода плагина. Значение, не подошедшее
  * ни под одну форму, называет обе в отказе.
  */
-function toPlugin(module: unknown, declaration: PluginDeclaration, path: string): Recognized {
+function toPlugin(module: unknown, row: TreeRow, path: string): Recognized {
   const exported = (module as { default?: unknown } | undefined)?.default;
   if (exported === undefined) {
-    throw new StepcastError(`Модуль плагина ${declaration.spec} не экспортирует объект по умолчанию`, {
-      ...(declaration.declaredIn === undefined ? {} : { file: declaration.declaredIn }),
+    throw new StepcastError(`Модуль плагина ${row.use} не экспортирует объект по умолчанию`, {
+      ...fileOption(row),
       at: 'plugins',
       hint: `Модуль ${path} обязан объявить export default с полями name и вкладами (docs/plugins.md)`,
     });
@@ -141,8 +139,8 @@ function toPlugin(module: unknown, declaration: PluginDeclaration, path: string)
   // объекта, которого нет. Объект, похожий на декларативный, но неверной
   // формы, идёт прежним путём — его отказ называет конкретное поле.
   if (typeof exported !== 'object' || exported === null) {
-    throw new StepcastError(`Модуль плагина ${declaration.spec} не опознан ни одной формой плагина`, {
-      ...(declaration.declaredIn === undefined ? {} : { file: declaration.declaredIn }),
+    throw new StepcastError(`Модуль плагина ${row.use} не опознан ни одной формой плагина`, {
+      ...fileOption(row),
       at: 'plugins',
       hint: `Модуль ${path} обязан экспортировать по умолчанию либо декларативный объект вкладов, либо функцию над контекстом (объект с apply) — см. docs/plugins.md`,
     });
@@ -153,9 +151,9 @@ function toPlugin(module: unknown, declaration: PluginDeclaration, path: string)
     const issue = parsed.error.issues[0];
     const where = issue === undefined || issue.path.length === 0 ? 'корень объекта' : issue.path.join('.');
     throw new StepcastError(
-      `Плагин ${declaration.spec} не соответствует контракту: ${where} — ${issue?.message ?? 'неверная форма'}`,
+      `Плагин ${row.use} не соответствует контракту: ${where} — ${issue?.message ?? 'неверная форма'}`,
       {
-        ...(declaration.declaredIn === undefined ? {} : { file: declaration.declaredIn }),
+        ...fileOption(row),
         at: 'plugins',
         hint: `Модуль: ${path}. Контракт описан в docs/plugins.md`,
       },
@@ -250,22 +248,92 @@ export function applyContextPlugin(kernel: Kernel, plugin: ContextPlugin, source
   return applyPlugin(kernel, { form: 'context', plugin }, source);
 }
 
+/** Отказ: строка называет несуществующую встроенную строку формой `stepcast:<имя>`. */
+function unknownBuiltinRow(row: TreeRow, name: string): StepcastError {
+  return new StepcastError(`Строка ${row.id} называет несуществующую встроенную строку stepcast:${name}`, {
+    ...fileOption(row),
+    at: 'plugins',
+    hint: `Пакет поставляет: ${BUILTIN_ROW_IDS.map((id) => `stepcast:${id}`).join(', ')}`,
+  });
+}
+
+/** Дописать отказ ядра (конфликт имён) расположением строки — тем же составом полей, что у прочих отказов загрузки. */
+function withRowLocation(error: unknown, row: TreeRow): never {
+  if (!isStepcastError(error) || error.file !== undefined) throw error;
+  throw new StepcastError(error.message, {
+    exitCode: error.exitCode,
+    ...fileOption(row),
+    at: error.at ?? 'plugins',
+    ...(error.hint === undefined ? {} : { hint: error.hint }),
+    cause: error,
+  });
+}
+
 /**
- * Объявление, которым заведена область. Вложенная область (`ctx.inject` внутри
- * тела плагина) в перечне не значится — ищется ближайший предок, который
- * значится: плагин отвечает за то, что завело его тело.
+ * Применить одну строку дерева: встроенная — фабрика из таблицы `builtin.ts`
+ * по форме `use: stepcast:<имя>`, обычная — прежние `resolveModulePath`,
+ * импорт и `applyPlugin` (задача 3.1, 3.2). Строка встроенного слоя,
+ * замененная патчем, сюда не доходит вовсе: в дереве её больше нет — на её
+ * месте новая строка со своим `use`.
+ *
+ * Возвращает область плагина, если она была заведена (обычная строка), — её
+ * `loadPlugins` использует для отказа о незакрытом внедрении. Встроенная
+ * строка область не заводит: она регистрирует вклад прямо на корневом
+ * контексте ядра (`builtin.ts`).
  */
-function declarationOf(
-  fiber: Fiber,
-  declaredBy: ReadonlyMap<Fiber, PluginDeclaration>,
-): PluginDeclaration | undefined {
-  // Корневая область — сама себе предок: перечень пройденных и есть условие
-  // остановки, отдельного признака корня для этого не нужно.
+async function applyTreeRow(
+  kernel: Kernel,
+  row: TreeRow,
+  options: LoadOptions,
+  load: (url: string) => Promise<unknown>,
+): Promise<Fiber | undefined> {
+  if (isBuiltinUse(row.use)) {
+    const name = row.use.slice(BUILTIN_USE_PREFIX.length);
+    const builtinRow = findBuiltinRow(name);
+    if (builtinRow === undefined) throw unknownBuiltinRow(row, name);
+    try {
+      builtinRow.apply(kernel);
+    } catch (error) {
+      // Конфликт имени вклада, случившийся на встроенной фабрике (две строки
+      // дерева назвали одну и ту же), обязан прийти тем же составом полей,
+      // что и отказы обычных строк: файлом строки и `at: 'plugins'`
+      // (`plugin-contributions`).
+      withRowLocation(translateReservedNameConflict(error), row);
+    }
+    return undefined;
+  }
+
+  const path = resolveModulePath(row, options);
+  let module: unknown;
+  try {
+    module = await load(pathToFileURL(path).href);
+  } catch (error) {
+    throw new StepcastError(
+      `Модуль плагина ${row.use} не загружается: ${error instanceof Error ? error.message : String(error)}`,
+      {
+        ...fileOption(row),
+        at: 'plugins',
+        hint: `Модуль: ${path}`,
+        cause: error,
+      },
+    );
+  }
+
+  const recognized = toPlugin(module, row, path);
+  try {
+    return await applyPlugin(kernel, recognized, path);
+  } catch (error) {
+    withRowLocation(error, row);
+  }
+}
+
+/** Строка, которой заведена область, — ищется ближайший предок, который значится (см. `applyTreeRow`). */
+function rowOf(fiber: Fiber, declaredBy: ReadonlyMap<Fiber, TreeRow>): TreeRow | undefined {
   const seen = new Set<Fiber>();
   let current = fiber;
   while (!seen.has(current)) {
-    const declaration = declaredBy.get(current);
-    if (declaration !== undefined) return declaration;
+    const row = declaredBy.get(current);
+    if (row !== undefined) return row;
     seen.add(current);
     current = current.parent.fiber;
   }
@@ -273,70 +341,130 @@ function declarationOf(
 }
 
 /**
- * Собрать реестр: встроенные вклады плюс вклады объявленных плагинов, в
- * порядке объявления, после того как контекст успокоился.
+ * Отказ о незакрытом внедрении: плагин остался ждать сервис, которого никто
+ * не зарегистрировал. Рождается после цикла по строкам — когда текущей строки
+ * уже нет, — поэтому строку-виновницу приходится искать по области
+ * (`rowOf`). Общий для загрузки и для осмотра дерева: команда `stepcast
+ * plugins` обязана назвать ту же виновницу и ту же причину, что и отказ
+ * загрузки (`plugin-tree`).
+ */
+function unresolvedInjectFailure(
+  fibers: readonly Fiber[],
+  declaredBy: ReadonlyMap<Fiber, TreeRow>,
+): { readonly row: TreeRow | undefined; readonly error: StepcastError } | undefined {
+  const first = unresolvedFibers(fibers)[0];
+  if (first === undefined) return undefined;
+  const row = rowOf(first.fiber, declaredBy);
+  const file = row === undefined ? undefined : declaredIn(row);
+  return {
+    row,
+    error: new StepcastError(
+      `Плагин ${first.plugin} ждёт сервис ${first.missing.join(', ')}, которого не регистрирует ни один из объявленных плагинов`,
+      {
+        ...(file === undefined ? {} : { file }),
+        at: 'plugins',
+        hint: 'Объявите плагин, регистрирующий этот сервис, либо снимите зависимость от него',
+      },
+    ),
+  };
+}
+
+/**
+ * Собрать реестр: встроенные вклады действующих строк плюс вклады
+ * действующих строк-плагинов, в порядке дерева, после того как контекст
+ * успокоился.
  */
 export async function loadPlugins(resolved: ResolvedConfig, options: LoadOptions): Promise<Registry> {
-  const kernel = createBuiltinKernel(options.builtinCommands ?? []);
-  const declarations = pluginDeclarations(resolved);
+  const kernel = createKernelShell(options.builtinCommands ?? []);
   const load = options.importModule ?? ((url: string) => import(url));
-  // Чьим объявлением заведена область. Нужно отказу о незакрытом внедрении:
-  // он рождается после цикла, когда текущего объявления уже нет, а файл
-  // конфигурации назвать обязан наравне с прочими отказами загрузки.
-  const declaredBy = new Map<Fiber, PluginDeclaration>();
+  // Чьей строкой заведена область. Нужно отказу о незакрытом внедрении: он
+  // рождается после цикла, когда текущей строки уже нет, а файл конфигурации
+  // назвать обязан наравне с прочими отказами загрузки.
+  const declaredBy = new Map<Fiber, TreeRow>();
 
-  for (const declaration of declarations) {
-    const path = resolveModulePath(declaration, options);
-    let module: unknown;
-    try {
-      module = await load(pathToFileURL(path).href);
-    } catch (error) {
-      throw new StepcastError(
-        `Модуль плагина ${declaration.spec} не загружается: ${error instanceof Error ? error.message : String(error)}`,
-        {
-          ...(declaration.declaredIn === undefined ? {} : { file: declaration.declaredIn }),
-          at: 'plugins',
-          hint: `Модуль: ${path}`,
-          cause: error,
-        },
-      );
+  for (const row of resolved.pluginTree) {
+    if (!row.enabled) continue;
+    const fiber = await applyTreeRow(kernel, row, options, load);
+    if (fiber !== undefined) declaredBy.set(fiber, row);
+  }
+
+  const failure = unresolvedInjectFailure(await kernel.settle(), declaredBy);
+  if (failure !== undefined) throw failure.error;
+
+  return registryFromKernel(kernel);
+}
+
+/** Итог применения одной строки — для команды осмотра дерева (`stepcast plugins`, design.md, Решение 8). */
+export interface RowOutcome {
+  readonly row: TreeRow;
+  readonly status: 'active' | 'disabled' | 'failed' | 'not-attempted';
+  readonly error?: StepcastError;
+}
+
+/**
+ * Пройти дерево, как это делает `loadPlugins`, но не бросая исключение на
+ * первом отказе: команда осмотра (`stepcast plugins`) обязана напечатать
+ * дерево целиком и тогда, когда одна из строк не загрузилась (design.md,
+ * Решение 8). Строка, на которой случился отказ, несёт его причину; строки
+ * ниже неё помечаются «не загружалась» — их и не пытались применить.
+ *
+ * Успокоение контекста здесь такое же, как в `loadPlugins`: отказ о
+ * незакрытом внедрении рождается только после него, и без него команда
+ * осмотра напечатала бы все строки действующими там, где загрузка отказала, —
+ * молча потеряв и виновницу, и причину.
+ */
+export async function inspectPluginTree(
+  resolved: ResolvedConfig,
+  options: LoadOptions,
+): Promise<readonly RowOutcome[]> {
+  const kernel = createKernelShell(options.builtinCommands ?? []);
+  const load = options.importModule ?? ((url: string) => import(url));
+  const outcomes: RowOutcome[] = [];
+  const declaredBy = new Map<Fiber, TreeRow>();
+  let failed = false;
+
+  for (const row of resolved.pluginTree) {
+    if (failed) {
+      outcomes.push({ row, status: 'not-attempted' });
+      continue;
     }
-
-    const recognized = toPlugin(module, declaration, path);
+    if (!row.enabled) {
+      outcomes.push({ row, status: 'disabled' });
+      continue;
+    }
     try {
-      declaredBy.set(await applyPlugin(kernel, recognized, path), declaration);
+      const fiber = await applyTreeRow(kernel, row, options, load);
+      if (fiber !== undefined) declaredBy.set(fiber, row);
+      outcomes.push({ row, status: 'active' });
     } catch (error) {
-      // Конфликт имён вкладов знает вид вклада, имя и обоих претендентов, но
-      // не знает, откуда плагин взялся: ядро про конфигурацию не знает вовсе.
-      // Место объявления дописывается здесь — прочие отказы загрузки несут
-      // `file` и `at: 'plugins'`, и отказ ядра обязан приходить тем же
-      // составом полей: и печать CLI, и карточка витрины показывают
-      // расположение отдельно от текста.
-      if (!isStepcastError(error) || error.file !== undefined) throw error;
-      throw new StepcastError(error.message, {
-        exitCode: error.exitCode,
-        ...(declaration.declaredIn === undefined ? {} : { file: declaration.declaredIn }),
-        at: error.at ?? 'plugins',
-        ...(error.hint === undefined ? {} : { hint: error.hint }),
-        cause: error,
+      failed = true;
+      outcomes.push({
+        row,
+        status: 'failed',
+        error: isStepcastError(error) ? error : new StepcastError(error instanceof Error ? error.message : String(error)),
       });
     }
   }
 
-  const fibers = await kernel.settle();
-  const unresolved = unresolvedFibers(fibers);
-  const first = unresolved[0];
-  if (first !== undefined) {
-    const declaredIn = declarationOf(first.fiber, declaredBy)?.declaredIn;
-    throw new StepcastError(
-      `Плагин ${first.plugin} ждёт сервис ${first.missing.join(', ')}, которого не регистрирует ни один из объявленных плагинов`,
-      {
-        ...(declaredIn === undefined ? {} : { file: declaredIn }),
-        at: 'plugins',
-        hint: 'Объявите плагин, регистрирующий этот сервис, либо снимите зависимость от него',
-      },
-    );
+  // Отказ о незакрытом внедрении ищется, только если ни одна строка не
+  // отказала: после отказа дерево применено не целиком, и ожидающая область
+  // ждёт сервис строки, до которой попросту не дошли, — причиной названа уже
+  // она.
+  if (!failed) {
+    const failure = unresolvedInjectFailure(await kernel.settle(), declaredBy);
+    if (failure !== undefined) {
+      const index = outcomes.findIndex((outcome) => outcome.row === failure.row);
+      // Виновница помечается отказавшей на своём месте; строки ниже неё
+      // применились и вкладов не теряли, поэтому «не загружалась» им не
+      // ставится. Область, не приписанная ни одной строке, — отказ дерева
+      // целиком: он достаётся первой действующей строке, чтобы причина всё
+      // же была напечатана.
+      const at = index === -1 ? outcomes.findIndex((outcome) => outcome.status === 'active') : index;
+      const target = outcomes[at];
+      if (target !== undefined) outcomes[at] = { row: target.row, status: 'failed', error: failure.error };
+    }
   }
 
-  return registryFromKernel(kernel);
+  await kernel.dispose().catch(() => undefined);
+  return outcomes;
 }

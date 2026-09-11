@@ -2311,6 +2311,135 @@ jobs:
       file: projectConfigFile,
     });
   });
+
+  it('патч, заменивший строку своим модулем, на работающем демоне снимает вклады прежнего модуля и вводит вклады нового', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    withProjectPlugin(projectRoot, PREDICATE_PLUGIN); // id ключа plugins — сам спецификатор ./plugins/probe.mjs
+    writeFileSync(join(projectRoot, 'stepcast.yml'), PREDICATE_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const kernelCache = createKernelCache();
+    const server = await startServer(t, { runsRoot, config, home, kernelCache });
+
+    const before = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(before.json, 'pipelines', 0, 'error'), undefined);
+
+    // Патч заменяет строку, объявленную ключом plugins, модулем без
+    // предикатов, но с бэкендом probe — тем же id, равным спецификатору
+    // (design.md, Решение 4).
+    writeFileSync(join(projectRoot, '.stepcast', 'plugins', 'backend.mjs'), BACKEND_PLUGIN);
+    writeFileSync(
+      join(projectRoot, '.stepcast', 'plugins.patch.yml'),
+      'version: 1\nkind: plugins-patch\nplugins:\n  - id: ./plugins/probe.mjs\n    use: ./plugins/backend.mjs\n',
+    );
+
+    const after = await fetchJson(server, '/api/pipelines');
+    assert.match(String(pick(after.json, 'pipelines', 0, 'error')), /неизвестный ключ always_ok/);
+
+    const entry = kernelCache.entries.get(projectRoot);
+    assert.ok(entry?.kernel.ctx.backends.contributions.has('probe'), 'вклад нового модуля действует');
+    assert.ok(!(entry?.kernel.ctx.predicates.contributions.has('always_ok') ?? false), 'вклад прежнего модуля снят');
+  });
+
+  it('патч, объявивший действующую строку enabled: false, убирает её вклады из реестра проекта', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    withProjectPlugin(projectRoot, PREDICATE_PLUGIN);
+    writeFileSync(join(projectRoot, 'stepcast.yml'), PREDICATE_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const kernelCache = createKernelCache();
+    const server = await startServer(t, { runsRoot, config, home, kernelCache });
+
+    const before = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(before.json, 'pipelines', 0, 'error'), undefined);
+
+    writeFileSync(
+      join(projectRoot, '.stepcast', 'plugins.patch.yml'),
+      'version: 1\nkind: plugins-patch\nplugins:\n  - id: ./plugins/probe.mjs\n    use: ./plugins/probe.mjs\n    enabled: false\n',
+    );
+
+    const after = await fetchJson(server, '/api/pipelines');
+    assert.match(String(pick(after.json, 'pipelines', 0, 'error')), /неизвестный ключ always_ok/);
+    const entry = kernelCache.entries.get(projectRoot);
+    assert.ok(!(entry?.kernel.ctx.predicates.contributions.has('always_ok') ?? false));
+  });
+
+  it('строка с тем же id и модулем, перекочевавшая из домашнего патча в проектный, пересобирает ядро и грузится из нового каталога', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    // Один и тот же относительный `use` в двух слоях означает два разных
+    // файла на диске: он разрешается от файла, объявившего строку. Дерево, в
+    // котором сменился только слой-источник, равным прежнему считаться не
+    // вправе — иначе демон продолжил бы держать модуль домашнего каталога
+    // (ui-daemon: правка любого файла, участвующего в сборке дерева).
+    mkdirSync(join(home, '.stepcast', 'plugins'), { recursive: true });
+    writeFileSync(join(home, '.stepcast', 'plugins', 'probe.mjs'), PREDICATE_PLUGIN);
+    writeFileSync(
+      join(home, '.stepcast', 'plugins.patch.yml'),
+      'version: 1\nkind: plugins-patch\nplugins:\n  - id: probe\n    use: ./plugins/probe.mjs\n',
+    );
+    mkdirSync(join(projectRoot, '.stepcast', 'plugins'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'plugins', 'probe.mjs'), BACKEND_PLUGIN);
+    writeFileSync(join(projectRoot, 'stepcast.yml'), PREDICATE_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const kernelCache = createKernelCache();
+    const server = await startServer(t, { runsRoot, config, home, kernelCache });
+
+    const before = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(before.json, 'pipelines', 0, 'error'), undefined, 'предикат домашнего модуля действует');
+
+    // Тот же id и тот же `use` — но объявленные проектным патчем, то есть
+    // разрешаемые от каталога проекта.
+    writeFileSync(
+      join(projectRoot, '.stepcast', 'plugins.patch.yml'),
+      'version: 1\nkind: plugins-patch\nplugins:\n  - id: probe\n    use: ./plugins/probe.mjs\n',
+    );
+
+    const after = await fetchJson(server, '/api/pipelines');
+    assert.match(String(pick(after.json, 'pipelines', 0, 'error')), /неизвестный ключ always_ok/);
+    const entry = kernelCache.entries.get(projectRoot);
+    assert.ok(entry?.kernel.ctx.backends.contributions.has('probe'), 'загружен модуль проектного каталога');
+  });
+
+  it('правка конфигурации, не меняющая ни одной строки дерева, ядро не пересобирает', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    withProjectPlugin(projectRoot, PREDICATE_PLUGIN);
+    writeFileSync(join(projectRoot, 'stepcast.yml'), PREDICATE_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const kernelCache = createKernelCache();
+    const server = await startServer(t, { runsRoot, config, home, kernelCache });
+
+    await fetchJson(server, '/api/pipelines');
+    const before = kernelCache.entries.get(projectRoot)?.kernel;
+    assert.ok(before !== undefined);
+
+    // Правка не трогает ни одной строки дерева — только defaults.model.
+    writeFileSync(
+      join(projectRoot, '.stepcast', 'config.yml'),
+      'plugins: ["./plugins/probe.mjs"]\ndefaults:\n  model: opus\n',
+    );
+
+    await fetchJson(server, '/api/pipelines');
+    const after = kernelCache.entries.get(projectRoot)?.kernel;
+    assert.equal(after, before, 'ядро осталось тем же объектом — модули заново не импортировались');
+  });
+
+  it('собственное ядро демона (ключ — домашний каталог) собирает дерево с домашним патчем, без проектного слоя', async (t) => {
+    const { home } = makeJournalBed();
+    mkdirSync(join(home, '.stepcast', 'plugins'), { recursive: true });
+    writeFileSync(join(home, '.stepcast', 'plugins', 'probe.mjs'), PREDICATE_PLUGIN);
+    writeFileSync(
+      join(home, '.stepcast', 'plugins.patch.yml'),
+      'version: 1\nkind: plugins-patch\nplugins:\n  - id: home-probe\n    use: ./plugins/probe.mjs\n',
+    );
+
+    const kernelCache = createKernelCache();
+    t.after(() => disposeRaisedKernels(kernelCache));
+    const { registry } = await resolveWithCachedKernel(home, { cwd: home, home, projectPath: null }, home, kernelCache);
+
+    assert.ok(registry.predicates.has('always_ok'), 'домашний патч подхвачен');
+  });
 });
 
 describe('ui-dashboard: изоляция и снятие контекстов ядра (cordis-kernel-daemon)', () => {

@@ -70,11 +70,15 @@ function renderValue(path: string, value: unknown): string {
  * Раздел о загруженных плагинах: чем движок сегодня расширен и откуда это
  * пришло. Отчёт о конфигурации без него отвечал бы на вопрос «какие
  * настройки», умалчивая о том, кто их принёс.
+ *
+ * Полного ответа на «что загружено и откуда» этот раздел не обещает: состав
+ * строк, их порядок и слой каждой — у `stepcast plugins` (`plugin-tree`,
+ * design.md, Решение 8), а не здесь.
  */
 export function renderPluginsReport(registry: Registry | undefined): string[] {
   if (registry === undefined || registry.plugins.length === 0) return [];
 
-  const lines = ['', 'Плагины:'];
+  const lines = ['', 'Плагины (полное дерево со слоями и порядком — stepcast plugins):'];
   for (const plugin of registry.plugins) {
     const contributions: string[] = [];
     const own = (kind: 'backends' | 'predicates' | 'commands'): string[] =>
@@ -94,11 +98,42 @@ export function renderPluginsReport(registry: Registry | undefined): string[] {
   return lines;
 }
 
+/**
+ * Строка отчёта для ключа `plugins`: действующее значение — проекция
+ * итогового дерева (`Config.plugins`: модули действующих строк в порядке
+ * дерева), а вклад слоёв — объявленное, как у прочих складывающихся списков
+ * (`stepcast-configuration`).
+ *
+ * Объявленное и действующее здесь расходятся законно: патч заменяет строку
+ * чужим модулем, отключает её или вставляет свою, а ключ `plugins` об этом не
+ * знает. Печатать суммой объявленного значит называть действующим состав,
+ * которого не будет, — ровно та ложь, ради которой второго представления
+ * состава и не заведено (`config/resolve.ts`, `Config.plugins`).
+ */
+function renderPluginsRow(resolved: ResolvedConfig): string[] {
+  const contributions = resolved.denyContributions.get('plugins') ?? [];
+  const breakdown = contributions
+    .map((item) => `${describeSource(item.source)} (${item.patterns.length})`)
+    .join(' + ');
+  const effective = resolved.config.plugins;
+  return ['plugins', effective.length === 0 ? 'нет' : effective.join(', '), breakdown];
+}
+
 export function renderConfigReport(resolved: ResolvedConfig): string[] {
   const rows: string[][] = [];
-  const paths = [...resolved.provenance.keys()].sort();
+  const paths = [...resolved.provenance.keys()];
+  // Ключ `plugins` печатается и тогда, когда его не объявлял ни один слой:
+  // строку дерева приносит ещё и патч, а его `provenance` не знает — он не про
+  // точечные пути (`config/resolve.ts`).
+  if (!paths.includes('plugins') && resolved.config.plugins.length > 0) paths.push('plugins');
+  paths.sort();
 
   for (const path of paths) {
+    if (path === 'plugins') {
+      rows.push(renderPluginsRow(resolved));
+      continue;
+    }
+
     const contributions = resolved.denyContributions.get(path);
     if (contributions !== undefined) {
       const breakdown = contributions

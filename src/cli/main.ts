@@ -1,4 +1,5 @@
-import { ExitCode, StepcastError, type ExitCodeValue } from '../core/errors.js';
+import { resolveConfig } from '../core/config/resolve.js';
+import { ExitCode, isStepcastError, StepcastError, type ExitCodeValue } from '../core/errors.js';
 import { parseArgs, type CliIo, type CommandSpec } from './args.js';
 import type { CommandContribution, CommandEnv } from '../core/plugins/contract.js';
 import { resolveWithPlugins } from '../core/plugins/resolve.js';
@@ -17,6 +18,7 @@ import { runInitCommand } from './commands/init.js';
 import { runLintCommand } from './commands/lint.js';
 import { runLogsCommand } from './commands/logs.js';
 import { runMergeLanesCommand } from './commands/merge-lanes.js';
+import { runPluginsCommand, runPluginsCommandAfterLoadFailure } from './commands/plugins.js';
 import { runProjectCommand } from './commands/project.js';
 import { runResumeCommand } from './commands/resume.js';
 import { runRunCommand } from './commands/run.js';
@@ -96,6 +98,15 @@ export const COMMANDS: Record<string, CommandSpec> = {
       'записать в .stepcast/schema/ JSON Schema документов проекта, знающую предикаты загруженных плагинов',
     flags: {
       out: { kind: 'string', description: 'каталог вывода вместо .stepcast/schema/' },
+    },
+  },
+  plugins: {
+    description: 'печатать итоговое дерево плагинов: место, id, слой, модуль, состояние',
+    flags: {
+      dump: {
+        kind: 'boolean',
+        description: 'то же самое — флаг ради совместимости, поведение команды от него не зависит',
+      },
     },
   },
   gc: {
@@ -304,6 +315,11 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
     run: (args, io, env) => runSchemaCommand(args, io.out, env.cwd, env.registry),
   },
   {
+    name: 'plugins',
+    spec: COMMANDS['plugins'] as CommandSpec,
+    run: (args, io, env) => runPluginsCommand(io.out, env.pluginTree),
+  },
+  {
     name: 'gc',
     spec: COMMANDS['gc'] as CommandSpec,
     run: (args, io, env) => runGcCommand(args, io.out, env.cwd),
@@ -394,6 +410,9 @@ export function buildIndependentCommandEnv(name: string, cwd: string): CommandEn
     get ctx() {
       return readForbidden();
     },
+    get pluginTree() {
+      return readForbidden();
+    },
   };
 }
 
@@ -415,10 +434,26 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
 
     // Плагины загружаются до разбора аргументов: команда плагина обязана
     // попасть в перечень раньше, чем разбор объявит её неизвестной.
-    const { resolved, registry, ctx } = await resolveWithPlugins(
-      { cwd: io.cwd },
-      { builtinCommands: BUILTIN_COMMANDS },
-    );
+    let resolution: Awaited<ReturnType<typeof resolveWithPlugins>>;
+    try {
+      resolution = await resolveWithPlugins({ cwd: io.cwd }, { builtinCommands: BUILTIN_COMMANDS });
+    } catch (error) {
+      // Отказ загрузки одной из строк не заслоняет команду осмотра дерева
+      // (design.md, Решение 8): для неё дерево печатается всё равно, а
+      // строка-виновница несёт причину. Для прочих команд поведение прежнее —
+      // отказ прекращает команду до диспетчеризации.
+      if (commandName !== 'plugins' || !isStepcastError(error)) throw error;
+      // Повторный разбор конфигурации без загрузки: если он тоже кинет, это
+      // отказ разбора (а не загрузки), и команда обязана прекратиться как
+      // прежде — исключение не перехватывается здесь второй раз.
+      const resolved = resolveConfig({ cwd: io.cwd });
+      parseArgs(argv, { plugins: COMMANDS['plugins'] as CommandSpec }); // тот же разбор флагов, что и на обычном пути — неизвестный флаг отказывает так же.
+      return await runPluginsCommandAfterLoadFailure(io.out, resolved, {
+        projectRoot: io.cwd,
+        builtinCommands: BUILTIN_COMMANDS,
+      });
+    }
+    const { resolved, registry, ctx } = resolution;
 
     const specs: Record<string, CommandSpec> = {};
     for (const [name, contribution] of registry.commands) specs[name] = contribution.spec;
@@ -427,7 +462,13 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
     const contribution = registry.commands.get(args.command);
     if (contribution === undefined) return ExitCode.configError;
 
-    return await contribution.run(args, io, { cwd: io.cwd, config: resolved.config, registry, ctx });
+    return await contribution.run(args, io, {
+      cwd: io.cwd,
+      config: resolved.config,
+      registry,
+      ctx,
+      pluginTree: resolved.pluginTree,
+    });
   } catch (error) {
     return reportError(error, io.err);
   }

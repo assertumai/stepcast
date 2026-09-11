@@ -20,6 +20,9 @@ export type {
   StepcastPlugin,
 } from './core/plugins/contract.js';
 
+/** Строка дерева плагинов: то, что команда получает в `CommandEnv.pluginTree`. */
+export type { TreeRow, TreeRowSource } from './core/plugins/tree.js';
+
 /**
  * Контекст ядра: то, без чего плагин контекста не написать. Служебные
  * сервисы `backends`, `predicates`, `commands` типизированы на нём —

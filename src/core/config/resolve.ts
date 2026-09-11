@@ -1,17 +1,28 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
 import { StepcastError } from '../errors.js';
 import { packagedWrapperNames } from '../package-schema.js';
 import { describeSchemaFailure } from '../pipeline/load.js';
+import { BUILTIN_ROW_IDS } from '../plugins/builtin.js';
+import {
+  applyOperations,
+  builtinSeedRows,
+  isBuiltinUse,
+  keyOperations,
+  patchOperations,
+  type TreeRow,
+} from '../plugins/tree.js';
 import {
   GLOBAL_ONLY_KEYS,
+  PluginsPatchDocumentSchema,
   PROJECT_ONLY_KEYS,
   RawConfigSchema,
   TIGHTEN_ONLY_KEYS,
   UNION_LIST_KEYS,
+  type PluginsPatchDocument,
   type RawConfig,
 } from './schema.js';
 import { BUILTIN_CONFIG } from './defaults.js';
@@ -107,11 +118,19 @@ export interface Config {
   };
   readonly envDeny: readonly string[];
   /**
-   * Модули плагинов в порядке объявления, слои объединены. Файл, в котором
-   * объявлен каждый, здесь не хранится: он нужен только загрузчику для
-   * разрешения относительного пути и берётся из вклада слоёв
-   * (`ResolvedConfig.denyContributions`) — второе представление одного и того
-   * же списка разошлось бы с отчётом `stepcast config`.
+   * Модули действующих строк дерева плагинов (`plugin-tree`), в порядке
+   * дерева, — проекция `ResolvedConfig.pluginTree`, а не отдельно собранный
+   * список (design.md, Решение 7). Второе представление того же состава
+   * разошлось бы с деревом на первом же патче, и `stepcast config` стал бы
+   * врать; файл объявления здесь по той же причине не хранится — он есть в
+   * дереве, у каждой строки своей.
+   *
+   * Строки встроенного слоя (`use: stepcast:<имя>`) в проекцию не входят:
+   * поле объявлено списком модулей (docs/config.md), а `stepcast:backend-claude`
+   * модулем не является и `resolveModulePath` обычным путём не разрешается —
+   * такую запись потребитель поля разрешить бы не смог. Состав встроенных
+   * строк виден там, где он и должен быть виден целиком, — в дереве и в
+   * выводе `stepcast plugins`.
    */
   readonly plugins: readonly string[];
   readonly context: {
@@ -198,6 +217,13 @@ export interface ResolvedConfig {
   readonly values: ReadonlyMap<string, unknown>;
   readonly provenance: ReadonlyMap<string, Source>;
   readonly denyContributions: ReadonlyMap<string, readonly DenyContribution[]>;
+  /**
+   * Дерево плагинов (`plugin-tree`): встроенный слой, свёрнутый с домашним и
+   * проектным — каждый из ключа `plugins` и патча `plugins.patch.yml` своего
+   * каталога, в этом порядке (design.md, Решение 3, 4). Единственный вход
+   * загрузчика (`loadPlugins`) и единственный источник `Config.plugins`.
+   */
+  readonly pluginTree: readonly TreeRow[];
 }
 
 export interface ResolveOptions {
@@ -269,6 +295,50 @@ function readConfigFile(path: string): RawConfig | undefined {
       file: path,
       ...(failure.at === undefined ? {} : { at: failure.at }),
       hint: 'Неизвестный ключ почти всегда опечатка — сверьтесь с docs/config.md',
+    });
+  }
+
+  return parsed.data;
+}
+
+/**
+ * Прочитать `plugins.patch.yml` слоя. Отсутствие файла — обычное состояние,
+ * не ошибка (`stepcast-configuration`): дерево в этом случае складывается из
+ * встроенного слоя и ключа `plugins`, как и до появления патчей. Патч не
+ * участвует в `mergeLayers` — он не про точечные пути, а про порядок и
+ * идентичность строк (design.md, Решение 9), и потому разбирается отдельно
+ * от `readConfigFile`.
+ */
+function readPluginsPatchFile(path: string): PluginsPatchDocument | undefined {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return undefined;
+    throw new StepcastError(`Не удалось прочитать патч плагинов: ${(error as Error).message}`, {
+      file: path,
+      cause: error,
+    });
+  }
+
+  let document: unknown;
+  try {
+    document = parseYaml(text);
+  } catch (error) {
+    throw new StepcastError(`Патч плагинов не разбирается как YAML: ${(error as Error).message}`, {
+      file: path,
+      cause: error,
+    });
+  }
+
+  const parsed = PluginsPatchDocumentSchema.safeParse(document ?? {});
+  if (!parsed.success) {
+    const failure = describeSchemaFailure(parsed.error);
+    throw new StepcastError(`Патч плагинов не соответствует схеме: ${failure.message}`, {
+      file: path,
+      ...(failure.at === undefined ? {} : { at: failure.at }),
+      hint: 'Формат описан в docs/plugins.md: version: 1, kind: plugins-patch, список plugins',
     });
   }
 
@@ -583,6 +653,26 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
     tightenOnly: TIGHTEN_ONLY_KEYS,
   });
 
+  // Дерево плагинов (`plugin-tree`): встроенный слой, затем домашний и
+  // проектный — каждый из своего ключа `plugins` (сокращённая форма,
+  // design.md Решение 4) и своего патча, в этом порядке. Патч не проходит
+  // через `mergeLayers`: он не про точечные пути, а про порядок и
+  // идентичность строк (Решение 9), и потому сворачивается отдельно.
+  const homePatchPath = join(dirname(globalPath), 'plugins.patch.yml');
+  const homePatch = readPluginsPatchFile(homePatchPath);
+  let pluginTree = applyOperations(builtinSeedRows(BUILTIN_ROW_IDS), [
+    ...keyOperations(globalConfig?.plugins ?? [], globalPath),
+    ...patchOperations(homePatch?.plugins ?? [], homePatchPath),
+  ]);
+  if (projectPath !== undefined) {
+    const projectPatchPath = join(dirname(projectPath), 'plugins.patch.yml');
+    const projectPatch = readPluginsPatchFile(projectPatchPath);
+    pluginTree = applyOperations(pluginTree, [
+      ...keyOperations(projectConfig?.plugins ?? [], projectPath),
+      ...patchOperations(projectPatch?.plugins ?? [], projectPatchPath),
+    ]);
+  }
+
   const values = merged.values;
   const workspaceMode = (values.get('defaults.workspace.mode') ?? 'cwd') as 'cwd' | 'worktree' | 'copy';
   const workspacePath = values.get('defaults.workspace.path');
@@ -650,7 +740,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
       iterations: requireNumber(values, 'limits.iterations'),
     },
     envDeny: (values.get('env_deny') as string[] | undefined) ?? [],
-    plugins: (values.get('plugins') as string[] | undefined) ?? [],
+    plugins: pluginTree.filter((row) => row.enabled && !isBuiltinUse(row.use)).map((row) => row.use),
     context: {
       inlineThreshold: requireNumber(values, 'context.inline_threshold'),
       maxTokens: requireNumber(values, 'context.max_tokens'),
@@ -699,5 +789,6 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
     values,
     provenance: merged.provenance,
     denyContributions: merged.denyContributions,
+    pluginTree,
   };
 }

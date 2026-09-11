@@ -13,6 +13,7 @@ import type { CliIo, CommandSpec, ParsedArgs } from './cli-types.js';
 // тянуть за собой ни `cordis`, ни его типы (см. `context.ts`).
 import type { Registry } from './registry.js';
 import type { Context, Inject } from './context.js';
+import type { TreeRow } from './tree.js';
 
 /**
  * Контракт плагина.
@@ -112,6 +113,14 @@ export interface CommandEnv {
    * плагина в нём не виден (design.md, Решение 12).
    */
   readonly ctx: Context;
+  /**
+   * Итоговое дерево плагинов того же разрешения конфигурации, которым собран
+   * `registry` (`plugin-tree`). Команде осмотра (`stepcast plugins`) оно нужно
+   * целиком — со слоями, порядком и отключёнными строками, которых в реестре
+   * нет вовсе, — и брать его вторым чтением слоёв нельзя: правка патча между
+   * двумя чтениями развела бы напечатанное дерево с загруженным составом.
+   */
+  readonly pluginTree: readonly TreeRow[];
 }
 
 /** Вклад команды: новая подкоманда `stepcast <имя>`. */

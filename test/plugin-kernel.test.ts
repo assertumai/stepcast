@@ -583,6 +583,7 @@ withOwnService.inject = ['commands'];
       config: out.config,
       registry,
       ctx,
+      pluginTree: out.pluginTree,
     });
 
     assert.equal(code, 0);

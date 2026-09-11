@@ -7,7 +7,7 @@ import { describe, it } from 'node:test';
 
 import { resolveConfig, type ResolvedConfig } from '../src/core/config/resolve.js';
 import { StepcastError } from '../src/core/errors.js';
-import { loadPlugins, pluginDeclarations } from '../src/core/plugins/load.js';
+import { loadPlugins } from '../src/core/plugins/load.js';
 import { availableNames, predicateNames } from '../src/core/plugins/registry.js';
 import { resolveWithPlugins, type ResolvedWithPlugins } from '../src/core/plugins/resolve.js';
 import { resolveAdapter } from '../src/core/backend/registry.js';
@@ -107,12 +107,15 @@ describe('plugin-contributions: загрузка плагинов', () => {
       project: 'plugins: ["./plugins/local.mjs", "./plugins/местный"]\n',
     });
 
-    // Порядок: сначала вклад глобального слоя, затем проектного; повтор внутри
-    // проектного слоя схлопнут.
+    // Порядок: встроенная строка первой, затем вклад глобального слоя, затем
+    // проектного; повтор спецификатора внутри проектного слоя схлопнут в одну
+    // строку — вставка нашла свой id в дереве и не сделала ничего (design.md,
+    // Решение 4).
     assert.deepEqual(
-      pluginDeclarations(config).map((declaration) => declaration.spec),
-      ['./plugins/местный', './plugins/local.mjs'],
+      config.pluginTree.map((row) => row.id),
+      ['backend-claude', './plugins/местный', './plugins/local.mjs'],
     );
+    // `Config.plugins` — модули: псевдоспецификатора встроенной строки в нём нет.
     assert.deepEqual(config.config.plugins, ['./plugins/местный', './plugins/local.mjs']);
   });
 
@@ -120,8 +123,9 @@ describe('plugin-contributions: загрузка плагинов', () => {
     const place = bed();
     const config = resolved(place, { global: 'plugins: ["./adapters/codex.mjs"]\n' });
 
-    const [declaration] = pluginDeclarations(config);
-    assert.equal(declaration?.declaredIn, place.globalPath);
+    const row = config.pluginTree.find((item) => item.id === './adapters/codex.mjs');
+    assert.equal(row?.source.kind, 'file');
+    assert.equal(row?.source.kind === 'file' ? row.source.path : undefined, place.globalPath);
   });
 
   it('отсутствующий модуль отказывает, называя объявление и файл', async () => {
