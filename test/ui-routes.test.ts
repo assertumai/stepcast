@@ -1,95 +1,108 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { MENU, USAGE_PERIODS, isApiPath, isWidgetPath, parseRoute, runHref, widgetModuleHref } from '../src/ui/routes.js';
+import { isApiPath, isWidgetPath, hrefFor, parseRoute, widgetModuleHref, type RouteScreen } from '../src/ui/routes.js';
+import { declaration as agents } from '../src/ui/screens/agents/declaration.js';
+import { declaration as backlog } from '../src/ui/screens/backlog/declaration.js';
+import { declaration as cleanup } from '../src/ui/screens/cleanup/declaration.js';
+import { declaration as pipelines } from '../src/ui/screens/pipelines/declaration.js';
+import { declaration as run } from '../src/ui/screens/run/declaration.js';
+import { declaration as runs } from '../src/ui/screens/runs/declaration.js';
+import { declaration as settings } from '../src/ui/screens/settings/declaration.js';
+import { declaration as steps } from '../src/ui/screens/steps/declaration.js';
+import { declaration as usage } from '../src/ui/screens/usage/declaration.js';
+import { declaration as widgets } from '../src/ui/screens/widgets/declaration.js';
 
-describe('ui-routes: разбор адресов', () => {
+/** Таблица всех десяти встроенных экранов — то, что демон и витрина держат в действующем составе. */
+const ALL_SCREENS: ReadonlyMap<string, RouteScreen> = new Map(
+  [runs, run, pipelines, steps, widgets, backlog, usage, cleanup, agents, settings].map((screen) => [
+    screen.id,
+    screen,
+  ]),
+);
+
+describe('ui-routes: разбор адресов по таблице экранов', () => {
   it('строит и разбирает адрес прогона кругом', () => {
     // Ключ проекта и id прогона — сегменты раскладки журнала: слэш, как и в
     // адресе API (`isSafeSegment`), в них недопустим, а вот пробел, `&` и `%`
     // — как раз то, ради чего экранирование нужно.
     const projectKey = 'проект a b';
     const runId = 'ид с пробелом & знак%';
-    const href = runHref(projectKey, runId);
+    const href = hrefFor(run.id, { projectKey, runId }, ALL_SCREENS);
 
-    const route = parseRoute(href);
-    assert.deepEqual(route, { page: 'run', projectKey, runId });
+    assert.deepEqual(parseRoute(href, ALL_SCREENS), { screenId: run.id, params: { projectKey, runId } });
   });
 
-  it('неизвестный путь даёт маршрут первого экрана', () => {
-    assert.deepEqual(parseRoute('/что-то-ещё'), { page: 'runs' });
-    assert.deepEqual(parseRoute('/'), { page: 'runs' });
+  it('неизвестный путь ведёт на экран с наименьшим местом в навигации', () => {
+    assert.deepEqual(parseRoute('/что-то-ещё', ALL_SCREENS), { screenId: runs.id, params: {} });
+    assert.deepEqual(parseRoute('/', ALL_SCREENS), { screenId: runs.id, params: {} });
   });
 
   it('/runs/<проект> без идентификатора прогона не признаётся адресом прогона', () => {
-    assert.deepEqual(parseRoute('/runs/a'), { page: 'runs' });
+    assert.deepEqual(parseRoute('/runs/a', ALL_SCREENS), { screenId: runs.id, params: {} });
   });
 
   it('/runs/<проект>/<прогон>/<хвост> не признаётся адресом прогона', () => {
-    assert.deepEqual(parseRoute('/runs/a/b/c'), { page: 'runs' });
+    assert.deepEqual(parseRoute('/runs/a/b/c', ALL_SCREENS), { screenId: runs.id, params: {} });
   });
 
-  it('экраны меню разбираются каждый в свой маршрут', () => {
-    assert.deepEqual(parseRoute('/pipelines'), { page: 'pipelines' });
-    assert.deepEqual(parseRoute('/steps'), { page: 'steps' });
-    assert.deepEqual(parseRoute('/widgets'), { page: 'widgets' });
-    assert.deepEqual(parseRoute('/backlog'), { page: 'backlog' });
-    assert.deepEqual(parseRoute('/settings'), { page: 'settings' });
-    assert.deepEqual(parseRoute('/agents'), { page: 'agents' });
-    assert.deepEqual(parseRoute('/cleanup'), { page: 'cleanup' });
+  it('небезопасный сегмент параметра не признаётся адресом экрана', () => {
+    assert.deepEqual(parseRoute('/runs/../b', ALL_SCREENS), { screenId: runs.id, params: {} });
   });
 
-  it('хвост за адресом экрана очереди ведёт на первый экран', () => {
-    assert.deepEqual(parseRoute('/backlog/что-то'), { page: 'runs' });
-  });
-
-  it('адрес каждого пункта меню ведёт на его же экран', () => {
-    // Меню и разбор адреса знают об одних экранах: пункт, чей адрес разбирается
-    // в другую страницу, вёл бы не туда, куда подписан.
-    for (const item of MENU) {
-      assert.equal(parseRoute(item.href).page, item.page, `пункт «${item.title}»`);
+  it('каждый объявленный путь разбирается в свой id', () => {
+    for (const screen of [pipelines, steps, widgets, backlog, cleanup, agents, settings]) {
+      assert.deepEqual(parseRoute(screen.path, ALL_SCREENS), { screenId: screen.id, params: {} }, screen.id);
     }
   });
 
-  it('хвост за именем экрана адресом экрана не признаётся', () => {
-    assert.deepEqual(parseRoute('/settings/что-то'), { page: 'runs' });
+  it('хвост за адресом экрана без параметров ведёт на экран по умолчанию', () => {
+    assert.deepEqual(parseRoute('/backlog/что-то', ALL_SCREENS), { screenId: runs.id, params: {} });
+    assert.deepEqual(parseRoute('/settings/что-то', ALL_SCREENS), { screenId: runs.id, params: {} });
   });
 
-  it('страница прогона подсвечивает пункт «Прогоны»', () => {
-    // Своего пункта у неё нет: пункт, на котором её не видно, оставил бы
-    // открытый экран без отметки в меню вовсе.
-    const owners = MENU.filter((item) => item.pages.includes('run'));
-    assert.deepEqual(
-      owners.map((item) => item.page),
-      ['runs'],
-    );
-  });
-
-  // Требование ui-dashboard: «Период — в адресе, пресетами» (design.md, Решение 5)
-  it('/usage/<период> разбирается в маршрут расхода со своим числом дней', () => {
-    assert.deepEqual(parseRoute('/usage'), { page: 'usage', days: 30 });
-    assert.deepEqual(parseRoute('/usage/7d'), { page: 'usage', days: 7 });
-    assert.deepEqual(parseRoute('/usage/30d'), { page: 'usage', days: 30 });
-    assert.deepEqual(parseRoute('/usage/90d'), { page: 'usage', days: 90 });
-    // «Всё время» не несёт нижней границы: дни отсутствуют, а не равны нулю.
-    assert.deepEqual(parseRoute('/usage/all'), { page: 'usage' });
-  });
-
-  it('неизвестный период уводит на первый экран, как и всякий неизвестный адрес', () => {
-    assert.deepEqual(parseRoute('/usage/вчера'), { page: 'runs' });
-  });
-
-  it('разбор адреса и переключатель периода на экране расхода знают один набор периодов', () => {
-    assert.deepEqual(
-      USAGE_PERIODS.map((period) => period.key),
-      ['7d', '30d', '90d', 'all'],
-    );
-    for (const period of USAGE_PERIODS) {
-      assert.deepEqual(parseRoute(`/usage/${period.key}`), {
-        page: 'usage',
-        ...(period.days === undefined ? {} : { days: period.days }),
-      });
+  it('hrefFor даёт адрес, который parseRoute разбирает обратно в тот же id', () => {
+    for (const screen of ALL_SCREENS.values()) {
+      if (screen.nav === undefined) continue; // у экрана без параметров и без пункта меню (run) свой круговой тест выше
+      const href = hrefFor(screen.id, {}, ALL_SCREENS);
+      assert.deepEqual(parseRoute(href, ALL_SCREENS), { screenId: screen.id, params: {} }, screen.id);
     }
+  });
+
+  it('hrefFor неизвестного id даёт корень, а не бросает исключение', () => {
+    assert.equal(hrefFor('screen-нет-такого', {}, ALL_SCREENS), '/');
+  });
+
+  // Требование ui-dashboard: «Период — в адресе, пресетами» (design.md изменения ui-dashboard, Решение 5).
+  // `:period?` — необязательный параметр: голый /usage разбирается тем же
+  // экраном, что и /usage/<значение>. Перечень значений объявляет сам экран
+  // (`paramValues` объявления), а разбор адреса остаётся общим и имён
+  // пресетов не знает (design.md, Решение 10) — он лишь сверяется с
+  // объявленным перечнем.
+  it('/usage/<период> разбирается в screen-usage c параметром period', () => {
+    assert.deepEqual(parseRoute('/usage', ALL_SCREENS), { screenId: usage.id, params: {} });
+    assert.deepEqual(parseRoute('/usage/7d', ALL_SCREENS), { screenId: usage.id, params: { period: '7d' } });
+    assert.deepEqual(parseRoute('/usage/30d', ALL_SCREENS), { screenId: usage.id, params: { period: '30d' } });
+    assert.deepEqual(parseRoute('/usage/90d', ALL_SCREENS), { screenId: usage.id, params: { period: '90d' } });
+    assert.deepEqual(parseRoute('/usage/all', ALL_SCREENS), { screenId: usage.id, params: { period: 'all' } });
+  });
+
+  it('значение периода вне объявленного перечня — неизвестный адрес: ведёт на экран по умолчанию, как вёл до перевода', () => {
+    // Перечень закрыт объявлением экрана (`paramValues`), поэтому
+    // `/usage/вчера` этому экрану не принадлежит вовсе и разбирается как
+    // любой другой неизвестный адрес — экраном по умолчанию (`ui-screens`,
+    // «Переведённые экраны не меняют поведения»: прежний `parseRoute` уводил
+    // такой адрес на экран прогонов, а не открывал расход за подставленный
+    // период).
+    assert.deepEqual(parseRoute('/usage/вчера', ALL_SCREENS), { screenId: runs.id, params: {} });
+    assert.deepEqual(parseRoute('/usage/7', ALL_SCREENS), { screenId: runs.id, params: {} });
+  });
+
+  it('параметр без объявленного перечня принимает любой безопасный сегмент', () => {
+    assert.deepEqual(parseRoute('/runs/проект/прогон-17', ALL_SCREENS), {
+      screenId: run.id,
+      params: { projectKey: 'проект', runId: 'прогон-17' },
+    });
   });
 
   it('/api/... не признаётся адресом страницы', () => {

@@ -41,7 +41,7 @@ interface Files {
   readonly projectPatch?: string;
 }
 
-function resolved(place: Bed, files: Files = {}): ResolvedConfig {
+function resolved(place: Bed, files: Files = {}, builtinRows?: readonly string[]): ResolvedConfig {
   if (files.global !== undefined) writeFileSync(place.globalPath, files.global);
   if (files.project !== undefined) writeFileSync(place.projectPath, files.project);
   if (files.homePatch !== undefined) writeFileSync(place.homePatchPath, files.homePatch);
@@ -51,6 +51,7 @@ function resolved(place: Bed, files: Files = {}): ResolvedConfig {
     home: place.home,
     globalPath: place.globalPath,
     projectPath: place.projectPath,
+    ...(builtinRows === undefined ? {} : { builtinRows }),
   });
 }
 
@@ -114,6 +115,36 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
     const config = resolveConfig({ cwd: place.root, home: place.home, projectPath: null });
 
     assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', 'home-only']);
+  });
+});
+
+describe('plugin-tree: строки поставки вызывающего', () => {
+  it('id строк поставки встают во встроенный слой рядом со строками движка, и патчи правят их наравне', () => {
+    const place = bed();
+    const config = resolved(
+      place,
+      {
+        homePatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: screen-usage\n    use: ./my-usage.mjs\n',
+        projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: screen-steps\n    use: irrelevant\n    enabled: false\n',
+      },
+      ['ui-shell', 'screen-usage', 'screen-steps'],
+    );
+
+    assert.deepEqual(config.pluginTree.map((row) => [row.id, row.use, row.enabled]), [
+      ['backend-claude', 'stepcast:backend-claude', true],
+      ['ui-shell', 'stepcast:ui-shell', true],
+      ['screen-usage', './my-usage.mjs', true],
+      ['screen-steps', 'irrelevant', false],
+    ]);
+  });
+
+  it('вызывающий, не назвавший своих строк, получает прежнее дерево — тот же состав и порядок', () => {
+    const place = bed();
+    const withoutRows = resolved(place);
+    const config = resolved(place);
+
+    assert.deepEqual(config.pluginTree, withoutRows.pluginTree);
+    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude']);
   });
 });
 
@@ -354,6 +385,64 @@ describe('plugin-tree: замена встроенной строки', () => {
         /Имя предиката exit_code занято/.test(error.message) &&
         /встроенный вклад/.test(error.message),
     );
+  });
+});
+
+describe('plugin-tree: фабрики строк поставки при загрузке', () => {
+  it('applyTreeRow ищет фабрику среди builtinRows наравне с findBuiltinRow', async () => {
+    const place = bed();
+    const config = resolved(place, {}, ['ui-shell']);
+    const applied: string[] = [];
+
+    const registry = await loadPlugins(config, {
+      projectRoot: place.root,
+      builtinRows: [{ id: 'ui-shell', apply: () => { applied.push('ui-shell'); } }],
+    });
+
+    assert.deepEqual(applied, ['ui-shell']);
+    assert.deepEqual(availableNames(registry, 'backends'), ['claude']);
+  });
+
+  it('неизвестное stepcast:<id> отказывает прежним текстом, перечисляя и строки движка, и строки вызывающего', async () => {
+    const place = bed();
+    const config = resolved(place, {
+      projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: mine\n    use: stepcast:screen-usage\n',
+    });
+
+    await assert.rejects(
+      () =>
+        loadPlugins(config, {
+          projectRoot: place.root,
+          builtinRows: [{ id: 'ui-shell', apply: () => undefined }],
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /несуществующую встроенную строку stepcast:screen-usage/);
+        assert.match(error.hint ?? '', /stepcast:backend-claude/);
+        assert.match(error.hint ?? '', /stepcast:ui-shell/);
+        return true;
+      },
+    );
+  });
+
+  it('строка витрины, отключённая патчем, фабрику не зовёт', async () => {
+    const place = bed();
+    const config = resolved(
+      place,
+      {
+        projectPatch:
+          'version: 1\nkind: plugins-patch\nplugins:\n  - id: ui-shell\n    use: stepcast:ui-shell\n    enabled: false\n',
+      },
+      ['ui-shell'],
+    );
+    let called = false;
+
+    await loadPlugins(config, {
+      projectRoot: place.root,
+      builtinRows: [{ id: 'ui-shell', apply: () => { called = true; } }],
+    });
+
+    assert.equal(called, false);
   });
 });
 

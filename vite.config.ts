@@ -61,6 +61,15 @@ export default defineConfig({
       // Целый корень репозитория здесь означал бы,
       // что любая открытая в браузере страница читает через `/@fs/` что
       // угодно из рабочего дерева.
+      //
+      // `src/ui/screens` разрешён каталогом, а не перечнем файлов
+      // (`builtin-pages-as-plugins`, design.md Решение 14): объявления
+      // экранов — общий с демоном модуль на каждый встроенный экран
+      // (`src/ui/screens/<id>/declaration.ts`), и перечислять десять файлов
+      // поимённо давало бы тот же доступ ценой лишней строки на каждый новый
+      // экран; серверные половины (`server.ts`) в этом каталоге тоже лежат, но
+      // витрина их не импортирует, и дев-сервер отдаёт браузеру только то, что
+      // запрошено.
       allow: [
         join(ROOT, 'ui'),
         join(ROOT, 'node_modules'),
@@ -72,6 +81,7 @@ export default defineConfig({
         join(ROOT, 'src', 'ui', 'filters.ts'),
         join(ROOT, 'src', 'ui', 'backlogView.ts'),
         join(ROOT, 'src', 'ui', 'widgetRuntime.ts'),
+        join(ROOT, 'src', 'ui', 'screens'),
         join(ROOT, 'src', 'core', 'config', 'modelTiers.ts'),
         join(ROOT, 'src', 'core', 'plugins', 'fibers.ts'),
       ],

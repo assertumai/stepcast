@@ -267,6 +267,11 @@ table.runs th.sortable.active .sort-button { color: var(--accent); }
 /* Состояние всей витрины (расхождение версий), а не одного прогона — полоса
    поверх экрана, тем же приглушённым видом, что и другие сообщения (.error). */
 .notice { color: var(--run); font-size: .85rem; }
+
+/* Причина отказа сборки состава экранов на демоне — полосой над экраном
+   (`ui-daemon`, «Отказ сборки состава не гасит витрину»): прежние экраны
+   работают, но пользователь обязан видеть, что состав не пересобран. */
+.screens-build-error { color: var(--fail); font-size: .85rem; padding-bottom: .75rem; }
 .notice code { font-family: var(--mono); }
 
 button.tokens {

@@ -10,7 +10,8 @@ import type { ModelTiers } from '../core/config/modelTiers.js';
 import type { ResolvedConfig } from '../core/config/resolve.js';
 import { ModelNameSchema, ModelTierSchema, RawConfigSchema } from '../core/config/schema.js';
 import { StepcastError } from '../core/errors.js';
-import { resolveWithCachedKernel, type KernelCache } from './pipelines.js';
+import { currentDaemonKernel } from './kernel.js';
+import type { KernelCache } from './pipelines.js';
 
 export interface SettingsValue {
   readonly value: string | undefined;
@@ -72,15 +73,21 @@ function valueOf(resolved: ResolvedConfig, path: string, value: string | undefin
  * сервера (тесты), плагины загружаются заново на каждый вызов.
  */
 export async function readSettings(home: string = homedir(), kernelCache?: KernelCache): Promise<Settings> {
-  // Ключ кеша — не сам `home` (путь проекта теоретически мог бы с ним
-  // совпасть), а отдельное пространство имён: собственное ядро демона не
-  // должно перепутаться с ядром какого-либо проекта, даже случайно.
-  const { resolved, registry } = await resolveWithCachedKernel(
-    `home:${home}`,
-    { cwd: home, home, projectPath: null },
-    home,
-    kernelCache,
-  );
+  // Единая точка получения действующего ядра демона (`src/ui/kernel.ts`,
+  // design.md Решение 6): ключ кеша `home:<home>`, строки поставки витрины —
+  // тот же вызов, что использует диспетчер маршрутов.
+  const { resolved, registry, fallback, buildError } = await currentDaemonKernel(kernelCache, home);
+  // Запасной встроенный состав держит витрину открытой, чтобы та назвала
+  // причину отказа (`ui-screens`, «Отказ сборки состава не гасит витрину»), но
+  // конфигурации пользователя в нём нет: ни домашнего слоя, ни проектного.
+  // Отдать его значения за настройки значило бы показать правдоподобные и
+  // неверные — и на них же проверить правку, которая пишется в настоящий файл.
+  if (fallback) {
+    throw new StepcastError(`Настройки не читаются: ${buildError ?? 'конфигурация не собирается'}`, {
+      file: globalConfigPath(home),
+      hint: 'Почините файлы, из которых собирается состав плагинов, — витрина покажет ту же причину полосой над экраном',
+    });
+  }
   const { config } = resolved;
   const backends: BackendView[] = Object.entries(config.backends).map(([name, backend]) => ({
     name,

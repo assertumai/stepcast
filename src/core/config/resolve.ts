@@ -251,6 +251,15 @@ export interface ResolveOptions {
     readonly plugin: string;
     readonly values: Record<string, unknown>;
   }[];
+  /**
+   * Id строк поставки вызывающего — во встроенный слой семени, рядом с
+   * `BUILTIN_ROW_IDS` (`plugin-tree`, design.md Решение 2): витрина добавляет
+   * сюда строку каркаса (`ui-shell`) и по строке на экран. Патч и ключ
+   * `plugins` домашнего и проектного слоёв заменяют и отключают их тем же
+   * правилом, что и строки движка. Отсутствие поля даёт дерево, каким оно было
+   * до появления строк поставки, — состав и порядок не меняются.
+   */
+  readonly builtinRows?: readonly string[];
 }
 
 /** Развернуть `~` в начале пути. Пути конфигурации пишутся людьми. */
@@ -660,7 +669,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   // идентичность строк (Решение 9), и потому сворачивается отдельно.
   const homePatchPath = join(dirname(globalPath), 'plugins.patch.yml');
   const homePatch = readPluginsPatchFile(homePatchPath);
-  let pluginTree = applyOperations(builtinSeedRows(BUILTIN_ROW_IDS), [
+  let pluginTree = applyOperations(builtinSeedRows([...BUILTIN_ROW_IDS, ...(options.builtinRows ?? [])]), [
     ...keyOperations(globalConfig?.plugins ?? [], globalPath),
     ...patchOperations(homePatch?.plugins ?? [], homePatchPath),
   ]);

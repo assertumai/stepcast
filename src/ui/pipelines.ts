@@ -8,6 +8,7 @@ import { isStepcastError, StepcastError } from '../core/errors.js';
 import { describeSource } from '../core/config/merge.js';
 import { resolveConfig, type Config, type ResolveOptions } from '../core/config/resolve.js';
 import { resolveWithPlugins, type ResolvedWithPlugins } from '../core/plugins/resolve.js';
+import type { BuiltinRow } from '../core/plugins/builtin.js';
 import type { Kernel } from '../core/plugins/kernel.js';
 import { kernelFromRegistry, registryFromKernel, type Registry } from '../core/plugins/registry.js';
 import type { TreeRow } from '../core/plugins/tree.js';
@@ -429,23 +430,36 @@ async function disposeKernel(kernel: Kernel, cache: KernelCache): Promise<void> 
  * Отдельное разрешение перед основным нужно ровно для одного: сверить ключ
  * кеша с записью, которая уже есть. Записи нет — сверять не с чем, и лишнего
  * чтения слоёв не делается: промах всё равно ведёт к полной сборке.
+ *
+ * `builtinRows` — строки поставки витрины (`ui-shell` и по строке на экран,
+ * `src/ui/screens/rows.ts`): доезжают до обоих проходов разрешения — их `id`
+ * встают в семя встроенного слоя (`ResolveOptions.builtinRows`), их фабрики
+ * ищет загрузчик (`LoadOptions.builtinRows`) — и входят в ключ пригодности
+ * удержанного ядра наравне с деревом, потому что сам список строк поставки
+ * определяет форму встроенного слоя дерева, которое сравнивает `treeEqual`
+ * (design.md, Решение 2, 6). Собственное ядро демона (`src/ui/kernel.ts`)
+ * передаёт их; `projectSection` — нет: строки витрины не должны появиться в
+ * дереве, по которому раскрывается пайплайн проекта.
  */
 export async function resolveWithCachedKernel(
   key: string,
   options: ResolveOptions,
   projectRoot: string,
   cache: KernelCache | undefined,
+  builtinRows: readonly BuiltinRow[] = [],
 ): Promise<ResolvedWithPlugins> {
+  const resolveOptions: ResolveOptions =
+    builtinRows.length === 0 ? options : { ...options, builtinRows: builtinRows.map((row) => row.id) };
   const cached = cache?.entries.get(key);
-  const tree = cached === undefined ? undefined : resolveConfig(options).pluginTree;
+  const tree = cached === undefined ? undefined : resolveConfig(resolveOptions).pluginTree;
   const cachedRegistry =
     cached !== undefined && tree !== undefined && treeEqual(cached.tree, tree)
       ? registryFromKernel(cached.kernel)
       : undefined;
 
   const result = await resolveWithPlugins(
-    options,
-    cachedRegistry === undefined ? { projectRoot } : { projectRoot, registry: cachedRegistry },
+    resolveOptions,
+    cachedRegistry === undefined ? { projectRoot, builtinRows } : { projectRoot, registry: cachedRegistry },
   );
 
   // Кешируется только успешно собранный реестр: если строка выше не бросила,

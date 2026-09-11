@@ -6,8 +6,9 @@ import * as JsxRuntimeNamespace from 'react/jsx-runtime';
 
 import { WIDGET_RUNTIME_GLOBAL, type WidgetRuntimeSpecifier } from '../../src/ui/widgetRuntime';
 import { createBrowserKernel } from './kernel';
+import { bindRouterKernel } from './router';
 import { KernelRoot } from './slots.tsx';
-import runs from './plugins/runs';
+import screens from './plugins/screens';
 import shell from './plugins/shell';
 import './styles.css';
 
@@ -31,14 +32,21 @@ import './styles.css';
  * виджетов выше. `StrictMode` в разработке вызывает эффекты дважды: ядро,
  * заводимое эффектом, удвоило бы регистрации или подняло бы второе.
  *
- * `shell` и `runs` — встроенные плагины (design.md, Решение 8), применённые
- * сразу же вслед за ядром: их отказ, если случится, соберёт `settle()`
- * рендерера корня (`KernelRoot`), а не прервёт загрузку здесь (design.md,
- * Решение 6, — отказы собираются, а не бросаются из вызова).
+ * `shell` — встроенный плагин каркаса (design.md, Решение 8); `screens` —
+ * плагин, который спрашивает состав экранов у демона и применяет встроенные
+ * половины (`ui-screens`, «Витрина узнаёт действующий состав экранов у
+ * демона»). Отказ любого из них, если случится, соберёт `settle()` рендерера
+ * корня (`KernelRoot`), а не прервёт загрузку здесь (design.md, Решение 6—
+ * отказы собираются, а не бросаются из вызова).
+ *
+ * `bindRouterKernel` — до применения плагинов: `screens` уже на первом шаге
+ * своей асинхронной работы пишет в `ctx.screens`, а маршрутизатор
+ * (`ui/src/router.tsx`) не имеет собственного способа получить контекст.
  */
 const kernel = createBrowserKernel();
+bindRouterKernel(kernel.ctx);
 kernel.ctx.plugin(shell);
-kernel.ctx.plugin(runs);
+kernel.ctx.plugin(screens);
 
 const container = document.getElementById('root');
 if (container === null) throw new Error('Разметка витрины без корневого элемента');

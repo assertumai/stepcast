@@ -11,7 +11,7 @@ import {
 } from '../api';
 import { fmtTime } from '../format';
 import { JobGraph } from '../components/JobGraph';
-import { runHref } from '../router';
+import { runHref } from '../screens/run';
 
 /**
  * Пайплайны проектов — их устройство, а не их прогоны.

@@ -26,7 +26,8 @@ import {
   resolveWithCachedKernel,
   type KernelCache,
 } from '../src/ui/pipelines.js';
-import { runHref } from '../src/ui/routes.js';
+import { hrefFor, type RouteScreen } from '../src/ui/routes.js';
+import { declaration as runDeclaration } from '../src/ui/screens/run/declaration.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { projectKey, runPaths, shortRunId, stepDir, usageStorePath } from '../src/core/journal/paths.js';
@@ -129,6 +130,13 @@ async function fetchJson(server: UiServer, path: string): Promise<{ code: number
 /** Адрес прогона в запросе: сегменты экранируются, ключ и id могут быть любыми. */
 function address(key: string, runId: string): string {
   return encodeURIComponent(`${key}/${runId}`);
+}
+
+/** Адрес страницы прогона: та же таблица из одного экрана, которой в браузере пользуется `hrefFor`. */
+const RUN_SCREEN_TABLE: ReadonlyMap<string, RouteScreen> = new Map([[runDeclaration.id, runDeclaration]]);
+
+function runHref(projectKey: string, runId: string): string {
+  return hrefFor(runDeclaration.id, { projectKey, runId }, RUN_SCREEN_TABLE);
 }
 
 function initGitRepo(dir: string): void {
@@ -2485,9 +2493,12 @@ describe('ui-dashboard: изоляция и снятие контекстов я
     const server = await startServer(t, { runsRoot, config, home, kernelCache });
     const pipelines = await fetchJson(server, '/api/pipelines');
     assert.equal(pick(pipelines.json, 'pipelines', 0, 'error'), undefined);
-    // Запись та же: объявления плагинов не менялись, и сервер взял готовое
-    // ядро, а не поднял своё.
-    assert.equal(kernelCache.entries.size, 1);
+    // Запись проекта та же: объявления плагинов не менялись, и сервер взял
+    // готовое ядро, а не поднял своё. Вторая запись — `home:<home>`: любой
+    // запрос под `/api/` теперь ищет обработчик в реестре собственного ядра
+    // демона (`src/ui/kernel.ts`, `ui-daemon`, «Настройки и маршруты живут в
+    // одном контексте демона»), и этот запрос завёл её впервые.
+    assert.equal(kernelCache.entries.size, 2);
     assert.equal([...kernelCache.entries.values()][0], entry);
 
     await server.close();
@@ -2506,16 +2517,19 @@ describe('ui-dashboard: изоляция и снятие контекстов я
 
     const pipelines = await fetchJson(server, '/api/pipelines');
     assert.equal(pick(pipelines.json, 'pipelines', 0, 'error'), undefined);
-    assert.equal(kernelCache.entries.size, 1);
-    const [entry] = [...kernelCache.entries.values()];
-    assert.deepEqual(entry?.kernel.ctx.get('shared-service'), { from: 'plugin' });
+    // Две записи: проект, раскрытый `/api/pipelines`, и `home:<home>` —
+    // собственное ядро демона, которое дispatcher резолвит на каждый запрос
+    // под `/api/`, чтобы найти обработчик в его реестре (`src/ui/kernel.ts`).
+    assert.equal(kernelCache.entries.size, 2);
+    const projectEntry = kernelCache.entries.get(projectRoot);
+    assert.deepEqual(projectEntry?.kernel.ctx.get('shared-service'), { from: 'plugin' });
 
     await server.close();
 
     // Кеш чужой, но контекст поднял сервер — значит он же его и снимает: иначе
     // демон тёк бы каждым раскрытым проектом (ui-daemon spec, «Остановка
     // снимает контексты»).
-    assert.equal(entry?.kernel.ctx.get('shared-service'), undefined);
+    assert.equal(projectEntry?.kernel.ctx.get('shared-service'), undefined);
   });
 
   /**

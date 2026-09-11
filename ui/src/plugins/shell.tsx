@@ -1,81 +1,48 @@
 import { Component, useContext, useEffect, useSyncExternalStore, type JSX, type ReactNode } from 'react';
 import type { Context } from 'cordis';
 
-import { MENU } from '../../../src/ui/routes';
 import type { BacklogOverview, Overview, RunSnapshot, WidgetsOverview } from '../api';
 import { KernelContext, ROOT } from '../kernel';
-import { useRoute, type Route } from '../router';
+import { useDefaultScreenId, useRoute, useScreens, type ParsedRoute } from '../router';
 import { Slot } from '../slots.tsx';
 import { slot, type ChainLinkProps } from '../slots.ts';
-import { Agents } from '../pages/Agents';
-import { Backlog } from '../pages/Backlog';
-import { Cleanup } from '../pages/Cleanup';
-import { Pipelines } from '../pages/Pipelines';
-import { RunDetail } from '../pages/RunDetail';
-import { Settings } from '../pages/Settings';
-import { Steps } from '../pages/Steps';
-import { Usage } from '../pages/Usage';
-import { Widgets } from '../pages/Widgets';
 
 /**
  * Каркас витрины — встроенный плагин (design.md `cordis-kernel-browser`,
- * Решение 8), образец для всех будущих: вносит компонент каркаса в `root`
- * одним вызовом с тремя дочерними слотами — `nav` (список пунктов меню по
- * маршруту), `screen` (экран по ключу маршрута), `screen.frame` (обрамление
- * экрана; сюда же вносит границу ошибок).
+ * Решение 8). Вносит компонент каркаса в `root` одним вызовом с тремя
+ * дочерними слотами — `nav` (список пунктов меню по маршруту), `screen`
+ * (экран по ключу маршрута), `screen.frame` (обрамление экрана; сюда же
+ * вносит границу ошибок).
+ *
+ * Каркас не знает ни одного имени экрана (`ui-kernel`, «Прежнего
+ * переключателя не осталось»; `ui-screens`, «Навигация и разбор адреса
+ * собираются из зарегистрированных экранов»): навигация — целиком слот
+ * `nav`, экран — целиком слот `screen` по ключу `route.screenId`, а
+ * содержимое обоих собирают сами экраны (`ui/src/plugins/screens.tsx`,
+ * `ui/src/screens/*.tsx`).
  *
  * Подписка на сервис `live` — здесь и только здесь (design.md, Решение 10):
  * каркас раздаёт данные вкладчикам через props слотов, сами вкладчики к
  * контексту не обращаются вовсе.
  */
 
-export const NAV = slot<{ readonly route: Route; readonly navigate: (href: string) => void }, 'list'>('nav', 'list');
+export const NAV = slot<{ readonly route: ParsedRoute; readonly navigate: (href: string) => void }, 'list'>(
+  'nav',
+  'list',
+);
 export const SCREEN = slot<
-  { readonly overview: Overview | undefined; readonly navigate: (href: string) => void },
+  {
+    readonly overview: Overview | undefined;
+    readonly navigate: (href: string) => void;
+    /** Параметры адреса, разобранные по объявлению экрана (`ui-screens`, «Параметры доезжают до экрана»). */
+    readonly params: Readonly<Record<string, string>>;
+    readonly backlog: BacklogOverview | undefined;
+    readonly widgets: WidgetsOverview | undefined;
+    readonly snapshot: RunSnapshot | undefined;
+  },
   'keyed'
 >('screen', 'keyed');
 export const SCREEN_FRAME = slot<Record<string, never>, 'chain'>('screen.frame', 'chain');
-
-interface LegacyProps {
-  readonly route: Route;
-  readonly navigate: (href: string) => void;
-  readonly overview: Overview | undefined;
-  readonly backlog: BacklogOverview | undefined;
-  readonly widgets: WidgetsOverview | undefined;
-  readonly snapshot: RunSnapshot | undefined;
-}
-
-/**
- * Прежний переключатель — временное содержимое по умолчанию слота `screen`
- * (design.md, Решение 9): ключ, которого слот не знает, попадает сюда.
- * Восемь экранов, ещё не переведённых в плагины; `builtin-pages-as-plugins`
- * снимает эту функцию целиком, переводя их. `runs` здесь нет — он вносится
- * в `screen` ключом `runs` плагином `ui/src/plugins/runs.tsx`.
- */
-function LegacySwitch({ route, navigate, overview, backlog, widgets, snapshot }: LegacyProps): JSX.Element | null {
-  if (route.page === 'pipelines') return <Pipelines overview={overview} navigate={navigate} />;
-  if (route.page === 'steps') return <Steps />;
-  if (route.page === 'widgets') return <Widgets overview={overview} widgets={widgets} />;
-  if (route.page === 'backlog') return <Backlog backlog={backlog} />;
-  if (route.page === 'usage') {
-    return <Usage overview={overview} {...(route.days === undefined ? {} : { days: route.days })} navigate={navigate} />;
-  }
-  if (route.page === 'cleanup') return <Cleanup overview={overview} />;
-  if (route.page === 'agents') return <Agents />;
-  if (route.page === 'settings') return <Settings />;
-  if (route.page === 'run') {
-    return (
-      <RunDetail
-        key={`${route.projectKey}/${route.runId}`}
-        projectKey={route.projectKey}
-        runId={route.runId}
-        snapshot={snapshot}
-        navigate={navigate}
-      />
-    );
-  }
-  return null;
-}
 
 interface BoundaryState {
   readonly error: Error | undefined;
@@ -109,6 +76,31 @@ const LIVE_LABEL = {
   offline: 'нет связи с демоном',
 } as const;
 
+/**
+ * Ни ключа маршрута, ни экрана по умолчанию в слоте нет — состав ещё не
+ * пришёл или пуст (`ui-kernel`, «Ключа нет в слоте экранов»: ключ, которого в
+ * слоте нет, ведёт на экран по умолчанию, и только когда нет и его, показать
+ * нечего).
+ */
+function NoScreen(): JSX.Element {
+  return <div className="screen-error">Экран не найден в действующем составе.</div>;
+}
+
+/**
+ * Причина отказа сборки состава — полосой над экраном (`ui-daemon`, «Отказ
+ * сборки состава не гасит витрину»: причина приходит вместе с составом и
+ * показывается пользователю). Отдельно от полосы диагностик ядра витрины
+ * (`ui/src/slots.tsx`): та про отказы плагинов страницы, эта — про отказ
+ * сборки на демоне.
+ */
+function BuildErrorBar({ reason }: { readonly reason: string }): JSX.Element {
+  return (
+    <div className="screens-build-error" role="alert">
+      Состав экранов не пересобран: {reason}
+    </div>
+  );
+}
+
 function Shell(): JSX.Element {
   const ctx = useKernelContext();
   const live = useSyncExternalStore(
@@ -117,13 +109,29 @@ function Shell(): JSX.Element {
     () => ctx.live.get(),
   );
   const { route, navigate } = useRoute();
-  const followedAddress = route.page === 'run' ? `${route.projectKey}/${route.runId}` : undefined;
+  const { buildError } = useScreens();
+  const defaultScreenId = useDefaultScreenId();
+  // Прогон, за которым следит поток событий, — по разобранным параметрам
+  // адреса, а не по имени экрана: каркас не знает ни одного (`ui-screens`,
+  // «каркас витрины MUST NOT содержать перечня экранов»). Пара «проект и
+  // прогон» и есть адрес прогона, кто бы её ни объявил.
+  const { projectKey, runId } = route.params;
+  const followed = projectKey === undefined || runId === undefined ? undefined : `${projectKey}/${runId}`;
 
   // Единственное место подписки: смена адреса пересоздаёт её через `follow`,
   // а не размонтирование компонента (design.md, Решение 10).
   useEffect(() => {
-    ctx.live.follow(followedAddress);
-  }, [ctx, followedAddress]);
+    ctx.live.follow(followed);
+  }, [ctx, followed]);
+
+  const screenProps = {
+    overview: live.overview,
+    navigate,
+    params: route.params,
+    backlog: live.backlog,
+    widgets: live.widgets,
+    snapshot: live.snapshot,
+  };
 
   return (
     <div className="shell">
@@ -140,47 +148,30 @@ function Shell(): JSX.Element {
           stepcast
         </a>
 
-        {/* `runs` — первый пункт исходного меню (`src/ui/routes.ts`): слот
-            рисуется первым, чтобы порядок не изменился от перевода одного
-            пункта на вклад. */}
         <Slot of={NAV} props={{ route, navigate }} />
-
-        {MENU.filter((item) => item.page !== 'runs').map((item) => (
-          <a
-            key={item.page}
-            className={item.pages.includes(route.page) ? 'nav-item active' : 'nav-item'}
-            href={item.href}
-            aria-current={item.pages.includes(route.page) ? 'page' : undefined}
-            onClick={(event) => {
-              if (event.metaKey || event.ctrlKey) return;
-              event.preventDefault();
-              navigate(item.href);
-            }}
-          >
-            {item.title}
-          </a>
-        ))}
 
         <div className={live.state === 'live' ? 'live on' : 'live off'}>{LIVE_LABEL[live.state]}</div>
       </nav>
 
       <main className="content">
+        {buildError === undefined ? null : <BuildErrorBar reason={buildError} />}
         <Slot
           of={SCREEN_FRAME}
           props={{}}
           default={
             <Slot
               of={SCREEN}
-              props={{ overview: live.overview, navigate }}
-              k={route.page}
+              props={screenProps}
+              k={route.screenId ?? defaultScreenId ?? ''}
+              // Ключа нет в слоте — экран по умолчанию действующего состава
+              // (`ui-kernel`, «Ключа нет в слоте экранов»), а не пустое место:
+              // тот же экран, на который ведёт неразобранный адрес.
               default={
-                <LegacySwitch
-                  route={route}
-                  navigate={navigate}
-                  overview={live.overview}
-                  backlog={live.backlog}
-                  widgets={live.widgets}
-                  snapshot={live.snapshot}
+                <Slot
+                  of={SCREEN}
+                  props={screenProps}
+                  k={defaultScreenId ?? ''}
+                  default={<NoScreen />}
                 />
               }
             />

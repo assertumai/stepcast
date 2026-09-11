@@ -29,6 +29,8 @@
     "../src/ui/filters.ts",
     "../src/ui/backlogView.ts",
     "../src/ui/widgetRuntime.ts",
+    "../src/ui/screens/declaration.ts",
+    "../src/ui/screens/*/declaration.ts",
     "../src/core/plugins/fibers.ts",
     "../vite.config.ts"
   ]

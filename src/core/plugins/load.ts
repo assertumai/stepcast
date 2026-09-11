@@ -6,7 +6,7 @@ import { findPackageRoot } from '../package-schema.js';
 
 import type { ResolvedConfig } from '../config/resolve.js';
 import { isStepcastError, StepcastError } from '../errors.js';
-import { BUILTIN_ROW_IDS, createKernelShell, findBuiltinRow } from './builtin.js';
+import { BUILTIN_ROW_IDS, createKernelShell, findBuiltinRow, type BuiltinRow } from './builtin.js';
 import {
   isContextPlugin,
   StepcastPluginSchema,
@@ -70,6 +70,14 @@ export interface LoadOptions {
   readonly importModule?: (url: string) => Promise<unknown>;
   /** Встроенные команды: их вносит точка входа, ядро о них не знает. */
   readonly builtinCommands?: readonly CommandContribution[];
+  /**
+   * Строки поставки вызывающего — фабрики встроенного слоя сверх строк движка
+   * (`plugin-tree`, design.md Решение 2): витрина передаёт `src/ui/screens/rows.ts`.
+   * `applyTreeRow` ищет их наравне с `findBuiltinRow`; вызов, не назвавший
+   * поле, ищет фабрику только среди строк движка, как и до появления строк
+   * поставки.
+   */
+  readonly builtinRows?: readonly BuiltinRow[];
 }
 
 /**
@@ -249,11 +257,12 @@ export function applyContextPlugin(kernel: Kernel, plugin: ContextPlugin, source
 }
 
 /** Отказ: строка называет несуществующую встроенную строку формой `stepcast:<имя>`. */
-function unknownBuiltinRow(row: TreeRow, name: string): StepcastError {
+function unknownBuiltinRow(row: TreeRow, name: string, callerRows: readonly BuiltinRow[]): StepcastError {
+  const names = [...BUILTIN_ROW_IDS, ...callerRows.map((candidate) => candidate.id)];
   return new StepcastError(`Строка ${row.id} называет несуществующую встроенную строку stepcast:${name}`, {
     ...fileOption(row),
     at: 'plugins',
-    hint: `Пакет поставляет: ${BUILTIN_ROW_IDS.map((id) => `stepcast:${id}`).join(', ')}`,
+    hint: `Пакет поставляет: ${names.map((id) => `stepcast:${id}`).join(', ')}`,
   });
 }
 
@@ -289,10 +298,10 @@ async function applyTreeRow(
 ): Promise<Fiber | undefined> {
   if (isBuiltinUse(row.use)) {
     const name = row.use.slice(BUILTIN_USE_PREFIX.length);
-    const builtinRow = findBuiltinRow(name);
-    if (builtinRow === undefined) throw unknownBuiltinRow(row, name);
+    const builtinRow = findBuiltinRow(name) ?? options.builtinRows?.find((candidate) => candidate.id === name);
+    if (builtinRow === undefined) throw unknownBuiltinRow(row, name, options.builtinRows ?? []);
     try {
-      builtinRow.apply(kernel);
+      await builtinRow.apply(kernel);
     } catch (error) {
       // Конфликт имени вклада, случившийся на встроенной фабрике (две строки
       // дерева назвали одну и ту же), обязан прийти тем же составом полей,

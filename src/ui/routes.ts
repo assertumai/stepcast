@@ -9,69 +9,144 @@
  *
  * Модуль не зависит ни от React, ни от `window`: всё, что зависит от браузера
  * (хук на History API), лежит в `ui/src/router.tsx`.
+ *
+ * `parseRoute` и `hrefFor` — чистые функции над таблицей объявленных экранов
+ * (`ui-screens`, «Навигация и разбор адреса собираются из зарегистрированных
+ * экранов»): ни то ни другое не перечисляет экраны по имени. Таблицу держит
+ * реестр экранов демона (`src/ui/screens/registry.ts`) и браузерный сервис
+ * `screens` (`ui/src/plugins/screens.tsx`) — этот модуль знает только форму
+ * записи, минимально нужную для разбора и сборки ссылки.
  */
 
-export type Route =
-  | { readonly page: 'runs' }
-  | { readonly page: 'pipelines' }
-  | { readonly page: 'steps' }
-  | { readonly page: 'backlog' }
-  | { readonly page: 'usage'; readonly days?: number }
-  | { readonly page: 'settings' }
-  | { readonly page: 'agents' }
-  | { readonly page: 'cleanup' }
-  | { readonly page: 'widgets' }
-  | { readonly page: 'run'; readonly projectKey: string; readonly runId: string };
-
-/**
- * Период экрана расхода: пресеты, а не произвольные даты (design.md,
- * Решение 5). `days` отсутствует у `all` — весь период наблюдений, без
- * нижней границы. Разбор адреса и переключатель периода на экране обязаны
- * знать один и тот же набор — тем же приёмом, что и `MENU`.
- */
-export interface UsagePeriod {
-  readonly key: string;
-  readonly days?: number;
-  readonly label: string;
+/** Часть объявления экрана, нужная разбору адреса и сборке ссылки (design.md, Решение 10). */
+export interface RouteScreen {
+  readonly id: string;
+  /** Место в навигации: по нему выбирается экран по умолчанию (`defaultScreenId`). Нет — не участвует в выборе. */
+  readonly nav?: { readonly order: number };
+  /**
+   * Шаблон адреса: сегмент `:имя` — обязательный параметр, `:имя?` —
+   * необязательный (допустим только последним сегментом).
+   */
+  readonly path: string;
+  /**
+   * Закрытые перечни значений параметров, объявленные самим экраном
+   * (`ScreenDeclaration.paramValues`). Значение вне перечня шаблону не
+   * подходит: адрес разбирается дальше и достаётся экрану по умолчанию, а не
+   * открывает экран с подставленным умолчанием.
+   */
+  readonly paramValues?: Readonly<Record<string, readonly string[]>>;
 }
 
-/** Голый `/usage` без периода в пути — этот же период (design.md, Решение 5). */
-const DEFAULT_USAGE_DAYS = 30;
-
-export const USAGE_PERIODS: readonly UsagePeriod[] = [
-  { key: '7d', days: 7, label: '7 дней' },
-  { key: '30d', days: DEFAULT_USAGE_DAYS, label: '30 дней' },
-  { key: '90d', days: 90, label: '90 дней' },
-  { key: 'all', label: 'всё время' },
-];
+export interface ParsedRoute {
+  /** `undefined` — ни один экран действующего состава не подошёл и нет ни одного экрана с местом в навигации. */
+  readonly screenId: string | undefined;
+  readonly params: Readonly<Record<string, string>>;
+}
 
 /**
- * Экраны бокового меню в порядке, в каком к ним обращаются: сначала
- * происходящее.
- *
- * Список здесь, а не в разметке: меню и разбор адреса обязаны знать об одних и
- * тех же экранах, и разъехаться им негде, пока имя пункта берётся оттуда же,
- * откуда маршрут.
- *
- * `pages` — экраны, на которых пункт считается текущим: страница прогона
- * своего пункта не имеет и подсвечивает тот, из которого на неё приходят.
+ * Экран по умолчанию — не литерал имени, а тот, у кого меньше всего `nav.order`
+ * действующего состава: неразобранный путь и ключ, которого нет в слоте экранов
+ * (`ui-kernel`, «Ключа нет в слоте экранов»), ведут на один и тот же экран этим
+ * правилом, а замена или отключение экрана с наименьшим `order` меняют
+ * умолчание сами, без правки кода.
  */
-export const MENU: readonly {
-  readonly page: Route['page'];
-  readonly href: string;
-  readonly title: string;
-  readonly pages: readonly Route['page'][];
-}[] = [
-  { page: 'runs', href: '/', title: 'Прогоны', pages: ['runs', 'run'] },
-  { page: 'pipelines', href: '/pipelines', title: 'Пайплайны', pages: ['pipelines'] },
-  { page: 'steps', href: '/steps', title: 'Шаги', pages: ['steps'] },
-  { page: 'widgets', href: '/widgets', title: 'Виджеты', pages: ['widgets'] },
-  { page: 'backlog', href: '/backlog', title: 'Бэклог', pages: ['backlog'] },
-  { page: 'usage', href: '/usage', title: 'Расход', pages: ['usage'] },
-  { page: 'cleanup', href: '/cleanup', title: 'Уборка', pages: ['cleanup'] },
-  { page: 'agents', href: '/agents', title: 'Агенты', pages: ['agents'] },
-  { page: 'settings', href: '/settings', title: 'Настройки', pages: ['settings'] },
-];
+export function defaultScreenId(screens: ReadonlyMap<string, RouteScreen>): string | undefined {
+  let best: { readonly id: string; readonly order: number } | undefined;
+  for (const screen of screens.values()) {
+    if (screen.nav === undefined) continue;
+    if (best === undefined || screen.nav.order < best.order) best = { id: screen.id, order: screen.nav.order };
+  }
+  return best?.id;
+}
+
+function templateSegments(path: string): readonly string[] {
+  return path.split('/').filter((part) => part !== '');
+}
+
+/** Сопоставить сегменты действующего пути шаблону экрана — `undefined`, если не подошёл. */
+function matchTemplate(
+  template: readonly string[],
+  actual: readonly string[],
+  paramValues: Readonly<Record<string, readonly string[]>> | undefined,
+): Record<string, string> | undefined {
+  const last = template[template.length - 1];
+  const lastOptional = last !== undefined && last.startsWith(':') && last.endsWith('?');
+  if (actual.length !== template.length && !(lastOptional && actual.length === template.length - 1)) {
+    return undefined;
+  }
+
+  const params: Record<string, string> = {};
+  for (let i = 0; i < actual.length; i++) {
+    const templateSegment = template[i] as string;
+    const actualSegment = actual[i] as string;
+    if (!templateSegment.startsWith(':')) {
+      if (templateSegment !== actualSegment) return undefined;
+      continue;
+    }
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(actualSegment);
+    } catch {
+      return undefined;
+    }
+    if (!isSafeSegment(decoded)) return undefined;
+    const name = templateSegment.slice(1).replace(/\?$/, '');
+    const allowed = paramValues?.[name];
+    // Закрытый перечень: значение вне его — не этот экран. Так `/usage/вчера`
+    // остаётся неизвестным адресом и ведёт на экран по умолчанию, как вёл до
+    // перевода экранов в строки состава.
+    if (allowed !== undefined && !allowed.includes(decoded)) return undefined;
+    params[name] = decoded;
+  }
+  return params;
+}
+
+/**
+ * Путь в маршрут по таблице действующих экранов. Путь, не разобранный ни
+ * одним из них, ведёт на экран по умолчанию (`defaultScreenId`) — включая
+ * лишний хвост сегментов или сегмент, не прошедший `isSafeSegment`.
+ */
+export function parseRoute(pathname: string, screens: ReadonlyMap<string, RouteScreen>): ParsedRoute {
+  const actual = templateSegments(pathname);
+
+  for (const screen of screens.values()) {
+    const params = matchTemplate(templateSegments(screen.path), actual, screen.paramValues);
+    if (params !== undefined) return { screenId: screen.id, params };
+  }
+
+  return { screenId: defaultScreenId(screens), params: {} };
+}
+
+/**
+ * Ссылка на экран по его `id` и параметрам. `id`, которого в таблице нет,
+ * либо параметр, не заполнивший обязательный сегмент шаблона, дают корень —
+ * вызывающий код не должен строить адрес по несуществующему экрану, а отказ
+ * посреди отрисовки меню хуже неверной ссылки.
+ */
+export function hrefFor(
+  id: string,
+  params: Readonly<Record<string, string>>,
+  screens: ReadonlyMap<string, RouteScreen>,
+): string {
+  const screen = screens.get(id);
+  if (screen === undefined) return '/';
+
+  const built: string[] = [];
+  for (const segment of templateSegments(screen.path)) {
+    if (!segment.startsWith(':')) {
+      built.push(segment);
+      continue;
+    }
+    const optional = segment.endsWith('?');
+    const value = params[segment.slice(1).replace(/\?$/, '')];
+    if (value === undefined) {
+      if (optional) continue;
+      return '/';
+    }
+    built.push(encodeURIComponent(value));
+  }
+  return `/${built.join('/')}`;
+}
 
 /**
  * Сегмент раскладки журнала: ключ проекта или идентификатор прогона. Оба идут
@@ -90,11 +165,6 @@ export function isSafeSegment(value: string): boolean {
  */
 export function isApiPath(pathname: string): boolean {
   return pathname === '/api' || pathname.startsWith('/api/');
-}
-
-/** Адрес страницы прогона: `/runs/<проект>/<прогон>`, сегменты экранированы. */
-export function runHref(projectKey: string, runId: string): string {
-  return `/runs/${encodeURIComponent(projectKey)}/${encodeURIComponent(runId)}`;
 }
 
 /**
@@ -116,50 +186,4 @@ export function isWidgetPath(pathname: string): boolean {
  */
 export function widgetModuleHref(projectKey: string, id: string, version: string): string {
   return `/widgets/${encodeURIComponent(projectKey)}/${encodeURIComponent(id)}.js?v=${encodeURIComponent(version)}`;
-}
-
-/**
- * Путь в маршрут. Неизвестный путь — включая `/runs/<проект>` без
- * идентификатора прогона и `/runs/<проект>/<прогон>/...` с хвостом — даёт
- * первый экран, прогоны: витрина не обязана объяснять форму адреса, ей
- * достаточно не потерять пользователя на пустой странице.
- */
-export function parseRoute(pathname: string): Route {
-  const parts = pathname.split('/').filter((part) => part !== '');
-
-  if (parts.length === 1) {
-    if (parts[0] === 'pipelines') return { page: 'pipelines' };
-    if (parts[0] === 'steps') return { page: 'steps' };
-    if (parts[0] === 'widgets') return { page: 'widgets' };
-    if (parts[0] === 'backlog') return { page: 'backlog' };
-    if (parts[0] === 'agents') return { page: 'agents' };
-    if (parts[0] === 'settings') return { page: 'settings' };
-    if (parts[0] === 'cleanup') return { page: 'cleanup' };
-    // Голый `/usage` — умолчание в 30 дней, тот же период, что и пресет `30d`.
-    if (parts[0] === 'usage') return { page: 'usage', days: DEFAULT_USAGE_DAYS };
-  }
-
-  if (parts[0] === 'usage' && parts.length === 2) {
-    const period = USAGE_PERIODS.find((candidate) => candidate.key === parts[1]);
-    if (period === undefined) return { page: 'runs' };
-    return period.days === undefined ? { page: 'usage' } : { page: 'usage', days: period.days };
-  }
-
-  if (parts[0] === 'runs' && parts.length === 3) {
-    const rawKey = parts[1] as string;
-    const rawRunId = parts[2] as string;
-    let projectKey: string;
-    let runId: string;
-    try {
-      projectKey = decodeURIComponent(rawKey);
-      runId = decodeURIComponent(rawRunId);
-    } catch {
-      return { page: 'runs' };
-    }
-    if (isSafeSegment(projectKey) && isSafeSegment(runId)) {
-      return { page: 'run', projectKey, runId };
-    }
-  }
-
-  return { page: 'runs' };
 }

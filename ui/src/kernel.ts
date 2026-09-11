@@ -19,6 +19,7 @@ import {
   type RejectedContribution,
 } from './slots.ts';
 import { LIVE_SERVICE_NAME, LiveService, type EventSourceFactory } from './services/live';
+import { SCREENS_SERVICE_NAME, ScreensService } from './services/screens';
 
 /**
  * Ядро витрины — корневой контекст cordis страницы (design.md
@@ -64,6 +65,7 @@ const RESERVED_SERVICE_RE = /^service "([^"]+)" has been registered at <([^>]*)>
 const KERNEL_SERVICE_NAMES: Readonly<Record<string, string>> = {
   [SLOTS_SERVICE_NAME]: 'реестр слотов',
   [LIVE_SERVICE_NAME]: 'живые данные витрины',
+  [SCREENS_SERVICE_NAME]: 'состав экранов витрины',
 };
 
 function translateKernelNameConflict(
@@ -196,6 +198,10 @@ export function createBrowserKernel(options: BrowserKernelOptions = {}): Browser
   // сервисе»). Одна подписка на вкладку — следствие того, что конструктор
   // зовётся ровно здесь.
   new LiveService(ctx, options.createEventSource);
+  // Состав экранов — тем же приёмом, что и `live`: маршрутизатор
+  // (`ui/src/router.tsx`) и плагин `screens` читают его с первой отрисовки, а
+  // не с той, на которую попадёт какой-то конкретный плагин.
+  new ScreensService(ctx);
   ctx.provide(slotServiceName(ROOT.name), ROOT);
 
   return {

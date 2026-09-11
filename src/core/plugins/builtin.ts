@@ -51,10 +51,17 @@ export const BUILTIN_PREDICATE_NAMES: readonly string[] = [
   'judge',
 ];
 
-/** Встроенная строка дерева: id и фабрика, вносящая вклады на корневой области ядра. */
+/**
+ * Встроенная строка дерева: id и фабрика, вносящая вклады.
+ *
+ * Строка движка вносит их прямо на корневой области ядра, синхронно; строка
+ * поставки витрины (`src/ui/screens/registry.ts`, `screenRow()`) заводит для
+ * себя область плагина внутри `apply` и потому асинхронна — отсюда
+ * `void | Promise<void>`, а не голый `void`.
+ */
 export interface BuiltinRow {
   readonly id: string;
-  apply(kernel: Kernel): void;
+  apply(kernel: Kernel): void | Promise<void>;
 }
 
 export const BUILTIN_ROWS: readonly BuiltinRow[] = [

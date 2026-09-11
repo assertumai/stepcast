@@ -11,7 +11,7 @@ import {
   type StatsOutcome,
 } from '../api';
 import { fmtBytes, fmtDuration, fmtMoney, fmtTime, fmtTokens, pluralRuns } from '../format';
-import { runHref } from '../router';
+import { runHref } from '../screens/run';
 import { withCurrentOption } from '../../../src/ui/filters';
 import {
   collectFilterValues,

@@ -1,7 +1,8 @@
 import { homedir } from 'node:os';
 
 import { discoverModels, type ModelDiscoveryResult } from '../core/backend/models.js';
-import { resolveWithCachedKernel, type KernelCache } from './pipelines.js';
+import { currentDaemonKernel } from './kernel.js';
+import type { KernelCache } from './pipelines.js';
 import { readSettings } from './settings.js';
 
 /**
@@ -25,12 +26,7 @@ export async function readModels(
   kernelCache?: KernelCache,
 ): Promise<ModelsView> {
   const settings = await readSettings(home, kernelCache);
-  const { resolved, registry } = await resolveWithCachedKernel(
-    `home:${home}`,
-    { cwd: home, home, projectPath: null },
-    home,
-    kernelCache,
-  );
+  const { resolved, registry } = await currentDaemonKernel(kernelCache, home);
 
   const entries = await Promise.all(
     settings.backends.map(async (backend) => {
