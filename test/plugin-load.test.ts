@@ -73,7 +73,7 @@ describe('plugin-contributions: загрузка плагинов', () => {
     writeModule(join(place.root, '.stepcast', 'plugins', 'local.mjs'), PLUGIN_BODY);
     const config = resolved(place, { project: 'plugins: ["./plugins/local.mjs"]\n' });
 
-    const registry = await loadPlugins(config, { projectRoot: place.root });
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
 
     assert.deepEqual(availableNames(registry, 'backends'), ['claude', 'codex']);
     assert.ok(predicateNames(registry).includes('http_ok'));
@@ -91,7 +91,7 @@ describe('plugin-contributions: загрузка плагинов', () => {
     writeFileSync(join(pkg, 'index.mjs'), PLUGIN_BODY);
     const config = resolved(place, { project: 'plugins: ["stepcast-plugin-example"]\n' });
 
-    const registry = await loadPlugins(config, { projectRoot: place.root });
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
 
     assert.ok(registry.backends.has('codex'));
     // На macOS временный каталог — симлинк, а разрешение пакета отдаёт
@@ -217,7 +217,7 @@ describe('plugin-contributions: загрузка плагинов', () => {
     const place = bed();
     const config = resolved(place, { project: 'defaults:\n  agent: claude\n' });
 
-    const registry = await loadPlugins(config, { projectRoot: place.root });
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
 
     assert.deepEqual(registry.plugins, []);
     assert.deepEqual(availableNames(registry, 'backends'), ['claude']);
@@ -367,7 +367,7 @@ export default {
     writeModule(join(place.root, '.stepcast', 'plugins', 'models.mjs'), WITH_MODELS);
     const config = resolved(place, { project: 'plugins: ["./plugins/models.mjs"]\n' });
 
-    const registry = await loadPlugins(config, { projectRoot: place.root });
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
 
     assert.equal(registry.backends.get('codex')?.models?.parse({ stdout: '', stderr: '', exitCode: 0 })[0]?.name, 'gpt');
   });
@@ -391,7 +391,7 @@ export default {
     writeModule(join(place.root, '.stepcast', 'plugins', 'local.mjs'), PLUGIN_BODY);
     const config = resolved(place, { project: 'plugins: ["./plugins/local.mjs"]\n' });
 
-    const registry = await loadPlugins(config, { projectRoot: place.root });
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
 
     assert.equal(registry.backends.get('codex')?.models, undefined);
   });

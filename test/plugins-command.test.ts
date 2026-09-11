@@ -150,6 +150,73 @@ describe('plugin-tree: отказ загрузки не заслоняет де�
   });
 });
 
+describe('user-plugins: stepcast plugins печатает каталожные строки', () => {
+  it('называет каталог и слой у строк обоих слоёв, а не «встроенный» и не путь файла', async () => {
+    const project = makeProject({});
+    // Заводим каталоги вручную — project.write ограничен корнем проекта.
+    mkdirSync(join(project.home, '.stepcast', 'plugins', 'home-clock'), { recursive: true });
+    writeFileSync(
+      join(project.home, '.stepcast', 'plugins', 'home-clock', 'plugin.json'),
+      JSON.stringify({ server: 'server.mjs' }),
+    );
+    writeFileSync(
+      join(project.home, '.stepcast', 'plugins', 'home-clock', 'server.mjs'),
+      EMPTY_PLUGIN('home-clock'),
+    );
+    mkdirSync(join(project.root, '.stepcast', 'plugins', 'project-clock'), { recursive: true });
+    writeFileSync(
+      join(project.root, '.stepcast', 'plugins', 'project-clock', 'plugin.json'),
+      JSON.stringify({ server: 'server.mjs' }),
+    );
+    writeFileSync(
+      join(project.root, '.stepcast', 'plugins', 'project-clock', 'server.mjs'),
+      EMPTY_PLUGIN('project-clock'),
+    );
+
+    const outcome = await cli(project, ['plugins']);
+
+    assert.equal(outcome.code, ExitCode.ok);
+    const homeLine = outcome.stdout.split('\n').find((entry) => entry.includes('home-clock'));
+    const projectLine = outcome.stdout.split('\n').find((entry) => entry.includes('project-clock'));
+    assert.match(
+      homeLine ?? '',
+      new RegExp(`${escapeRegExp(join(project.home, '.stepcast', 'plugins', 'home-clock'))}.*\\(дом\\)`),
+    );
+    assert.match(
+      projectLine ?? '',
+      new RegExp(`${escapeRegExp(join(project.root, '.stepcast', 'plugins', 'project-clock'))}.*\\(проект\\)`),
+    );
+    assert.match(homeLine ?? '', /действует/);
+    assert.match(projectLine ?? '', /действует/);
+  });
+
+  it('каталог, названный именем встроенной строки, напечатан отказавшим рядом с ней — и команда работает', async () => {
+    const project = makeProject({});
+    mkdirSync(join(project.home, '.stepcast', 'plugins', 'backend-claude'), { recursive: true });
+
+    const outcome = await cli(project, ['plugins']);
+
+    assert.equal(outcome.code, ExitCode.ok, 'чужая папка с неудачным именем не валит команду');
+    const lines = outcome.stdout.split('\n').filter((entry) => entry.includes('backend-claude'));
+    assert.equal(lines.length, 2, 'встроенная строка и отказавшая каталожная — обе на месте');
+    assert.match(lines[0] ?? '', /встроенный/);
+    assert.match(lines[0] ?? '', /действует/);
+    assert.match(lines[1] ?? '', /\(дом\)/);
+    assert.match(lines[1] ?? '', /отказ:.*встроенной строки/);
+  });
+
+  it('каталожная строка без манифеста показана отказавшей с причиной, а команда не прекращается', async () => {
+    const project = makeProject({});
+    mkdirSync(join(project.home, '.stepcast', 'plugins', 'broken'), { recursive: true });
+
+    const outcome = await cli(project, ['plugins']);
+
+    assert.equal(outcome.code, ExitCode.ok, 'мягкий отказ каталожной строки не меняет код возврата');
+    const line = outcome.stdout.split('\n').find((entry) => entry.includes('broken'));
+    assert.match(line ?? '', /отказ:/);
+  });
+});
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

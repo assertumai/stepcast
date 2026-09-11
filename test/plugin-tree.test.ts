@@ -61,6 +61,20 @@ function writeModule(path: string, body: string): void {
   writeFileSync(path, body);
 }
 
+/** Каталог плагина пользователя (`user-plugins`): манифест плюс перечисленные файлы половин. */
+function writePluginDir(
+  baseDir: string,
+  id: string,
+  manifest: Record<string, unknown>,
+  files: Readonly<Record<string, string>> = {},
+): string {
+  const dir = join(baseDir, '.stepcast', 'plugins', id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'plugin.json'), JSON.stringify(manifest));
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+  return dir;
+}
+
 const REPLACEMENT_CLAUDE = `
 export default {
   name: 'user-claude',
@@ -300,7 +314,7 @@ describe('plugin-tree: отключение строки', () => {
     assert.equal(row?.enabled, false);
     assert.ok(config.pluginTree.some((item) => item.id === 'a'), 'отключённая строка осталась в дереве');
 
-    const registry = await loadPlugins(config, { projectRoot: place.root });
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
     assert.deepEqual(registry.plugins.map((plugin) => plugin.name), ['b']);
     assert.equal(registry.predicates.get('shared_name')?.name, 'shared_name');
     assert.equal(contributionOwner(registry, 'predicates', 'shared_name'), 'b');
@@ -315,7 +329,7 @@ describe('plugin-tree: замена встроенной строки', () => {
       projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: backend-claude\n    use: ./claude.mjs\n',
     });
 
-    const registry = await loadPlugins(config, { projectRoot: place.root });
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
 
     assert.deepEqual(availableNames(registry, 'backends'), ['claude']);
     assert.equal(contributionOwner(registry, 'backends', 'claude'), 'user-claude');
@@ -394,7 +408,7 @@ describe('plugin-tree: фабрики строк поставки при заг�
     const config = resolved(place, {}, ['ui-shell']);
     const applied: string[] = [];
 
-    const registry = await loadPlugins(config, {
+    const { registry } = await loadPlugins(config, {
       projectRoot: place.root,
       builtinRows: [{ id: 'ui-shell', apply: () => { applied.push('ui-shell'); } }],
     });
@@ -491,7 +505,7 @@ describe('plugin-tree: ключ plugins как сокращённая форма
     assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', './shared.mjs']);
     assert.deepEqual(config.pluginTree[1]?.source, { kind: 'file', path: place.globalPath });
 
-    const registry = await loadPlugins(config, { projectRoot: place.root });
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
     assert.equal(registry.plugins.length, 1);
     assert.equal(registry.plugins[0]?.name, 'home-shared', 'модуль разрешён от домашнего файла, объявившего строку');
   });
@@ -568,5 +582,185 @@ describe('plugin-tree: отказы чтения патча', () => {
         return true;
       },
     );
+  });
+});
+
+describe('plugin-tree: каталожные строки (user-plugins)', () => {
+  it('плагин, найденный обходом домашнего слоя, стоит в дереве и применяется', async () => {
+    const place = bed();
+    const dir = writePluginDir(place.home, 'clock', { version: '1.0.0', server: 'server.mjs' }, {
+      'server.mjs': 'export default { name: "clock", predicates: [] };\n',
+    });
+
+    const config = resolved(place);
+    const row = config.pluginTree.find((item) => item.id === 'clock');
+    assert.equal(row?.use, dir);
+    assert.equal(row?.enabled, true);
+    assert.deepEqual(row?.source, { kind: 'directory', dir, layer: 'home' });
+
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
+    assert.deepEqual(registry.plugins.map((plugin) => plugin.name), ['clock']);
+  });
+
+  it('патч своего слоя отключает найденную обходом строку', async () => {
+    const place = bed();
+    writePluginDir(place.home, 'clock', { server: 'server.mjs' }, {
+      'server.mjs': 'export default { name: "clock", predicates: [] };\n',
+    });
+
+    const config = resolved(place, {
+      // `use` повторяет каталог, найденный обходом: тот же приём, что в
+      // design.md, Решение 2 — патч того же слоя правит найденную строку.
+      // Замена целиком, поэтому `use` патча — то, что теперь несёт строка, а
+      // не прежний абсолютный путь, поставленный обходом.
+      homePatch: `version: 1\nkind: plugins-patch\nplugins:\n  - id: clock\n    use: ./plugins/clock\n    enabled: false\n`,
+    });
+
+    const row = config.pluginTree.find((item) => item.id === 'clock');
+    assert.equal(row?.use, './plugins/clock');
+    assert.equal(row?.enabled, false);
+    assert.deepEqual(row?.source, { kind: 'file', path: place.homePatchPath });
+
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
+    assert.deepEqual(registry.plugins, []);
+  });
+
+  it('проектный слой заменяет найденную строку домашнего слоя целиком', async () => {
+    const place = bed();
+    writePluginDir(place.home, 'clock', { server: 'server.mjs' }, {
+      'server.mjs':
+        'export default { name: "clock", predicates: [{ name: "home_only", schema: { type: "boolean" }, evaluate: () => ({ predicate: "home_only", passed: true, hard: true }) }] };\n',
+    });
+    const projectDir = writePluginDir(place.root, 'clock', { server: 'server.mjs' }, {
+      'server.mjs':
+        'export default { name: "clock", predicates: [{ name: "project_only", schema: { type: "boolean" }, evaluate: () => ({ predicate: "project_only", passed: true, hard: true }) }] };\n',
+    });
+
+    const config = resolved(place);
+    const rows = config.pluginTree.filter((item) => item.id === 'clock');
+    assert.equal(rows.length, 1, 'домашняя строка не должна остаться в дереве наравне с проектной');
+    assert.equal(rows[0]?.use, projectDir);
+    assert.deepEqual(rows[0]?.source, { kind: 'directory', dir: projectDir, layer: 'project' });
+
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
+    assert.deepEqual(availableNames(registry, 'predicates').sort(), ['project_only']);
+  });
+
+  it('строка патча, назвавшая в use каталог с манифестом, даёт тот же плагин, что и обход', async () => {
+    const place = bed();
+    // Каталог вне `.stepcast/plugins/` обходом не находится — на него ссылается только патч.
+    // Патч разрешает относительный `use` от своего собственного каталога
+    // (`.stepcast`), поэтому каталог плагина заводится рядом, внутри него.
+    const dir = join(place.root, '.stepcast', 'vendored', 'clock');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'plugin.json'), JSON.stringify({ server: 'server.mjs' }));
+    writeFileSync(join(dir, 'server.mjs'), 'export default { name: "clock", predicates: [] };\n');
+
+    const config = resolved(place, {
+      projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: clock\n    use: ./vendored/clock\n',
+    });
+
+    const row = config.pluginTree.find((item) => item.id === 'clock');
+    assert.deepEqual(row?.source, { kind: 'file', path: place.projectPatchPath });
+
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
+    assert.deepEqual(registry.plugins.map((plugin) => plugin.name), ['clock']);
+  });
+
+  it('имя, объявленное серверной половиной, обязано совпасть с именем каталога', async () => {
+    const place = bed();
+    writePluginDir(place.home, 'clock', { server: 'server.mjs' }, {
+      'server.mjs': 'export default { name: "not-clock", predicates: [] };\n',
+    });
+    const config = resolved(place);
+
+    // Строка найдена обходом — расхождение имён её отказ, но не отказ
+    // загрузки целиком (design.md, Решение 10): вклады не регистрируются,
+    // а причина видна в итогах строк, не в отклонении промиса.
+    const { registry, outcomes } = await loadPlugins(config, { projectRoot: place.root });
+    assert.deepEqual(registry.plugins, []);
+    const outcome = outcomes.find((item) => item.row.id === 'clock');
+    assert.equal(outcome?.status, 'failed');
+    assert.match(outcome?.error?.message ?? '', /clock/);
+    assert.match(outcome?.error?.message ?? '', /not-clock/);
+  });
+
+  it('каталог, названный именем встроенной строки, отказывает сам и не заменяет её', async () => {
+    const place = bed();
+    const dir = writePluginDir(place.home, 'backend-claude', { server: 'server.mjs' }, {
+      'server.mjs': 'export default { name: "backend-claude", predicates: [] };\n',
+    });
+    // Сосед по каталогу плагинов обязан работать: отказ одной строки не имеет
+    // права остановить обход и сборку дерева целиком.
+    writePluginDir(place.home, 'clock', { server: 'server.mjs' }, {
+      'server.mjs': 'export default { name: "clock", predicates: [] };\n',
+    });
+
+    const config = resolved(place);
+
+    const builtin = config.pluginTree.find((row) => row.source.kind === 'builtin' && row.id === 'backend-claude');
+    assert.equal(builtin?.use, 'stepcast:backend-claude', 'встроенная строка своей подмены не получила');
+    assert.equal(builtin?.failure, undefined);
+    const fromDir = config.pluginTree.find((row) => row.source.kind === 'directory' && row.id === 'backend-claude');
+    assert.deepEqual(fromDir?.source, { kind: 'directory', dir, layer: 'home' });
+    assert.match(fromDir?.failure?.message ?? '', /backend-claude/);
+    assert.ok(
+      !config.config.plugins.includes(dir),
+      'заведомо отказавшая строка не попадает в перечень модулей конфигурации',
+    );
+
+    const { registry, outcomes } = await loadPlugins(config, { projectRoot: place.root });
+    const failed = outcomes.find((outcome) => outcome.row === fromDir);
+    assert.equal(failed?.status, 'failed');
+    assert.match(failed?.error?.hint ?? '', /патч/);
+    assert.equal(
+      outcomes.find((outcome) => outcome.row === builtin)?.status,
+      'active',
+      'встроенная строка применена как обычно',
+    );
+    assert.deepEqual(registry.plugins.map((plugin) => plugin.name), ['clock'], 'сосед по каталогу загружен');
+  });
+
+  it('плагин без серверной половины действует и ничего не импортирует', async () => {
+    const place = bed();
+    const dir = writePluginDir(place.home, 'clock', { browser: 'browser.tsx' }, {
+      'browser.tsx': 'export default () => {};\n',
+    });
+
+    const config = resolved(place);
+    const row = config.pluginTree.find((item) => item.id === 'clock');
+    assert.equal(row?.use, dir);
+
+    const imported: string[] = [];
+    const { registry, outcomes } = await loadPlugins(config, {
+      projectRoot: place.root,
+      importModule: async (url) => {
+        imported.push(url);
+        return {};
+      },
+    });
+
+    assert.deepEqual(imported, [], 'без объявленной серверной половины импортировать нечего');
+    assert.equal(outcomes.find((item) => item.row.id === 'clock')?.status, 'active');
+    assert.deepEqual(registry.plugins, [], 'вкладов у такой строки нет — вся её половина браузерная');
+  });
+
+  it('ключ plugins, назвавший тот же id, что и каталог, оставляет строку за обходом', async () => {
+    const place = bed();
+    const dir = writePluginDir(place.home, 'clock', { server: 'server.mjs' }, {
+      'server.mjs': 'export default { name: "clock", predicates: [] };\n',
+    });
+
+    // Спецификатор ключа `plugins` совпал с именем каталога: строка уже в
+    // дереве, и повтор ключа её не трогает (`applyOperation`, ветка `key`).
+    const config = resolved(place, { global: 'plugins: ["clock"]\n' });
+
+    const rows = config.pluginTree.filter((item) => item.id === 'clock');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.use, dir, 'модуль остался каталогом, найденным обходом');
+    assert.deepEqual(rows[0]?.source, { kind: 'directory', dir, layer: 'home' });
+
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
+    assert.deepEqual(registry.plugins.map((plugin) => plugin.name), ['clock']);
   });
 });

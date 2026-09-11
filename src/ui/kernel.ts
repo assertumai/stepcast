@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { resolveConfig, type ResolvedConfig } from '../core/config/resolve.js';
-import { loadPlugins } from '../core/plugins/load.js';
+import { loadPlugins, type RowOutcome } from '../core/plugins/load.js';
 import { kernelFromRegistry, type Registry } from '../core/plugins/registry.js';
 import { resolveWithCachedKernel, type KernelCache } from './pipelines.js';
 import { UI_ROWS, UI_SHELL_ROW } from './screens/rows.js';
@@ -25,6 +25,15 @@ import { NO_ROUTES, type ActiveScreen, type ApiRoutes, type ApiService, type Scr
 export interface DaemonKernel {
   readonly resolved: ResolvedConfig;
   readonly registry: Registry;
+  /**
+   * Итог каждой строки дерева (`RowOutcome`, `user-plugins`, design.md
+   * Решение 10) — того самого состава, что лежит в `registry`: состояние
+   * каталожной строки (действует, отключена, отказ с причиной) иначе было бы
+   * неоткуда взять — с одним `enabled` отказавшая строка неотличима от
+   * действующей. Переживает попадание в кеш ядра: дерево совпало, значит
+   * итоги описывают тот же состав.
+   */
+  readonly outcomes: readonly RowOutcome[];
   /** Действующий состав экранов — сервис `screens` ядра, породившего `registry`. */
   readonly screens: ReadonlyMap<string, ActiveScreen>;
   /** Маршруты того же ядра — их ищет диспетчер (`src/ui/server.ts`). */
@@ -50,6 +59,7 @@ export interface DaemonKernel {
 interface Built {
   readonly resolved: ResolvedConfig;
   readonly registry: Registry;
+  readonly outcomes: readonly RowOutcome[];
 }
 
 interface DaemonKernelState {
@@ -95,8 +105,8 @@ async function builtinOnlyKernel(home: string): Promise<Built> {
     projectPath: null,
     builtinRows: UI_ROWS.map((row) => row.id),
   });
-  const registry = await loadPlugins(resolved, { projectRoot: home, builtinRows: UI_ROWS });
-  return { resolved, registry };
+  const { registry, outcomes } = await loadPlugins(resolved, { projectRoot: home, builtinRows: UI_ROWS });
+  return { resolved, registry, outcomes };
 }
 
 /**
@@ -128,7 +138,7 @@ export async function currentDaemonKernel(
   let buildError: string | undefined;
 
   try {
-    const { resolved, registry } = await resolveWithCachedKernel(
+    const { resolved, registry, outcomes } = await resolveWithCachedKernel(
       `home:${home}`,
       { cwd: home, home, projectPath: null },
       home,
@@ -143,7 +153,11 @@ export async function currentDaemonKernel(
       state.last = undefined;
       buildError = `Строка ${UI_SHELL_ROW.id} не применена: без неё у демона нет ни реестра экранов, ни реестра маршрутов`;
     } else {
-      state.last = { resolved, registry };
+      // Итоги приходят `undefined`, когда реестр взят из кеша (дерево совпало,
+      // `loadPlugins` не звался): описывают тот же состав прежние итоги, и
+      // выбрасывать их означало бы потерять состояние каталожных строк на
+      // каждом втором запросе.
+      state.last = { resolved, registry, outcomes: outcomes ?? state.last?.outcomes ?? [] };
     }
   } catch (error) {
     buildError = reasonOf(error);
@@ -171,6 +185,7 @@ export async function currentDaemonKernel(
   return {
     resolved: active.resolved,
     registry: active.registry,
+    outcomes: active.outcomes,
     // Запасное ядро собрано из тех же `UI_ROWS`, поэтому сервисы у него есть
     // всегда; пустой состав — ответ на случай, которого быть не может, но
     // который не имеет права стать `TypeError` в долгоживущем процессе.

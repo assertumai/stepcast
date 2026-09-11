@@ -1,5 +1,5 @@
 import { resolveConfig, type ResolveOptions, type ResolvedConfig } from '../config/resolve.js';
-import { loadPlugins, type LoadOptions } from './load.js';
+import { loadPlugins, type LoadOptions, type RowOutcome } from './load.js';
 import type { Context } from './context.js';
 import { pluginContext } from './kernel.js';
 import { contributionOwner, kernelFromRegistry, type Registry } from './registry.js';
@@ -22,6 +22,14 @@ export interface ResolvedWithPlugins {
   readonly registry: Registry;
   /** Контекст ядра, породившего `registry` — то, чем пользуется `CommandEnv.ctx`. */
   readonly ctx: Context;
+  /**
+   * Итог каждой строки дерева (`RowOutcome`, design.md, Решение 10) —
+   * `undefined`, когда реестр пришёл готовым (`registry`, второй вариант
+   * `ResolveWithPluginsOptions`), а не собран здесь: тогда `loadPlugins` не
+   * звался, и итогов ниоткуда взять. `stepcast plugins --dump` в этом случае
+   * читает дерево напрямую (`runPluginsCommand`), не через это поле.
+   */
+  readonly outcomes: readonly RowOutcome[] | undefined;
 }
 
 /**
@@ -57,8 +65,16 @@ export async function resolveWithPlugins(
 ): Promise<ResolvedWithPlugins> {
   const first = resolveConfig(options);
   const projectRoot = loadOptions.projectRoot ?? options.cwd;
-  const registry =
-    loadOptions.registry ?? (await loadPlugins(first, { ...loadOptions, projectRoot }));
+  let registry: Registry;
+  let outcomes: readonly RowOutcome[] | undefined;
+  if (loadOptions.registry === undefined) {
+    const loaded = await loadPlugins(first, { ...loadOptions, projectRoot });
+    registry = loaded.registry;
+    outcomes = loaded.outcomes;
+  } else {
+    registry = loadOptions.registry;
+    outcomes = undefined;
+  }
   const ctx = pluginContext(kernelFromRegistry(registry).ctx);
 
   const pluginDefaults = registry.plugins.flatMap((plugin) => {
@@ -73,7 +89,7 @@ export async function resolveWithPlugins(
     return Object.keys(backends).length === 0 ? [] : [{ plugin: plugin.name, values: { backends } }];
   });
 
-  if (pluginDefaults.length === 0) return { resolved: first, registry, ctx };
+  if (pluginDefaults.length === 0) return { resolved: first, registry, ctx, outcomes };
 
-  return { resolved: resolveConfig({ ...options, pluginDefaults }), registry, ctx };
+  return { resolved: resolveConfig({ ...options, pluginDefaults }), registry, ctx, outcomes };
 }

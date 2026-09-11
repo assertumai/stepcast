@@ -315,10 +315,17 @@ interface ProjectOverrides {
   readonly registry: Registry;
 }
 
-/** Слой-источник строки совпал: тот же вид и тот же файл. */
+/**
+ * Слой-источник строки совпал: тот же вид, и для файла — тот же путь, для
+ * каталога (`user-plugins`) — тот же каталог и тот же слой. Строка,
+ * переехавшая между слоями (домашний каталог заменён проектным с тем же
+ * `id`), несёт разный `layer` и потому строкой той же не считается.
+ */
 function sourceEqual(a: TreeRow['source'], b: TreeRow['source']): boolean {
   if (a.kind !== b.kind) return false;
-  return a.kind !== 'file' || b.kind !== 'file' || a.path === b.path;
+  if (a.kind === 'file') return b.kind === 'file' && a.path === b.path;
+  if (a.kind === 'directory') return b.kind === 'directory' && a.dir === b.dir && a.layer === b.layer;
+  return true;
 }
 
 /**

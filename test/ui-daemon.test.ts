@@ -15,6 +15,7 @@ import {
   stopDaemon,
   writeRecord,
 } from '../src/ui/daemon.js';
+import { currentDaemonKernel } from '../src/ui/kernel.js';
 import { StepcastError } from '../src/core/errors.js';
 import { tempDir } from './tmp.js';
 
@@ -120,5 +121,59 @@ describe('ui-daemon: жизненный цикл', () => {
     assert.ok(error instanceof StepcastError);
     assert.match(error.message, /7717/);
     assert.match(error.hint ?? '', /ui\.port/);
+  });
+});
+
+/** Каталог плагина пользователя в домашнем слое (`user-plugins`). */
+function writeHomePlugin(home: string, id: string, manifest: Record<string, unknown>, files: Readonly<Record<string, string>>): void {
+  const dir = join(home, '.stepcast', 'plugins', id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'plugin.json'), JSON.stringify(manifest));
+  for (const [name, content] of Object.entries(files)) writeFileSync(join(dir, name), content);
+}
+
+describe('ui-daemon: действующее ядро и каталожные плагины', () => {
+  it('итоги строк доходят до ядра демона: каталожный плагин действует, сломанный сосед назван отказавшим', async () => {
+    const home = tempDir('daemon-kernel-');
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    writeHomePlugin(home, 'clock', { server: 'server.mjs' }, {
+      'server.mjs': 'export default { name: "clock" };\n',
+    });
+    // Каталог без манифеста — мягкий отказ строки: демон обязан подняться.
+    mkdirSync(join(home, '.stepcast', 'plugins', 'broken'), { recursive: true });
+
+    const daemon = await currentDaemonKernel(undefined, home);
+
+    assert.equal(daemon.fallback, false);
+    assert.equal(daemon.buildError, undefined);
+    assert.equal(daemon.outcomes.find((outcome) => outcome.row.id === 'clock')?.status, 'active');
+    const broken = daemon.outcomes.find((outcome) => outcome.row.id === 'broken');
+    assert.equal(broken?.status, 'failed');
+    assert.match(broken?.error?.message ?? '', /манифест/i);
+  });
+
+  it('запасное встроенное ядро не берёт плагинов пользователя: домашний слой у него свой, подставной', async () => {
+    const home = tempDir('daemon-kernel-');
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    writeHomePlugin(home, 'clock', { server: 'server.mjs' }, {
+      'server.mjs': 'export default { name: "clock" };\n',
+    });
+    // Явная строка патча отказывает строго — основная сборка не удаётся вовсе,
+    // и действующим становится запасное ядро (design.md `config-patch-layers`,
+    // Решение 7): в нём не должно быть ни домашнего слоя, ни его каталогов.
+    writeFileSync(
+      join(home, '.stepcast', 'plugins.patch.yml'),
+      'version: 1\nkind: plugins-patch\nplugins:\n  - id: mine\n    use: ./нет-такого.mjs\n',
+    );
+
+    const daemon = await currentDaemonKernel(undefined, home);
+
+    assert.equal(daemon.fallback, true);
+    assert.match(daemon.buildError ?? '', /не загружается/);
+    assert.deepEqual(daemon.registry.plugins.map((plugin) => plugin.name), []);
+    assert.ok(
+      !daemon.outcomes.some((outcome) => outcome.row.id === 'clock'),
+      'каталог плагина домашнего слоя во встроенный состав не входит',
+    );
   });
 });

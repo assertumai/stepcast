@@ -18,7 +18,7 @@ import { runInitCommand } from './commands/init.js';
 import { runLintCommand } from './commands/lint.js';
 import { runLogsCommand } from './commands/logs.js';
 import { runMergeLanesCommand } from './commands/merge-lanes.js';
-import { runPluginsCommand, runPluginsCommandAfterLoadFailure } from './commands/plugins.js';
+import { outcomeWithoutLoad, runPluginsCommand, runPluginsCommandAfterLoadFailure } from './commands/plugins.js';
 import { runProjectCommand } from './commands/project.js';
 import { runResumeCommand } from './commands/resume.js';
 import { runRunCommand } from './commands/run.js';
@@ -317,7 +317,16 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
   {
     name: 'plugins',
     spec: COMMANDS['plugins'] as CommandSpec,
-    run: (args, io, env) => runPluginsCommand(io.out, env.pluginTree),
+    run: (args, io, env) =>
+      runPluginsCommand(
+        io.out,
+        // Точка входа всегда загружает плагины заново для этой команды — итоги
+        // определены. `undefined` остаётся на случай вызова с кешированным
+        // реестром (`resolveWithPlugins`, вариант `registry`): тогда состояние
+        // строки выводится из неё самой — заведомый отказ (`TreeRow.failure`)
+        // со своей причиной, иначе `enabled`, как и до появления каталогов.
+        env.pluginOutcomes ?? env.pluginTree.map((row) => outcomeWithoutLoad(row)),
+      ),
   },
   {
     name: 'gc',
@@ -413,6 +422,9 @@ export function buildIndependentCommandEnv(name: string, cwd: string): CommandEn
     get pluginTree() {
       return readForbidden();
     },
+    get pluginOutcomes() {
+      return readForbidden();
+    },
   };
 }
 
@@ -453,7 +465,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
         builtinCommands: BUILTIN_COMMANDS,
       });
     }
-    const { resolved, registry, ctx } = resolution;
+    const { resolved, registry, ctx, outcomes } = resolution;
 
     const specs: Record<string, CommandSpec> = {};
     for (const [name, contribution] of registry.commands) specs[name] = contribution.spec;
@@ -468,6 +480,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
       registry,
       ctx,
       pluginTree: resolved.pluginTree,
+      pluginOutcomes: outcomes,
     });
   } catch (error) {
     return reportError(error, io.err);

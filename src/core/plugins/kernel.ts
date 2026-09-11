@@ -163,6 +163,17 @@ export interface Kernel {
    */
   recordPlugin(ctx: Context, meta: LoadedPlugin): void;
   /**
+   * Забыть запись плагина, чья область так и осталась `PENDING`, — область,
+   * которая ждёт сервис и не дождалась. Снятие такой области эффектов не
+   * разматывает: cordis снимает их, только выходя из `ACTIVE`
+   * (`Fiber._setEpoch`, ветка `epoch === oldEpoch`), а `PENDING` в него и не
+   * входила. Вкладов за такой областью нет — её тело не исполнялось вовсе, —
+   * но запись в перечне загруженных сделана снаружи, вызывающим, и снять её
+   * тоже приходится ему. Для области, снятой обычным путём, вызов
+   * безвреден: запись уже убрана её же эффектом.
+   */
+  forgetPlugin(fiber: Fiber): void;
+  /**
    * Снять все области, заведённые плагинами этого ядра, — то, чем демон
    * останавливает ядро проекта при `close()` (design.md, Решение 6). Снимаются
    * только верхнеуровневые области (`fiber.parent === ctx`): их собственное
@@ -203,6 +214,13 @@ export function createKernel(): Kernel {
   new ContributionService<CommandContribution>(ctx, 'commands', builtinFiber);
 
   const plugins: LoadedPlugin[] = [];
+  /** Запись, сделанная областью: нужна `forgetPlugin` — см. её объяснение. */
+  const recorded = new WeakMap<Fiber, LoadedPlugin>();
+
+  const forget = (meta: LoadedPlugin): void => {
+    const index = plugins.indexOf(meta);
+    if (index >= 0) plugins.splice(index, 1);
+  };
 
   return {
     ctx,
@@ -213,13 +231,15 @@ export function createKernel(): Kernel {
       await Promise.all(topLevelFibers(ctx).map((fiber) => fiber.dispose()));
     },
     recordPlugin(pluginCtx, meta) {
+      recorded.set(pluginCtx.fiber, meta);
       pluginCtx.effect(() => {
         plugins.push(meta);
-        return () => {
-          const index = plugins.indexOf(meta);
-          if (index >= 0) plugins.splice(index, 1);
-        };
+        return () => forget(meta);
       }, `plugins.record(${meta.name})`);
+    },
+    forgetPlugin(fiber) {
+      const meta = recorded.get(fiber);
+      if (meta !== undefined) forget(meta);
     },
   };
 }

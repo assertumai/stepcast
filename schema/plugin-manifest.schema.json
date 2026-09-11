@@ -1,0 +1,36 @@
+{
+  "title": "stepcast plugin manifest",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1
+    },
+    "server": {
+      "type": "string",
+      "minLength": 1
+    },
+    "browser": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false,
+  "anyOf": [
+    {
+      "required": [
+        "server"
+      ]
+    },
+    {
+      "required": [
+        "browser"
+      ]
+    }
+  ]
+}

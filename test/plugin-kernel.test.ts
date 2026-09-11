@@ -584,6 +584,7 @@ withOwnService.inject = ['commands'];
       registry,
       ctx,
       pluginTree: out.pluginTree,
+      pluginOutcomes: undefined,
     });
 
     assert.equal(code, 0);

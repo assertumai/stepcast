@@ -8,8 +8,15 @@ import type { PluginPatchRow } from '../config/schema.js';
  * вложенности: ни группировки, ни глубины у списка нет.
  */
 
-/** Слой, давший строке её последнюю редакцию: встроенный либо файл (design.md, Решение 7). */
-export type TreeRowSource = { readonly kind: 'builtin' } | { readonly kind: 'file'; readonly path: string };
+/**
+ * Слой, давший строке её последнюю редакцию: встроенный, файл (design.md,
+ * Решение 7) либо каталог, найденный обходом слоя (`user-plugins`, design.md,
+ * Решение 1) — со своим слоем, проектным либо домашним.
+ */
+export type TreeRowSource =
+  | { readonly kind: 'builtin' }
+  | { readonly kind: 'file'; readonly path: string }
+  | { readonly kind: 'directory'; readonly dir: string; readonly layer: 'project' | 'home' };
 
 /**
  * Форма `use`, которой строка называет фабрику встроенного слоя, а не модуль
@@ -24,11 +31,30 @@ export function isBuiltinUse(use: string): boolean {
   return use.startsWith(BUILTIN_USE_PREFIX);
 }
 
+/**
+ * Причина, по которой строка отказывает ещё до загрузки — до всякого чтения
+ * диска и импорта. Сегодня такая причина одна: каталог назван идентификатором
+ * встроенной строки (`user-plugins`, design.md, Решение 5). Отказ обязан быть
+ * состоянием строки, а не исключением из сборки дерева: чужая папка с
+ * неудачным именем не вправе сделать неработоспособными все команды разом.
+ */
+export interface TreeRowFailure {
+  readonly message: string;
+  readonly hint?: string;
+}
+
 export interface TreeRow {
   readonly id: string;
   readonly use: string;
   readonly enabled: boolean;
   readonly source: TreeRowSource;
+  /**
+   * Строка заведомо неприменима (`TreeRowFailure`). Загрузчик не трогает ради
+   * неё ни диска, ни импорта — отказ отдаётся сразу, и дальше с ним поступают
+   * по общему правилу: у строки, найденной обходом, он становится её
+   * состоянием (design.md, Решение 10).
+   */
+  readonly failure?: TreeRowFailure;
 }
 
 /**
@@ -40,11 +66,15 @@ export interface TreeRow {
 export interface TreeOperation {
   /**
    * Откуда операция: `key` — строка ключа `plugins` (сокращённая форма,
-   * design.md Решение 4), `patch` — строка документа `plugins.patch.yml`.
-   * Различие видно только в одном месте — повторе уже стоящей в дереве строки
-   * (`applyOperation`).
+   * design.md Решение 4), `patch` — строка документа `plugins.patch.yml`,
+   * `directory` — каталог, найденный обходом слоя (`user-plugins`, design.md,
+   * Решение 1, 2). Различие между `key` и прочими видно в одном месте —
+   * повторе уже стоящей в дереве строки (`applyOperation`): `key` оставляет
+   * строку, объявившую `id` первой, за собой, а `directory` и `patch` заменяют
+   * её целиком — так верхний слой (проектный обход поверх домашнего) берёт
+   * приоритет тем же правилом, что и патч.
    */
-  readonly kind: 'key' | 'patch';
+  readonly kind: 'key' | 'patch' | 'directory';
   readonly id: string;
   readonly use: string;
   readonly enabled: boolean;
@@ -52,6 +82,13 @@ export interface TreeOperation {
   readonly after?: string;
   /** Файл, объявивший операцию, — для отказов и для `source` новой строки. */
   readonly file: string;
+  /** Слой каталога — только при `kind: 'directory'` (`TreeRowSource`, вид `directory`). */
+  readonly layer?: 'project' | 'home';
+  /**
+   * Строка заведомо неприменима (`TreeRowFailure`). Такая операция никогда не
+   * заменяет строку, уже стоящую в дереве: см. `applyOperation`.
+   */
+  readonly failure?: TreeRowFailure;
 }
 
 /**
@@ -61,6 +98,28 @@ export interface TreeOperation {
  */
 export function keyOperations(specs: readonly string[], file: string): TreeOperation[] {
   return specs.map((spec) => ({ kind: 'key' as const, id: spec, use: spec, enabled: true, file }));
+}
+
+/**
+ * Строки, найденные обходом каталога плагинов слоя (`user-plugins`,
+ * design.md, Решение 1, 2): вставка в конец с `id`, равным имени каталога, и
+ * `use` — абсолютным путём каталога. В отличие от `key`, повтор `id` между
+ * слоями не схлопывается — верхний слой заменяет найденную строку целиком
+ * (`applyOperation`, ветка по умолчанию), а не оставляет её за нижним.
+ */
+export function directoryOperations(
+  dirs: readonly { readonly id: string; readonly dir: string; readonly failure?: TreeRowFailure }[],
+  layer: 'project' | 'home',
+): TreeOperation[] {
+  return dirs.map(({ id, dir, failure }) => ({
+    kind: 'directory' as const,
+    id,
+    use: dir,
+    enabled: true,
+    file: dir,
+    layer,
+    ...(failure === undefined ? {} : { failure }),
+  }));
 }
 
 /**
@@ -94,6 +153,16 @@ export function patchOperations(rows: readonly PluginPatchRow[], file: string): 
   return operations;
 }
 
+/** Источник новой строки: каталог — для операции обхода, файл — для ключа и патча (design.md, Решение 1, 7). */
+function operationSource(operation: TreeOperation): TreeRowSource {
+  if (operation.kind === 'directory') {
+    // `layer` всегда задан операциями `directoryOperations` — необязательность
+    // поля здесь только ради того, чтобы `key`/`patch` его не носили.
+    return { kind: 'directory', dir: operation.use, layer: operation.layer! };
+  }
+  return { kind: 'file', path: operation.file };
+}
+
 /** Применить одну операцию к дереву — замена известного `id` либо вставка нового (design.md, Решение 3). */
 function applyOperation(tree: readonly TreeRow[], operation: TreeOperation): TreeRow[] {
   const index = tree.findIndex((row) => row.id === operation.id);
@@ -101,8 +170,20 @@ function applyOperation(tree: readonly TreeRow[], operation: TreeOperation): Tre
     id: operation.id,
     use: operation.use,
     enabled: operation.enabled,
-    source: { kind: 'file', path: operation.file },
+    source: operationSource(operation),
+    ...(operation.failure === undefined ? {} : { failure: operation.failure }),
   };
+
+  if (operation.failure !== undefined) {
+    // Заведомо неприменимая строка не занимает чужого места: каталог, названный
+    // идентификатором встроенной строки, обязан отказать сам, а встроенная
+    // строка — остаться в дереве нетронутой (`user-plugins`, «Каталог назван
+    // именем встроенной строки»; design.md, Решение 5). Отсюда и повтор `id` в
+    // дереве: две строки с одним именем — ровно то, что произошло на диске, и
+    // печать состава (`stepcast plugins`) показывает обе — действующую
+    // встроенную и отказавшую каталожную с причиной.
+    return [...tree, row];
+  }
 
   if (index !== -1 && operation.kind === 'key') {
     // Ключ `plugins` — вставка, а не правка: строка с этим `id` уже в дереве,

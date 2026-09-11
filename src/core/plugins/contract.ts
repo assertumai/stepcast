@@ -11,6 +11,7 @@ import type { CliIo, CommandSpec, ParsedArgs } from './cli-types.js';
 // круга между контрактом, реестром и контекстом не возникает. Контекст берётся
 // из `context.js`, а не из ядра: публикуемая поверхность плагина не должна
 // тянуть за собой ни `cordis`, ни его типы (см. `context.ts`).
+import type { RowOutcome } from './load.js';
 import type { Registry } from './registry.js';
 import type { Context, Inject } from './context.js';
 import type { TreeRow } from './tree.js';
@@ -121,6 +122,14 @@ export interface CommandEnv {
    * двумя чтениями развела бы напечатанное дерево с загруженным составом.
    */
   readonly pluginTree: readonly TreeRow[];
+  /**
+   * Итог применения каждой строки дерева (`RowOutcome`, `user-plugins`,
+   * design.md Решение 10) — тот же состав, что уже собрала загрузка.
+   * `undefined`, если реестр пришёл готовым, а не собран `loadPlugins` на этом
+   * вызове (`resolveWithPlugins`, вариант с кешированным реестром) — на пути
+   * CLI такого не бывает, но поле остаётся честным для прочих вызывающих.
+   */
+  readonly pluginOutcomes: readonly RowOutcome[] | undefined;
 }
 
 /** Вклад команды: новая подкоманда `stepcast <имя>`. */

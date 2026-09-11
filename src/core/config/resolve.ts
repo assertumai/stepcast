@@ -7,12 +7,14 @@ import { StepcastError } from '../errors.js';
 import { packagedWrapperNames } from '../package-schema.js';
 import { describeSchemaFailure } from '../pipeline/load.js';
 import { BUILTIN_ROW_IDS } from '../plugins/builtin.js';
+import { discoverPluginDirectories, pluginsDirPath } from '../plugins/discover.js';
 import {
   applyOperations,
   builtinSeedRows,
   isBuiltinUse,
   keyOperations,
   patchOperations,
+  type TreeOperation,
   type TreeRow,
 } from '../plugins/tree.js';
 import {
@@ -260,6 +262,18 @@ export interface ResolveOptions {
    * до появления строк поставки, — состав и порядок не меняются.
    */
   readonly builtinRows?: readonly string[];
+  /**
+   * Корень проекта, каталоги плагинов которого обходятся проектным слоем
+   * (`user-plugins`, design.md, Решение 13). По умолчанию — `cwd`, тот же
+   * каталог, из которого читается проектный конфиг: для обычного вызова CLI
+   * это один и тот же проект. Демон витрины разрешает собственное ядро с
+   * `projectPath: null` (свой конфиг — не проектный), но каталог, в котором он
+   * поднят, всё равно обязан быть проектным слоем каталогов плагинов — это
+   * поле называет его в обход отсутствующего `projectPath`. `projectPath: null`
+   * без этого поля — обхода проектного слоя нет вовсе (собственное ядро
+   * демона, запасной встроенный состав, `src/ui/kernel.ts`).
+   */
+  readonly pluginsProjectRoot?: string;
 }
 
 /** Развернуть `~` в начале пути. Пути конфигурации пишутся людьми. */
@@ -662,24 +676,46 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
     tightenOnly: TIGHTEN_ONLY_KEYS,
   });
 
-  // Дерево плагинов (`plugin-tree`): встроенный слой, затем домашний и
-  // проектный — каждый из своего ключа `plugins` (сокращённая форма,
-  // design.md Решение 4) и своего патча, в этом порядке. Патч не проходит
-  // через `mergeLayers`: он не про точечные пути, а про порядок и
-  // идентичность строк (Решение 9), и потому сворачивается отдельно.
+  // Дерево плагинов (`plugin-tree`, `user-plugins`): встроенный слой, затем
+  // домашний и проектный — каждый из обхода своего каталога плагинов, своего
+  // ключа `plugins` (сокращённая форма, design.md Решение 4) и своего патча, в
+  // этом порядке (design.md, Решение 3). Патч не проходит через `mergeLayers`:
+  // он не про точечные пути, а про порядок и идентичность строк (Решение 9), и
+  // потому сворачивается отдельно.
+  const reservedRowIds = [...BUILTIN_ROW_IDS, ...(options.builtinRows ?? [])];
   const homePatchPath = join(dirname(globalPath), 'plugins.patch.yml');
   const homePatch = readPluginsPatchFile(homePatchPath);
-  let pluginTree = applyOperations(builtinSeedRows([...BUILTIN_ROW_IDS, ...(options.builtinRows ?? [])]), [
+  // Каталог плагинов домашнего слоя — рядом с глобальным конфигом, а не под
+  // домашним каталогом машины: сборка с подставным путём конфигурации
+  // (запасное встроенное ядро демона, `src/ui/kernel.ts`) обязана остаться
+  // встроенной и не подхватывать настоящие `~/.stepcast/plugins`.
+  let pluginTree = applyOperations(builtinSeedRows(reservedRowIds), [
+    ...discoverPluginDirectories(join(dirname(globalPath), 'plugins'), 'home', reservedRowIds),
     ...keyOperations(globalConfig?.plugins ?? [], globalPath),
     ...patchOperations(homePatch?.plugins ?? [], homePatchPath),
   ]);
+
+  // Корень обхода проектного слоя каталогов плагинов — независим от того,
+  // читается ли проектный файл конфигурации: демон разрешает собственное ядро
+  // с `projectPath: null`, но каталог, в котором он поднят, всё равно обязан
+  // дать проектный слой плагинов (`ui-daemon`, Решение 13).
+  const pluginsProjectRoot = options.pluginsProjectRoot ?? (options.projectPath === null ? undefined : options.cwd);
+  const projectOperations: TreeOperation[] = [];
+  if (pluginsProjectRoot !== undefined) {
+    projectOperations.push(
+      ...discoverPluginDirectories(pluginsDirPath(pluginsProjectRoot), 'project', reservedRowIds),
+    );
+  }
   if (projectPath !== undefined) {
     const projectPatchPath = join(dirname(projectPath), 'plugins.patch.yml');
     const projectPatch = readPluginsPatchFile(projectPatchPath);
-    pluginTree = applyOperations(pluginTree, [
+    projectOperations.push(
       ...keyOperations(projectConfig?.plugins ?? [], projectPath),
       ...patchOperations(projectPatch?.plugins ?? [], projectPatchPath),
-    ]);
+    );
+  }
+  if (projectOperations.length > 0) {
+    pluginTree = applyOperations(pluginTree, projectOperations);
   }
 
   const values = merged.values;
@@ -749,7 +785,13 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
       iterations: requireNumber(values, 'limits.iterations'),
     },
     envDeny: (values.get('env_deny') as string[] | undefined) ?? [],
-    plugins: pluginTree.filter((row) => row.enabled && !isBuiltinUse(row.use)).map((row) => row.use),
+    // Заведомо неприменимая строка (`TreeRow.failure`) из проекции выпадает
+    // наравне с отключённой: её `use` — каталог, который загрузчик и не
+    // попытается открыть, и выдавать его за объявленный модуль значило бы
+    // соврать потребителю поля.
+    plugins: pluginTree
+      .filter((row) => row.enabled && row.failure === undefined && !isBuiltinUse(row.use))
+      .map((row) => row.use),
     context: {
       inlineThreshold: requireNumber(values, 'context.inline_threshold'),
       maxTokens: requireNumber(values, 'context.max_tokens'),
