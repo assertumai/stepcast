@@ -13,6 +13,7 @@ import type { BackendConfig, Config } from '../src/core/config/resolve.js';
 import { asAgent, asRun, asScript, makeProject, MINIMAL_PIPELINE, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 import type { ScriptRoots } from '../src/core/pipeline/expand.js';
+import type { Predicate } from '../src/core/pipeline/model.js';
 
 /** Бэкенд с умолчанием модели — для проверки слоя `backend`. */
 const BACKEND_WITH_DEFAULT_MODEL: BackendConfig = {
@@ -4410,6 +4411,200 @@ jobs:
       project.path('.stepcast/scripts/build.mjs'),
       '--flag',
     ]);
+  });
+});
+
+describe('pipeline-definition: предикат script', () => {
+  function scriptPredicate(predicates: readonly Predicate[]): Extract<Predicate, { kind: 'script' }> {
+    const predicate = predicates[0];
+    assert.equal(predicate?.kind, 'script');
+    return predicate as Extract<Predicate, { kind: 'script' }>;
+  }
+
+  // Сценарий: «Предикат в expect шага»
+  it('разбирает предикат script в expect шага и разрешает путь тем же слоем, что и шаг script', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, hi]
+        expect: [{ script: checks/no-todo.py }]
+`,
+    });
+    project.write('.stepcast/scripts/checks/no-todo.py', '#!/usr/bin/env python3\nprint("ok")\n');
+
+    const { pipeline } = expandScript(project, isolatedScriptRoots(project));
+    const step = asRun(pipeline.jobs[0]!.steps[0]!);
+    const predicate = scriptPredicate(step.expect);
+
+    assert.equal(predicate.path, 'checks/no-todo.py');
+    assert.equal(predicate.unresolved, undefined);
+    assert.equal(predicate.resolved?.layer, 'project');
+    assert.equal(predicate.resolved?.runner, 'python3');
+    assert.equal(
+      predicate.resolved?.absolutePath,
+      project.path('.stepcast/scripts/checks/no-todo.py'),
+    );
+    assert.deepEqual(predicate.resolved?.argv, [
+      'python3',
+      project.path('.stepcast/scripts/checks/no-todo.py'),
+    ]);
+  });
+
+  // Сценарий: «Предикат в условии сходимости»
+  it('разбирает предикат script в until.check тем же правилом, что и в expect', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    until:
+      max_iterations: 3
+      check: [{ script: checks/converged.sh }]
+    steps:
+      - id: c
+        run: [echo, hi]
+`,
+    });
+    project.write('.stepcast/scripts/checks/converged.sh', '#!/bin/sh\nexit 0\n');
+
+    const { pipeline } = expandScript(project, isolatedScriptRoots(project));
+    const predicate = scriptPredicate(pipeline.jobs[0]!.until!.check);
+
+    assert.equal(predicate.path, 'checks/converged.sh');
+    assert.equal(predicate.unresolved, undefined);
+    assert.equal(predicate.resolved?.layer, 'project');
+  });
+
+  // Сценарий: «Пустое значение»
+  it('отклоняет пустое значение предиката script', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, hi]
+        expect: [{ script: "" }]
+`,
+    });
+    assert.throws(() => expandScript(project, isolatedScriptRoots(project)), StepcastError);
+  });
+
+  it('предикат script голым именем ищется тем же слоем, что и шаг script с тем же именем', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, hi]
+        expect: [{ script: checks/no-todo.py }]
+`,
+    });
+    const roots = isolatedScriptRoots(project);
+    const homeScript = join(roots.home, '.stepcast', 'scripts', 'checks');
+    writeOutsideProject(homeScript, 'no-todo.py', 'print(1)\n');
+
+    const { pipeline } = expandScript(project, roots);
+    const predicate = scriptPredicate(asRun(pipeline.jobs[0]!.steps[0]!).expect);
+    assert.equal(predicate.resolved?.layer, 'home');
+  });
+
+  // Сценарий: «Предикат script явным путём»
+  it('предикат script явным путём разрешается от файла объявления работы, слои не просматриваются', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  nightly:
+    uses: ./.stepcast/jobs/nightly.yml
+`,
+      '.stepcast/jobs/nightly.yml': `
+kind: job
+until:
+  max_iterations: 2
+  check: [{ script: ../../checks/converged.sh }]
+steps:
+  - id: c
+    run: [echo, hi]
+`,
+    });
+    // Файл лежит вне слоя .stepcast/scripts/: находка доказывает, что путь с
+    // префиксом ../ разрешается от файла работы, а не слоями.
+    project.write('checks/converged.sh', 'exit 0\n');
+
+    const { pipeline } = expandScript(project, isolatedScriptRoots(project));
+    const predicate = scriptPredicate(pipeline.jobs[0]!.until!.check);
+    assert.equal(predicate.resolved?.layer, 'explicit');
+    assert.equal(predicate.resolved?.absolutePath, project.path('checks/converged.sh'));
+  });
+
+  it('предикат script с ненайденным файлом даёт unresolved с перечнем просмотренных слоёв', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, hi]
+        expect: [{ script: checks/missing.py }]
+`,
+    });
+    const roots = isolatedScriptRoots(project);
+
+    const { pipeline } = expandScript(project, roots);
+    const predicate = scriptPredicate(asRun(pipeline.jobs[0]!.steps[0]!).expect);
+
+    assert.equal(predicate.resolved, undefined);
+    assert.equal(predicate.unresolved?.reason, 'file_not_found');
+    if (predicate.unresolved?.reason === 'file_not_found') {
+      assert.ok(predicate.unresolved.searched.includes(join(roots.project, '.stepcast', 'scripts')));
+      assert.ok(predicate.unresolved.searched.includes(join(roots.home, '.stepcast', 'scripts')));
+    }
+  });
+
+  it('предикат script с неразрешимым раннером даёт unresolved runner_undetermined', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, hi]
+        expect: [{ script: checks/mystery.rb }]
+`,
+    });
+    project.write('.stepcast/scripts/checks/mystery.rb', 'puts 1\n');
+
+    const { pipeline } = expandScript(project, isolatedScriptRoots(project));
+    const predicate = scriptPredicate(asRun(pipeline.jobs[0]!.steps[0]!).expect);
+    assert.equal(predicate.unresolved?.reason, 'runner_undetermined');
+  });
+
+  it('отклоняет отложенную подстановку в значении предиката script', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  a:
+    steps: [{ id: c, run: [echo, hi] }]
+  b:
+    needs: [a]
+    steps:
+      - id: c
+        run: [echo, hi]
+        expect: [{ script: "\${jobs.a.output.path}" }]
+`,
+    });
+    assert.throws(() => expandScript(project, isolatedScriptRoots(project)), StepcastError);
   });
 });
 

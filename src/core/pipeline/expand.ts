@@ -440,6 +440,8 @@ function toPredicate(
   substitutions: SubstitutionMap,
   at: string,
   registry: Registry,
+  config: Config,
+  scriptRoots: ScriptRoots,
 ): Predicate {
   // Объединение включает и ветви плагинов, поэтому разбор встроенных ведётся
   // по их собственному типу: проверка ключа идёт по настоящему объекту, а
@@ -472,6 +474,17 @@ function toPredicate(
     return { kind: 'knowledge_valid' };
   }
   if ('cmd' in builtin) return { kind: 'cmd', command: builtin.cmd };
+  if ('script' in builtin) {
+    // Путь и раннер разрешаются тем же правилом, что и у шага `script`, без
+    // `args` и без явного `runner`: у предиката этих ключей нет вовсе
+    // (`docs/pipeline-format.md`, раздел «Предикат script»).
+    const outcome = resolveScript(builtin.script, [], undefined, declaringFile, config, scriptRoots, `${at}.script`);
+    return {
+      kind: 'script',
+      path: builtin.script,
+      ...('resolved' in outcome ? { resolved: outcome.resolved } : { unresolved: outcome.unresolved }),
+    };
+  }
   if ('judge' in builtin) {
     return {
       kind: 'judge',
@@ -874,6 +887,23 @@ function resolveScript(
   };
 }
 
+/**
+ * Текст причины отказа неразрешённого скрипта — общий для шага `script` и
+ * предиката `script`: оба несут один и тот же перечень причин
+ * (`ScriptUnresolved`), и текст должен звучать одинаково что в журнале
+ * прогона, что в вердикте предиката (`run/runner.ts`, `expect/evaluate.ts`).
+ */
+export function describeScriptUnresolved(unresolved: ScriptUnresolved): string {
+  switch (unresolved.reason) {
+    case 'file_not_found':
+      return `Файл скрипта не найден ни в одном слое. Искали: ${unresolved.searched.join(', ')}`;
+    case 'unknown_runner':
+      return `Неизвестный раннер ${unresolved.runner}. Известны: ${unresolved.known.join(', ')}`;
+    case 'runner_undetermined':
+      return `Раннер не определяется ни расширением, ни shebang. Известные расширения: ${unresolved.extensions.join(', ')}`;
+  }
+}
+
 interface StepDefaults {
   readonly agent: string;
   readonly model: string | undefined;
@@ -926,7 +956,7 @@ function toStep(
       ? {}
       : { budget: toBudget(raw.budget, substitutions, `${at}.budget`) }),
     expect: (raw.expect ?? []).map((entry, i) =>
-      toPredicate(entry, declaringFile, substitutions, `${at}.expect.${i}`, registry),
+      toPredicate(entry, declaringFile, substitutions, `${at}.expect.${i}`, registry, config, scriptRoots),
     ),
     attempts: toAttempts(raw.attempts, config.limits, substitutions, at),
   };
@@ -1395,7 +1425,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
                 `${at}.until.max_iterations`,
               ),
               check: until.check.map((entry, i) =>
-                toPredicate(entry, declaringFile, substitutions, `${at}.until.check.${i}`, registry),
+                toPredicate(entry, declaringFile, substitutions, `${at}.until.check.${i}`, registry, config, scriptRoots),
               ),
             },
           }),

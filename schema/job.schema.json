@@ -441,6 +441,20 @@
               {
                 "type": "object",
                 "properties": {
+                  "script": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  }
+                },
+                "required": [
+                  "script"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
                   "judge": {
                     "type": "string"
                   },
@@ -867,6 +881,20 @@
                       },
                       "required": [
                         "cmd"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "script": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "\\S"
+                        }
+                      },
+                      "required": [
+                        "script"
                       ],
                       "additionalProperties": false
                     },
@@ -1368,6 +1396,20 @@
                     {
                       "type": "object",
                       "properties": {
+                        "script": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "\\S"
+                        }
+                      },
+                      "required": [
+                        "script"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
                         "judge": {
                           "type": "string"
                         },
@@ -1771,6 +1813,20 @@
                       },
                       "required": [
                         "cmd"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "script": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "\\S"
+                        }
+                      },
+                      "required": [
+                        "script"
                       ],
                       "additionalProperties": false
                     },

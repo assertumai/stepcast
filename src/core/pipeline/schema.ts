@@ -97,6 +97,9 @@ export const BuiltinPredicateSchema = z.union([
   z.object({ changed_only: z.array(z.string()) }).strict(),
   z.object({ knowledge_valid: z.boolean() }).strict(),
   z.object({ cmd: z.string() }).strict(),
+  // Тот же образец, что у `script` шага: пустая строка внутри слоя дала бы сам
+  // каталог слоя (см. комментарий у ScriptStepSchema).
+  z.object({ script: z.string().min(1).regex(/\S/) }).strict(),
   z
     .object({
       judge: z.string(),

@@ -2999,3 +2999,93 @@ jobs:
     assert.deepEqual(diagnostics, []);
   });
 });
+
+describe('pipeline-definition: статическая проверка предиката script', () => {
+  // Сценарий: «Файла нет ни в одном слое»
+  it('ненайденный файл предиката в expect — ошибка, называющая шаг и просмотренные каталоги', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, hi], expect: [{ script: checks/missing.py }] }]
+`,
+    });
+    const roots = isolatedScriptRoots(project);
+    const diagnostics = lintScript(project, roots);
+
+    const message = errors(diagnostics).find((text) => /предиката script/.test(text) && /не найден/.test(text));
+    assert.ok(message !== undefined, errors(diagnostics).join('\n'));
+    const diagnostic = diagnostics.find((item) => item.message === message);
+    assert.match(diagnostic?.message ?? '', /build\/c/);
+    assert.match(
+      diagnostic?.hint ?? '',
+      new RegExp(join(roots.project, '.stepcast', 'scripts').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    );
+  });
+
+  // Сценарий: «Раннер не определяется»
+  it('раннер предиката, не определяемый ни расширением, ни shebang, — ошибка с перечнем известных расширений', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, hi], expect: [{ script: checks/mystery.rb }] }]
+`,
+    });
+    const roots = isolatedScriptRoots(project);
+    project.write('.stepcast/scripts/checks/mystery.rb', 'puts 1\n');
+    const diagnostics = lintScript(project, roots);
+
+    const message = errors(diagnostics).find((text) => /предиката script/.test(text) && /не определяется/.test(text));
+    assert.ok(message !== undefined, errors(diagnostics).join('\n'));
+    const diagnostic = diagnostics.find((item) => item.message === message);
+    assert.match(diagnostic?.hint ?? '', /\.py/);
+  });
+
+  // Сценарий: «Предикат в until.check с ненайденным файлом»
+  it('ненайденный файл предиката в until.check — ошибка, называющая работу', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    until:
+      max_iterations: 2
+      check: [{ script: checks/missing.sh }]
+    steps: [{ id: c, run: [echo, hi] }]
+`,
+    });
+    const roots = isolatedScriptRoots(project);
+    const diagnostics = lintScript(project, roots);
+
+    const message = errors(diagnostics).find((text) => /предиката script/.test(text) && /не найден/.test(text));
+    assert.ok(message !== undefined, errors(diagnostics).join('\n'));
+    const diagnostic = diagnostics.find((item) => item.message === message);
+    assert.match(diagnostic?.message ?? '', /условия сходимости работы build/);
+  });
+
+  // Сценарий: «Путь с подстановкой не проверяется»
+  it('путь предиката script с подстановкой ${inputs.*} не проверяется статически', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+inputs:
+  name: { type: string, default: no-todo }
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, hi], expect: [{ script: "./checks/\${inputs.name}.py" }] }]
+`,
+    });
+    const diagnostics = lintScript(project, isolatedScriptRoots(project));
+    assert.deepEqual(
+      errors(diagnostics).filter((text) => /предиката script/.test(text)),
+      [],
+    );
+  });
+});

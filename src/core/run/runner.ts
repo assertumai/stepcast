@@ -63,6 +63,7 @@ import { findStepDir } from '../journal/reader.js';
 import { appendUsageRecord, usageRecord } from '../journal/usageStore.js';
 import { RunJournal } from '../journal/writer.js';
 import { jobLockHash, serializeLock } from '../pipeline/lock.js';
+import { describeScriptUnresolved } from '../pipeline/expand.js';
 import type {
   AgentStep,
   ContextEntry,
@@ -927,6 +928,13 @@ async function runJob(
   const jobStartedAt = Date.now();
   const maxIterations = job.until?.maxIterations ?? 1;
   let previousCheck: readonly PredicateResult[] | undefined;
+  // Сквозная нумерация вызовов предиката script в until.check — растёт через
+  // итерации цикла, тем же образом, что и у предиката script в expect шага.
+  let checkScriptCallCount = 0;
+  const nextCheckScriptCallIndex = (): number => {
+    checkScriptCallCount += 1;
+    return checkScriptCallCount;
+  };
 
   try {
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
@@ -955,7 +963,7 @@ async function runJob(
         return outcome;
       }
 
-      const results = await evaluateCheck(job, jobContext);
+      const results = await evaluateCheck(job, jobContext, nextCheckScriptCallIndex);
       const passed = results.every((item) => item.passed || !item.hard);
       journal.event({ kind: 'iteration.finished', job: job.id, iteration, passed });
 
@@ -1016,7 +1024,11 @@ async function runJob(
  * работы. Время идёт в бюджет работы, токены — только если проверка обращается
  * к агентскому бэкенду.
  */
-async function evaluateCheck(job: Job, context: RunContext): Promise<PredicateResult[]> {
+async function evaluateCheck(
+  job: Job,
+  context: RunContext,
+  nextScriptCallIndex: () => number,
+): Promise<PredicateResult[]> {
   const until = job.until;
   if (until === undefined) return [];
 
@@ -1033,6 +1045,17 @@ async function evaluateCheck(job: Job, context: RunContext): Promise<PredicateRe
       // ни PATH, ни HOME.
       env: jobEnv(job, context),
       knowledge: context.knowledgeSource,
+      // Проверка цикла — не попытка шага: подкаталог script-<n> ложится в
+      // каталог работы, а не шага, и `exit_code`/пути в input.json несут
+      // умолчания «попытки не было» — предикат цикла проверяет состояние
+      // рабочего дерева, а не чей-то процесс.
+      script: {
+        stepDir: context.journal.prepareJob(job.id),
+        attempt: 1,
+        journal: context.journal,
+        nextCallIndex: nextScriptCallIndex,
+        timeoutMs: context.config.defaults.stepTimeoutMs,
+      },
     },
     context.registry,
   );
@@ -1950,18 +1973,6 @@ function checkCostUnreported(context: RunContext, job: Job, step: Step, attempt:
   }
 }
 
-/** Текст причины отказа неразрешённого шага `script` — для журнала и для причины исхода. */
-function describeScriptUnresolved(unresolved: ScriptUnresolved): string {
-  switch (unresolved.reason) {
-    case 'file_not_found':
-      return `Файл скрипта не найден ни в одном слое. Искали: ${unresolved.searched.join(', ')}`;
-    case 'unknown_runner':
-      return `Неизвестный раннер ${unresolved.runner}. Известны: ${unresolved.known.join(', ')}`;
-    case 'runner_undetermined':
-      return `Раннер не определяется ни расширением, ни shebang. Известные расширения: ${unresolved.extensions.join(', ')}`;
-  }
-}
-
 /**
  * Шаг с неразрешённым скриптом (design.md, решение 1): линт называет причину
  * заранее, а прогон, дошедший до такого шага, отказывает ему тем же текстом —
@@ -2082,6 +2093,13 @@ async function runCommandStep(
       judgeCallCount += 1;
       return judgeCallCount;
     };
+    // Отдельная сквозная нумерация от судей: `script-<n>` и `judge-<n>` —
+    // разные ряды подкаталогов одного шага (`docs/run-layout.md`).
+    let scriptCallCount = 0;
+    const nextScriptCallIndex = (): number => {
+      scriptCallCount += 1;
+      return scriptCallCount;
+    };
     const onStall = (silentMs: number): void =>
       journal.event({ kind: 'step.stalled', job: job.id, step: step.id, silent_ms: silentMs });
 
@@ -2159,6 +2177,15 @@ async function runCommandStep(
               env: stepEnv(step, job, 1, context, stepDirPath),
               changedPaths: changedPaths(),
               knowledge: context.knowledgeSource,
+              script: {
+                stepDir: stepDirPath,
+                attempt: plan.attempt,
+                journal,
+                nextCallIndex: nextScriptCallIndex,
+                timeoutMs: target.timeoutMs,
+                stallTimeoutMs: config.defaults.stallTimeoutMs,
+                signal: abort.controller.signal,
+              },
             },
             context.registry,
           );
@@ -2318,6 +2345,13 @@ async function runAgentStep(
   const nextCallIndex = (): number => {
     judgeCallCount += 1;
     return judgeCallCount;
+  };
+  // Отдельная сквозная нумерация от судей: `script-<n>` и `judge-<n>` —
+  // разные ряды подкаталогов одного шага (`docs/run-layout.md`).
+  let scriptCallCount = 0;
+  const nextScriptCallIndex = (): number => {
+    scriptCallCount += 1;
+    return scriptCallCount;
   };
   const onStall = (silentMs: number): void =>
     journal.event({ kind: 'step.stalled', job: job.id, step: step.id, silent_ms: silentMs });
@@ -2480,6 +2514,15 @@ async function runAgentStep(
             env: stepEnv(step, job, 1, context, stepDirPath),
             changedPaths: changedPaths(),
             knowledge: context.knowledgeSource,
+            script: {
+              stepDir: stepDirPath,
+              attempt: plan.attempt,
+              journal,
+              nextCallIndex: nextScriptCallIndex,
+              timeoutMs: target.timeoutMs,
+              stallTimeoutMs: config.defaults.stallTimeoutMs,
+              signal: abort.controller.signal,
+            },
           },
           context.registry,
         );

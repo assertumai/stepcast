@@ -1146,6 +1146,195 @@ jobs:
   });
 });
 
+describe('result-contract: предикат script', () => {
+  // Сценарий: «Проверка пройдена»
+  it('код возврата 0 — предикат пройден', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, ok]
+        expect: [{ script: probe.sh }]
+`,
+    });
+    project.write('.stepcast/scripts/probe.sh', '#!/bin/sh\nexit 0\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+  });
+
+  // Сценарий: «Проверка не пройдена» / «Предикат всегда жёсткий»
+  it('ненулевой код возврата проваливает попытку — без output.json причина называет код возврата', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, ok]
+        expect: [{ script: probe.sh }]
+`,
+    });
+    project.write('.stepcast/scripts/probe.sh', '#!/bin/sh\nexit 3\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'failed');
+
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'c');
+    assert.match(step?.reason ?? '', /3/);
+  });
+
+  // Сценарий: «Скрипт называет причину»
+  it('причина отказа берётся из output.json.reason, когда скрипт его записал', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, ok]
+        expect: [{ script: probe.sh }]
+`,
+    });
+    project.write(
+      '.stepcast/scripts/probe.sh',
+      '#!/bin/sh\necho \'{"reason": "найден TODO в src/index.ts:42"}\' > "$STEPCAST_OUTPUT"\nexit 1\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'failed');
+
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'c');
+    assert.match(step?.reason ?? '', /найден TODO в src\/index\.ts:42/);
+  });
+
+  // Задача 4.1: input.json несёт код возврата и пути к stdout.log/stderr.log
+  // попытки — те же файлы, что и у самого шага, а не собственный вызов.
+  it('input.json несёт код возврата попытки и пути к её stdout.log/stderr.log', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [sh, -c, 'printf hola; exit 0']
+        expect: [{ script: probe.sh }]
+`,
+    });
+    project.write('.stepcast/scripts/probe.sh', '#!/bin/sh\nexit 0\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.ok(stepDir !== undefined);
+    const input = JSON.parse(readFileSync(join(stepDir!, 'script-1', 'input.json'), 'utf8'));
+    assert.equal(input.exit_code, 0);
+    assert.equal(input.stdout, join(stepDir!, 'stdout.log'));
+    assert.equal(input.stderr, join(stepDir!, 'stderr.log'));
+    assert.equal('structured' in input, false);
+    assert.match(readFileSync(input.stdout, 'utf8'), /hola/);
+  });
+});
+
+describe('run-journal: подкаталог script-<n> предиката script', () => {
+  // Сценарий: «Один предикат, три попытки»
+  it('нумерация сквозная через попытки: script-1, script-2, script-3', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [sh, -c, 'test "$STEPCAST_ATTEMPT" = "3"']
+        attempts: { max: 3 }
+        expect: [{ exit_code: 0 }, { script: probe.sh }]
+`,
+    });
+    project.write('.stepcast/scripts/probe.sh', '#!/bin/sh\nexit 0\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.ok(existsSync(join(stepDir!, 'script-1')));
+    assert.ok(existsSync(join(stepDir!, 'script-2')));
+    assert.ok(existsSync(join(stepDir!, 'script-3')));
+  });
+
+  // Сценарий: «Несколько предикатов в одной попытке»
+  it('несколько предикатов одной попытки делят общую сквозную нумерацию', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, ok]
+        expect: [{ script: a.sh }, { script: b.sh }]
+`,
+    });
+    project.write('.stepcast/scripts/a.sh', '#!/bin/sh\nexit 0\n');
+    project.write('.stepcast/scripts/b.sh', '#!/bin/sh\nexit 0\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.ok(existsSync(join(stepDir!, 'script-1')));
+    assert.ok(existsSync(join(stepDir!, 'script-2')));
+    assert.ok(!existsSync(join(stepDir!, 'script-3')));
+  });
+
+  // Сценарий: «Состав подкаталога» / «Скрипт записал причину отказа»
+  it('подкаталог несёт input.json, stdout.log, stderr.log и output.json скрипта', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, ok]
+        expect: [{ script: probe.sh }]
+`,
+    });
+    project.write(
+      '.stepcast/scripts/probe.sh',
+      '#!/bin/sh\necho out-line\necho err-line 1>&2\necho \'{"reason": "причина"}\' > "$STEPCAST_OUTPUT"\nexit 1\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'failed');
+
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    const callDir = join(stepDir!, 'script-1');
+    assert.ok(existsSync(join(callDir, 'input.json')));
+    assert.match(readFileSync(join(callDir, 'stdout.log'), 'utf8'), /out-line/);
+    assert.match(readFileSync(join(callDir, 'stderr.log'), 'utf8'), /err-line/);
+    assert.deepEqual(JSON.parse(readFileSync(join(callDir, 'output.json'), 'utf8')), {
+      reason: 'причина',
+    });
+  });
+});
+
 describe('step-execution: контракт входа и выхода script', () => {
   // Сценарий: «Вход доезжает файлом» / «Выход доезжает файлом»
   it('sh видит STEPCAST_INPUT/STEPCAST_OUTPUT, читает вход и пишет выход, работа публикует его и следующая работа читает', async () => {

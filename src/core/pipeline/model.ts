@@ -93,6 +93,19 @@ export type Predicate =
       readonly model?: string;
     }
   /**
+   * Файл-проверка на любом языке — тот же путь и раннер, что у шага `script`
+   * (`docs/pipeline-format.md`, раздел script). Разрешён на раскрытии, тем же
+   * способом, что несёт `ScriptStep`: ровно одно из `resolved`/`unresolved`.
+   * Ключей `runner` и `hard` у предиката нет — раннер решает расширение или
+   * shebang, а жёсткость безусловна.
+   */
+  | {
+      readonly kind: 'script';
+      readonly path: string;
+      readonly resolved?: ResolvedScript;
+      readonly unresolved?: ScriptUnresolved;
+    }
+  /**
    * Предикат, внесённый плагином (`docs/plugins.md`). Движок видит его как
    * данные: имя из реестра и значение, уже проверенное схемой вклада при
    * разборе. Ключ шага, файл фиксации и журнал несут их как есть — знание о

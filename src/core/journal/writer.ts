@@ -19,6 +19,7 @@ import {
   makeRunId,
   projectKey,
   runPaths,
+  scriptCallDir,
   stepDir,
   type RunPaths,
 } from './paths.js';
@@ -210,6 +211,13 @@ export class RunJournal {
   /** Создать каталог вызова судьи и вернуть его путь. */
   prepareJudgeCall(stepDirPath: string, n: number): string {
     const dir = judgeCallDir(stepDirPath, n);
+    mkdirSync(dir, { recursive: true, mode: DIR_MODE });
+    return dir;
+  }
+
+  /** Создать каталог вызова предиката script и вернуть его путь. */
+  prepareScriptCall(stepDirPath: string, n: number): string {
+    const dir = scriptCallDir(stepDirPath, n);
     mkdirSync(dir, { recursive: true, mode: DIR_MODE });
     return dir;
   }

@@ -1,13 +1,16 @@
 import { execaSync } from 'execa';
 import { existsSync, readFileSync } from 'node:fs';
-import { isAbsolute, resolve as resolvePath } from 'node:path';
+import { isAbsolute, join, resolve as resolvePath } from 'node:path';
 // Сборка для draft 2020-12: схемы пишутся по актуальному стандарту, а
 // обычный экспорт ajv знает только draft-07 и отклоняет ссылку на мета-схему.
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import type { ErrorObject, ValidateFunction } from 'ajv';
 
 import { StepcastError } from '../errors.js';
-import type { Predicate } from '../pipeline/model.js';
+import { runProcess } from '../exec/process.js';
+import type { RunJournal } from '../journal/writer.js';
+import { describeScriptUnresolved } from '../pipeline/expand.js';
+import type { Predicate, ScriptUnresolved } from '../pipeline/model.js';
 import type { PredicateResult } from '../journal/schema.js';
 import type { KnowledgeSource } from '../knowledge/types.js';
 import type { Registry } from '../plugins/registry.js';
@@ -40,6 +43,26 @@ export interface EvaluationInput {
    * при необъявленной практике памяти раньше, чем дело доходит сюда.
    */
   readonly knowledge?: KnowledgeSource | undefined;
+  /**
+   * Контракт вызова предиката `script`: где вести каталог `script-<n>` и
+   * какими путями к логам попытки заполнять его `input.json`. Не объявлен —
+   * предикат `script` в списке невозможен: линт и `expand.ts` не пропускают
+   * его до вызывающего без этого контракта (`run/runner.ts`).
+   */
+  readonly script?: ScriptPredicateContext | undefined;
+}
+
+export interface ScriptPredicateContext {
+  /** Каталог шага: в нём заводится подкаталог `script-<n>` вызова. */
+  readonly stepDir: string;
+  /** Номер попытки — им собирается имя `stdout.log`/`stderr.log` попытки. */
+  readonly attempt: number;
+  readonly journal: RunJournal;
+  /** Сквозной номер вызова в пределах шага: растёт через попытки и предикаты. */
+  readonly nextCallIndex: () => number;
+  readonly timeoutMs: number;
+  readonly stallTimeoutMs?: number;
+  readonly signal?: AbortSignal;
 }
 
 const ajv = new Ajv2020({ allErrors: true, strict: false });
@@ -151,6 +174,9 @@ async function evaluateOne(
       };
     }
 
+    case 'script':
+      return evaluateScript(predicate, input);
+
     case 'changed_only':
       return evaluateChangedOnly(predicate.globs, input);
 
@@ -171,6 +197,96 @@ async function evaluateOne(
         expected: predicate.claim,
         detail: 'не вычислен: судья вызывается вторым проходом',
       };
+  }
+}
+
+/**
+ * Предикат `script`: файл-проверка, исполняемая раннером, разрешённым на
+ * раскрытии (`expand.ts`, `resolveScript`). Вход и выход — тот же контракт
+ * файлов, что у шага `script` (`docs/pipeline-format.md`), но с полями самой
+ * попытки: код возврата, пути к её `stdout.log`/`stderr.log` и структурированный
+ * выход, если он есть.
+ *
+ * Неразрешённый предикат (файл не найден, раннер не определяется) не бросает
+ * исключение — линт называет причину заранее (`lint.ts`), а вычисление здесь
+ * отдаёт её же непройденным предикатом, тем же текстом, что и у шага `script`
+ * (`describeScriptUnresolved`).
+ */
+async function evaluateScript(
+  predicate: Extract<Predicate, { kind: 'script' }>,
+  input: EvaluationInput,
+): Promise<PredicateResult> {
+  if (predicate.resolved === undefined) {
+    return {
+      predicate: 'script',
+      passed: false,
+      hard: true,
+      expected: predicate.path,
+      detail: describeScriptUnresolved(predicate.unresolved as ScriptUnresolved),
+    };
+  }
+
+  const call = input.script;
+  if (call === undefined) {
+    // Вызывающий обязан передать контракт вызова вместе с разрешённым
+    // предикатом — иначе некуда писать `input.json` и нечем ограничить
+    // исполнение временем. Внутренняя ошибка движка, а не отказ пользователя.
+    throw new StepcastError('Предикат script вычислен без контракта вызова', {
+      hint: 'evaluatePredicates позвана без поля script в EvaluationInput',
+    });
+  }
+
+  const dir = call.journal.prepareScriptCall(call.stepDir, call.nextCallIndex());
+  const suffix = call.attempt === 1 ? '' : `.${call.attempt}`;
+
+  call.journal.writeStepJson(dir, 'input.json', {
+    exit_code: input.exitCode,
+    stdout: join(call.stepDir, `stdout${suffix}.log`),
+    stderr: join(call.stepDir, `stderr${suffix}.log`),
+    ...(input.structured === undefined ? {} : { structured: input.structured }),
+  });
+
+  const outputPath = join(dir, 'output.json');
+  const result = await runProcess({
+    command: predicate.resolved.argv,
+    cwd: input.cwd,
+    env: {
+      ...input.env,
+      // Свой вход и выход, отдельные от контракта самого шага (если это шаг
+      // `script`): предикат — второй, независимый вызов, а не продолжение
+      // того же контракта.
+      STEPCAST_INPUT: join(dir, 'input.json'),
+      STEPCAST_OUTPUT: outputPath,
+    },
+    timeoutMs: call.timeoutMs,
+    ...(call.stallTimeoutMs === undefined ? {} : { stallTimeoutMs: call.stallTimeoutMs }),
+    ...(call.signal === undefined ? {} : { signal: call.signal }),
+    stdoutPath: join(dir, 'stdout.log'),
+    stderrPath: join(dir, 'stderr.log'),
+  });
+
+  const passed = result.outcome === 'exited' && result.exitCode === 0;
+  if (passed) {
+    return { predicate: 'script', passed: true, hard: true, expected: predicate.path };
+  }
+
+  const reason = readScriptPredicateReason(outputPath) ?? `код возврата ${result.exitCode ?? 'нет'}`;
+  return { predicate: 'script', passed: false, hard: true, expected: predicate.path, detail: reason };
+}
+
+/**
+ * Причина отказа из `output.json` предиката `script`: единственное поле
+ * `reason`, без проверки схемой — это причина отказа, а не структурированный
+ * выход шага (`docs/pipeline-format.md`). Отсутствие файла или поля — не
+ * ошибка: вызывающий берёт родовую причину по коду возврата.
+ */
+function readScriptPredicateReason(outputPath: string): string | undefined {
+  if (!existsSync(outputPath)) return undefined;
+  try {
+    const parsed = JSON.parse(readFileSync(outputPath, 'utf8')) as { reason?: unknown };
+    return typeof parsed.reason === 'string' ? parsed.reason : undefined;
+  } catch {
+    return undefined;
   }
 }
 

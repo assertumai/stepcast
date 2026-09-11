@@ -590,6 +590,17 @@ export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): 
         lintPluginPredicate(predicate, `${at}.until.check.${index}`, job.source, base, options, push);
         continue;
       }
+      if (predicate.kind === 'script') {
+        checkScriptPredicate(
+          predicate,
+          `условия сходимости работы ${job.id}`,
+          job.source,
+          `${at}.until.check.${index}`,
+          substitutions,
+          push,
+        );
+        continue;
+      }
       if (predicate.kind !== 'schema') continue;
       checkDeclaredPath(
         {
@@ -1362,6 +1373,17 @@ function checkStep(
       );
       continue;
     }
+    if (predicate.kind === 'script') {
+      checkScriptPredicate(
+        predicate,
+        `шага ${job.id}/${step.id}`,
+        job.source,
+        `${at}.expect.${index}`,
+        substitutions,
+        push,
+      );
+      continue;
+    }
     if (predicate.kind === 'plugin') {
       lintPluginPredicate(predicate, `${at}.expect.${index}`, job.source, base, options, push);
       continue;
@@ -1476,6 +1498,55 @@ function checkScriptStep(
     file: job.source,
     at: `${at}.script`,
     hint: `Известные расширения таблицы раннеров: ${unresolved.extensions.join(', ') || '(таблица раннеров пуста)'}. Назовите runner явно`,
+  });
+}
+
+/**
+ * Диагностика неразрешённого предиката `script` — тот же образец, что у шага
+ * `script` (`checkScriptStep`), разбитый по причине из `unresolved.reason`;
+ * общая для `expect` шага и `until.check` работы, различающихся только тем,
+ * как называть место объявления (`label`).
+ */
+function checkScriptPredicate(
+  predicate: Extract<Predicate, { kind: 'script' }>,
+  label: string,
+  file: string,
+  at: string,
+  substitutions: ExpandedPipeline['substitutions'],
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  const unresolved = predicate.unresolved;
+  if (unresolved === undefined) return;
+
+  if (unresolved.reason === 'file_not_found') {
+    if (pathCheckSkipped(predicate.path, [`${at}.script`], substitutions)) return;
+    push({
+      severity: 'error',
+      message: `Файл предиката script у ${label} не найден ни в одном слое`,
+      file,
+      at: `${at}.script`,
+      hint: `Искали: ${unresolved.searched.join(', ')}`,
+    });
+    return;
+  }
+
+  if (unresolved.reason === 'unknown_runner') {
+    push({
+      severity: 'error',
+      message: `Предикат script у ${label} называет неизвестный раннер ${unresolved.runner}`,
+      file,
+      at,
+      hint: `Известны: ${unresolved.known.join(', ') || '(таблица раннеров пуста)'}`,
+    });
+    return;
+  }
+
+  push({
+    severity: 'error',
+    message: `Раннер предиката script у ${label} не определяется ни расширением, ни shebang`,
+    file,
+    at: `${at}.script`,
+    hint: `Известные расширения таблицы раннеров: ${unresolved.extensions.join(', ') || '(таблица раннеров пуста)'}`,
   });
 }
 

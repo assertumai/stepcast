@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { expandPipeline } from '../src/core/pipeline/expand.js';
+import { jobDir } from '../src/core/journal/paths.js';
 import { findStepDir, readEvents, readStatus } from '../src/core/journal/reader.js';
 import { lintPipeline } from '../src/core/lint.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
@@ -11,6 +12,30 @@ import { HaltCause } from '../src/core/run/halt.js';
 import { StepcastError } from '../src/core/errors.js';
 import { makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
+
+/**
+ * Корни трёх слоёв script, изолированные от машины: `home` и `builtin` —
+ * пустые временные каталоги, а не настоящие `homedir()` и пакет stepcast.
+ */
+function isolatedScriptRoots(project: Project): { project: string; home: string; builtin: string } {
+  return { project: project.root, home: tempDir('script-home-'), builtin: tempDir('script-builtin-') };
+}
+
+/** Прогнать пайплайн проекта целиком с изолированными корнями слоёв script. */
+async function runWithScriptRoots(project: Project): Promise<RunResult> {
+  const runsRoot = tempDir('runs-');
+  const expanded = expandPipeline({
+    pipelinePath: project.path('stepcast.yml'),
+    config: project.config,
+    scriptRoots: isolatedScriptRoots(project),
+  });
+  return runPipeline({
+    expanded,
+    config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+    projectRoot: project.root,
+    cwd: project.root,
+  });
+}
 
 async function run(project: Project): Promise<RunResult> {
   const runsRoot = tempDir('runs-');
@@ -327,5 +352,43 @@ jobs:
     );
 
     assert.deepEqual(errors, []);
+  });
+});
+
+describe('result-contract: предикат script в until.check', () => {
+  // Тот же предикат, что в expect шага, принят и в условии сходимости —
+  // разбор и раскрытие проверены в test/expand.test.ts; здесь — что вычисление
+  // на самом деле исполняет файл и решает исход итерации.
+  it('script в until.check исполняется и решает исход итерации', async () => {
+    const project = makeProject({
+      'счётчик.txt': '0\n',
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: цикл-script
+jobs:
+  работа:
+    budget: { tokens: 1M }
+    until:
+      max_iterations: 3
+      check: [{ script: converged.sh }]
+    steps:
+      - id: считает
+        run: [sh, -c, 'echo $(( $(cat счётчик.txt) + 1 )) > счётчик.txt']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    project.write(
+      '.stepcast/scripts/converged.sh',
+      '#!/bin/sh\ntest "$(cat счётчик.txt)" -ge 2\n',
+    );
+
+    const result = await runWithScriptRoots(project);
+    assert.equal(result.status, 'success');
+    assert.equal(jobOf(result, 'работа')?.iterations, 2);
+
+    const callDir = join(jobDir(result.journal.paths, 'работа'), 'script-1');
+    assert.ok(existsSync(join(callDir, 'input.json')));
+    assert.ok(existsSync(join(callDir, 'stdout.log')));
   });
 });

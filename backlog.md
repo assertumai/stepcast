@@ -71,12 +71,13 @@ started_at: 2026-09-10T23:27:57.991Z
 
 ## script-predicate
 
-status: pending
+status: done
 title: Предикат script — проверка на любом языке, а не только cmd
 group: script-steps
 track: express
 why: Предикат `cmd` (`src/core/pipeline/model.ts`, `Predicate`) исполняет строку через оболочку, и проверка сложнее `grep` превращается в shell с `jq`. Раннеры и контракт входа из `script-step-runners` и `script-step-contract` дают предикату тот же путь: файл на любом языке, на вход — результат попытки, на выход — вердикт.
 done_when: предикат `script: <путь>` в `expect` и `until.check` исполняется раннером по тем же правилам выбора и слоёв, что и шаг `script`; на вход в `input.json` он получает то же, что `EvaluationInput` (`src/core/expect/evaluate.ts`): код выхода, пути к stdout и stderr, структурированный выход; вердикт — код выхода, а необязательный `output.json` с полем `reason` попадает в причину отказа; предикат подчиняется `hard` как остальные; линтер проверяет существование файла; покрыто тестами; `docs/pipeline-format.md` описывает предикат
+started_at: 2026-09-11T01:15:19.970Z
 
 ## reusable-steps
 

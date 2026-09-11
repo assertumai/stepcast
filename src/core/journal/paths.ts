@@ -142,6 +142,15 @@ export function judgeCallDir(stepDirPath: string, n: number): string {
   return join(stepDirPath, `judge-${n}`);
 }
 
+/**
+ * Каталог вызова предиката `script` внутри каталога шага — тем же образом,
+ * что `judgeCallDir`: номер сквозной, растёт через попытки и через несколько
+ * предикатов `script` одного шага.
+ */
+export function scriptCallDir(stepDirPath: string, n: number): string {
+  return join(stepDirPath, `script-${n}`);
+}
+
 /** Имя каталога итерации: `iter-1`, `iter-2`, … */
 export function iterationDirName(iteration: number): string {
   return `iter-${iteration}`;
