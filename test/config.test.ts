@@ -1174,14 +1174,73 @@ describe('stepcast-configuration: таблица раннеров', () => {
   it('встроенная таблица содержит node, node-ts, python3 и sh', () => {
     const box = sandbox({});
     const { config, provenance } = resolveIn(box);
-    assert.deepEqual(config.runners.node, { command: ['node'], extensions: ['.js', '.mjs', '.cjs'] });
+    assert.deepEqual(config.runners.node, {
+      command: ['node'],
+      extensions: ['.js', '.mjs', '.cjs'],
+      wrapper: 'stepcast:step',
+    });
     assert.deepEqual(config.runners['node-ts'], {
       command: ['node', '--experimental-strip-types'],
       extensions: ['.ts', '.mts'],
+      wrapper: 'stepcast:step',
     });
     assert.deepEqual(config.runners.python3, { command: ['python3'], extensions: ['.py'] });
     assert.deepEqual(config.runners.sh, { command: ['sh'], extensions: ['.sh'] });
     assert.equal(describeSource(provenance.get('runners.python3.command')!), 'встроенное умолчание');
+  });
+
+  // Сценарий: «Встроенные раннеры Node несут обёртку»
+  it('python3 и sh обёртки не несут, node и node-ts несут stepcast:step', () => {
+    const box = sandbox({});
+    const { config } = resolveIn(box);
+    assert.equal(config.runners.node!.wrapper, 'stepcast:step');
+    assert.equal(config.runners['node-ts']!.wrapper, 'stepcast:step');
+    assert.equal(config.runners.python3!.wrapper, undefined);
+    assert.equal(config.runners.sh!.wrapper, undefined);
+  });
+
+  // Сценарий: «Обёртка снимается значением none»
+  it('wrapper: none снимает унаследованную обёртку у переопределённого node', () => {
+    const box = sandbox({
+      project: 'runners:\n  node:\n    command: [bun]\n    wrapper: none\n',
+    });
+    const { config } = resolveIn(box);
+    assert.deepEqual(config.runners.node, { command: ['bun'], extensions: ['.js', '.mjs', '.cjs'] });
+  });
+
+  // Сценарий: «Своя обёртка у своего раннера» — форма пути принимается без
+  // разбора здесь: полное разрешение (слои script) — дело `expand.ts`.
+  it('путь у wrapper принимается разбором конфигурации как есть', () => {
+    const box = sandbox({
+      project: 'runners:\n  deno:\n    command: [deno, run]\n    wrapper: ./tools/deno-step.ts\n',
+    });
+    const { config } = resolveIn(box);
+    assert.equal(config.runners.deno!.wrapper, './tools/deno-step.ts');
+  });
+
+  // Сценарий: «Неизвестная поставляемая обёртка»
+  it('неизвестное имя stepcast:<имя> у wrapper — отказ с перечнем поставляемых', () => {
+    const box = sandbox({
+      project: 'runners:\n  deno:\n    command: [deno, run]\n    wrapper: "stepcast:нет-такой"\n',
+    });
+    assert.throws(() => resolveIn(box), (error: unknown) => {
+      assert.ok(error instanceof StepcastError);
+      assert.match(error.message, /stepcast:нет-такой/);
+      assert.match(error.message, /step/);
+      assert.equal(error.at, 'runners.deno.wrapper');
+      return true;
+    });
+  });
+
+  it('stepcast config печатает действующий wrapper значением', () => {
+    const box = sandbox({});
+    const lines = renderConfigReport(resolveIn(box));
+    const wrapper = lines.find((line) => line.startsWith('runners.node.wrapper'));
+    assert.match(wrapper ?? '', /stepcast:step/);
+    assert.equal(
+      lines.find((line) => line.startsWith('runners.python3.wrapper')),
+      undefined,
+    );
   });
 
   // Сценарий: «Проект пополняет таблицу»

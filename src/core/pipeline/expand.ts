@@ -6,17 +6,17 @@ import { fileURLToPath } from 'node:url';
 
 import { ModelTierSchema } from '../config/schema.js';
 import type { ModelTier } from '../config/modelTiers.js';
-import type { Config } from '../config/resolve.js';
+import type { Config, RunnerConfig } from '../config/resolve.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
 import { StepcastError } from '../errors.js';
 import { assertDataKey } from '../journal/data.js';
 import { findProjectRoot } from '../journal/paths.js';
-import { findPackageRoot, packagedSchemaPath } from '../package-schema.js';
+import { findPackageRoot, packagedSchemaPath, packagedWrapperPath } from '../package-schema.js';
 import { builtinRegistry } from '../plugins/builtin.js';
 import { predicateNames, type Registry } from '../plugins/registry.js';
 import { parseCount, parseDuration, parseExitCode, parseMoney, parsePercent, parseTokens } from '../units.js';
-import { interpolateTree, placeholderNamespaces, type Scope } from './interpolate.js';
+import { interpolateTree, interpolateTypedTree, placeholderNamespaces, type Scope } from './interpolate.js';
 import { readYamlDocument, rejectWiringKeys, validateDocument } from './load.js';
 import { resolveParams, type ParamValue } from './params.js';
 import {
@@ -645,6 +645,31 @@ function recordPromptSubstitutions(
   substitutions.set(key, [...(substitutions.get(key) ?? []), ...extra]);
 }
 
+/**
+ * Снять `input` с каждого шага перед общим `interpolateTree` тела работы:
+ * подстановка внутри `input` разрешается типизированным проходом в `toStep`,
+ * а не общим, который вернул бы всё строкой (design.md, решение 4). Тот же
+ * приём, каким из общего обхода уже вынесен `display` работы.
+ */
+function omitStepInputs(rawSteps: unknown): unknown {
+  if (!Array.isArray(rawSteps)) return rawSteps;
+  return rawSteps.map((step) => {
+    if (step === null || typeof step !== 'object' || !('input' in step)) return step;
+    const { input: _input, ...rest } = step as Record<string, unknown>;
+    return rest;
+  });
+}
+
+/** Вернуть на место `input`, снятый `omitStepInputs`, — нераскрытым, для `toStep`. */
+function restoreStepInputs(interpolatedSteps: unknown, rawSteps: unknown): unknown {
+  if (!Array.isArray(interpolatedSteps) || !Array.isArray(rawSteps)) return interpolatedSteps;
+  return interpolatedSteps.map((step, index) => {
+    const original = rawSteps[index];
+    if (original === null || typeof original !== 'object' || !('input' in original)) return step;
+    return { ...(step as Record<string, unknown>), input: (original as Record<string, unknown>).input };
+  });
+}
+
 function parseModelTier(value: unknown, file: string, at: string): ModelTier | undefined {
   if (value === undefined) return undefined;
   const parsed = ModelTierSchema.safeParse(value);
@@ -767,6 +792,35 @@ function selectRunner(
   };
 }
 
+const STEPCAST_WRAPPER_PREFIX = 'stepcast:';
+
+/**
+ * Разрешить обёртку раннера в абсолютный путь (design.md, решение 7):
+ * `stepcast:<имя>` — от расположения движка, путь — по тем же правилам, что
+ * значение `script` (слоями для голого имени, от места объявления —
+ * `runner.wrapperFile` — для `./` и `../`). Не объявлена — `undefined`.
+ */
+function resolveWrapper(runner: RunnerConfig, roots: ScriptRoots): string | undefined {
+  const value = runner.wrapper;
+  if (value === undefined) return undefined;
+  if (value.startsWith(STEPCAST_WRAPPER_PREFIX)) {
+    return packagedWrapperPath(value.slice(STEPCAST_WRAPPER_PREFIX.length));
+  }
+
+  const declaringFile = runner.wrapperFile ?? roots.builtin;
+  if (isAbsolute(value) || value.startsWith('./') || value.startsWith('../')) {
+    return resolveDeclaredPath(value, declaringFile);
+  }
+
+  const located = resolveScriptFile(value, declaringFile, roots);
+  if ('searched' in located) {
+    throw new StepcastError(`Обёртка ${value} не найдена`, {
+      hint: `Искали: ${located.searched.join(', ')}`,
+    });
+  }
+  return located.absolutePath;
+}
+
 /**
  * Разрешить шаг `script` целиком: путь, раннер, argv, отпечаток. Отложенная
  * подстановка (`jobs`, `run`, `env`) в значении `script` отклоняется здесь же
@@ -800,12 +854,21 @@ function resolveScript(
   const runner = selectRunner(declaredRunner, located.absolutePath, content, config);
   if ('reason' in runner) return { unresolved: runner };
 
+  // Обёртка встаёт между командой раннера и путём скрипта (design.md, решение
+  // 7): argv шага — команда, обёртка, скрипт, `args`.
+  const wrapperPath = resolveWrapper(config.runners[runner.name]!, roots);
+
   return {
     resolved: {
       absolutePath: located.absolutePath,
       layer: located.layer,
       runner: runner.name,
-      argv: [...runner.command, located.absolutePath, ...args],
+      argv: [
+        ...runner.command,
+        ...(wrapperPath === undefined ? [] : [wrapperPath]),
+        located.absolutePath,
+        ...args,
+      ],
       fingerprint: fingerprintContent(content),
     },
   };
@@ -907,6 +970,16 @@ function toStep(
       scriptRoots,
       `${at}.script`,
     );
+    // `raw.input` дошёл сюда нераскрытым (`omitStepInputs`/`restoreStepInputs`):
+    // общий обход тела работы его не тронул, чтобы `${params.retries}` не
+    // превратился в строку "3" раньше типизированного прохода.
+    const inputResult =
+      raw.input === undefined
+        ? undefined
+        : interpolateTypedTree(raw.input, scope, `${at}.input`);
+    if (inputResult !== undefined) {
+      for (const [path, list] of inputResult.substitutions) substitutions.set(path, list);
+    }
     return {
       step: {
         ...common,
@@ -915,6 +988,10 @@ function toStep(
         args,
         ...(raw.runner === undefined ? {} : { runner: raw.runner }),
         ...(onFail === undefined ? {} : { onFail }),
+        ...(inputResult === undefined ? {} : { input: inputResult.value }),
+        ...(raw.output_schema === undefined
+          ? {}
+          : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
         ...('resolved' in outcome ? { resolved: outcome.resolved } : { unresolved: outcome.unresolved }),
       },
     };
@@ -1136,9 +1213,17 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       };
 
       const { params: _params, kind: _kind, version: _version, ...rest } = jobDocument;
-      const interpolated = interpolateTree(rest as Record<string, unknown>, bodyScope, at);
+      const restSteps = (rest as Record<string, unknown>).steps;
+      const interpolated = interpolateTree(
+        { ...(rest as Record<string, unknown>), steps: omitStepInputs(restSteps) },
+        bodyScope,
+        at,
+      );
       collect(interpolated.substitutions);
-      body = interpolated.value;
+      body = {
+        ...interpolated.value,
+        steps: restoreStepInputs((interpolated.value as Record<string, unknown>).steps, restSteps),
+      };
 
       // Переопределения с места подключения накладываются поверх файла работы
       // и делят с ним область job: буква дорожки известна уже здесь, на месте
@@ -1184,9 +1269,17 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         budget_exempt: _budgetExempt,
         ...rest
       } = entry;
-      const interpolated = interpolateTree(rest as Record<string, unknown>, bodyScope, at);
+      const restSteps = (rest as Record<string, unknown>).steps;
+      const interpolated = interpolateTree(
+        { ...(rest as Record<string, unknown>), steps: omitStepInputs(restSteps) },
+        bodyScope,
+        at,
+      );
       collect(interpolated.substitutions);
-      body = interpolated.value;
+      body = {
+        ...interpolated.value,
+        steps: restoreStepInputs((interpolated.value as Record<string, unknown>).steps, restSteps),
+      };
     }
 
     const jobModelTier = parseModelTier(
@@ -1247,12 +1340,20 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
 
     const output = body.output as { from?: string; schema?: string } | undefined;
     if (output !== undefined && output.from === undefined) {
-      const lastAgent = [...rawSteps].reverse().find((step) => !('run' in step));
-      if (lastAgent === undefined) {
-        throw new StepcastError('Работа объявляет output без from и не содержит агентских шагов', {
+      // Способен дать выход: агентский шаг всегда, `script` всегда (канал —
+      // файл, объявлен `output_schema` или нет), `run` — только с объявленным
+      // `output_schema` (design.md, решение 11).
+      const capable = (step: RawStep): boolean => {
+        if ('script' in step) return true;
+        if ('run' in step) return step.output_schema !== undefined;
+        return true;
+      };
+      const lastCapable = [...rawSteps].reverse().find(capable);
+      if (lastCapable === undefined) {
+        throw new StepcastError('Работа объявляет output без from и не содержит шагов, способных дать выход', {
           file: declaringFile,
           at: `${at}.output`,
-          hint: 'Укажите output.from или добавьте агентский шаг',
+          hint: 'Укажите output.from или добавьте агентский шаг, script либо run с output_schema',
         });
       }
     }

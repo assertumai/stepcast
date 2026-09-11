@@ -4,6 +4,7 @@ import { isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 
 import { StepcastError } from '../errors.js';
+import { packagedWrapperNames } from '../package-schema.js';
 import { describeSchemaFailure } from '../pipeline/load.js';
 import {
   GLOBAL_ONLY_KEYS,
@@ -42,6 +43,20 @@ export interface NestedRepoDeclaration {
 export interface RunnerConfig {
   readonly command: readonly string[];
   readonly extensions: readonly string[];
+  /**
+   * Объявленное значение `wrapper` — `stepcast:<имя>` либо путь, ещё не
+   * разрешённый в абсолютный (design.md, решение 7): разрешение бере́т слои
+   * script-каталогов, которых у конфигурации на своём этапе нет, и потому
+   * дописывается позже, рядом с разрешением скрипта (`expand.ts`).
+   * `none` и необъявленное значение одинаково дают `undefined` здесь: обе
+   * формы значат «обёртки нет».
+   */
+  readonly wrapper?: string;
+  /**
+   * Файл, объявивший `wrapper`, — только для формы «путь»: она разрешается
+   * от места объявления, как и значение `script` (design.md, решение 7).
+   */
+  readonly wrapperFile?: string;
 }
 
 export interface BackendConfig {
@@ -412,11 +427,38 @@ function buildBackends(
  * схемы файлов не проходит вовсе, и эта проверка — единственное, что стоит
  * между его неполной записью и таким запуском.
  */
-function buildRunners(values: ReadonlyMap<string, unknown>): Record<string, RunnerConfig> {
+const STEPCAST_WRAPPER_PREFIX = 'stepcast:';
+
+/**
+ * Объявленный `wrapper` записи, слитой из всех слоёв, в действующее значение:
+ * `none` и необъявленное значение — `undefined`, `stepcast:<имя>` —
+ * проверяется по перечню поставляемых здесь же (единственная форма, чья
+ * корректность не зависит от каталога прогона), путь — переносится как есть
+ * для разрешения при раскрытии пайплайна (design.md, решение 7).
+ */
+function resolveDeclaredWrapper(name: string, value: string): string | undefined {
+  if (value === 'none') return undefined;
+  if (value.startsWith(STEPCAST_WRAPPER_PREFIX)) {
+    const wrapperName = value.slice(STEPCAST_WRAPPER_PREFIX.length);
+    if (!packagedWrapperNames().includes(wrapperName)) {
+      throw new StepcastError(`Обёртка stepcast:${wrapperName} не поставляется пакетом stepcast`, {
+        at: `runners.${name}.wrapper`,
+        hint: `Пакет поставляет: ${packagedWrapperNames().join(', ')}`,
+      });
+    }
+    return value;
+  }
+  return value;
+}
+
+function buildRunners(
+  values: ReadonlyMap<string, unknown>,
+  provenance: ReadonlyMap<string, Source>,
+): Record<string, RunnerConfig> {
   const tree = unflatten(values);
   const rawRunners = (tree.runners ?? {}) as Record<
     string,
-    { readonly command?: readonly string[]; readonly extensions?: readonly string[] }
+    { readonly command?: readonly string[]; readonly extensions?: readonly string[]; readonly wrapper?: string }
   >;
   const out: Record<string, RunnerConfig> = {};
 
@@ -427,9 +469,16 @@ function buildRunners(values: ReadonlyMap<string, unknown>): Record<string, Runn
         hint: 'Назовите command списком argv — например, command: [uv, run, --script]',
       });
     }
+    const wrapper = raw.wrapper === undefined ? undefined : resolveDeclaredWrapper(name, raw.wrapper);
+    const wrapperSource =
+      wrapper === undefined || wrapper.startsWith(STEPCAST_WRAPPER_PREFIX)
+        ? undefined
+        : provenance.get(`runners.${name}.wrapper`);
     out[name] = {
       command: raw.command,
       extensions: raw.extensions ?? [],
+      ...(wrapper === undefined ? {} : { wrapper }),
+      ...(wrapperSource?.kind === 'file' ? { wrapperFile: wrapperSource.path } : {}),
     };
   }
 
@@ -551,7 +600,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   const knowledgeDir = values.get('project.knowledge.dir');
   const knowledgeRules = values.get('project.knowledge.rules');
   const runsRoot = expandHome(requireString(values, 'runs.root'), home);
-  const runners = buildRunners(values);
+  const runners = buildRunners(values, merged.provenance);
   const runnersByExtension = buildRunnersByExtension(runners, merged.provenance, layers);
 
   // Согласованность объявления проверяется здесь, а не схемой: схема видит

@@ -3745,8 +3745,8 @@ jobs:
     assert.throws(() => expandScript(project, isolatedScriptRoots(project)), StepcastError);
   });
 
-  // Сценарий: «Структурированный выход не объявляется»
-  it('отклоняет output_schema у шага script', () => {
+  // Сценарий: «Схема выхода принимается»
+  it('принимает output_schema у шага script и разрешает путь от файла объявления', () => {
     const project = makeProject({
       'stepcast.yml': `
 kind: pipeline
@@ -3755,11 +3755,89 @@ jobs:
     steps:
       - id: c
         script: cleanup.py
-        output_schema: schema.json
+        output_schema: ./schemas/pick.json
 `,
-      'schema.json': JSON.stringify({ type: 'object' }),
     });
-    assert.throws(() => expandScript(project, isolatedScriptRoots(project)), StepcastError);
+    project.write('schemas/pick.json', JSON.stringify({ type: 'object' }));
+    const { pipeline } = expandScript(project, isolatedScriptRoots(project));
+    const step = asScript(pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.outputSchemaPath, project.path('schemas/pick.json'));
+  });
+
+  // Сценарий: «Вход объявляется отображением»
+  it('вход script раскрывается объявленным отображением', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: cleanup.py
+        input: { slug: bug-42, retries: 3 }
+`,
+    });
+    const { pipeline } = expandScript(project, isolatedScriptRoots(project));
+    const step = asScript(pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.input, { slug: 'bug-42', retries: 3 });
+  });
+
+  // Сценарий: «Вход не отображением»
+  it('отклоняет input списком либо строкой', () => {
+    const list = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: cleanup.py
+        input: [a, b]
+`,
+    });
+    assert.throws(() => expandScript(list, isolatedScriptRoots(list)), StepcastError);
+
+    const str = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: cleanup.py
+        input: slug
+`,
+    });
+    assert.throws(() => expandScript(str, isolatedScriptRoots(str)), StepcastError);
+  });
+
+  // Сценарий: «Вход у чужого вида шага»
+  it('отклоняет input у шага run и у агентского шага', () => {
+    const runProject = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, hi]
+        input: { a: 1 }
+`,
+    });
+    assert.throws(() => expandScript(runProject, isolatedScriptRoots(runProject)), StepcastError);
+
+    const agentProject = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        prompt: привет
+        input: { a: 1 }
+`,
+    });
+    assert.throws(() => expandScript(agentProject, isolatedScriptRoots(agentProject)), StepcastError);
   });
 
   it('отклоняет отложенную подстановку в значении script', () => {
@@ -4127,5 +4205,262 @@ jobs:
       });
 
     assert.notEqual(keyOf(before.pipeline, beforeStep), keyOf(after.pipeline, afterStep));
+  });
+
+  // Сценарий: «Вход записан в замке»
+  it('несёт input с нераскрытой отложенной подстановкой', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  plan:
+    steps:
+      - id: p
+        run: [echo, hi]
+  build:
+    needs: [plan]
+    steps:
+      - id: c
+        script: cleanup.py
+        input: { slug: "\${jobs.plan.output.slug}" }
+`,
+    });
+    project.write('.stepcast/scripts/cleanup.py', 'print(1)\n');
+    const { pipeline } = expandScript(project, isolatedScriptRoots(project));
+    const lock = serializeLock(pipeline);
+    assert.match(lock, /\$\{jobs\.plan\.output\.slug\}/);
+  });
+
+  // Сценарий: «Правка входа меняет ключ»
+  it('правка input при неизменном скрипте меняет ключ шага', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: cleanup
+        script: cleanup.py
+        input: { slug: bug-1 }
+`,
+    });
+    const roots = isolatedScriptRoots(project);
+    project.write('.stepcast/scripts/cleanup.py', 'print(1)\n');
+    const before = expandScript(project, roots);
+    const beforeStep = asScript(before.pipeline.jobs[0]!.steps[0]!);
+
+    project.write(
+      'stepcast.yml',
+      `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: cleanup
+        script: cleanup.py
+        input: { slug: bug-2 }
+`,
+    );
+    const after = expandScript(project, roots);
+    const afterStep = asScript(after.pipeline.jobs[0]!.steps[0]!);
+
+    const keyOf = (pipeline: typeof before.pipeline, step: typeof beforeStep) =>
+      computeStepKey({
+        lockHash: jobLockHash(pipeline, pipeline.jobs[0]!),
+        jobId: 'build',
+        step,
+        inputsFingerprint: undefined,
+        backendCommand: undefined,
+        upstream: [],
+      });
+
+    assert.notEqual(keyOf(before.pipeline, beforeStep), keyOf(after.pipeline, afterStep));
+  });
+});
+
+describe('pipeline-definition: типизированная подстановка внутри input', () => {
+  // Сценарий: «Объект уезжает объектом» — раскрывается на этапе params, но
+  // сохраняет тип: числа и объекты доходят до input не строкой.
+  it('${params.retries} даёт число, а не строку', () => {
+    const project = makeProject({});
+    project.write(
+      'stepcast.yml',
+      `
+kind: pipeline
+jobs:
+  build:
+    uses: job.yml
+    with: { retries: 3 }
+`,
+    );
+    project.write(
+      'job.yml',
+      `
+kind: job
+params:
+  retries: { type: int }
+steps:
+  - id: c
+    script: cleanup.py
+    input: { retries: "\${params.retries}" }
+`,
+    );
+    const { pipeline } = expandScript(project, isolatedScriptRoots(project));
+    const step = asScript(pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.input, { retries: 3 });
+  });
+
+  // Сценарий: «Подстановка внутри текста даёт строку»
+  it('подстановка внутри текста input раскрывается строкой', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: job.yml
+    with: { slug: bug-42 }
+`,
+      'job.yml': `
+kind: job
+params:
+  slug: { type: string }
+steps:
+  - id: c
+    script: cleanup.py
+    input: { title: "чинить \${params.slug}" }
+`,
+    });
+    const { pipeline } = expandScript(project, isolatedScriptRoots(project));
+    const step = asScript(pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.input, { title: 'чинить bug-42' });
+  });
+
+  // Прежнее правило вне input не меняется: объект в args по-прежнему отказ.
+  it('подстановка объектом в args по-прежнему отказывает', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: job.yml
+    with: {}
+`,
+      'job.yml': `
+kind: job
+steps:
+  - id: c
+    script: cleanup.py
+    args: ["\${project}"]
+`,
+    });
+    const error = thrown(() => expandScript(project, isolatedScriptRoots(project)));
+    assert.match(error.message, /непредставимое строкой/);
+  });
+});
+
+describe('pipeline-definition: обёртка раннера в argv шага script', () => {
+  it('node встраивает обёртку stepcast:step между командой и путём скрипта', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: build.mjs
+`,
+    });
+    project.write('.stepcast/scripts/build.mjs', 'export default () => ({});\n');
+    const { pipeline } = expandScript(project, isolatedScriptRoots(project));
+    const step = asScript(pipeline.jobs[0]!.steps[0]!);
+    const argv = step.resolved?.argv ?? [];
+    assert.equal(argv[0], 'node');
+    assert.match(argv[1] ?? '', /step[/\\]wrapper\.js$/);
+    assert.equal(argv[2], project.path('.stepcast/scripts/build.mjs'));
+  });
+
+  it('wrapper: none у переопределённого раннера снимает обёртку из argv', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: build.mjs
+        args: ['--flag']
+`,
+    });
+    project.write('.stepcast/scripts/build.mjs', 'export default () => ({});\n');
+    const config = {
+      ...project.config,
+      runners: {
+        ...project.config.runners,
+        node: { command: ['bun'], extensions: ['.js', '.mjs', '.cjs'] },
+      },
+    };
+    const { pipeline } = expandPipeline({
+      pipelinePath: project.path('stepcast.yml'),
+      config,
+      scriptRoots: isolatedScriptRoots(project),
+    });
+    const step = asScript(pipeline.jobs[0]!.steps[0]!);
+    assert.deepEqual(step.resolved?.argv, [
+      'bun',
+      project.path('.stepcast/scripts/build.mjs'),
+      '--flag',
+    ]);
+  });
+});
+
+describe('result-contract: умолчание output.from у шага script', () => {
+  // Сценарий: «Умолчание по шагу script»
+  it('работа без from публикует выход последнего script', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    output: {}
+    steps:
+      - id: c
+        script: cleanup.py
+`,
+    });
+    project.write('.stepcast/scripts/cleanup.py', 'print(1)\n');
+    assert.doesNotThrow(() => expandScript(project, isolatedScriptRoots(project)));
+  });
+
+  // Сценарий: «Работа без способных дать выход шагов и без from»
+  it('работа из одних run без output_schema и без from отклоняется', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    output: {}
+    steps:
+      - id: c
+        run: [echo, hi]
+`,
+    });
+    assert.throws(() => expandScript(project, isolatedScriptRoots(project)), StepcastError);
+  });
+
+  it('run с объявленным output_schema делает работу способной дать выход по умолчанию', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    output: {}
+    steps:
+      - id: c
+        run: [echo, hi]
+        output_schema: ./schema.json
+`,
+    });
+    project.write('schema.json', JSON.stringify({ type: 'object' }));
+    assert.doesNotThrow(() => expandScript(project, isolatedScriptRoots(project)));
   });
 });

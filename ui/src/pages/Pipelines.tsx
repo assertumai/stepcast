@@ -98,6 +98,10 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
           </div>
           {step.command === undefined ? null : <div className="ctx">$ {step.command}</div>}
           {step.scriptPath === undefined ? null : <div className="ctx">script: {step.scriptPath}</div>}
+          {step.hasScriptInput !== true ? null : <div className="ctx dim">input объявлен</div>}
+          {step.scriptOutputSchemaPath === undefined ? null : (
+            <div className="ctx dim">output_schema: {step.scriptOutputSchemaPath}</div>
+          )}
         </div>
       ))}
     </div>

@@ -88,6 +88,10 @@ export interface StepSnapshot {
   readonly scriptPath?: string;
   /** Имя раннера, которым скрипт разрешён исполниться. */
   readonly scriptRunner?: string;
+  /** Объявлен ли вход контракта (`input`) — у шага script. */
+  readonly hasScriptInput?: boolean;
+  /** Путь объявленной схемы выхода — у script означает проверку файла, а не разбор stdout. */
+  readonly scriptOutputSchemaPath?: string;
   readonly context: readonly string[];
   /** Разрез контекста: есть только у исполнившегося агентского шага. */
   readonly contextBreakdown?: ContextBreakdown;
@@ -265,6 +269,10 @@ function buildStep(
     ...(definition?.command === undefined ? {} : { command: definition.command }),
     ...(definition?.scriptPath === undefined ? {} : { scriptPath: definition.scriptPath }),
     ...(definition?.scriptRunner === undefined ? {} : { scriptRunner: definition.scriptRunner }),
+    ...(definition?.hasScriptInput === undefined ? {} : { hasScriptInput: definition.hasScriptInput }),
+    ...(definition?.scriptOutputSchemaPath === undefined
+      ? {}
+      : { scriptOutputSchemaPath: definition.scriptOutputSchemaPath }),
     context: definition?.context ?? [],
     ...(breakdown === undefined ? {} : { contextBreakdown: breakdown }),
     files: stepFiles(paths.dir, dir),

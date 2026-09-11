@@ -221,6 +221,18 @@ export interface ScriptStep extends StepCommon {
   /** Имя раннера, объявленное на шаге явно — побеждает расширение и shebang. */
   readonly runner?: string;
   readonly onFail?: { readonly analyze: string; readonly prompt: string };
+  /**
+   * Объявленный вход шага — JSON-дерево, раскрытое типизированной подстановкой
+   * (design.md, решение 4). Не объявлен — движок пишет `input.json` пустым
+   * отображением (design.md, решение 3), но поле здесь остаётся неопределённым:
+   * в замок попадает только то, что действительно объявлено.
+   */
+  readonly input?: unknown;
+  /**
+   * Схема, проверяющая файл выхода шага, — не разбор `stdout`, как у `run`
+   * (design.md, решение 1).
+   */
+  readonly outputSchemaPath?: string;
   /** Ровно одно из двух: разрешённый скрипт либо причина, почему не вышло. */
   readonly resolved?: ResolvedScript;
   readonly unresolved?: ScriptUnresolved;

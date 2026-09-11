@@ -372,6 +372,123 @@ export interface TreeResult<T> {
   readonly substitutions: Map<string, readonly Substitution[]>;
 }
 
+const FULL_SUBSTITUTION = /^\$\{([^}]*)\}$/;
+
+export interface TypedInterpolated {
+  readonly value: unknown;
+  readonly substitutions: readonly Substitution[];
+}
+
+/**
+ * Строка, состоящая ровно из одной подстановки и ничего кроме неё, разрешается
+ * значением исходного типа — объектом, списком, числом, — а не его строковым
+ * представлением (design.md, решение 4). Всякая другая строка — пустая,
+ * смешанная с текстом, экранированная — уходит в обычный `interpolate`: у
+ * `$${...}` первый символ после `$` не `{`, и `FULL_SUBSTITUTION` на ней не
+ * совпадает сам по себе, без отдельной проверки.
+ */
+function interpolateTypedLeaf(
+  template: string,
+  scope: Scope,
+  at: string | undefined,
+): TypedInterpolated {
+  const match = FULL_SUBSTITUTION.exec(template);
+  const expression = match?.[1]?.trim();
+  if (match === null || expression === undefined || expression === '') {
+    return interpolate(template, scope, at);
+  }
+
+  const late = scope.mode === 'late';
+  const resolved = resolveExpression(expression, scope);
+  // Позиция — та же величина, что и в `interpolate`: смещение выражения
+  // внутри шаблона, а не внутри файла. Здесь подстановка занимает шаблон
+  // целиком, и потому считается от начала — тем же `positionAt`, чтобы
+  // соглашение о позиции у двух проходов не разъехалось.
+  const { line, column } = positionAt(template, match.index);
+
+  if (resolved.kind === 'deferred') {
+    const namespace = expression.split('.')[0] as string;
+    const substitution: Substitution = {
+      expression,
+      namespace,
+      path: expression.split('.').slice(1).join('.'),
+      deferred: true,
+      ...(scope.origin === undefined ? {} : { origin: scope.origin }),
+      ...(scope.file === undefined ? {} : { file: scope.file }),
+      line,
+      column,
+    };
+    return { value: template, substitutions: [substitution] };
+  }
+
+  if (resolved.kind === 'unknown-namespace') {
+    // Как и в `interpolate`: на позднем этапе чужое пространство — литерал от
+    // экранирования, а не опечатка.
+    if (late) return { value: template, substitutions: [] };
+    const namespace = expression.split('.')[0] as string;
+    const available = [...Object.keys(scope.values), ...scope.deferred].sort().join(', ');
+    throw new StepcastError(`Неизвестное пространство подстановки: ${namespace}`, {
+      ...(at === undefined ? {} : { at }),
+      ...(scope.file === undefined ? {} : { file: scope.file }),
+      hint: scope.hints?.[namespace] ?? `Доступны: ${available}`,
+    });
+  }
+
+  const { namespace, path, value } = resolved;
+  if (value === undefined) {
+    throw new StepcastError(`Подстановка ${expression} не определена`, {
+      ...(at === undefined ? {} : { at }),
+      ...(scope.file === undefined ? {} : { file: scope.file }),
+      hint: scope.explain?.(expression, namespace, path) ?? `Проверьте, что ${namespace}.${path} объявлено`,
+    });
+  }
+
+  const substitution: Substitution = {
+    expression,
+    namespace,
+    path,
+    deferred: false,
+    ...(scope.origin === undefined ? {} : { origin: scope.origin }),
+    ...(scope.file === undefined ? {} : { file: scope.file }),
+    line,
+    column,
+  };
+  return { value, substitutions: [substitution] };
+}
+
+/**
+ * Обойти поддерево JSON-значений (`input` шага `script`), разрешая строку из
+ * ровно одной подстановки значением исходного типа, а прочие строки — как
+ * обычно. Отдельный проход, а не режим `interpolateTree` (design.md, решение
+ * 4): списочное размножение элементов сюда не переносится — `input` несёт
+ * данные, а не текст с местами вставки, и вопрос «сколько элементов»
+ * применённой размера не задаётся.
+ */
+export function interpolateTypedTree<T>(node: T, scope: Scope, prefix = ''): TreeResult<T> {
+  const substitutions = new Map<string, readonly Substitution[]>();
+
+  const walk = (value: unknown, path: string): unknown => {
+    if (typeof value === 'string') {
+      const result = interpolateTypedLeaf(value, scope, path === '' ? undefined : path);
+      if (result.substitutions.length > 0) substitutions.set(path, result.substitutions);
+      return result.value;
+    }
+    if (Array.isArray(value)) {
+      return value.map((item, index) => walk(item, path === '' ? String(index) : `${path}.${index}`));
+    }
+    if (typeof value === 'object' && value !== null) {
+      const out: Record<string, unknown> = {};
+      for (const [key, child] of Object.entries(value)) {
+        out[key] = walk(child, path === '' ? key : `${path}.${key}`);
+      }
+      return out;
+    }
+    return value;
+  };
+
+  return { value: walk(node, prefix) as T, substitutions };
+}
+
 /**
  * Обойти документ и раскрыть подстановки во всех строках, запомнив по каждому
  * точечному пути, какие подстановки там применялись.

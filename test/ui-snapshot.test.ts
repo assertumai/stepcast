@@ -190,9 +190,12 @@ jobs:
     steps:
       - id: cleanup
         script: cleanup.sh
+        input: { slug: bug-42 }
+        output_schema: ./schema.json
 `,
     });
     project.write('.stepcast/scripts/cleanup.sh', '#!/bin/sh\nexit 0\n');
+    project.write('schema.json', JSON.stringify({ type: 'object' }));
     const lock = serializeLock(
       expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }).pipeline,
     );
@@ -215,6 +218,8 @@ jobs:
     assert.equal(step?.kind, 'script');
     assert.equal(step?.scriptPath, 'cleanup.sh');
     assert.equal(step?.scriptRunner, 'sh');
+    assert.equal(step?.hasScriptInput, true);
+    assert.equal(step?.scriptOutputSchemaPath, project.path('schema.json'));
   });
 
   // Сценарий: «Разрез контекста агентского шага»

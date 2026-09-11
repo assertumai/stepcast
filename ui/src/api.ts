@@ -172,6 +172,10 @@ export interface StepSnapshot {
   readonly scriptPath?: string;
   /** Имя раннера, которым скрипт разрешён исполниться. */
   readonly scriptRunner?: string;
+  /** Объявлен ли вход контракта (`input`) — у шага script. */
+  readonly hasScriptInput?: boolean;
+  /** Путь объявленной схемы выхода — у script означает проверку файла, а не разбор stdout. */
+  readonly scriptOutputSchemaPath?: string;
   readonly context: readonly string[];
   readonly contextBreakdown?: ContextBreakdown;
   readonly files: readonly JournalFileRef[];
@@ -246,6 +250,10 @@ export interface PipelineStepView {
   readonly scriptPath?: string;
   /** Имя раннера, которым скрипт исполнится, — только у разрешённого шага. */
   readonly scriptRunner?: string;
+  /** Объявлен ли вход контракта (`input`) — у шага script. */
+  readonly hasScriptInput?: boolean;
+  /** Путь объявленной схемы выхода — у script означает проверку файла, а не разбор stdout. */
+  readonly scriptOutputSchemaPath?: string;
 }
 
 export interface PipelineJobView {

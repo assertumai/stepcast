@@ -324,20 +324,19 @@ function matches(glob: string, path: string): boolean {
   return new RegExp(`^${source}$`).test(path);
 }
 
-function evaluateSchema(path: string, input: EvaluationInput): PredicateResult {
-  if (input.structured === undefined) {
-    return {
-      predicate: 'schema',
-      passed: false,
-      hard: true,
-      expected: path,
-      detail: 'шаг не произвёл структурированного вывода',
-    };
-  }
-
+/**
+ * Проверить значение схемой из файла — общая механика для предиката `schema`
+ * и для проверки объявленного `output_schema` шага `script` движком
+ * (`runner.ts`, design.md решение 6): один компилятор, одно сообщение о
+ * дефектной схеме, а не по реализации на потребителя.
+ */
+export function validateAgainstSchemaFile(
+  path: string,
+  value: unknown,
+): { readonly passed: boolean; readonly detail?: string } {
   let schema: unknown;
   try {
-    schema = JSON.parse(readFileSync(absolute(path, input.cwd), 'utf8'));
+    schema = JSON.parse(readFileSync(path, 'utf8'));
   } catch (error) {
     throw new StepcastError(`Не удалось прочитать схему ${path}: ${(error as Error).message}`, {
       file: path,
@@ -357,13 +356,9 @@ function evaluateSchema(path: string, input: EvaluationInput): PredicateResult {
     });
   }
 
-  const passed = validate(input.structured) === true;
-
+  const passed = validate(value) === true;
   return {
-    predicate: 'schema',
     passed,
-    hard: true,
-    expected: path,
     ...(passed
       ? {}
       : {
@@ -374,6 +369,28 @@ function evaluateSchema(path: string, input: EvaluationInput): PredicateResult {
             )
             .join('\n'),
         }),
+  };
+}
+
+function evaluateSchema(path: string, input: EvaluationInput): PredicateResult {
+  if (input.structured === undefined) {
+    return {
+      predicate: 'schema',
+      passed: false,
+      hard: true,
+      expected: path,
+      detail: 'шаг не произвёл структурированного вывода',
+    };
+  }
+
+  const { passed, detail } = validateAgainstSchemaFile(absolute(path, input.cwd), input.structured);
+
+  return {
+    predicate: 'schema',
+    passed,
+    hard: true,
+    expected: path,
+    ...(detail === undefined ? {} : { detail }),
   };
 }
 

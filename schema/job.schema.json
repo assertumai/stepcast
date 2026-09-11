@@ -1861,6 +1861,16 @@
                   "prompt"
                 ],
                 "additionalProperties": false
+              },
+              "input": {
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              },
+              "output_schema": {
+                "type": "string"
               }
             },
             "required": [

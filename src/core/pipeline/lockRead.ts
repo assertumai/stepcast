@@ -31,6 +31,10 @@ export interface LockStep {
   readonly scriptPath?: string;
   /** Имя раннера, которым скрипт разрешён исполниться. */
   readonly scriptRunner?: string;
+  /** Объявлен ли вход контракта (`input`) — у шага script. */
+  readonly hasScriptInput?: boolean;
+  /** Путь объявленной схемы выхода — у script означает проверку файла, а не разбор stdout. */
+  readonly scriptOutputSchemaPath?: string;
   readonly context: readonly string[];
 }
 
@@ -119,6 +123,7 @@ function toStep(value: unknown): LockStep | undefined {
   const model = asString(record.model);
   const scriptPath = asString(record.script);
   const scriptRunner = asString(asRecord(record.resolved)?.runner);
+  const scriptOutputSchemaPath = scriptPath === undefined ? undefined : asString(record.output_schema);
 
   return {
     id,
@@ -131,6 +136,8 @@ function toStep(value: unknown): LockStep | undefined {
     ...(command === undefined ? {} : { command }),
     ...(scriptPath === undefined ? {} : { scriptPath }),
     ...(scriptRunner === undefined ? {} : { scriptRunner }),
+    ...(scriptPath === undefined ? {} : { hasScriptInput: record.input !== undefined }),
+    ...(scriptOutputSchemaPath === undefined ? {} : { scriptOutputSchemaPath }),
     context: contextLabels(record.context),
   };
 }

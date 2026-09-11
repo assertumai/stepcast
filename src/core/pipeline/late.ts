@@ -1,6 +1,6 @@
 import { StepcastError } from '../errors.js';
-import { interpolateTree } from './interpolate.js';
-import type { Job } from './model.js';
+import { interpolateTree, interpolateTypedTree, type Scope } from './interpolate.js';
+import type { Job, Step } from './model.js';
 
 /**
  * Раскрытие отложенных подстановок перед исполнением работы.
@@ -80,6 +80,13 @@ function explain(scope: LateScope) {
   };
 }
 
+/** `input` шага script снят перед обходом — тем же приёмом, что и `display`. */
+function omitInput(step: Step): Step {
+  if (step.kind !== 'script' || step.input === undefined) return step;
+  const { input: _input, ...rest } = step;
+  return rest;
+}
+
 /**
  * Раскрыть отложенные подстановки в определении работы.
  *
@@ -87,21 +94,45 @@ function explain(scope: LateScope) {
  * шаг — его читает витрина, — а к этому моменту работа ещё не исполнялась и
  * собственных данных не публиковала. Раскрытый здесь, он навсегда застыл бы
  * пустым. Поэтому блок отделяется до обхода и возвращается на место как был.
+ *
+ * `input` шагов `script` отделяется по той же причине, что и при разборе
+ * документа (`expand.ts`, `omitStepInputs`): общий `interpolateTree` раскрыл
+ * бы `${jobs.plan.output.item}` строкой, а не объектом. Типизированный проход
+ * зовётся здесь же, отдельно на каждый шаг, — теперь уже по-настоящему
+ * отложенными `${jobs.*}`, `${run.*}` и `${env.*}`.
  */
 export function resolveLate(job: Job, scope: LateScope): Job {
   const { display, ...resolvable } = job;
+  const lateScope: Scope = {
+    values: { jobs: scope.jobs, run: scope.run, env: scope.env },
+    deferred: new Set(),
+    mode: 'late',
+    explain: explain(scope),
+  };
   try {
+    const stepsWithoutInput = resolvable.steps.map(omitInput);
     const resolved = interpolateTree(
-      resolvable,
-      {
-        values: { jobs: scope.jobs, run: scope.run, env: scope.env },
-        deferred: new Set(),
-        mode: 'late',
-        explain: explain(scope),
-      },
+      { ...resolvable, steps: stepsWithoutInput },
+      lateScope,
       `jobs.${job.id}`,
     ).value;
-    return display === undefined ? resolved : { ...resolved, display };
+    const resolvedSteps = resolved.steps.map((step, index) => {
+      const original = resolvable.steps[index];
+      if (
+        original === undefined ||
+        original.kind !== 'script' ||
+        original.input === undefined ||
+        step.kind !== 'script'
+      ) {
+        return step;
+      }
+      return {
+        ...step,
+        input: interpolateTypedTree(original.input, lateScope, `jobs.${job.id}.steps.${index}.input`).value,
+      };
+    });
+    const withSteps = { ...resolved, steps: resolvedSteps };
+    return display === undefined ? withSteps : { ...withSteps, display };
   } catch (error) {
     // Файл, из которого пришло определение, интерполятору неизвестен, а без
     // него сообщение не говорит, где искать.

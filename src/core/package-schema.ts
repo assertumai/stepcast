@@ -87,3 +87,43 @@ function packagedSchemaNames(schemaDir: string): string[] {
     .map((entry) => entry.slice(0, -SCHEMA_SUFFIX.length))
     .sort();
 }
+
+/**
+ * Обёртки раннера, поставляемые пакетом (design.md, решение 7): имя →
+ * скомпилированный файл от корня пакета. Пакет поставляет одну — для Node
+ * (design.md, Non-Goals) — но перечень заведён множественным, а не константой,
+ * чтобы вторая обёртка не потребовала переписывать разбор имени.
+ */
+const PACKAGED_WRAPPERS: Readonly<Record<string, string>> = {
+  step: join('dist', 'src', 'step', 'wrapper.js'),
+};
+
+/** Имена обёрток, поставляемых пакетом, — для перечня в отказе и в отчёте. */
+export function packagedWrapperNames(): readonly string[] {
+  return Object.keys(PACKAGED_WRAPPERS).sort();
+}
+
+/**
+ * Путь к обёртке `stepcast:<имя>`, поставляемой пакетом, — от расположения
+ * этого модуля, той же схемой, что и `packagedSchemaPath`. Незнакомое имя —
+ * отказ с перечнем поставляемых (`stepcast-configuration`, решение о
+ * форме `wrapper`).
+ */
+export function packagedWrapperPath(name: string, reference?: SchemaReference): string {
+  const at = reference === undefined ? {} : { file: reference.file, at: reference.declaredAt };
+  const relative = PACKAGED_WRAPPERS[name];
+  if (relative === undefined) {
+    throw new StepcastError(`Обёртка stepcast:${name} не поставляется пакетом stepcast`, {
+      ...at,
+      hint: `Пакет поставляет: ${packagedWrapperNames().join(', ')}`,
+    });
+  }
+  const path = join(findPackageRoot(HERE), relative);
+  if (!existsSync(path)) {
+    throw new StepcastError(`Обёртка stepcast:${name} не найдена по пути ${path}`, {
+      ...at,
+      hint: 'Установка пакета stepcast неполна — соберите его (npm run build) либо переустановите',
+    });
+  }
+  return path;
+}

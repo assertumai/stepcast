@@ -1076,6 +1076,39 @@ jobs:
     assert.ok(errors(withoutSubstitution).some((message) => /Файл схемы не найден/.test(message)));
   });
 
+  // Сценарий: «Несуществующая схема выхода» (pipeline-definition, шаг script)
+  it('проверяет путь output_schema у шага script тем же правилом, что у agent и run', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, script: cleanup.py, output_schema: ./schemas/pick.json }]
+`,
+    });
+    project.write('.stepcast/scripts/cleanup.py', 'print(1)\n');
+    const messages = errors(lintScript(project, isolatedScriptRoots(project)));
+    assert.ok(messages.some((message) => /Файл схемы не найден/.test(message) && /pick\.json/.test(message)));
+  });
+
+  it('не проверяет output_schema шага script с подстановкой в пути', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+inputs:
+  kind: { type: string, default: plan }
+jobs:
+  build:
+    steps: [{ id: c, script: cleanup.py, output_schema: "./schemas/\${inputs.kind}.json" }]
+`,
+    });
+    project.write('.stepcast/scripts/cleanup.py', 'print(1)\n');
+    const messages = errors(lintScript(project, isolatedScriptRoots(project)));
+    assert.ok(!messages.some((message) => /Файл схемы не найден/.test(message)));
+  });
+
   it('проверяет превышение потолков конфигурации', () => {
     const project = makeProject({
       'stepcast.yml': `

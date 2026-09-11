@@ -1319,7 +1319,10 @@ function checkStep(
     }
   }
 
-  if ((step.kind === 'agent' || step.kind === 'run') && step.outputSchemaPath !== undefined) {
+  if (
+    (step.kind === 'agent' || step.kind === 'run' || step.kind === 'script') &&
+    step.outputSchemaPath !== undefined
+  ) {
     checkDeclaredPath(
       {
         path: step.outputSchemaPath,

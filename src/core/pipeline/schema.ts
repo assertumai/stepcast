@@ -238,8 +238,10 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
   /**
    * Шаг `script`: файл со своим кодом, а не команда (`docs/pipeline-format.md`).
    * Строковой формы нет — оболочка в исполнении не участвует, и `args`
-   * поэтому только список. `output_schema` здесь не заводится: структурного
-   * выхода у `script` в этом изменении нет (design.md, Non-Goals).
+   * поэтому только список. `input` — объявленный вход контракта файлов
+   * (`docs/pipeline-format.md`, раздел script): отображение, значения полей —
+   * любой JSON. `output_schema` означает проверку файла выхода шага, а не
+   * разбор `stdout`, как у `run` (design.md, решение 1, решение 6).
    *
    * Пустое значение `script` отклоняется здесь, а не разрешением пути: пустая
    * строка внутри слоя даёт сам каталог слоя, и шаг молча указал бы на него
@@ -253,6 +255,8 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
       args: z.array(z.string()).optional(),
       runner: z.string().optional(),
       on_fail: z.object({ analyze: z.string(), prompt: z.string() }).strict().optional(),
+      input: z.record(z.string(), z.unknown()).optional(),
+      output_schema: z.string().optional(),
     })
     .strict();
 

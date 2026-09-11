@@ -57,6 +57,10 @@ export interface PipelineStepView {
   readonly scriptPath?: string;
   /** Имя раннера, которым скрипт исполнится, — только у разрешённого шага. */
   readonly scriptRunner?: string;
+  /** Объявлен ли вход контракта (`input`) — сам вход в карточку не идёт: он может быть велик. */
+  readonly hasScriptInput?: boolean;
+  /** Путь объявленной схемы выхода — тем же полем, что и у `run`/`agent`, но у script означает проверку файла, а не разбор stdout. */
+  readonly scriptOutputSchemaPath?: string;
 }
 
 export interface PipelineJobView {
@@ -177,6 +181,10 @@ function toJobView(
       ...(step.kind === 'script' ? { scriptPath: step.path } : {}),
       ...(step.kind === 'script' && step.resolved !== undefined
         ? { scriptRunner: step.resolved.runner }
+        : {}),
+      ...(step.kind === 'script' ? { hasScriptInput: step.input !== undefined } : {}),
+      ...(step.kind === 'script' && step.outputSchemaPath !== undefined
+        ? { scriptOutputSchemaPath: step.outputSchemaPath }
         : {}),
     })),
   };

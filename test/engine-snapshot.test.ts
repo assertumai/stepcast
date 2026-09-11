@@ -578,11 +578,20 @@ jobs:
 /**
  * Сторож: собранный код движка не несёт отложенных импортов, кроме загрузчика
  * плагинов (run-engine-snapshot, «Граф модулей движка загружен до первой
- * работы»). Проверяет как настоящий `dist/src/**`, так и синтетическое
- * дерево с подложенным нарушением — иначе зелёный результат ничего не значил
- * бы: он мог быть зелёным и потому, что проверка ничего не находит никогда.
+ * работы») и обёртки раннера `stepcast:step`. Проверяет как настоящий
+ * `dist/src/**`, так и синтетическое дерево с подложенным нарушением — иначе
+ * зелёный результат ничего не значил бы: он мог быть зелёным и потому, что
+ * проверка ничего не находит никогда.
+ *
+ * Обёртка не часть графа движка: она исполняется отдельным процессом
+ * `node <обёртка> <скрипт>` и импортирует чужой файл по пути, узнанному из
+ * argv, а не из графа модулей движка, — тот же довод, что и у загрузчика
+ * плагинов (design.md изменения `script-step-contract`, решение 8).
  */
-const ALLOWED_DYNAMIC_IMPORT = join('src', 'core', 'plugins', 'load.js');
+const ALLOWED_DYNAMIC_IMPORTS = new Set([
+  join('src', 'core', 'plugins', 'load.js'),
+  join('src', 'step', 'wrapper.js'),
+]);
 
 function jsFilesUnder(dir: string): string[] {
   let entries;
@@ -601,7 +610,7 @@ function jsFilesUnder(dir: string): string[] {
 function findDisallowedDynamicImports(distRoot: string): string[] {
   const violations: string[] = [];
   for (const file of jsFilesUnder(join(distRoot, 'src'))) {
-    if (relativePath(distRoot, file) === ALLOWED_DYNAMIC_IMPORT) continue;
+    if (ALLOWED_DYNAMIC_IMPORTS.has(relativePath(distRoot, file))) continue;
     const text = readFileSync(file, 'utf8');
     const index = text.indexOf('import(');
     if (index === -1) continue;

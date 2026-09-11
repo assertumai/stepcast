@@ -1146,6 +1146,597 @@ jobs:
   });
 });
 
+describe('step-execution: контракт входа и выхода script', () => {
+  // Сценарий: «Вход доезжает файлом» / «Выход доезжает файлом»
+  it('sh видит STEPCAST_INPUT/STEPCAST_OUTPUT, читает вход и пишет выход, работа публикует его и следующая работа читает', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  plan:
+    output: { from: build }
+    steps:
+      - id: build
+        script: plan.sh
+        input: { slug: bug-42 }
+  use:
+    needs: [plan]
+    steps:
+      - id: show
+        run: [sh, -c, 'echo "\${jobs.plan.output.slug}-done"']
+`,
+    });
+    project.write(
+      '.stepcast/scripts/plan.sh',
+      '#!/bin/sh\n' +
+        'echo "log line"\n' +
+        'python3 -c "import json,os; d=json.load(open(os.environ[\'STEPCAST_INPUT\'])); json.dump({\'slug\': d[\'slug\']+\'-planned\'}, open(os.environ[\'STEPCAST_OUTPUT\'], \'w\'))"\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+
+    const stepDir = findStepDir(result.journal.paths, 'plan', 'build');
+    assert.ok(stepDir !== undefined);
+    const input = JSON.parse(readFileSync(join(stepDir!, 'input.json'), 'utf8'));
+    assert.deepEqual(input, { slug: 'bug-42' });
+    const output = JSON.parse(readFileSync(join(stepDir!, 'output.json'), 'utf8'));
+    assert.deepEqual(output, { slug: 'bug-42-planned' });
+    const stdout = readFileSync(join(stepDir!, 'stdout.log'), 'utf8');
+    assert.match(stdout, /log line/);
+
+    const showDir = findStepDir(result.journal.paths, 'use', 'show');
+    const showStdout = readFileSync(join(showDir!, 'stdout.log'), 'utf8');
+    assert.match(showStdout, /bug-42-planned-done/);
+  });
+
+  // Сценарий: «Вход не объявлен»
+  it('input.json существует пустым отображением, когда input не объявлен', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        script: noop.sh
+`,
+    });
+    project.write('.stepcast/scripts/noop.sh', '#!/bin/sh\ncat "$STEPCAST_INPUT"\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.deepEqual(JSON.parse(readFileSync(join(stepDir!, 'input.json'), 'utf8')), {});
+  });
+
+  // Сценарий: «Переменные контракта у прочих шагов»
+  it('шаг run не получает STEPCAST_INPUT/STEPCAST_OUTPUT', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [sh, -c, 'echo "input=$STEPCAST_INPUT output=$STEPCAST_OUTPUT"']
+`,
+    });
+
+    const result = await run(project);
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    const stdout = readFileSync(join(stepDir!, 'stdout.log'), 'utf8');
+    assert.match(stdout, /input= output=/);
+  });
+
+  // Сценарий: «Скрипт на Python без библиотеки»
+  it('python без SDK читает вход, логирует в stdout, пишет выход и публикует данные через STEPCAST_BIN', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    output: { from: c }
+    data: [status]
+    steps:
+      - id: c
+        script: work.py
+        input: { name: alice }
+`,
+    });
+    project.write(
+      '.stepcast/scripts/work.py',
+      [
+        'import json, os, subprocess',
+        "d = json.load(open(os.environ['STEPCAST_INPUT']))",
+        "print('hello', d['name'])",
+        "json.dump({'greeting': 'hi ' + d['name']}, open(os.environ['STEPCAST_OUTPUT'], 'w'))",
+        "subprocess.run(['node', os.environ['STEPCAST_BIN'], 'data', 'set', 'status', 'ok'], check=True)",
+        '',
+      ].join('\n'),
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    const stdout = readFileSync(join(stepDir!, 'stdout.log'), 'utf8');
+    assert.match(stdout, /hello alice/);
+    const output = JSON.parse(readFileSync(join(stepDir!, 'output.json'), 'utf8'));
+    assert.deepEqual(output, { greeting: 'hi alice' });
+
+    const status = readStatus(result.journal.paths);
+    const job = status.jobs.find((entry) => entry.id === 'build');
+    assert.ok(job?.output !== undefined);
+    assert.deepEqual(JSON.parse(readFileSync(job!.output as string, 'utf8')), { greeting: 'hi alice' });
+  });
+
+  // Сценарий pipeline-definition «Объект уезжает объектом» целиком, прогоном:
+  // выход работы выше по графу доезжает до `input` соседней работы объектом,
+  // а не своим строковым видом.
+  it('объект из выхода работы доезжает до input соседней работы объектом', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  plan:
+    output: { from: p }
+    steps:
+      - id: p
+        script: plan.sh
+  build:
+    needs: [plan]
+    steps:
+      - id: b
+        script: take.py
+        input:
+          item: \${jobs.plan.output.item}
+          title: "чинить \${jobs.plan.output.item.slug}"
+`,
+    });
+    project.write(
+      '.stepcast/scripts/plan.sh',
+      '#!/bin/sh\ncat > "$STEPCAST_OUTPUT" <<\'JSON\'\n{"item": {"slug": "add-oauth", "repos": ["ui"]}}\nJSON\n',
+    );
+    project.write(
+      '.stepcast/scripts/take.py',
+      [
+        'import json, os',
+        "d = json.load(open(os.environ['STEPCAST_INPUT']))",
+        "assert isinstance(d['item'], dict), d['item']",
+        "print('repos', d['item']['repos'][0], '|', d['title'])",
+        '',
+      ].join('\n'),
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'b');
+    assert.deepEqual(JSON.parse(readFileSync(join(stepDir!, 'input.json'), 'utf8')), {
+      item: { slug: 'add-oauth', repos: ['ui'] },
+      title: 'чинить add-oauth',
+    });
+    assert.match(readFileSync(join(stepDir!, 'stdout.log'), 'utf8'), /repos ui \| чинить add-oauth/);
+  });
+
+  // Три отказа проверки выхода
+  it('файл выхода, не разбираемый как JSON, — отказ попытки', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        script: bad.sh
+        attempts: { max: 2 }
+`,
+    });
+    project.write('.stepcast/scripts/bad.sh', '#!/bin/sh\necho "не json" > "$STEPCAST_OUTPUT"\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'failed');
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'c');
+    assert.equal(step?.attempts.length, 2);
+    assert.match(step?.reason ?? '', /c/);
+    assert.match(step?.reason ?? '', /JSON/i);
+  });
+
+  it('объявлен output_schema, а файла нет, — отказ попытки', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        script: silent.sh
+        output_schema: ./schema.json
+        attempts: { max: 2 }
+`,
+    });
+    project.write('schema.json', JSON.stringify({ type: 'object' }));
+    project.write('.stepcast/scripts/silent.sh', '#!/bin/sh\ntrue\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'failed');
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'c');
+    assert.equal(step?.attempts.length, 2);
+    assert.match(step?.reason ?? '', /c/);
+    assert.match(step?.reason ?? '', /output_schema/);
+  });
+
+  it('значение не по схеме — отказ с замечаниями валидатора', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        script: wrong.sh
+        output_schema: ./schema.json
+        attempts: { max: 1 }
+`,
+    });
+    project.write(
+      'schema.json',
+      JSON.stringify({ type: 'object', required: ['ok'], properties: { ok: { const: true } } }),
+    );
+    project.write('.stepcast/scripts/wrong.sh', '#!/bin/sh\necho \'{"ok": false}\' > "$STEPCAST_OUTPUT"\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'failed');
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'c');
+    assert.match(step?.reason ?? '', /ok/);
+  });
+
+  // Сценарий: «Выход прошлой попытки не выдаётся за нынешний». Случай,
+  // который снятием файла не закрывается: успешная вторая попытка файла не
+  // пишет вовсе, и прочитанное на первой значение не должно дожить до неё
+  // в памяти движка.
+  it('выход первой попытки не становится выходом успешной второй, ничего не записавшей', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    output: { from: c }
+    steps:
+      - id: c
+        script: flaky.sh
+        expect: [{ exit_code: 0 }]
+        attempts: { max: 2 }
+`,
+    });
+    project.write(
+      '.stepcast/scripts/flaky.sh',
+      '#!/bin/sh\n' +
+        'if [ "$STEPCAST_ATTEMPT" = "1" ]; then echo \'{"stale": true}\' > "$STEPCAST_OUTPUT"; exit 1; fi\n' +
+        'exit 0\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'c');
+    assert.equal(step?.attempts.length, 2);
+    const job = status.jobs.find((entry) => entry.id === 'build');
+    assert.equal(job?.output, undefined, 'выхода у шага нет: вторая попытка файла не писала');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.equal(existsSync(join(stepDir!, 'output.json')), false);
+  });
+
+  // Сценарий: «Обещанного выхода нет» — причиной остаётся непройденный
+  // предикат, а не отсутствие файла, которое он же и объясняет.
+  it('упавший скрипт с объявленным output_schema отказывает по exit_code, а не по файлу', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        script: boom.sh
+        output_schema: ./schema.json
+        expect: [{ exit_code: 0 }]
+        attempts: { max: 1 }
+`,
+    });
+    project.write('schema.json', JSON.stringify({ type: 'object' }));
+    project.write('.stepcast/scripts/boom.sh', '#!/bin/sh\necho "упал" >&2\nexit 3\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'failed');
+    const status = readStatus(result.journal.paths);
+    const step = status.jobs.flatMap((job) => job.steps).find((entry) => entry.id === 'c');
+    assert.match(step?.reason ?? '', /код возврата 3/);
+  });
+
+  // Сценарий: «Выход прошлой попытки не выдаётся за нынешний»
+  it('стухший выход первой попытки не становится выходом второй', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    output: { from: c }
+    steps:
+      - id: c
+        script: stale.sh
+        output_schema: ./schema.json
+        attempts: { max: 2 }
+`,
+    });
+    project.write(
+      'schema.json',
+      JSON.stringify({ type: 'object', required: ['ok'], properties: { ok: { const: true } } }),
+    );
+    project.write(
+      '.stepcast/scripts/stale.sh',
+      '#!/bin/sh\n' +
+        'if [ "$STEPCAST_ATTEMPT" = "1" ]; then echo \'{"ok": false}\' > "$STEPCAST_OUTPUT"; exit 0; fi\n' +
+        'exit 1\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'failed');
+    const status = readStatus(result.journal.paths);
+    const job = status.jobs.find((entry) => entry.id === 'build');
+    assert.equal(job?.output, undefined, 'выход неуспешной работы не публикуется');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.equal(existsSync(join(stepDir!, 'output.json')), false, 'файл второй попытки снят и не записан заново');
+  });
+});
+
+describe('step-execution: обёртка stepcast:step у раннера node', () => {
+  it('default export модуля .mjs вызывается входом шага, а результат — выход шага', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    output: { from: c }
+    steps:
+      - id: c
+        script: pick.mjs
+        input: { a: 1, b: 2 }
+`,
+    });
+    project.write(
+      '.stepcast/scripts/pick.mjs',
+      'export default function (input) {\n' +
+        '  console.log("picking");\n' +
+        '  return { sum: input.a + input.b };\n' +
+        '}\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    const output = JSON.parse(readFileSync(join(stepDir!, 'output.json'), 'utf8'));
+    assert.deepEqual(output, { sum: 3 });
+    const stdout = readFileSync(join(stepDir!, 'stdout.log'), 'utf8');
+    assert.match(stdout, /picking/);
+  });
+
+  it('модуль .mjs без default export исполняется как обычный скрипт', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        script: plain.mjs
+`,
+    });
+    project.write('.stepcast/scripts/plain.mjs', 'console.log("plain ran");\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    const stdout = readFileSync(join(stepDir!, 'stdout.log'), 'utf8');
+    assert.match(stdout, /plain ran/);
+    assert.equal(existsSync(join(stepDir!, 'output.json')), false);
+  });
+
+  it('брошенная ошибка внутри default export даёт ненулевой код и сообщение в stderr', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        script: throws.mjs
+        attempts: { max: 1 }
+`,
+    });
+    project.write(
+      '.stepcast/scripts/throws.mjs',
+      'export default function () {\n  throw new Error("боль");\n}\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'failed');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    const stderr = readFileSync(join(stepDir!, 'stderr.log'), 'utf8');
+    assert.match(stderr, /боль/);
+  });
+
+  // Сценарий: «Асинхронная точка входа»
+  it('обёртка дожидается промиса точки входа и пишет разрешённое значение', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    output: { from: c }
+    steps:
+      - id: c
+        script: slow.mjs
+        input: { n: 2 }
+`,
+    });
+    project.write(
+      '.stepcast/scripts/slow.mjs',
+      'export default async function (input) {\n' +
+        '  await new Promise((resolve) => setTimeout(resolve, 10));\n' +
+        '  return { doubled: input.n * 2 };\n' +
+        '}\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.deepEqual(JSON.parse(readFileSync(join(stepDir!, 'output.json'), 'utf8')), { doubled: 4 });
+  });
+
+  it('default export модуля .mjs не функцией — отказ с названной причиной', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        script: table.mjs
+        attempts: { max: 1 }
+`,
+    });
+    project.write('.stepcast/scripts/table.mjs', 'export default { a: 1 };\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'failed');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    const stderr = readFileSync(join(stepDir!, 'stderr.log'), 'utf8');
+    assert.match(stderr, /Default export модуля не функция/);
+  });
+
+  // Сценарий: «Модуль без точки входа», формат CommonJS. У него `mod.default`
+  // — это `module.exports`, то есть пустой объект даже когда модуль ничего не
+  // экспортировал: принять его за объявленную точку входа значит отказать
+  // обычному скрипту.
+  it('скрипт .cjs без экспорта исполняется как обычный скрипт', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        script: plain.cjs
+        attempts: { max: 1 }
+`,
+    });
+    project.write(
+      '.stepcast/scripts/plain.cjs',
+      'const fs = require("node:fs");\n' +
+        'console.log("cjs ran");\n' +
+        'fs.writeFileSync(process.env.STEPCAST_OUTPUT, JSON.stringify({ from: "тело" }));\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.match(readFileSync(join(stepDir!, 'stdout.log'), 'utf8'), /cjs ran/);
+    assert.deepEqual(JSON.parse(readFileSync(join(stepDir!, 'output.json'), 'utf8')), { from: 'тело' });
+  });
+
+  it('скрипт .js без package.json рядом исполняется как обычный скрипт CommonJS', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        script: plain.js
+        attempts: { max: 1 }
+`,
+    });
+    project.write('.stepcast/scripts/plain.js', 'console.log("js ran");\n');
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.match(readFileSync(join(stepDir!, 'stdout.log'), 'utf8'), /js ran/);
+  });
+
+  it('module.exports функцией в .cjs — точка входа наравне с default export', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    output: { from: c }
+    steps:
+      - id: c
+        script: entry.cjs
+        input: { a: 4 }
+`,
+    });
+    project.write(
+      '.stepcast/scripts/entry.cjs',
+      'module.exports = function (input) {\n  return { twice: input.a * 2 };\n};\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.deepEqual(JSON.parse(readFileSync(join(stepDir!, 'output.json'), 'utf8')), { twice: 8 });
+  });
+
+  it('process.argv.slice(2) внутри модуля равен args шага', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        script: argv.mjs
+        args: ['--dry-run', 'x']
+`,
+    });
+    project.write(
+      '.stepcast/scripts/argv.mjs',
+      'console.log(JSON.stringify(process.argv.slice(2)));\n',
+    );
+
+    const result = await runWithScriptRoots(project, project.config, isolatedScriptRoots(project));
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    const stdout = readFileSync(join(stepDir!, 'stdout.log'), 'utf8');
+    assert.match(stdout, /\["--dry-run","x"\]/);
+  });
+});
+
 describe('runner-disposers: области ресурсов раннера', () => {
   const ONE_STEP = `
 version: 1

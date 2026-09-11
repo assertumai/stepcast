@@ -62,11 +62,12 @@ started_at: 2026-09-10T21:51:52.361Z
 
 ## script-step-contract
 
-status: pending
+status: done
 title: Вход и выход скрипта — файлы по контракту, а не argv и stdout
 group: script-steps
 why: Скрипт получает данные только подстановками в argv, а структурированный выход отдаёт единственным способом — печатая JSON в stdout при объявленном `output_schema` (`docs/pipeline-format.md`, «run»). Для скрипта на Python или Go это значит собирать аргументы вручную и держать stdout чистым от логов. Нужен контракт, одинаковый для любого языка: вход — `input.json` в каталоге шага с путём в `STEPCAST_INPUT`, выход — `output.json` с путём в `STEPCAST_OUTPUT`, публикация — прежний `stepcast data set`; stdout остаётся логом. Поверх контракта — тонкий SDK для TS/JS `stepcast/step` с `input()`, `output()`, `publish()`, `log()`, `exec()`, читающий `STEPCAST_*` из окружения и потому пригодный в любом дочернем процессе; раннер `node` подключает обёртку, которая вызывает default export модуля, пишет возвращённое значение в `output.json` и проверяет схемой. Библиотека для Python — отдельным пунктом, когда понадобится.
 done_when: шаг `script` принимает поле `input` с подстановками и записывает его в `input.json` каталога шага, путь передаётся в `STEPCAST_INPUT`; выход читается из файла по `STEPCAST_OUTPUT`, проверяется `output_schema` и доступен `expect`, `output.from` и `${jobs.*.output.*}` так же, как выход агентского шага; `run` с `output_schema` продолжает разбирать stdout как раньше; пакет экспортирует `stepcast/step` с `input`, `output`, `publish`, `log`, `exec`, работающий по одним лишь `STEPCAST_*`; раннер `node` для модуля с default export вызывает его и пишет результат в `output.json`, а модуль без default export исполняется как обычный скрипт; контракт, SDK и обёртка покрыты тестами, включая скрипт на Python, работающий по контракту без SDK; `docs/pipeline-format.md` и `docs/plugins.md` описывают контракт и SDK
+started_at: 2026-09-10T23:27:57.991Z
 
 ## script-predicate
 

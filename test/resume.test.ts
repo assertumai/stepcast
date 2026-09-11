@@ -1847,6 +1847,55 @@ jobs:
   });
 });
 
+describe('run-resume: перенос выхода переиспользованного шага script', () => {
+  const SCRIPT_OUTPUT_PIPELINE = `
+version: 1
+kind: pipeline
+name: script-output-resume
+jobs:
+  plan:
+    output: { from: build }
+    session: per_step
+    inputs: [неподходящее.txt]
+    steps:
+      - id: build
+        script: plan.sh
+        output_schema: ./schema.json
+        expect: [{ exit_code: 0 }]
+  use:
+    needs: [plan]
+    session: per_step
+    steps:
+      - id: c
+        run: [sh, -c, 'echo "\${jobs.plan.output.slug}" > slug.txt']
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Сценарий: «Переиспользованный шаг script»
+  it('переносит output.json переиспользованного шага script и работа публикует его как свой выход', async () => {
+    const b = bed({
+      'stepcast.yml': SCRIPT_OUTPUT_PIPELINE,
+      'неподходящее.txt': 'исходно',
+      'schema.json': JSON.stringify({ type: 'object' }),
+    });
+    b.project.write('.stepcast/scripts/plan.sh', '#!/bin/sh\necho \'{"slug":"add-oauth"}\' > "$STEPCAST_OUTPUT"\n');
+
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+
+    const second = await resume(b, first, 'use');
+    assert.equal(second.status, 'success');
+
+    const artifactPath = join(second.journal.paths.artifacts, 'plan.json');
+    assert.equal(existsSync(artifactPath), true);
+    assert.deepEqual(JSON.parse(readFileSync(artifactPath, 'utf8')), { slug: 'add-oauth' });
+    assert.equal(readFileSync(b.project.path('slug.txt'), 'utf8').trim(), 'add-oauth');
+
+    const buildStep = steps(second).find((step) => step.id === 'build');
+    assert.equal(buildStep?.reused_from, first.journal.paths.runId);
+  });
+});
+
 /**
  * backlog-item-names-repo, «Выбранный репозиторий доезжает выходом работы, а
  * не определением шага»: ключ шага считается по нераскрытому определению

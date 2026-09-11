@@ -76,6 +76,11 @@ function stepToPlain(step: Step): Record<string, unknown> {
       ...(step.args.length === 0 ? {} : { args: step.args }),
       ...(step.runner === undefined ? {} : { runner: step.runner }),
       ...(step.onFail === undefined ? {} : { on_fail: step.onFail }),
+      // Объявленное значение — с нераскрытыми отложенными подстановками — а не
+      // то, с чем скрипт исполнился (design.md, решение 4): ключ шага держится
+      // на этой записи, а фактическое значение уже видно в `resolved.json`.
+      ...(step.input === undefined ? {} : { input: step.input }),
+      ...(step.outputSchemaPath === undefined ? {} : { output_schema: step.outputSchemaPath }),
       // Разрешённое — путь, слой, раннер, argv, отпечаток — а не содержимое
       // файла: замок читают глазами, отпечатка достаточно, чтобы отличить
       // один файл от другого (design.md, решение 8).

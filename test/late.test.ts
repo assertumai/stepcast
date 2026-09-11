@@ -8,7 +8,7 @@ import { resolveLate, type LateScope } from '../src/core/pipeline/late.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { jobScratchDir } from '../src/core/journal/paths.js';
 import { readStatus } from '../src/core/journal/reader.js';
-import { asAgent, asRun, makeProject, type Project } from './helpers.js';
+import { asAgent, asRun, asScript, makeProject, type Project } from './helpers.js';
 import type { Job } from '../src/core/pipeline/model.js';
 import { tempDir } from './tmp.js';
 
@@ -290,6 +290,72 @@ jobs:
       () => resolveLate(job, SCOPE),
       (error: Error & { hint?: string }) => /даёт пустой список/.test(error.message),
     );
+  });
+
+  /**
+   * `input` шага `script` раскрывается отдельным типизированным проходом
+   * (`late.ts`, `omitInput`): общий обход отдал бы объект строкой. Проход
+   * возвращает значения по индексу шага — потому среди тестов есть работа с
+   * несколькими шагами, где перепутанный индекс виден.
+   */
+  it('объект из выхода работы уезжает в input объектом', () => {
+    const scope: LateScope = {
+      ...SCOPE,
+      jobs: {
+        ...SCOPE.jobs,
+        plan: { status: 'success', output: { item: { slug: 'add-oauth', repos: ['ui'] } } },
+      },
+    };
+    const job = expandJob(
+      pipelineWith(`    steps:
+      - id: work
+        script: work.mjs
+        input:
+          item: \${jobs.plan.output.item}`),
+    );
+
+    assert.deepEqual(asScript(resolveLate(job, scope).steps[0] as never).input, {
+      item: { slug: 'add-oauth', repos: ['ui'] },
+    });
+  });
+
+  it('число из выхода работы уезжает в input числом, а смешанная строка — строкой', () => {
+    const job = expandJob(
+      pipelineWith(`    steps:
+      - id: work
+        script: work.mjs
+        input:
+          count: \${jobs.plan.output.count}
+          title: "чинить \${jobs.plan.output.slug}"
+          list: ["\${jobs.plan.output.files}"]`),
+    );
+
+    assert.deepEqual(asScript(resolveLate(job, SCOPE).steps[0] as never).input, {
+      count: 3,
+      title: 'чинить add-oauth',
+      list: [['src/a.ts', 'src/b.ts']],
+    });
+  });
+
+  it('каждый шаг script получает свой input, а прочие шаги раскрываются как прежде', () => {
+    const job = expandJob(
+      pipelineWith(`    steps:
+      - id: first
+        script: first.mjs
+        input:
+          slug: \${jobs.plan.output.slug}
+      - id: middle
+        run: [echo, "\${jobs.plan.output.count}"]
+      - id: last
+        script: last.mjs
+        input:
+          count: \${jobs.plan.output.count}`),
+    );
+
+    const resolved = resolveLate(job, SCOPE);
+    assert.deepEqual(asScript(resolved.steps[0] as never).input, { slug: 'add-oauth' });
+    assert.deepEqual(asRun(resolved.steps[1] as never).command, ['echo', '3']);
+    assert.deepEqual(asScript(resolved.steps[2] as never).input, { count: 3 });
   });
 
   it('отказывает на имени вне состава run', () => {

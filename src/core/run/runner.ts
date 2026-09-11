@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, readFileSync, readdirSync, rmdirSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync, readdirSync, rmSync, rmdirSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
 import {
@@ -39,7 +39,7 @@ import { createSessionRegistry, executeAgentStep } from '../exec/agentStep.js';
 import { buildStepEnv, injectedVariables } from '../exec/env.js';
 import { executeRunStep } from '../exec/runStep.js';
 import { runJudgePass } from '../exec/judgePass.js';
-import { evaluatePredicates } from '../expect/evaluate.js';
+import { evaluatePredicates, validateAgainstSchemaFile } from '../expect/evaluate.js';
 import { createKnowledgeSource } from '../knowledge/source.js';
 import type { KnowledgeSource } from '../knowledge/types.js';
 import { buildGraph, upstreamOutputs, type Graph } from '../graph.js';
@@ -1493,7 +1493,9 @@ async function runJobSteps(
       const dataViolation = foldJobData(context, job);
       if (dataViolation !== undefined) return { status: 'failed', reason: dataViolation };
       if (
-        (step.kind === 'agent' || (step.kind === 'run' && step.outputSchemaPath !== undefined)) &&
+        (step.kind === 'agent' ||
+          (step.kind === 'run' && step.outputSchemaPath !== undefined) ||
+          step.kind === 'script') &&
         planned.decision.record.status === 'success'
       ) {
         // Переиспользованный шаг не исполнялся, структурированного вывода у
@@ -1749,9 +1751,19 @@ async function runJobSteps(
     steps.push(stepRecord);
     journal.writeStepJson(stepDirPath, 'step.json', stepRecord);
 
-    if ((step.kind === 'agent' || (step.kind === 'run' && step.outputSchemaPath !== undefined)) && outcome.structured !== undefined) {
+    if (
+      (step.kind === 'agent' ||
+        (step.kind === 'run' && step.outputSchemaPath !== undefined) ||
+        step.kind === 'script') &&
+      outcome.structured !== undefined
+    ) {
       lastStructuredOutput = outcome.structured;
-      journal.writeStepJson(stepDirPath, 'output.json', outcome.structured);
+      // Шаг `script` уже записал этот файл сам — байт в байт, как и было
+      // (design.md, решение 5). Переписать его здесь — заново сериализовать
+      // то же значение — значило бы потерять форматирование скрипта.
+      if (step.kind !== 'script') {
+        journal.writeStepJson(stepDirPath, 'output.json', outcome.structured);
+      }
     }
     if (job.output?.from === step.id) outputFromStep = outcome.structured;
 
@@ -1976,6 +1988,65 @@ function unresolvedScriptOutcome(step: Extract<Step, { kind: 'script' }>): StepO
   };
 }
 
+/**
+ * Прочитать и проверить файл выхода шага `script` (design.md, решение 6).
+ * Движок проверяет схемой сам — одинаково для любого языка, — а не
+ * перекладывает это на обёртку раннера, у которой есть только Node.
+ *
+ * Отсутствие файла без объявленной схемы — не отказ: канал у `script` есть
+ * всегда, но обещания результата без `output_schema` не было.
+ */
+function readScriptOutput(
+  outputPath: string,
+  outputSchemaPath: string | undefined,
+  stepId: string,
+): { readonly kind: 'value'; readonly value: unknown } | { readonly kind: 'none' } | { readonly kind: 'failure'; readonly result: PredicateResult } {
+  if (!existsSync(outputPath)) {
+    if (outputSchemaPath === undefined) return { kind: 'none' };
+    return {
+      kind: 'failure',
+      result: {
+        predicate: 'output_schema',
+        passed: false,
+        hard: true,
+        detail: `шаг ${stepId} объявляет output_schema, но файл выхода не записан`,
+      },
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(outputPath, 'utf8'));
+  } catch (error) {
+    return {
+      kind: 'failure',
+      result: {
+        predicate: 'output_schema',
+        passed: false,
+        hard: true,
+        detail: `шаг ${stepId} записал файл выхода, не разбираемый как JSON: ${(error as Error).message}`,
+      },
+    };
+  }
+
+  if (outputSchemaPath === undefined) return { kind: 'value', value: parsed };
+
+  const validated = validateAgainstSchemaFile(outputSchemaPath, parsed);
+  if (!validated.passed) {
+    return {
+      kind: 'failure',
+      result: {
+        predicate: 'output_schema',
+        passed: false,
+        hard: true,
+        detail: `шаг ${stepId} записал выход не по output_schema:\n${validated.detail ?? ''}`,
+      },
+    };
+  }
+
+  return { kind: 'value', value: parsed };
+}
+
 async function runCommandStep(
   step: Extract<Step, { kind: 'run' | 'script' }>,
   job: Job,
@@ -1994,6 +2065,15 @@ async function runCommandStep(
   // output_schema — без него у командного шага структурированного выхода
   // нет, и поле остаётся неопределённым до конца функции.
   let structuredOutput: unknown;
+
+  // Файл входа шага `script` пишется движком один раз, до первой попытки
+  // (design.md, решение 3): объявленный `input` — раскрытым значением,
+  // необъявленный — пустым отображением, чтобы читателю не нужна была ветка
+  // «а если файла нет».
+  const outputPath = join(stepDirPath, 'output.json');
+  if (step.kind === 'script') {
+    journal.writeStepJson(stepDirPath, 'input.json', step.input ?? {});
+  }
 
   for (;;) {
     let exceeded: ReturnType<UsageAccumulator['check']>;
@@ -2020,7 +2100,20 @@ async function runCommandStep(
         stallTimeoutMs: config.defaults.stallTimeoutMs,
         signal: abort.controller.signal,
         env: (plan) => stepEnv(step, job, plan.attempt, context, stepDirPath),
+        // Выход прошлой попытки не должен дожить до следующей и выдаться за
+        // её результат (design.md, решение 5) — файл снимается перед спавном,
+        // а не после чтения: неуспешная попытка, упавшая до записи, не должна
+        // унаследовать чужой файл, оставшийся на диске.
+        onAttemptStart: () => {
+          if (step.kind === 'script') rmSync(outputPath, { force: true });
+        },
         evaluate: async (target, process_, plan) => {
+          // Попытка начинается без выхода: значение, прочитанное прошлой, не
+          // должно дожить до нынешней и выдаться за её результат (design.md,
+          // решение 5). Снятия файла для этого мало — попытка, не записавшая
+          // его вовсе, иначе унаследовала бы уже прочитанное значение.
+          structuredOutput = undefined;
+
           // Разбор строгий: только пробелы по краям снимаются, без поиска
           // первого объекта и без склейки последней строки — вывод либо один
           // JSON-документ целиком, либо отказ попытки.
@@ -2041,6 +2134,21 @@ async function runCommandStep(
             structuredOutput = structured;
           }
 
+          // Промах контракта не отменяет объявленных шагом предикатов, а
+          // дописывается к ним последним: у скрипта, упавшего ненулевым кодом
+          // и потому не записавшего файл, причиной попытки должен остаться
+          // непройденный `exit_code` — настоящая причина, а не её следствие
+          // (`firstFailureReason` берёт первый жёсткий промах по порядку).
+          let contractFailure: PredicateResult | undefined;
+          if (target.kind === 'script') {
+            const contract = readScriptOutput(outputPath, target.outputSchemaPath, target.id);
+            if (contract.kind === 'failure') contractFailure = contract.result;
+            if (contract.kind === 'value') {
+              structured = contract.value;
+              structuredOutput = structured;
+            }
+          }
+
           const firstPass = await evaluatePredicates(
             target.expect,
             {
@@ -2054,6 +2162,11 @@ async function runCommandStep(
             },
             context.registry,
           );
+
+          // Судьи по промаху контракта не зовутся: структурированного выхода,
+          // о котором их спрашивают, у попытки нет, а отказ её уже решён —
+          // платить за вызов модели незачем.
+          if (contractFailure !== undefined) return [...firstPass, contractFailure];
 
           if (!target.expect.some((predicate) => predicate.kind === 'judge')) return firstPass;
 
@@ -2612,6 +2725,12 @@ function stepEnv(
       workspace: context.cwd,
       artifacts: context.journal.paths.artifacts,
       scratch: jobScratchDir(context.journal.paths, job.id),
+      ...(step.kind === 'script'
+        ? {
+            contractInputPath: join(stepDirPath, 'input.json'),
+            contractOutputPath: join(stepDirPath, 'output.json'),
+          }
+        : {}),
     }),
     deny: pipeline.envDeny,
     cwd: context.cwd,

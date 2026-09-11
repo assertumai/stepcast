@@ -119,6 +119,13 @@ export interface InjectedContext {
   readonly scratch: string;
   readonly iteration?: number;
   readonly previousFailurePath?: string;
+  /**
+   * Пути файлов контракта шага `script` — переданы только вызывающим, у кого
+   * они есть: `stepEnv` называет их лишь для шага этого вида, у `run` и
+   * агентского шага контракт свой (design.md, решение 1).
+   */
+  readonly contractInputPath?: string;
+  readonly contractOutputPath?: string;
 }
 
 export function injectedVariables(context: InjectedContext): Record<string, string> {
@@ -138,5 +145,7 @@ export function injectedVariables(context: InjectedContext): Record<string, stri
     ...(context.previousFailurePath === undefined
       ? {}
       : { STEPCAST_PREV_FAILURE: context.previousFailurePath }),
+    ...(context.contractInputPath === undefined ? {} : { STEPCAST_INPUT: context.contractInputPath }),
+    ...(context.contractOutputPath === undefined ? {} : { STEPCAST_OUTPUT: context.contractOutputPath }),
   };
 }

@@ -73,9 +73,17 @@ export const BUILTIN_CONFIG: RawConfig = {
   // отдельной записью, а не флагом, который `node` добавляет при виде `.ts`:
   // `--experimental-strip-types` неприменим на Node 22.0-22.5 и не нужен на
   // новых — приписывать его всякому `node` нельзя (design.md, Context).
+  // `node` и `node-ts` называют поставляемую пакетом обёртку шага
+  // (`stepcast-configuration`): она зовёт default export модуля, если он
+  // есть. `python3` и `sh` без неё — пакет поставляет обёртку только для
+  // Node (design.md, Non-Goals).
   runners: {
-    node: { command: ['node'], extensions: ['.js', '.mjs', '.cjs'] },
-    'node-ts': { command: ['node', '--experimental-strip-types'], extensions: ['.ts', '.mts'] },
+    node: { command: ['node'], extensions: ['.js', '.mjs', '.cjs'], wrapper: 'stepcast:step' },
+    'node-ts': {
+      command: ['node', '--experimental-strip-types'],
+      extensions: ['.ts', '.mts'],
+      wrapper: 'stepcast:step',
+    },
     python3: { command: ['python3'], extensions: ['.py'] },
     sh: { command: ['sh'], extensions: ['.sh'] },
   },

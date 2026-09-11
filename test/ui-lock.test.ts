@@ -101,9 +101,12 @@ jobs:
       - id: cleanup
         script: cleanup.sh
         args: ['--dry-run']
+        input: { slug: bug-42 }
+        output_schema: ./schema.json
 `,
     });
     project.write('.stepcast/scripts/cleanup.sh', '#!/bin/sh\nexit 0\n');
+    project.write('schema.json', JSON.stringify({ type: 'object' }));
     const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
     const path = project.path('pipeline.lock.yml');
     writeFileSync(path, serializeLock(expanded.pipeline));
@@ -112,6 +115,31 @@ jobs:
     assert.equal(step?.kind, 'script');
     assert.equal(step?.scriptPath, 'cleanup.sh');
     assert.equal(step?.scriptRunner, 'sh');
+    assert.equal(step?.hasScriptInput, true);
+    assert.equal(step?.scriptOutputSchemaPath, project.path('schema.json'));
+  });
+
+  it('шаг script без входа и схемы выхода отличим от шага с контрактом', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: витрина-script-без-контракта
+jobs:
+  build:
+    steps:
+      - id: cleanup
+        script: cleanup.sh
+`,
+    });
+    project.write('.stepcast/scripts/cleanup.sh', '#!/bin/sh\nexit 0\n');
+    const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
+    const path = project.path('pipeline.lock.yml');
+    writeFileSync(path, serializeLock(expanded.pipeline));
+
+    const step = readLockJobs(path).find((job) => job.id === 'build')?.steps[0];
+    assert.equal(step?.hasScriptInput, false);
+    assert.equal(step?.scriptOutputSchemaPath, undefined);
   });
 
   it('на отсутствующем и негодном файле отдаёт пустой список, а не падает', () => {
