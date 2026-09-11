@@ -69,6 +69,17 @@ export interface LintOptions {
   readonly registry?: Registry;
 }
 
+/**
+ * То же, но с реестром на месте: умолчание `builtinRegistry()` раскрывается
+ * один раз на вызов `lintPipeline` и дальше передаётся, а не пересчитывается на
+ * каждое обращение (design.md изменения `cordis-kernel-daemon`, Решение 13).
+ * Каждый такой вызов поднимает корневой контекст, и документ с N предикатами
+ * плагинов стоил бы N корней за проход.
+ */
+interface ResolvedLintOptions extends LintOptions {
+  readonly registry: Registry;
+}
+
 /** Метасимволы глоба. Глоб запрашивает совпадения, и их отсутствие не ошибка. */
 const GLOB = /[*?[]/;
 
@@ -430,14 +441,14 @@ const SCHEMA_TARGETS = [
  * только если хотя бы один файл найден: проект, не пользовавшийся командой
  * `stepcast schema`, о ней от линта не узнаёт вовсе.
  */
-function checkPublishedSchema(base: string, registry: Registry | undefined, push: (diagnostic: Diagnostic) => void): void {
+function checkPublishedSchema(base: string, registry: Registry, push: (diagnostic: Diagnostic) => void): void {
   const dir = join(base, '.stepcast', 'schema');
   const targets = SCHEMA_TARGETS.map((target) => ({ ...target, path: join(dir, target.file) }));
   if (!targets.some((target) => existsSync(target.path))) return;
 
   // Тот же перечень, каким печатает команда `stepcast schema`: сверка со
   // «свежим» выводом верна лишь пока сборка перечня у них одна.
-  const current = buildPublishedSchemas(pluginPredicateEntries(registry ?? builtinRegistry()));
+  const current = buildPublishedSchemas(pluginPredicateEntries(registry));
 
   for (const target of targets) {
     if (!existsSync(target.path)) continue;
@@ -475,10 +486,10 @@ function lintPluginPredicate(
   at: string,
   file: string,
   cwd: string,
-  options: LintOptions,
+  options: ResolvedLintOptions,
   push: (diagnostic: Diagnostic) => void,
 ): void {
-  const contribution = (options.registry ?? builtinRegistry()).predicates.get(predicate.name);
+  const contribution = options.registry.predicates.get(predicate.name);
   const site = { file, at: `${at}.${predicate.name}`, cwd };
 
   for (const diagnostic of contribution?.lint?.(predicate.value, site) ?? []) {
@@ -505,7 +516,12 @@ function callsModel(step: Step): boolean {
   return step.kind === 'agent' || step.expect.some((predicate) => predicate.kind === 'judge');
 }
 
-export function lintPipeline(expanded: ExpandedPipeline, options: LintOptions): Diagnostic[] {
+export function lintPipeline(expanded: ExpandedPipeline, given: LintOptions): Diagnostic[] {
+  // Умолчание реестра раскрывается здесь и только здесь: встроенное ядро
+  // поднимается один раз на проход, а не на каждое обращение внутри него
+  // (Решение 13 изменения `cordis-kernel-daemon`). Вызывающий, у которого
+  // реестр уже есть, передаёт его, как передавал.
+  const options: ResolvedLintOptions = { ...given, registry: given.registry ?? builtinRegistry() };
   const { pipeline, substitutions } = expanded;
   const diagnostics: Diagnostic[] = [];
   const push = (diagnostic: Diagnostic): void => {
@@ -1279,7 +1295,7 @@ function checkStep(
   job: Job,
   step: Step,
   base: string,
-  options: LintOptions,
+  options: ResolvedLintOptions,
   substitutions: ExpandedPipeline['substitutions'],
   envDenyMatchers: readonly RegExp[],
   envDenyPatterns: readonly string[],
@@ -1427,7 +1443,7 @@ function checkStep(
     }
     // Настроенный бэкенд без адаптера — отказ прогона на первом вызове судьи;
     // линт обязан назвать это раньше, чем потрачен первый токен.
-    const registry = options.registry ?? builtinRegistry();
+    const { registry } = options;
     if (!registry.backends.has(backendName)) {
       push({
         severity: 'error',

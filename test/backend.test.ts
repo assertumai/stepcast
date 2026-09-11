@@ -21,8 +21,9 @@ import { RunJournal } from '../src/core/journal/writer.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { resolveAdapter } from '../src/core/backend/registry.js';
-import { builtinRegistry } from '../src/core/plugins/builtin.js';
-import { addPlugin } from '../src/core/plugins/registry.js';
+import { builtinRegistry, createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
+import { registryFromKernel } from '../src/core/plugins/registry.js';
 import { readEvents, readStatus } from '../src/core/journal/reader.js';
 import { StepcastError } from '../src/core/errors.js';
 import { makeProject } from './helpers.js';
@@ -300,15 +301,16 @@ jobs:
     const project = makeProject({ 'stepcast.yml': PIPELINE });
     const runsRoot = tempDir('runs-');
     const backend = createFakeBackend({ lines: [resultLine({ text: 'готово' })] });
-    const registry = builtinRegistry();
+    const kernel = createBuiltinKernel();
+    const registry = registryFromKernel(kernel);
     const created: string[] = [];
-    addPlugin(
-      registry,
+    await applyDeclarativePlugin(
+      kernel,
       {
         name: 'codex-adapter',
         backends: {
           codex: {
-            create: (backendConfig) => {
+            create: (backendConfig: BackendConfig) => {
               created.push(backendConfig.command);
               return backend.adapter;
             },
@@ -364,7 +366,7 @@ jobs:
   });
 
   // Сценарий: «Адаптер не объявил направление идентификатора сессии»
-  it('адаптер плагина без объявленного направления сессии отказывает при подборе', () => {
+  it('адаптер плагина без объявленного направления сессии отказывает при подборе', async () => {
     const project = makeProject({});
     const backend = createFakeBackend({ lines: [] });
     // Плагин грузится готовым JS-модулем, и типы ему не указ: поле, забытое в
@@ -375,9 +377,10 @@ jobs:
       ...backend.adapter,
       capabilities: withoutDirection as BackendCapabilities,
     };
-    const registry = builtinRegistry();
-    addPlugin(
-      registry,
+    const kernel = createBuiltinKernel();
+    const registry = registryFromKernel(kernel);
+    await applyDeclarativePlugin(
+      kernel,
       { name: 'codex-adapter', backends: { codex: { create: () => adapter } } },
       '/м.js',
     );

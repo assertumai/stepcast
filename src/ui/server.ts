@@ -29,7 +29,13 @@ import { dashboardHtml } from './assets.js';
 import type { BacklogOverview } from './backlog.js';
 import { readJournalFile } from './file.js';
 import { readModels } from './models.js';
-import { buildPipelines, createRegistryCache, type RegistryCache } from './pipelines.js';
+import {
+  buildPipelines,
+  createKernelCache,
+  disposeRaisedKernels,
+  shareKernelCache,
+  type KernelCache,
+} from './pipelines.js';
 import { buildSteps } from './steps.js';
 import { isApiPath, isSafeSegment, isWidgetPath } from './routes.js';
 import { readSettings, writeSettings } from './settings.js';
@@ -84,6 +90,14 @@ export interface UiServerOptions {
   readonly config?: Config;
   /** Домашний каталог: определяет, какой глобальный конфиг правят настройки. */
   readonly home?: string;
+  /**
+   * Кеш ядер: контекст на корень проекта плюс собственный контекст демона
+   * (ключ `home:<домашний каталог>`) — им пользуются `readSettings` и
+   * `readModels` (design.md, Решение 6). Заводится сервером сам, если не
+   * передан, тем же приёмом, что и `watcher`: полученный снаружи кеш `close()`
+   * не снимает — ни один из его контекстов.
+   */
+  readonly kernelCache?: KernelCache;
   /**
    * Файл собранной витрины. По умолчанию — артефакт сборки рядом с кодом
    * (`dist/ui-web/index.html`). Переопределение нужно проверке отказа
@@ -823,6 +837,7 @@ async function handleSettingsWrite(
   req: IncomingMessage,
   res: ServerResponse,
   home: string | undefined,
+  kernelCache: KernelCache,
 ): Promise<void> {
   let body: string;
   try {
@@ -841,7 +856,7 @@ async function handleSettingsWrite(
   }
 
   try {
-    sendJson(res, 200, await writeSettings(patch, home));
+    sendJson(res, 200, await writeSettings(patch, home, kernelCache));
   } catch (error) {
     const message = isStepcastError(error) ? error.message : (error as Error).message;
     sendJson(res, isStepcastError(error) ? 400 : 500, { error: message });
@@ -854,10 +869,15 @@ async function handleSettingsWrite(
  * приходят вторым запросом, когда пробы отработают. `?refresh=1` обходит
  * удержанное демоном и перечисляет заново.
  */
-async function handleModels(home: string | undefined, url: URL, res: ServerResponse): Promise<void> {
+async function handleModels(
+  home: string | undefined,
+  kernelCache: KernelCache,
+  url: URL,
+  res: ServerResponse,
+): Promise<void> {
   try {
     const refresh = url.searchParams.get('refresh') === '1';
-    sendJson(res, 200, await readModels(home, { refresh }));
+    sendJson(res, 200, await readModels(home, { refresh }, kernelCache));
   } catch (error) {
     sendJson(res, 500, { error: (error as Error).message });
   }
@@ -873,7 +893,7 @@ async function handlePipelines(
   runsRoot: string,
   config: Config | undefined,
   home: string | undefined,
-  registryCache: RegistryCache,
+  kernelCache: KernelCache,
   res: ServerResponse,
 ): Promise<void> {
   if (config === undefined) {
@@ -886,7 +906,7 @@ async function handlePipelines(
     // каждого проекта своей: команда проверки объявлена в репозитории.
     const overview = await buildPipelines(runsRoot, config, {
       ...(home === undefined ? {} : { home }),
-      registryCache,
+      kernelCache,
     });
     sendJson(res, 200, overview);
   } catch (error) {
@@ -983,10 +1003,21 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
     options.watcher ??
     createWatcher({ runsRoot, ...(options.log === undefined ? {} : { log: options.log }) });
   const ownsWatcher = options.watcher === undefined;
-  // Один кеш реестров на сервер, не на модуль: тесты поднимают несколько
-  // демонов в одном процессе, и общий кеш связал бы их между собой
-  // (design.md, Решение 3).
-  const registryCache = createRegistryCache();
+  // Один кеш ядер на сервер, не на модуль: тесты поднимают несколько демонов в
+  // одном процессе, и общий кеш связал бы их между собой (design.md,
+  // Решение 3). Ядро проекта и собственное ядро демона (ключ `home:...`,
+  // `src/ui/settings.ts`) живут в одном кеше — их пространства имён не
+  // пересекаются (Решение 6).
+  //
+  // Правило «останавливает тот, кто поднял» считается по ядру, а не по кешу:
+  // кеш, полученный снаружи, сервер не присваивает, но контексты, поднятые в
+  // него им самим, при закрытии снимает — иначе демон, которому передали кеш,
+  // тёк бы каждым проектом, который раскрыл. Записи, положенные хозяином кеша,
+  // остаются действующими: `shareKernelCache` ведёт им отдельный счёт.
+  const kernelCache =
+    options.kernelCache === undefined
+      ? createKernelCache(options.log)
+      : shareKernelCache(options.kernelCache, options.log);
   // Компилятор виджетов — тем же приёмом, что и `watcher`: заводится сервером
   // сам, если не передан, и снаружи полученный сервер не останавливает
   // (design.md, Решение 12). Заведение объекта не поднимает службу: `esbuild`
@@ -1023,7 +1054,7 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
     }
 
     if (method === 'PUT' && url.pathname === '/api/settings') {
-      void handleSettingsWrite(req, res, home);
+      void handleSettingsWrite(req, res, home, kernelCache);
       return;
     }
 
@@ -1063,18 +1094,18 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
         handleSelectUsageRecords(runsRoot, url, res);
         return;
       case '/api/pipelines':
-        void handlePipelines(runsRoot, config, home, registryCache, res);
+        void handlePipelines(runsRoot, config, home, kernelCache, res);
         return;
       case '/api/steps':
         handleSteps(runsRoot, home, res);
         return;
       case '/api/settings':
-        void readSettings(home)
+        void readSettings(home, kernelCache)
           .then((settings) => sendJson(res, 200, settings))
           .catch((error: Error) => sendJson(res, 500, { error: error.message }));
         return;
       case '/api/models':
-        void handleModels(home, url, res);
+        void handleModels(home, kernelCache, url, res);
         return;
       case '/api/usage':
         handleUsage(runsRoot, watcher, url, res);
@@ -1109,6 +1140,11 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
           // `node --test`, если его не остановить (design.md, Решение 12);
           // компилятор, полученный снаружи, останавливает тот, кто его поднял.
           if (ownsWidgetCompiler) await widgetCompiler.dispose();
+          // Тем же правилом «останавливает тот, кто поднял», считанным по
+          // ядру: снимаются контексты, поднятые этим сервером, и остаются
+          // действующими те, что положил в кеш кто-то другой (design.md,
+          // Решение 6, ui-daemon spec).
+          await disposeRaisedKernels(kernelCache);
           server.closeAllConnections();
           await new Promise<void>((done) => server.close(() => done()));
         },

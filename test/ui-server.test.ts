@@ -20,6 +20,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resetModelDiscoveryCache } from '../src/core/backend/models.js';
 import { dashboardPath } from '../src/ui/assets.js';
 import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
+import {
+  createKernelCache,
+  disposeRaisedKernels,
+  resolveWithCachedKernel,
+  type KernelCache,
+} from '../src/ui/pipelines.js';
 import { runHref } from '../src/ui/routes.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
@@ -56,6 +62,7 @@ async function startServer(
     config?: Config;
     home?: string;
     dashboardFile?: string;
+    kernelCache?: KernelCache;
   },
 ): Promise<UiServer> {
   const server = await createUiServer({ ...options, port: 0 });
@@ -691,6 +698,43 @@ export default {
   },
 };
 `;
+
+/**
+ * Плагин контекста, заводящий сервис с именем, которого ядро не знает. Два
+ * проекта, объявившие его оба, спорили бы за имя, если бы демон держал один
+ * общий корень: изоляция проектов проверяется именно этим (design.md
+ * изменения `cordis-kernel-daemon`, Решение 6).
+ */
+const SHARED_SERVICE_PLUGIN = `
+export default function shared(ctx) {
+  ctx.provide('shared-service');
+  ctx.set('shared-service', { from: 'plugin' });
+}
+`;
+
+/**
+ * Плагин контекста, заводящий таймер эффектом области. Не остановленный,
+ * `setInterval` держит событийный цикл живым — тот же симптом, что у
+ * служебного процесса `esbuild` (design.md изменения `ui-runtime-widget-spike`,
+ * Решение 12), только источник теперь плагин, а не компилятор виджетов.
+ *
+ * Отметка на диске пишется при заведении эффекта: без неё проба, в которой
+ * плагин не загрузился вовсе, завершилась бы так же успешно, как проба, в
+ * которой область снята, — то есть не проверяла бы ничего.
+ */
+function intervalPlugin(marker: string): string {
+  return `
+import { writeFileSync } from 'node:fs';
+
+export default function withInterval(ctx) {
+  ctx.effect(() => {
+    const timer = setInterval(() => {}, 1000);
+    writeFileSync(${JSON.stringify(marker)}, 'таймер заведён');
+    return () => clearInterval(timer);
+  });
+}
+`;
+}
 
 /**
  * Плагин, отмечающий сам факт своей загрузки: отметка пишется при исполнении
@@ -2266,6 +2310,126 @@ jobs:
       layer: 'config',
       file: projectConfigFile,
     });
+  });
+});
+
+describe('ui-dashboard: изоляция и снятие контекстов ядра (cordis-kernel-daemon)', () => {
+  it('два проекта с одноимённым сервисом раскрываются оба, не споря по конфликту имён', async (t) => {
+    const first = makeJournalBed();
+    const second = makeJournalBed();
+    seedRun(first.runsRoot, first.projectRoot, { runId: 'a' });
+    withProjectPlugin(first.projectRoot, SHARED_SERVICE_PLUGIN);
+    writeFileSync(join(first.projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    withProjectPlugin(second.projectRoot, SHARED_SERVICE_PLUGIN);
+    writeFileSync(join(second.projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    // Второй проект живёт под тем же корнем прогонов, что и первый — иначе
+    // обход `listProjects` его не увидит вовсе.
+    seedRun(first.runsRoot, second.projectRoot, { runId: 'b' });
+    const { config } = resolveConfig({ cwd: first.home, home: first.home, projectPath: null });
+    const server = await startServer(t, { runsRoot: first.runsRoot, config, home: first.home });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    const views = pipelines.json.pipelines as Array<{ projectPath: string; error?: string }>;
+    const own = views.find((view) => view.projectPath === first.projectRoot);
+    const other = views.find((view) => view.projectPath === second.projectRoot);
+    assert.ok(own !== undefined && other !== undefined, JSON.stringify(views));
+    assert.equal(own?.error, undefined, own?.error);
+    assert.equal(other?.error, undefined, other?.error);
+  });
+
+  it('контекст, поднятый в чужой кеш не сервером, close() не снимает', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    withProjectPlugin(projectRoot, SHARED_SERVICE_PLUGIN);
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+
+    // Ядро поднято ХОЗЯИНОМ кеша, до сервера: именно такое сервер снимать не
+    // вправе. Кеш, отданный ему пустым, он наполняет сам — и то, что наполнил,
+    // снимает (проверка ниже).
+    const kernelCache = createKernelCache();
+    t.after(() => disposeRaisedKernels(kernelCache));
+    await resolveWithCachedKernel(projectRoot, { cwd: projectRoot, home }, projectRoot, kernelCache);
+    assert.equal(kernelCache.entries.size, 1);
+    const [entry] = [...kernelCache.entries.values()];
+
+    const server = await startServer(t, { runsRoot, config, home, kernelCache });
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'error'), undefined);
+    // Запись та же: объявления плагинов не менялись, и сервер взял готовое
+    // ядро, а не поднял своё.
+    assert.equal(kernelCache.entries.size, 1);
+    assert.equal([...kernelCache.entries.values()][0], entry);
+
+    await server.close();
+
+    assert.deepEqual(entry?.kernel.ctx.get('shared-service'), { from: 'plugin' });
+  });
+
+  it('контекст, поднятый сервером в полученный извне кеш, close() снимает', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    withProjectPlugin(projectRoot, SHARED_SERVICE_PLUGIN);
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const kernelCache = createKernelCache();
+    const server = await startServer(t, { runsRoot, config, home, kernelCache });
+
+    const pipelines = await fetchJson(server, '/api/pipelines');
+    assert.equal(pick(pipelines.json, 'pipelines', 0, 'error'), undefined);
+    assert.equal(kernelCache.entries.size, 1);
+    const [entry] = [...kernelCache.entries.values()];
+    assert.deepEqual(entry?.kernel.ctx.get('shared-service'), { from: 'plugin' });
+
+    await server.close();
+
+    // Кеш чужой, но контекст поднял сервер — значит он же его и снимает: иначе
+    // демон тёк бы каждым раскрытым проектом (ui-daemon spec, «Остановка
+    // снимает контексты»).
+    assert.equal(entry?.kernel.ctx.get('shared-service'), undefined);
+  });
+
+  /**
+   * Область плагина держит таймер; не снятая при `close()`, она держит
+   * событийный цикл, и поднявший сервер процесс не завершится сам —
+   * проверяется отдельным процессом, как и у служебного процесса компилятора
+   * виджетов (design.md изменения `ui-runtime-widget-spike`, Решение 12).
+   *
+   * Проба обязана раскрыть пайплайны по-настоящему: без `config` обзор
+   * пайплайнов отвечает пустым списком, не обходя проекты вовсе, и проба
+   * завершилась бы одинаково при любом поведении `close()`. Отсюда и
+   * конфигурация, и проверка непустого ответа внутри пробы, и отметка,
+   * оставленная эффектом плагина на диске.
+   */
+  it('close() снимает поднятые сервером контексты проектов: процесс завершается сам', () => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const marker = join(projectRoot, '.stepcast', 'таймер.txt');
+    withProjectPlugin(projectRoot, intervalPlugin(marker));
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+
+    const moduleUrl = (path: string): string =>
+      JSON.stringify(pathToFileURL(fileURLToPath(new URL(path, import.meta.url))).href);
+    const probe = [
+      `import { createUiServer } from ${moduleUrl('../src/ui/server.js')};`,
+      `import { resolveConfig } from ${moduleUrl('../src/core/config/resolve.js')};`,
+      `const home = ${JSON.stringify(home)};`,
+      'const { config } = resolveConfig({ cwd: home, home, projectPath: null });',
+      `const server = await createUiServer({ runsRoot: ${JSON.stringify(runsRoot)}, config, home, port: 0 });`,
+      `const res = await fetch(\`http://127.0.0.1:\${server.port}/api/pipelines\`);`,
+      'const body = await res.json();',
+      "if (body.pipelines.length === 0) throw new Error('пайплайны не раскрыты: ' + JSON.stringify(body));",
+      'if (body.pipelines[0].error) throw new Error(body.pipelines[0].error);',
+      'await server.close();',
+      "console.log('done');",
+    ].join('\n');
+
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', probe], {
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+    assert.match(out, /done/);
+    assert.equal(existsSync(marker), true, 'плагин с таймером не был загружен — проба ничего не проверила');
   });
 });
 

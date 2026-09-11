@@ -273,4 +273,16 @@ describe('config-error-breaks-every-command: команда перечня, об
         /независим/.test(error.message),
     );
   });
+
+  it('чтение ctx бросает ту же форму отказа', () => {
+    const env = buildIndependentCommandEnv('down', '/tmp');
+
+    assert.throws(
+      () => env.ctx,
+      (error: unknown) =>
+        error instanceof StepcastError &&
+        /down/.test(error.message) &&
+        /независим/.test(error.message),
+    );
+  });
 });

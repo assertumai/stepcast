@@ -6,10 +6,11 @@ import { listProjects } from '../core/journal/reader.js';
 import { expandPipeline } from '../core/pipeline/expand.js';
 import { isStepcastError, StepcastError } from '../core/errors.js';
 import { describeSource } from '../core/config/merge.js';
-import { resolveConfig, type Config } from '../core/config/resolve.js';
+import { resolveConfig, type Config, type ResolveOptions } from '../core/config/resolve.js';
 import { pluginDeclarations, type PluginDeclaration } from '../core/plugins/load.js';
-import { resolveWithPlugins } from '../core/plugins/resolve.js';
-import type { Registry } from '../core/plugins/registry.js';
+import { resolveWithPlugins, type ResolvedWithPlugins } from '../core/plugins/resolve.js';
+import type { Kernel } from '../core/plugins/kernel.js';
+import { kernelFromRegistry, registryFromKernel, type Registry } from '../core/plugins/registry.js';
 import type { Job, ModelOrigin, Pipeline } from '../core/pipeline/model.js';
 import { layoutJobs, type JobGraph } from './graph.js';
 
@@ -319,27 +320,127 @@ function declarationsEqual(a: readonly PluginDeclaration[], b: readonly PluginDe
   return a.every((item, i) => item.spec === b[i]?.spec && item.declaredIn === b[i]?.declaredIn);
 }
 
-interface RegistryCacheEntry {
+export interface KernelCacheEntry {
   readonly declarations: readonly PluginDeclaration[];
-  readonly registry: Registry;
+  readonly kernel: Kernel;
 }
 
 /**
- * Реестры вкладов, собранные по корню проекта, — переживают отдельный запрос
- * (design.md, Решение 3). Ключ — сам корень проекта; совпадение записи
- * проверяется списком объявлений плагинов проекта (спецификатор и файл
- * объявления, в порядке объявления), а не временем правки файлов
- * конфигурации: правка соседнего ключа не обязана сбрасывать реестр, а два
- * разных содержимого с одной меткой времени неразличимы.
+ * Ядра, поднятые по корню проекта, — переживают отдельный запрос (design.md,
+ * Решение 3 и 6). Ключ — сам корень проекта; совпадение записи проверяется
+ * списком объявлений плагинов проекта (спецификатор и файл объявления, в
+ * порядке объявления), а не временем правки файлов конфигурации: правка
+ * соседнего ключа не обязана сбрасывать ядро, а два разных содержимого с
+ * одной меткой времени неразличимы.
+ *
+ * Отдельный корневой контекст на проект, а не форк общего корня: сервис,
+ * заведённый плагином одного проекта, не виден другому и не конфликтует с
+ * одноимённым — хранилище сервисов cordis принадлежит корню, а не области
+ * (design.md, Решение 6).
  *
  * Не модульный синглтон: тесты поднимают несколько демонов в одном процессе,
  * и общий кеш связал бы их между собой. Экземпляр создаёт `createUiServer` и
- * передаёт `buildPipelines` опцией; он умирает вместе с демоном.
+ * передаёт `buildPipelines` опцией.
+ *
+ * Владение считается не по кешу, а по ядру: `raised` — ядра, поднятые именно
+ * этим доступом к кешу. Сервер, получивший кеш снаружи, берёт к нему
+ * собственный доступ (`shareKernelCache`) и при закрытии снимает ровно то, что
+ * поднял сам, — записи, положенные хозяином кеша, остаются действующими. Кеш,
+ * общий на два сервера, иначе оставлял бы текущими контексты, которых уже никто
+ * не спросит (design.md, Решение 6, ui-daemon spec).
  */
-export type RegistryCache = Map<string, RegistryCacheEntry>;
+export interface KernelCache {
+  /** Записи по ключу — общие у всех, кто делит этот кеш. */
+  readonly entries: Map<string, KernelCacheEntry>;
+  /** Ядра, поднятые через этот доступ, — их и снимает его владелец. */
+  readonly raised: Set<Kernel>;
+  /** Журнал демона: отказ снятия записывается, а не валит процесс. */
+  readonly log?: ((line: string) => void) | undefined;
+}
 
-export function createRegistryCache(): RegistryCache {
-  return new Map();
+export function createKernelCache(log?: (line: string) => void): KernelCache {
+  return { entries: new Map(), raised: new Set(), log };
+}
+
+/** Доступ к чужому кешу: те же записи, свой счёт поднятого. */
+export function shareKernelCache(cache: KernelCache, log?: (line: string) => void): KernelCache {
+  return { entries: cache.entries, raised: new Set(), log: log ?? cache.log };
+}
+
+/**
+ * Снять ядра, поднятые через этот доступ. Снятое ядро выбывает и из перечня
+ * поднятого: повторный вызов — не двойное снятие.
+ */
+export async function disposeRaisedKernels(cache: KernelCache): Promise<void> {
+  const raised = [...cache.raised];
+  cache.raised.clear();
+  await Promise.all(raised.map((kernel) => disposeKernel(kernel, cache)));
+}
+
+/**
+ * Снятие ядра в демоне: отказ disposer'а какого-нибудь плагина — строка в
+ * журнале, а не необработанное отклонение промиса, валящее долгоживущий
+ * процесс.
+ */
+async function disposeKernel(kernel: Kernel, cache: KernelCache): Promise<void> {
+  try {
+    await kernel.dispose();
+  } catch (error) {
+    cache.log?.(`не удалось снять контекст плагинов: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/**
+ * Разрешить конфигурацию с плагинами, взяв ядро из кеша либо подняв заново,
+ * если объявления плагинов разошлись с закешированными, — общий приём для
+ * реестра каждого проекта (`projectSection`) и для собственного ядра демона
+ * (`src/ui/settings.ts`, `src/ui/models.ts`, design.md Решение 6): ключ кеша
+ * там — не корень проекта, а домашний каталог, но правило то же самое.
+ *
+ * Отдельное разрешение перед основным нужно ровно для одного: сверить ключ
+ * кеша с записью, которая уже есть. Записи нет — сверять не с чем, и лишнего
+ * чтения слоёв не делается: промах всё равно ведёт к полной сборке.
+ */
+export async function resolveWithCachedKernel(
+  key: string,
+  options: ResolveOptions,
+  projectRoot: string,
+  cache: KernelCache | undefined,
+): Promise<ResolvedWithPlugins> {
+  const cached = cache?.entries.get(key);
+  const declared = cached === undefined ? undefined : pluginDeclarations(resolveConfig(options));
+  const cachedRegistry =
+    cached !== undefined && declared !== undefined && declarationsEqual(cached.declarations, declared)
+      ? registryFromKernel(cached.kernel)
+      : undefined;
+
+  const result = await resolveWithPlugins(
+    options,
+    cachedRegistry === undefined ? { projectRoot } : { projectRoot, registry: cachedRegistry },
+  );
+
+  // Кешируется только успешно собранный реестр: если строка выше не бросила,
+  // отказа загрузки не было. Совпавшая запись не перезаписывается — иначе
+  // объект реестра на каждый запрос был бы новым, хотя и с тем же содержимым.
+  if (cachedRegistry === undefined && cache !== undefined) {
+    // Объявления разошлись — или записи не было вовсе. Прежнее ядро, если оно
+    // было, осталось не у дел: снимаем его сразу, а не откладываем до
+    // `close()`, иначе оно текло бы всё время жизни демона (design.md, Риск 4).
+    // Снимается оно независимо от того, кто его поднял: из кеша запись ушла, и
+    // дотянуться до неё больше некому.
+    if (cached !== undefined) {
+      cache.raised.delete(cached.kernel);
+      void disposeKernel(cached.kernel, cache);
+    }
+    const kernel = kernelFromRegistry(result.registry);
+    cache.raised.add(kernel);
+    cache.entries.set(key, {
+      declarations: declared ?? pluginDeclarations(result.resolved),
+      kernel,
+    });
+  }
+
+  return result;
 }
 
 /**
@@ -369,38 +470,10 @@ export function createRegistryCache(): RegistryCache {
 async function projectSection(
   projectPath: string,
   home: string | undefined,
-  registryCache: RegistryCache | undefined,
+  kernelCache: KernelCache | undefined,
 ): Promise<ProjectOverrides> {
   const options = { cwd: projectPath, ...(home === undefined ? {} : { home }) };
-
-  // Отдельное разрешение нужно ровно для одного: сверить ключ кеша с записью,
-  // которая уже есть. Записи нет — сверять не с чем, и лишнего чтения слоёв
-  // не делается: промах всё равно ведёт к полной сборке, а объявления для
-  // записи в кеш видны и во втором проходе (слой умолчаний плагинов вносит
-  // `backends`, а не `plugins`).
-  const cached = registryCache?.get(projectPath);
-  const declared = cached === undefined ? undefined : pluginDeclarations(resolveConfig(options));
-  const cachedRegistry =
-    cached !== undefined && declared !== undefined && declarationsEqual(cached.declarations, declared)
-      ? cached.registry
-      : undefined;
-
-  const { resolved, registry } = await resolveWithPlugins(
-    options,
-    cachedRegistry === undefined
-      ? { projectRoot: projectPath }
-      : { projectRoot: projectPath, registry: cachedRegistry },
-  );
-
-  // Кешируется только успешно собранный реестр: если строка выше не бросила,
-  // отказа загрузки не было. Совпавшая запись не перезаписывается — иначе
-  // объект реестра на каждый запрос был бы новым, хотя и с тем же содержимым.
-  if (cachedRegistry === undefined) {
-    registryCache?.set(projectPath, {
-      declarations: declared ?? pluginDeclarations(resolved),
-      registry,
-    });
-  }
+  const { resolved, registry } = await resolveWithCachedKernel(projectPath, options, projectPath, kernelCache);
 
   const source = resolved.provenance.get('defaults.model');
   return {
@@ -417,11 +490,11 @@ export interface BuildPipelinesOptions {
   readonly home?: string;
   readonly now?: Date;
   /**
-   * Реестры вкладов по корню проекта, живущие дольше одного вызова. Без
-   * него — например, в прямых вызовах тестов — каждый обход собирает реестр
-   * заново, как и раньше.
+   * Ядра по корню проекта, живущие дольше одного вызова. Без него —
+   * например, в прямых вызовах тестов — каждый обход поднимает ядро заново,
+   * как и раньше.
    */
-  readonly registryCache?: RegistryCache;
+  readonly kernelCache?: KernelCache;
 }
 
 export async function buildPipelines(
@@ -451,7 +524,7 @@ export async function buildPipelines(
     let modelConfigFile: string | undefined;
     let failure: Failure | undefined;
     try {
-      const overrides = await projectSection(project.path, options.home, options.registryCache);
+      const overrides = await projectSection(project.path, options.home, options.kernelCache);
       forProject = {
         ...config,
         project: overrides.project,

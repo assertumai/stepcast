@@ -7,8 +7,9 @@ import { StepcastError } from '../src/core/errors.js';
 import { evaluatePredicates } from '../src/core/expect/evaluate.js';
 import { findStepDir, readStatus } from '../src/core/journal/reader.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { builtinRegistry } from '../src/core/plugins/builtin.js';
-import { addPlugin, type Registry } from '../src/core/plugins/registry.js';
+import { builtinRegistry, createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
+import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import type { PredicateContribution } from '../src/core/plugins/contract.js';
 import { planResume, readSourceRun } from '../src/core/run/resumePlan.js';
 import { runPipeline } from '../src/core/run/runner.js';
@@ -22,10 +23,11 @@ import { tempDir } from './tmp.js';
  * текст шага её содержит. Достаточно, чтобы пройти весь путь от разбора
  * документа до записи результата в журнал.
  */
-function pluginRegistry(overrides: Partial<PredicateContribution> = {}): Registry {
-  const registry = builtinRegistry();
-  addPlugin(
-    registry,
+async function pluginRegistry(overrides: Partial<PredicateContribution> = {}): Promise<Registry> {
+  const kernel = createBuiltinKernel();
+  const registry = registryFromKernel(kernel);
+  await applyDeclarativePlugin(
+    kernel,
     {
       name: 'example',
       version: '1.0.0',
@@ -79,7 +81,7 @@ describe('plugin-contributions: предикат плагина в докуме�
   it('разбирается, вычисляется и попадает в журнал под своим именем', async () => {
     const project = makeProject({ 'stepcast.yml': pipelineWith('[{ exit_code: 0 }, { text_has: "готово" }]') });
 
-    const result = await run(project, pluginRegistry());
+    const result = await run(project, await pluginRegistry());
 
     assert.equal(result.status, 'success');
 
@@ -97,7 +99,7 @@ describe('plugin-contributions: предикат плагина в докуме�
   it('непройденный предикат плагина отклоняет попытку', async () => {
     const project = makeProject({ 'stepcast.yml': pipelineWith('[{ text_has: "провалено" }]') });
 
-    const result = await run(project, pluginRegistry());
+    const result = await run(project, await pluginRegistry());
 
     assert.equal(result.status, 'failed');
     const record = readStatus(result.journal.paths).jobs[0]?.steps[0];
@@ -111,15 +113,16 @@ describe('plugin-contributions: предикат плагина в докуме�
     assert.equal(report.results[0]?.passed, false);
   });
 
-  it('значение не по схеме вклада отклоняется разбором документа', () => {
+  it('значение не по схеме вклада отклоняется разбором документа', async () => {
     const project = makeProject({ 'stepcast.yml': pipelineWith('[{ text_has: 42 }]') });
+    const registry = await pluginRegistry();
 
     assert.throws(
       () =>
         expandPipeline({
           pipelinePath: project.path('stepcast.yml'),
           config: project.config,
-          registry: pluginRegistry(),
+          registry,
         }),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
@@ -130,15 +133,16 @@ describe('plugin-contributions: предикат плагина в докуме�
     );
   });
 
-  it('неизвестный ключ предиката отклоняется с перечнем доступных', () => {
+  it('неизвестный ключ предиката отклоняется с перечнем доступных', async () => {
     const project = makeProject({ 'stepcast.yml': pipelineWith('[{ exit_cod: 0 }]') });
+    const registry = await pluginRegistry();
 
     assert.throws(
       () =>
         expandPipeline({
           pipelinePath: project.path('stepcast.yml'),
           config: project.config,
-          registry: pluginRegistry(),
+          registry,
         }),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
@@ -158,7 +162,7 @@ describe('plugin-contributions: предикат плагина в докуме�
 
   it('асинхронный вычислитель дожидается результата', async () => {
     const project = makeProject({ 'stepcast.yml': pipelineWith('[{ text_has: "готово" }]') });
-    const registry = pluginRegistry({
+    const registry = await pluginRegistry({
       evaluate: async (value, input) => {
         await new Promise((resolve) => setTimeout(resolve, 10));
         return {
@@ -175,7 +179,7 @@ describe('plugin-contributions: предикат плагина в докуме�
   });
 
   it('отказ вычислителя — непройденный предикат с названной причиной, а не крушение', async () => {
-    const registry = pluginRegistry({
+    const registry = await pluginRegistry({
       evaluate: () => {
         throw new Error('внешняя система недоступна');
       },
@@ -203,8 +207,8 @@ describe('plugin-contributions: предикат плагина в докуме�
     assert.match(result?.detail ?? '', /не предоставлен ни одним загруженным плагином/);
   });
 
-  it('значение предиката входит в ключ шага', () => {
-    const registry = pluginRegistry();
+  it('значение предиката входит в ключ шага', async () => {
+    const registry = await pluginRegistry();
     const key = (value: string): string => {
       const project = makeProject({ 'stepcast.yml': pipelineWith(`[{ text_has: "${value}" }]`) });
       const { pipeline } = expandPipeline({
@@ -249,7 +253,7 @@ jobs:
     // последнего шага, — поэтому предикат цикла на текст шага полагаться не
     // может, и вклад здесь смотрит на то, что цикл ему действительно даёт.
     const seen: { text: string; cwd: string }[] = [];
-    const registry = pluginRegistry({
+    const registry = await pluginRegistry({
       lint: () => [{ severity: 'warning', message: 'проверка цикла осмотрена' }],
       evaluate: (_value, input) => {
         seen.push({ text: input.text, cwd: input.cwd });
@@ -276,9 +280,9 @@ jobs:
     assert.ok((seen[0]?.cwd.length ?? 0) > 0);
   });
 
-  it('статическая проверка вклада печатается линтом', () => {
+  it('статическая проверка вклада печатается линтом', async () => {
     const project = makeProject({ 'stepcast.yml': pipelineWith('[{ text_has: "готово" }]') });
-    const registry = pluginRegistry({
+    const registry = await pluginRegistry({
       lint: (value) =>
         String(value).length < 10 ? [{ severity: 'warning', message: 'слишком короткое ожидание' }] : [],
     });
@@ -298,14 +302,14 @@ jobs:
 describe('plugin-contributions: возобновление прогона с плагинным предикатом', () => {
   it('плагин загружен в реестр возобновления — пайплайн раскрывается', async () => {
     const project = makeProject({ 'stepcast.yml': pipelineWith('[{ text_has: "готово" }]') });
-    const result = await run(project, pluginRegistry());
+    const result = await run(project, await pluginRegistry());
     const source = readSourceRun(result.journal.paths);
 
     const { expanded, plan } = planResume({
       cwd: project.root,
       config: project.config,
       source,
-      registry: pluginRegistry(),
+      registry: await pluginRegistry(),
     });
 
     const job = expanded.pipeline.jobs.find((item) => item.id === 'build');
@@ -315,7 +319,7 @@ describe('plugin-contributions: возобновление прогона с п�
 
   it('плагин не загружен в реестр возобновления — отказ называет его по манифесту', async () => {
     const project = makeProject({ 'stepcast.yml': pipelineWith('[{ text_has: "готово" }]') });
-    const result = await run(project, pluginRegistry());
+    const result = await run(project, await pluginRegistry());
     const source = readSourceRun(result.journal.paths);
     assert.deepEqual(
       source.manifest.plugins?.map((plugin) => plugin.name),
@@ -344,12 +348,13 @@ describe('plugin-contributions: возобновление прогона с п�
 
   it('опечатка в предикате при полном составе плагинов остаётся неизвестным ключом', async () => {
     const project = makeProject({ 'stepcast.yml': pipelineWith('[{ text_has: "готово" }]') });
-    const result = await run(project, pluginRegistry());
+    const result = await run(project, await pluginRegistry());
     const source = readSourceRun(result.journal.paths);
 
     // Пайплайн правится после прогона: опечатка в имени встроенного предиката,
     // не связанная ни с одним плагином, — а не пропажа плагина `example`.
     project.write('stepcast.yml', pipelineWith('[{ exit_cod: 0 }]'));
+    const registry = await pluginRegistry();
 
     assert.throws(
       () =>
@@ -357,7 +362,7 @@ describe('plugin-contributions: возобновление прогона с п�
           cwd: project.root,
           config: project.config,
           source,
-          registry: pluginRegistry(),
+          registry,
         }),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
@@ -368,11 +373,12 @@ describe('plugin-contributions: возобновление прогона с п�
     );
   });
 
-  it('манифест прежней версии без поля plugins сохраняет прежнюю диагностику', () => {
+  it('манифест прежней версии без поля plugins сохраняет прежнюю диагностику', async () => {
     const project = makeProject({ 'stepcast.yml': pipelineWith('[{ exit_cod: 0 }]') });
     const journal = seedRun(tempDir('runs-'), project.root);
     const source = readSourceRun(journal.paths);
     assert.equal(source.manifest.plugins, undefined);
+    const registry = await pluginRegistry();
 
     assert.throws(
       () =>
@@ -380,7 +386,7 @@ describe('plugin-contributions: возобновление прогона с п�
           cwd: project.root,
           config: project.config,
           source,
-          registry: pluginRegistry(),
+          registry,
         }),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);

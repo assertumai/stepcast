@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { StepcastError } from '../src/core/errors.js';
-import { BUILTIN_PREDICATE_NAMES, builtinRegistry } from '../src/core/plugins/builtin.js';
-import { addPlugin, availableNames, predicateNames } from '../src/core/plugins/registry.js';
+import { BUILTIN_PREDICATE_NAMES, builtinRegistry, createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
+import { availableNames, predicateNames, registryFromKernel } from '../src/core/plugins/registry.js';
 import type { PredicateContribution, StepcastPlugin } from '../src/core/plugins/contract.js';
 import { ExitCode } from '../src/core/errors.js';
 
@@ -26,15 +27,16 @@ describe('plugin-contributions: реестр вкладов', () => {
     assert.deepEqual(availableNames(registry, 'predicates'), []);
   });
 
-  it('заводится заново на каждый вызов: вклад одного реестра не течёт в другой', () => {
-    const first = builtinRegistry();
-    addPlugin(first, { name: 'a', predicates: [predicate('http_ok')] }, '/модуль/a.js');
+  it('заводится заново на каждый вызов: вклад одного реестра не течёт в другой', async () => {
+    const kernel = createBuiltinKernel();
+    await applyDeclarativePlugin(kernel, { name: 'a', predicates: [predicate('http_ok')] }, '/модуль/a.js');
 
     assert.deepEqual(predicateNames(builtinRegistry()), [...BUILTIN_PREDICATE_NAMES].sort());
   });
 
-  it('плагин добавляет вклады трёх видов', () => {
-    const registry = builtinRegistry();
+  it('плагин добавляет вклады трёх видов', async () => {
+    const kernel = createBuiltinKernel();
+    const registry = registryFromKernel(kernel);
     const plugin: StepcastPlugin = {
       name: 'пример',
       version: '1.2.0',
@@ -49,7 +51,7 @@ describe('plugin-contributions: реестр вкладов', () => {
       ],
     };
 
-    addPlugin(registry, plugin, '/модуль/пример.js');
+    await applyDeclarativePlugin(kernel, plugin, '/модуль/пример.js');
 
     assert.deepEqual(availableNames(registry, 'backends'), ['claude', 'codex']);
     assert.deepEqual(availableNames(registry, 'commands'), ['hello']);
@@ -59,11 +61,16 @@ describe('plugin-contributions: реестр вкладов', () => {
     ]);
   });
 
-  it('плагин не может занять имя встроенного бэкенда', () => {
-    const registry = builtinRegistry();
+  it('плагин не может занять имя встроенного бэкенда', async () => {
+    const kernel = createBuiltinKernel();
 
-    assert.throws(
-      () => addPlugin(registry, { name: 'самозванец', backends: { claude: { create: () => ({}) as never } } }, '/м.js'),
+    await assert.rejects(
+      () =>
+        applyDeclarativePlugin(
+          kernel,
+          { name: 'самозванец', backends: { claude: { create: () => ({}) as never } } },
+          '/м.js',
+        ),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /бэкенда claude/);
@@ -74,11 +81,11 @@ describe('plugin-contributions: реестр вкладов', () => {
     );
   });
 
-  it('плагин не может занять имя встроенного предиката', () => {
-    const registry = builtinRegistry();
+  it('плагин не может занять имя встроенного предиката', async () => {
+    const kernel = createBuiltinKernel();
 
-    assert.throws(
-      () => addPlugin(registry, { name: 'самозванец', predicates: [predicate('exit_code')] }, '/м.js'),
+    await assert.rejects(
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец', predicates: [predicate('exit_code')] }, '/м.js'),
       (error: unknown) =>
         error instanceof StepcastError &&
         /предиката exit_code/.test(error.message) &&
@@ -86,12 +93,12 @@ describe('plugin-contributions: реестр вкладов', () => {
     );
   });
 
-  it('два плагина не могут спорить за одно имя', () => {
-    const registry = builtinRegistry();
-    addPlugin(registry, { name: 'первый', predicates: [predicate('http_ok')] }, '/первый.js');
+  it('два плагина не могут спорить за одно имя', async () => {
+    const kernel = createBuiltinKernel();
+    await applyDeclarativePlugin(kernel, { name: 'первый', predicates: [predicate('http_ok')] }, '/первый.js');
 
-    assert.throws(
-      () => addPlugin(registry, { name: 'второй', predicates: [predicate('http_ok')] }, '/второй.js'),
+    await assert.rejects(
+      () => applyDeclarativePlugin(kernel, { name: 'второй', predicates: [predicate('http_ok')] }, '/второй.js'),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /плагин первый/);
@@ -101,11 +108,12 @@ describe('plugin-contributions: реестр вкладов', () => {
     );
   });
 
-  it('одно имя в разных видах вкладов конфликтом не считается', () => {
-    const registry = builtinRegistry();
+  it('одно имя в разных видах вкладов конфликтом не считается', async () => {
+    const kernel = createBuiltinKernel();
+    const registry = registryFromKernel(kernel);
 
-    addPlugin(
-      registry,
+    await applyDeclarativePlugin(
+      kernel,
       {
         name: 'codex-адаптер',
         backends: { codex: { create: () => ({}) as never } },

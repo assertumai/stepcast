@@ -391,6 +391,9 @@ export function buildIndependentCommandEnv(name: string, cwd: string): CommandEn
     get registry() {
       return readForbidden();
     },
+    get ctx() {
+      return readForbidden();
+    },
   };
 }
 
@@ -412,7 +415,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
 
     // Плагины загружаются до разбора аргументов: команда плагина обязана
     // попасть в перечень раньше, чем разбор объявит её неизвестной.
-    const { resolved, registry } = await resolveWithPlugins(
+    const { resolved, registry, ctx } = await resolveWithPlugins(
       { cwd: io.cwd },
       { builtinCommands: BUILTIN_COMMANDS },
     );
@@ -424,7 +427,7 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
     const contribution = registry.commands.get(args.command);
     if (contribution === undefined) return ExitCode.configError;
 
-    return await contribution.run(args, io, { cwd: io.cwd, config: resolved.config, registry });
+    return await contribution.run(args, io, { cwd: io.cwd, config: resolved.config, registry, ctx });
   } catch (error) {
     return reportError(error, io.err);
   }

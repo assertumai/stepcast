@@ -12,8 +12,9 @@ import { describeComparison, diffRuns, lineDiff } from '../src/core/run/diff.js'
 import { cleanupRun } from '../src/core/run/cleanup.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { ExitCode, StepcastError } from '../src/core/errors.js';
-import { builtinRegistry } from '../src/core/plugins/builtin.js';
-import { addPlugin, type Registry } from '../src/core/plugins/registry.js';
+import { builtinRegistry, createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
+import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import type { ParsedArgs } from '../src/cli/args.js';
 import { makeProject, withHome, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
@@ -533,15 +534,15 @@ jobs:
     });
   }
 
-  function withPlugin(name: string, version: string): Registry {
-    const registry = builtinRegistry();
-    addPlugin(registry, { name, version }, `/модуль/${name}.js`);
-    return registry;
+  async function withPlugin(name: string, version: string): Promise<Registry> {
+    const kernel = createBuiltinKernel();
+    await applyDeclarativePlugin(kernel, { name, version }, `/модуль/${name}.js`);
+    return registryFromKernel(kernel);
   }
 
   it('разный состав плагинов назван заметкой', async () => {
     const b = bed({ 'stepcast.yml': SIMPLE });
-    const first = await runWith(b, withPlugin('example', '1.0.0'));
+    const first = await runWith(b, await withPlugin('example', '1.0.0'));
     const second = await runWith(b, builtinRegistry());
 
     const comparison = compare(b, first, second);
@@ -554,8 +555,8 @@ jobs:
 
   it('одинаковый состав заметки не даёт', async () => {
     const b = bed({ 'stepcast.yml': SIMPLE });
-    const first = await runWith(b, withPlugin('example', '1.0.0'));
-    const second = await runWith(b, withPlugin('example', '1.0.0'));
+    const first = await runWith(b, await withPlugin('example', '1.0.0'));
+    const second = await runWith(b, await withPlugin('example', '1.0.0'));
 
     const comparison = compare(b, first, second);
 
@@ -567,8 +568,8 @@ jobs:
 
   it('смена версии плагина видна', async () => {
     const b = bed({ 'stepcast.yml': SIMPLE });
-    const first = await runWith(b, withPlugin('example', '1.0.0'));
-    const second = await runWith(b, withPlugin('example', '2.0.0'));
+    const first = await runWith(b, await withPlugin('example', '1.0.0'));
+    const second = await runWith(b, await withPlugin('example', '2.0.0'));
 
     const comparison = compare(b, first, second);
 

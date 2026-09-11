@@ -10,7 +10,7 @@ import type { ModelTiers } from '../core/config/modelTiers.js';
 import type { ResolvedConfig } from '../core/config/resolve.js';
 import { ModelNameSchema, ModelTierSchema, RawConfigSchema } from '../core/config/schema.js';
 import { StepcastError } from '../core/errors.js';
-import { resolveWithPlugins } from '../core/plugins/resolve.js';
+import { resolveWithCachedKernel, type KernelCache } from './pipelines.js';
 
 export interface SettingsValue {
   readonly value: string | undefined;
@@ -61,9 +61,26 @@ function valueOf(resolved: ResolvedConfig, path: string, value: string | undefin
   return { value, source: source === undefined ? 'встроенное умолчание' : describeSource(source) };
 }
 
-/** Витрина правит глобальный файл; проектный слой отключён независимо от cwd. */
-export async function readSettings(home: string = homedir()): Promise<Settings> {
-  const { resolved, registry } = await resolveWithPlugins({ cwd: home, home, projectPath: null }, {});
+/**
+ * Витрина правит глобальный файл; проектный слой отключён независимо от cwd.
+ *
+ * `kernelCache` — кеш ядра демона (`src/ui/server.ts`, `createUiServer`):
+ * ядро переживает отдельный запрос тем же правилом, каким кеш проверяет ключ
+ * проекта (design.md, Решение 6) — свежая правка настроек, добавившая плагин
+ * (`connectCodex`), меняет объявления, и следующий вызов поднимает ядро
+ * заново, а не читает устаревшее. Без кеша, как и при прямом вызове вне
+ * сервера (тесты), плагины загружаются заново на каждый вызов.
+ */
+export async function readSettings(home: string = homedir(), kernelCache?: KernelCache): Promise<Settings> {
+  // Ключ кеша — не сам `home` (путь проекта теоретически мог бы с ним
+  // совпасть), а отдельное пространство имён: собственное ядро демона не
+  // должно перепутаться с ядром какого-либо проекта, даже случайно.
+  const { resolved, registry } = await resolveWithCachedKernel(
+    `home:${home}`,
+    { cwd: home, home, projectPath: null },
+    home,
+    kernelCache,
+  );
   const { config } = resolved;
   const backends: BackendView[] = Object.entries(config.backends).map(([name, backend]) => ({
     name,
@@ -104,14 +121,18 @@ export async function readSettings(home: string = homedir()): Promise<Settings> 
 }
 
 /** Проверить всю правку до записи; менять YAML-документ, сохраняя комментарии. */
-export async function writeSettings(input: unknown, home: string = homedir()): Promise<Settings> {
+export async function writeSettings(
+  input: unknown,
+  home: string = homedir(),
+  kernelCache?: KernelCache,
+): Promise<Settings> {
   const parsedPatch = SettingsPatchSchema.safeParse(input);
   if (!parsedPatch.success) {
     const issue = parsedPatch.error.issues[0]!;
     throw new StepcastError(`Некорректная правка настроек ${issue.path.join('.')}: ${issue.message}`);
   }
   const patch = parsedPatch.data;
-  const current = await readSettings(home);
+  const current = await readSettings(home, kernelCache);
   const known = new Map(current.backends.map((backend) => [backend.name, backend]));
   for (const name of Object.keys(patch.backends ?? {})) {
     if (!known.has(name)) throw new StepcastError(`Неизвестный агент ${name}`);
@@ -167,5 +188,8 @@ export async function writeSettings(input: unknown, home: string = homedir()): P
   const temporary = `${file}.tmp`;
   writeFileSync(temporary, next);
   renameSync(temporary, file);
-  return readSettings(home);
+  // Кеш перечитывает объявления плагинов заново при каждом обращении: правка,
+  // добавившая plugins (`connectCodex`), обязана быть видна тут же, без
+  // перезапуска демона.
+  return readSettings(home, kernelCache);
 }

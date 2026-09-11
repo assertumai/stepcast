@@ -1,19 +1,15 @@
-import { StepcastError } from '../errors.js';
-import type {
-  BackendContribution,
-  CommandContribution,
-  LoadedPlugin,
-  PredicateContribution,
-  StepcastPlugin,
-} from './contract.js';
+import type { BackendContribution, CommandContribution, LoadedPlugin, PredicateContribution } from './contract.js';
+import { BUILTIN_OWNER, type Kernel } from './kernel.js';
 
 /**
  * Реестр вкладов: то, чем движок расширяется.
  *
- * Собирается один раз на вызов команды — из встроенных вкладов и вкладов
- * загруженных плагинов — и передаётся туда, где раньше стоял закрытый
- * перечень: разбор документа, линт, вычисление предикатов, подбор адаптера,
- * диспетчеризация команд.
+ * Больше не снимок, собранный один раз на вызов команды из встроенных вкладов
+ * и вкладов загруженных плагинов, — вид над контекстом ядра (`kernel.ts`).
+ * Каждое поле читает контекст заново при обращении: снятие области плагина
+ * видно здесь немедленно, без пересборки реестра. Для CLI разницы нет — за
+ * время команды ничего не снимается, — для демона это и есть желаемое
+ * поведение.
  *
  * Встроенное описано тем же контрактом, что и плагинное, не для красоты: это
  * единственный способ проверить, что контракта достаточно. Если через него
@@ -33,135 +29,75 @@ export interface Registry {
   readonly plugins: readonly LoadedPlugin[];
   /**
    * Кто внёс вклад: ключ «вид:имя», значение — имя плагина либо «встроенный».
-   * Часть контракта, а не внутренность: отчёт `stepcast config` и слой
-   * умолчаний обязаны называть автора вклада, а не выводить его догадкой.
+   * Выводится из области, зарегистрировавшей имя, а не ведётся отдельной
+   * картой (design.md, Решение 5).
    */
   readonly owners: ReadonlyMap<string, string>;
 }
 
-interface MutableRegistry {
-  /** Та же карта, что в `Registry`, но изменяемая на время сборки. */
-  readonly backends: Map<string, BackendContribution>;
-  readonly predicates: Map<string, PredicateContribution>;
-  readonly commands: Map<string, CommandContribution>;
-  readonly builtinPredicates: readonly string[];
-  readonly plugins: LoadedPlugin[];
-  /** Кто внёс вклад с этим именем: «встроенный» либо имя плагина. */
-  readonly owners: Map<string, string>;
-}
+type ContributionKind = 'backends' | 'predicates' | 'commands';
 
-/** Названия видов вкладов в родительном падеже: «Имя команды run занято». */
-const KIND_NAMES = {
-  backends: 'бэкенда',
-  predicates: 'предиката',
-  commands: 'команды',
-} as const;
-
-type ContributionKind = keyof typeof KIND_NAMES;
-
-const BUILTIN_OWNER = 'встроенный';
-
-function ownerKey(kind: ContributionKind, name: string): string {
-  return `${kind}:${name}`;
-}
-
-function claim(target: MutableRegistry, kind: ContributionKind, name: string, owner: string): void {
-  const key = ownerKey(kind, name);
-  const existing = target.owners.get(key);
-  if (existing !== undefined) {
-    // Тихая подмена `claude` или `exit_code` сделала бы лжецом и `stepcast
-    // config`, и журнал прогона: и тот и другой называют имя, а не источник.
-    throw new StepcastError(
-      `Имя ${KIND_NAMES[kind]} ${name} занято: его объявляют ${describeOwner(existing)} и ${describeOwner(owner)}`,
-      {
-        hint: 'Переопределение вклада не предусмотрено: снимите один из плагинов либо попросите автора переименовать вклад',
-      },
-    );
-  }
-  target.owners.set(key, owner);
-}
-
-function describeOwner(owner: string): string {
-  return owner === BUILTIN_OWNER ? 'встроенный вклад' : `плагин ${owner}`;
-}
-
-/** Пустой изменяемый реестр: основа и для встроенного, и для тестов. */
-function emptyRegistry(builtinPredicates: readonly string[]): MutableRegistry {
-  return {
-    backends: new Map(),
-    predicates: new Map(),
-    commands: new Map(),
-    builtinPredicates,
-    plugins: [],
-    owners: new Map(),
-  };
-}
+const KINDS: readonly ContributionKind[] = ['backends', 'predicates', 'commands'];
 
 /**
- * Добавить вклады плагина в реестр. Конфликт имён — отказ, называющий вид
- * вклада, имя и обоих претендентов: разобраться, чей вклад победил, по одному
- * лишь имени потом невозможно.
+ * Ядро, из которого выведен реестр, — на случай, если код вне `Registry`
+ * (например, `CommandEnv.ctx`) должен добраться до контекста, не расширяя
+ * публичный интерфейс чтения самого `Registry` полем, которого у него
+ * никогда не было.
  */
-export function addPlugin(target: Registry, plugin: StepcastPlugin, source: string): Registry {
-  const mutable = target as unknown as MutableRegistry;
+const kernels = new WeakMap<Registry, Kernel>();
 
-  for (const [name, contribution] of Object.entries(plugin.backends ?? {})) {
-    claim(mutable, 'backends', name, plugin.name);
-    mutable.backends.set(name, contribution);
-  }
-  for (const contribution of plugin.predicates ?? []) {
-    claim(mutable, 'predicates', contribution.name, plugin.name);
-    mutable.predicates.set(contribution.name, contribution);
-  }
-  for (const contribution of plugin.commands ?? []) {
-    claim(mutable, 'commands', contribution.name, plugin.name);
-    mutable.commands.set(contribution.name, contribution);
-  }
-
-  mutable.plugins.push({
-    name: plugin.name,
-    ...(plugin.version === undefined ? {} : { version: plugin.version }),
-    source,
-  });
-  return target;
+/** Реестр как вид поверх ядра — то, что раньше строил `createRegistry`/`addPlugin`. */
+export function registryFromKernel(kernel: Kernel): Registry {
+  const { ctx } = kernel;
+  const registry: Registry = {
+    get backends() {
+      return ctx.backends.contributions;
+    },
+    get predicates() {
+      return ctx.predicates.contributions;
+    },
+    get commands() {
+      return ctx.commands.contributions;
+    },
+    get builtinPredicates() {
+      return ctx.predicates.reserved;
+    },
+    get plugins() {
+      return kernel.plugins;
+    },
+    get owners() {
+      const out = new Map<string, string>();
+      for (const kind of KINDS) {
+        const service = ctx[kind];
+        for (const name of [...service.contributions.keys(), ...service.reserved]) {
+          const owner = service.owner(name);
+          if (owner !== undefined) out.set(`${kind}:${name}`, owner);
+        }
+      }
+      return out;
+    },
+  };
+  kernels.set(registry, kernel);
+  return registry;
 }
 
-/** Реестр из одних встроенных вкладов. Заводится заново на каждый вызов. */
-export function createRegistry(
-  builtin: StepcastPlugin,
-  builtinPredicates: readonly string[] = [],
-): Registry {
-  const registry = emptyRegistry(builtinPredicates);
-  // Имена встроенных предикатов заняты, хотя вкладов у них нет: плагин,
-  // объявивший `exit_code`, обязан получить тот же отказ, что и плагин,
-  // объявивший бэкенд `claude`.
-  for (const name of builtinPredicates) claim(registry, 'predicates', name, BUILTIN_OWNER);
-  for (const [name, contribution] of Object.entries(builtin.backends ?? {})) {
-    claim(registry, 'backends', name, BUILTIN_OWNER);
-    registry.backends.set(name, contribution);
+/** Ядро, породившее реестр, — для `CommandEnv.ctx` и подобного (см. `kernels` выше). */
+export function kernelFromRegistry(registry: Registry): Kernel {
+  const kernel = kernels.get(registry);
+  if (kernel === undefined) {
+    throw new Error('Registry не связан с ядром: он не был построен registryFromKernel');
   }
-  for (const contribution of builtin.predicates ?? []) {
-    claim(registry, 'predicates', contribution.name, BUILTIN_OWNER);
-    registry.predicates.set(contribution.name, contribution);
-  }
-  for (const contribution of builtin.commands ?? []) {
-    claim(registry, 'commands', contribution.name, BUILTIN_OWNER);
-    registry.commands.set(contribution.name, contribution);
-  }
-  return registry as Registry;
-}
-
-/** Кто внёс вклад этого вида с этим именем: имя плагина либо «встроенный». */
-export function contributionOwner(
-  registry: Registry,
-  kind: ContributionKind,
-  name: string,
-): string | undefined {
-  return registry.owners.get(ownerKey(kind, name));
+  return kernel;
 }
 
 /** Имя владельца встроенных вкладов — им помечено всё, что даёт сам движок. */
 export { BUILTIN_OWNER };
+
+/** Кто внёс вклад этого вида с этим именем: имя плагина либо «встроенный». */
+export function contributionOwner(registry: Registry, kind: ContributionKind, name: string): string | undefined {
+  return registry.owners.get(`${kind}:${name}`);
+}
 
 /** Имена вкладов вида, отсортированные, — для перечня в диагностике. */
 export function availableNames(registry: Registry, kind: ContributionKind): string[] {

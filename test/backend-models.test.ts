@@ -9,7 +9,9 @@ import type { ModelDiscovery, ProbeOutput } from '../src/core/backend/types.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { lintPipeline } from '../src/core/lint.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { createRegistry, type Registry } from '../src/core/plugins/registry.js';
+import { createKernel } from '../src/core/plugins/kernel.js';
+import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
+import type { BackendContribution } from '../src/core/plugins/contract.js';
 import { asAgent, makeProject } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -23,11 +25,15 @@ function configFrom(yaml: string): Config {
   return resolveConfig({ cwd: base, home, globalPath, projectPath: null }).config;
 }
 
+/** Реестр из одних заданных бэкендов, зарегистрированных на корне ядра — синоним прежнего `createRegistry`. */
+function registryOf(backends: Record<string, BackendContribution>): Registry {
+  const kernel = createKernel();
+  for (const [name, contribution] of Object.entries(backends)) kernel.ctx.backends.register(name, contribution);
+  return registryFromKernel(kernel);
+}
+
 function registryWith(name: string, models?: ModelDiscovery): Registry {
-  return createRegistry({
-    name: 'test-plugin',
-    backends: { [name]: { create: () => ({ name }) as never, ...(models === undefined ? {} : { models }) } },
-  });
+  return registryOf({ [name]: { create: () => ({ name }) as never, ...(models === undefined ? {} : { models }) } });
 }
 
 /** Разбор простого JSON-массива имён из stdout — общий для проб этого файла. */
@@ -212,17 +218,14 @@ describe('agent-backend: исключение из кода вклада — н�
   it('сорвавшийся вклад одного бэкенда не мешает перечислению соседнего', async () => {
     resetModelDiscoveryCache();
     const config = configFrom('backends:\n  broken:\n    command: broken\n  good:\n    command: good\n');
-    const registry = createRegistry({
-      name: 'test-plugin',
-      backends: {
-        broken: {
-          create: () => ({ name: 'broken' }) as never,
-          models: { probe: () => { throw new Error('сорвался'); }, parse: () => [] },
-        },
-        good: {
-          create: () => ({ name: 'good' }) as never,
-          models: jsonNamesDiscovery(nodeScript('process.stdout.write(JSON.stringify(["живая"]))')),
-        },
+    const registry = registryOf({
+      broken: {
+        create: () => ({ name: 'broken' }) as never,
+        models: { probe: () => { throw new Error('сорвался'); }, parse: () => [] },
+      },
+      good: {
+        create: () => ({ name: 'good' }) as never,
+        models: jsonNamesDiscovery(nodeScript('process.stdout.write(JSON.stringify(["живая"]))')),
       },
     });
 

@@ -1,6 +1,8 @@
 import { resolveConfig, type ResolveOptions, type ResolvedConfig } from '../config/resolve.js';
 import { loadPlugins, type LoadOptions } from './load.js';
-import { contributionOwner, type Registry } from './registry.js';
+import type { Context } from './context.js';
+import { pluginContext } from './kernel.js';
+import { contributionOwner, kernelFromRegistry, type Registry } from './registry.js';
 
 /**
  * Разрешение конфигурации вместе с плагинами.
@@ -18,6 +20,8 @@ import { contributionOwner, type Registry } from './registry.js';
 export interface ResolvedWithPlugins {
   readonly resolved: ResolvedConfig;
   readonly registry: Registry;
+  /** Контекст ядра, породившего `registry` — то, чем пользуется `CommandEnv.ctx`. */
+  readonly ctx: Context;
 }
 
 /**
@@ -55,6 +59,7 @@ export async function resolveWithPlugins(
   const projectRoot = loadOptions.projectRoot ?? options.cwd;
   const registry =
     loadOptions.registry ?? (await loadPlugins(first, { ...loadOptions, projectRoot }));
+  const ctx = pluginContext(kernelFromRegistry(registry).ctx);
 
   const pluginDefaults = registry.plugins.flatMap((plugin) => {
     const backends: Record<string, unknown> = {};
@@ -68,7 +73,7 @@ export async function resolveWithPlugins(
     return Object.keys(backends).length === 0 ? [] : [{ plugin: plugin.name, values: { backends } }];
   });
 
-  if (pluginDefaults.length === 0) return { resolved: first, registry };
+  if (pluginDefaults.length === 0) return { resolved: first, registry, ctx };
 
-  return { resolved: resolveConfig({ ...options, pluginDefaults }), registry };
+  return { resolved: resolveConfig({ ...options, pluginDefaults }), registry, ctx };
 }

@@ -10,12 +10,26 @@ export type {
   BackendContribution,
   CommandContribution,
   CommandEnv,
+  ContextPlugin,
+  ContextPluginFunction,
+  ContextPluginObject,
   LintSite,
   LoadedPlugin,
   PluginDiagnostic,
   PredicateContribution,
   StepcastPlugin,
 } from './core/plugins/contract.js';
+
+/**
+ * Контекст ядра: то, без чего плагин контекста не написать. Служебные
+ * сервисы `backends`, `predicates`, `commands` типизированы на нём —
+ * `ctx.backends.register(имя, вклад)` и симметричные вызовы для двух других
+ * видов. Объявлен степкастом целиком и на `cordis` не ссылается: плагину не
+ * нужна ни библиотека, ни её типы, и объявлять собственную зависимость от неё
+ * не следует — два экземпляра означают два разных хранилища сервисов, не
+ * видящих друг друга (docs/plugins.md, граница единственного экземпляра).
+ */
+export type { Context, ContributionRegistrar, Inject } from './core/plugins/context.js';
 
 export type { CliIo, CommandSpec, FlagKind, FlagSpec, ParsedArgs } from './core/plugins/cli-types.js';
 

@@ -297,6 +297,11 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
 
   const context: RunContext = {
     ...options,
+    // Умолчание реестра раскрывается один раз на прогон: каждый вызов
+    // `builtinRegistry()` поднимает корневой контекст, а спрашивают его и
+    // разрешение адаптера, и вычисление предикатов каждого шага (design.md
+    // изменения `cordis-kernel-daemon`, Решение 13).
+    registry: options.registry ?? builtinRegistry(),
     journal,
     records,
     usage,
@@ -520,6 +525,12 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
 }
 
 interface RunContext extends RunOptions {
+  /**
+   * Реестр вкладов прогона — в отличие от `RunOptions.registry`, здесь он есть
+   * всегда: умолчание встроенного ядра раскрыто при заведении контекста (см.
+   * `startRun`), и ни одно место исполнения не поднимает его себе само.
+   */
+  readonly registry: Registry;
   readonly journal: RunJournal;
   readonly records: Map<string, JobRecord>;
   readonly usage: UsageAccumulator;
@@ -712,7 +723,7 @@ function adapterOf(name: string, context: RunContext): BackendAdapter {
   const existing = context.adapters.get(name);
   if (existing !== undefined) return existing;
   const created = (
-    context.adapterFor ?? ((backend) => resolveAdapter(backend, context.config, context.registry ?? builtinRegistry()))
+    context.adapterFor ?? ((backend) => resolveAdapter(backend, context.config, context.registry))
   )(name);
   context.adapters.set(name, created);
   return created;

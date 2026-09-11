@@ -7,9 +7,12 @@ import type { RawBackend } from '../config/schema.js';
 import type { EvaluationInput } from '../expect/evaluate.js';
 import type { PredicateResult } from '../journal/schema.js';
 import type { CliIo, CommandSpec, ParsedArgs } from './cli-types.js';
-// Ссылка на реестр — только типом: в рантайме импорт стирается, и круга
-// между контрактом и реестром не возникает.
+// Ссылки на реестр и контекст — только типом: в рантайме импорт стирается, и
+// круга между контрактом, реестром и контекстом не возникает. Контекст берётся
+// из `context.js`, а не из ядра: публикуемая поверхность плагина не должна
+// тянуть за собой ни `cordis`, ни его типы (см. `context.ts`).
 import type { Registry } from './registry.js';
+import type { Context, Inject } from './context.js';
 
 /**
  * Контракт плагина.
@@ -103,6 +106,12 @@ export interface CommandEnv {
    * назвать доступное в своей справке.
    */
   readonly registry: Registry;
+  /**
+   * Контекст ядра. Команда плагина достаёт через него сервис, заведённый этим
+   * же плагином, — реестр отдаёт только три служебных сервиса, а свой сервис
+   * плагина в нём не виден (design.md, Решение 12).
+   */
+  readonly ctx: Context;
 }
 
 /** Вклад команды: новая подкоманда `stepcast <имя>`. */
@@ -128,6 +137,41 @@ export interface LoadedPlugin {
   readonly version?: string;
   /** Разрешённый путь модуля — по нему прогон воспроизводят. */
   readonly source: string;
+}
+
+/**
+ * Вторая форма плагина: функция над контекстом либо объект с `apply` — то,
+ * что не умеет декларативная форма: завести сервис с именем, которого ядро не
+ * знает, и объявить зависимость от чужого через `inject` (design.md,
+ * Решение 7). Имя обязано быть известно до применения: им подписан
+ * `LoadedPlugin` и им же называет себя отказ о занятом имени ядра —
+ * `Plugin.Base.name` объекта либо `Function.name` функции. Безымянная функция
+ * именем не располагает: у `export default function (ctx) {…}` `Function.name`
+ * равен `default`, и загрузчик отказывает такому плагину (`load.ts`).
+ */
+export interface ContextPluginObject {
+  readonly name?: string;
+  readonly version?: string;
+  readonly inject?: Inject;
+  apply(ctx: Context, config?: unknown): unknown;
+}
+
+export type ContextPluginFunction = ((ctx: Context, config?: unknown) => unknown) & {
+  readonly name?: string;
+  readonly version?: string;
+  readonly inject?: Inject;
+};
+
+export type ContextPlugin = ContextPluginFunction | ContextPluginObject;
+
+/** Плагин контекста опознаётся по форме экспорта: функция либо объект с `apply`. */
+export function isContextPlugin(value: unknown): value is ContextPlugin {
+  if (typeof value === 'function') return true;
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { apply?: unknown }).apply === 'function'
+  );
 }
 
 const SLUG = /^[a-z0-9]+(?:[-_][a-z0-9]+)*$/;
