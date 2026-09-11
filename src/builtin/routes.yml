@@ -1,0 +1,62 @@
+# Встроенные маршруты витрины (`ui-routes`, design.md Решение 1, 12).
+#
+# Нижний слой таблицы маршрутов: домашний `~/.stepcast/routes.yml` и
+# проектный `.stepcast/routes.yml` перекрывают и дополняют эти строки по
+# `id` (docs/routes.md). Название пункта меню не объявлено нарочно — оно
+# берётся из заголовка цели (`nav.title` отсутствует означает «как экран»),
+# и правка заголовка экрана не расходится с меню сама по себе.
+routes:
+  - id: screen-runs
+    path: /
+    target: { screen: screen-runs }
+    nav: { order: 0, active_for: [screen-run] }
+
+  - id: screen-run
+    path: /runs/:projectKey/:runId
+    target: { screen: screen-run }
+
+  - id: screen-pipelines
+    path: /pipelines
+    target: { screen: screen-pipelines }
+    nav: { order: 1 }
+
+  - id: screen-steps
+    path: /steps
+    target: { screen: screen-steps }
+    nav: { order: 2 }
+
+  - id: screen-widgets
+    path: /widgets
+    target: { screen: screen-widgets }
+    nav: { order: 3 }
+
+  - id: screen-backlog
+    path: /backlog
+    target: { screen: screen-backlog }
+    nav: { order: 4 }
+
+  - id: screen-usage
+    path: /usage/:period?
+    target: { screen: screen-usage }
+    values: { period: [7d, 30d, 90d, all] }
+    nav: { order: 5 }
+
+  - id: screen-cleanup
+    path: /cleanup
+    target: { screen: screen-cleanup }
+    nav: { order: 6 }
+
+  - id: screen-agents
+    path: /agents
+    target: { screen: screen-agents }
+    nav: { order: 7 }
+
+  - id: screen-settings
+    path: /settings
+    target: { screen: screen-settings }
+    nav: { order: 8 }
+
+  - id: screen-routes
+    path: /routes
+    target: { screen: screen-routes }
+    nav: { order: 9 }

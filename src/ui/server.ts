@@ -14,7 +14,7 @@ import {
   shareKernelCache,
   type KernelCache,
 } from './pipelines.js';
-import type { RequestEnv } from './screens/registry.js';
+import type { ActiveScreen, RequestEnv } from './screens/registry.js';
 import { isApiPath, isPluginPath, isSafeSegment, isSharedPath, isWidgetPath } from './routes.js';
 import { createWatcher, type Watcher } from './watcher.js';
 import {
@@ -62,6 +62,8 @@ export interface UiServerOptions {
   readonly config?: Config;
   /** Домашний каталог: определяет, какой глобальный конфиг правят настройки. */
   readonly home?: string;
+  /** Корень проекта, в котором поднят демон — проектный слой таблицы маршрутов (`ui-daemon`). */
+  readonly projectRoot?: string;
   /**
    * Кеш ядер: контекст на корень проекта плюс собственный контекст демона
    * (ключ `home:<домашний каталог>`) — им пользуется `src/ui/kernel.ts`.
@@ -344,7 +346,12 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
   backfillUsageStore(runsRoot);
   const watcher =
     options.watcher ??
-    createWatcher({ runsRoot, home: homeDir, ...(options.log === undefined ? {} : { log: options.log }) });
+    createWatcher({
+      runsRoot,
+      home: homeDir,
+      ...(options.projectRoot === undefined ? {} : { projectRoot: options.projectRoot }),
+      ...(options.log === undefined ? {} : { log: options.log }),
+    });
   const ownsWatcher = options.watcher === undefined;
   // Один кеш ядер на сервер, не на модуль: тесты поднимают несколько демонов в
   // одном процессе, и общий кеш связал бы их между собой (design.md,
@@ -387,6 +394,18 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
   };
 
   /**
+   * Состав экранов на каждый такт потока событий — тем же приёмом, что и
+   * `activePlugins`: ядро демона (не наблюдатель) — единственное место,
+   * знающее действующий состав, и звать его на каждый такт, а не один раз на
+   * соединение, обязательно (`ui-daemon`, «Поток событий несёт действующие
+   * маршруты и состав экранов»).
+   */
+  const activeScreens = async (): Promise<{ screens: ReadonlyMap<string, ActiveScreen>; buildError: string | undefined }> => {
+    const daemon = await currentDaemonKernel(kernelCache, homeDir);
+    return { screens: daemon.screens, buildError: daemon.buildError };
+  };
+
+  /**
    * Обработчик запроса под `/api/`: ядро демона собирается заново на каждый
    * вызов (`currentDaemonKernel`, попадание в кеш — сравнение дерева, не
    * пересборка), обработчик ищется в его сервисе `api`. Путь, известный под
@@ -395,7 +414,7 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
    * маршрутов, а не имена экранов»).
    */
   async function dispatchApi(req: IncomingMessage, res: ServerResponse, url: URL, method: string): Promise<void> {
-    const daemon = await currentDaemonKernel(kernelCache, home);
+    const daemon = await currentDaemonKernel(kernelCache, homeDir);
     const handler = daemon.api.find(method, url.pathname);
     if (handler === undefined) {
       if (daemon.api.hasAnyMethod(url.pathname)) {
@@ -414,7 +433,9 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
       kernelCache,
       screens: daemon.screens,
       buildError: daemon.buildError,
+      projectRoot: options.projectRoot,
       activePlugins,
+      activeScreens,
     };
     await handler(req, res, env);
   }

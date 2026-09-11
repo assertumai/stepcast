@@ -11,7 +11,8 @@ import {
   type StatsOutcome,
 } from '../api';
 import { fmtBytes, fmtDuration, fmtMoney, fmtTime, fmtTokens, pluralRuns } from '../format';
-import { runHref } from '../screens/run';
+import { TargetLink } from '../routeLink';
+import { RUN_TARGET } from '../screens/run';
 import { withCurrentOption } from '../../../src/ui/filters';
 import {
   collectFilterValues,
@@ -646,7 +647,6 @@ export function Runs({
             <tbody>
               {rows.map((row) => {
                 const run = row.run;
-                const href = runHref(row.projectKey, run.runId);
                 return (
                   <tr key={row.address}>
                     <td className="check-cell">
@@ -674,15 +674,13 @@ export function Runs({
                       </span>
                     </td>
                     <td>
-                      <a
-                        href={href}
-                        onClick={(event) => {
-                          // Средняя кнопка и Cmd/Ctrl-клик должны открывать вкладку:
-                          // перехватывается только обычный переход.
-                          if (event.metaKey || event.ctrlKey || event.button !== 0) return;
-                          event.preventDefault();
-                          navigate(href);
-                        }}
+                      {/* Маршрут страницы прогона отключён — строка остаётся
+                          на месте не-ссылкой с названной причиной, общим видом
+                          витрины (`ui-routes`, Решение 8). */}
+                      <TargetLink
+                        target={RUN_TARGET}
+                        params={{ projectKey: row.projectKey, runId: run.runId }}
+                        navigate={navigate}
                       >
                         <div className="run-name">{run.pipeline || 'без имени'}</div>
                         {run.problem === undefined ? null : (
@@ -692,7 +690,7 @@ export function Runs({
                           </div>
                         )}
                         <div className="run-id">{run.shortId}</div>
-                      </a>
+                      </TargetLink>
                     </td>
                     <td>
                       <div className="marks">

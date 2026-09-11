@@ -4,10 +4,12 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { createWatcher } from '../src/ui/watcher.js';
+import { StepcastError } from '../src/core/errors.js';
 import { cleanupRun, removeRunWithStats } from '../src/core/run/cleanup.js';
 import { projectKey } from '../src/core/journal/paths.js';
 import { removeUsageRecords } from '../src/core/journal/usageStore.js';
 import { widgetsDirPath } from '../src/ui/widgets.js';
+import { homeRoutesPath, projectRoutesPath } from '../src/ui/routesFile.js';
 import type { BacklogOverview } from '../src/ui/backlog.js';
 import type { Overview } from '../src/ui/overview.js';
 import type { WidgetsOverview } from '../src/ui/widgets.js';
@@ -497,5 +499,143 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
       assert.equal(watcher.currentWidgets(), before, 'состав виджетов не должен пересобираться от правки очереди');
       watcher.dispose();
     });
+  });
+});
+
+describe('ui-routes: часть отпечатка наблюдателя', () => {
+  function writeHomeRoutes(home: string, content: string): void {
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    writeFileSync(homeRoutesPath(home), content);
+  }
+
+  function writeProjectRoutes(projectRoot: string, content: string): void {
+    mkdirSync(join(projectRoot, '.stepcast'), { recursive: true });
+    writeFileSync(projectRoutesPath(projectRoot), content);
+  }
+
+  it('правка домашнего файла маршрутов пересобирает таблицу и будит подписчика, не трогая виджеты и очередь', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const home = tempDir('routes-watcher-home-');
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+
+    const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
+    const beforeWidgets = watcher.currentWidgets();
+    const beforeBacklog = watcher.currentBacklog();
+    let calls = 0;
+    watcher.subscribe(() => (calls += 1));
+
+    writeHomeRoutes(home, 'routes:\n  - id: screen-cleanup\n    nav:\n      title: Чистка\n');
+    watcher.poll();
+
+    assert.equal(calls, 1, 'правка файла маршрутов обязана разбудить подписчика');
+    const entry = watcher.currentRoutes().entries.find((candidate) => candidate.id === 'screen-cleanup');
+    assert.equal(entry?.definition.nav?.title, 'Чистка');
+    assert.equal(watcher.currentWidgets(), beforeWidgets, 'правка routes.yml не должна пересобирать состав виджетов');
+    assert.equal(watcher.currentBacklog(), beforeBacklog, 'правка routes.yml не должна перечитывать очередь');
+    watcher.dispose();
+  });
+
+  it('правка файла маршрутов не перечитывает прогоны', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const home = tempDir('routes-watcher-home-');
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+
+    const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
+    const beforeOverview = watcher.current();
+
+    writeHomeRoutes(home, 'routes:\n  - id: screen-cleanup\n    nav:\n      title: Чистка\n');
+    watcher.poll();
+
+    // Обзор — самая дорогая часть такта (разбор `status.json` каждого
+    // прогона корня), и правка `routes.yml` не повод его пересобирать
+    // (`ui-routes`, «MUST NOT перечитывать ради неё очередь, виджеты и
+    // прогоны»).
+    assert.equal(watcher.current(), beforeOverview, 'правка routes.yml не должна перечитывать прогоны');
+    assert.equal(watcher.currentRoutes().entries.find((entry) => entry.id === 'screen-cleanup')?.definition.nav?.title, 'Чистка');
+    watcher.dispose();
+  });
+
+  it('сломанный встроенный файл маршрутов отказывает подъёму витрины, а не поднимает её с пустой таблицей', () => {
+    const { runsRoot } = makeJournalBed();
+    const home = tempDir('routes-watcher-home-');
+    const missing = join(tempDir('routes-builtin-'), 'routes.yml');
+
+    assert.throws(
+      () => createWatcher({ runsRoot, home, intervalMs: 10_000, builtinRoutesPath: missing }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.file, missing);
+        return true;
+      },
+    );
+  });
+
+  it('сломанный пользовательский файл на первом же подъёме не гасит витрину, а называет причину', () => {
+    const { runsRoot } = makeJournalBed();
+    const home = tempDir('routes-watcher-home-');
+    writeHomeRoutes(home, 'routes:\n  - id: bad\n    bogus: 1\n');
+
+    const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
+    assert.match(watcher.currentRoutesError() ?? '', /bogus/);
+    assert.deepEqual(watcher.currentRoutes().table, [], 'первая сборка не имеет прежней таблицы, которой можно было бы остаться');
+    watcher.dispose();
+  });
+
+  it('такт без правки файлов маршрутов оставляет тот же объект таблицы', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const home = tempDir('routes-watcher-home-');
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+
+    const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
+    const before = watcher.currentRoutes();
+
+    seedRun(runsRoot, projectRoot, { runId: 'b' });
+    watcher.poll();
+
+    assert.equal(watcher.currentRoutes(), before, 'таблица маршрутов не должна пересобираться, когда файлы слоя не менялись');
+    watcher.dispose();
+  });
+
+  it('правка очереди или виджета не меняет таблицу маршрутов', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const home = tempDir('routes-watcher-home-');
+
+    const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
+    const before = watcher.currentRoutes();
+
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+    watcher.poll();
+
+    assert.equal(watcher.currentRoutes(), before, 'правка очереди не должна пересобирать таблицу маршрутов');
+    watcher.dispose();
+  });
+
+  it('проектный слой — только файл каталога проекта, в котором поднят демон', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const home = tempDir('routes-watcher-home-');
+
+    const watcher = createWatcher({ runsRoot, home, projectRoot, intervalMs: 10_000 });
+    writeProjectRoutes(projectRoot, 'routes:\n  - id: screen-runs\n    path: /elsewhere\n');
+    watcher.poll();
+
+    const entry = watcher.currentRoutes().entries.find((candidate) => candidate.id === 'screen-runs');
+    assert.equal(entry?.definition.path, '/elsewhere');
+    watcher.dispose();
+  });
+
+  it('отказ сборки после правки файла не гасит прежнюю действующую таблицу, а называет причину', () => {
+    const { runsRoot } = makeJournalBed();
+    const home = tempDir('routes-watcher-home-');
+
+    const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
+    const before = watcher.currentRoutes();
+    assert.equal(watcher.currentRoutesError(), undefined);
+
+    writeHomeRoutes(home, 'routes:\n  - id: bad\n    bogus: 1\n');
+    watcher.poll();
+
+    assert.equal(watcher.currentRoutes(), before, 'отказ сборки не должен подменять действующую таблицу');
+    assert.match(watcher.currentRoutesError() ?? '', /bogus/);
+    watcher.dispose();
   });
 });

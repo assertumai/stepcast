@@ -11,7 +11,7 @@ import type { PluginsOverview } from '../plugins.js';
 import type { Watcher } from '../watcher.js';
 import type { ScreenDeclaration } from './declaration.js';
 
-export type { ScreenDeclaration, ScreenListing, ScreenNav } from './declaration.js';
+export type { ScreenDeclaration, ScreenListing } from './declaration.js';
 
 /**
  * Реестры экранов и маршрутов API — механизм состава витрины (`ui-screens`,
@@ -52,6 +52,16 @@ export interface RequestEnv {
    */
   readonly screens: ReadonlyMap<string, ActiveScreen>;
   readonly buildError: string | undefined;
+  /** Корень проекта, в котором поднят демон — `undefined`, если он его не знает (`ui-daemon`). Проектный слой файла маршрутов ищется от него. */
+  readonly projectRoot: string | undefined;
+  /**
+   * Состав экранов и причина отказа последней сборки — функцией на такт, тем
+   * же приёмом, что и `activePlugins`: поток событий (`handleEvents`,
+   * `rows.ts`) спрашивает его на каждый такт наблюдателя, а не один раз на
+   * соединение (`ui-daemon`, «Поток событий несёт действующие маршруты и
+   * состав экранов»).
+   */
+  readonly activeScreens: () => Promise<{ readonly screens: ReadonlyMap<string, ActiveScreen>; readonly buildError: string | undefined }>;
   /**
    * Действующий состав браузерных строк — тот же, которым гейтится адрес
    * `/plugins/<id>.js` (`src/ui/server.ts`): строка, отключённая патчем или

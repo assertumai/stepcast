@@ -4,8 +4,7 @@ import type { Context } from 'cordis';
 import { declaration } from '../../../src/ui/screens/pipelines/declaration.ts';
 import type { Overview } from '../api';
 import { Pipelines } from '../pages/Pipelines';
-import { navItem } from '../plugins/navItem';
-import { NAV, SCREEN } from '@stepcast/slots';
+import { SCREEN } from '@stepcast/slots';
 
 function PipelinesScreen({
   overview,
@@ -18,6 +17,5 @@ function PipelinesScreen({
 }
 
 export default function pipelines(ctx: Context): void {
-  ctx.slots.contribute(NAV, { component: navItem(declaration), order: declaration.nav?.order ?? 0 });
   ctx.slots.contribute(SCREEN, { component: PipelinesScreen, key: declaration.id });
 }

@@ -11,12 +11,15 @@ import { row as agentsRow } from './agents/server.js';
 import { row as backlogRow } from './backlog/server.js';
 import { row as cleanupRow } from './cleanup/server.js';
 import { row as pipelinesRow } from './pipelines/server.js';
+import { row as routesRow } from './routes/server.js';
 import { row as runRow } from './run/server.js';
 import { row as runsRow } from './runs/server.js';
 import { row as settingsRow } from './settings/server.js';
 import { row as stepsRow } from './steps/server.js';
 import { row as usageRow } from './usage/server.js';
 import { row as widgetsRow } from './widgets/server.js';
+import { routesPayload } from '../routesFile.js';
+import type { ActiveScreen } from './registry.js';
 
 /**
  * Строки поставки витрины во встроенном слое дерева (`plugin-tree`, «Строки
@@ -56,10 +59,20 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, env: RequestEnv
   // наблюдателя с действующим составом демона, `activePlugins` в
   // `src/ui/server.ts`), и ссылка у него всегда новая.
   let sentPluginsKey: string | undefined;
+  // Таблица маршрутов сравнивается по содержимому, а не по ссылке `watcher`:
+  // объект пересобирается наблюдателем только по сдвигу своей части
+  // отпечатка (`src/ui/watcher.ts`), но новое значение — новый объект даже
+  // тогда, когда содержимое совпало с прежним посланным (например, файл
+  // тронут без смысловой правки).
+  let sentRoutesKey: string | undefined;
+  // Состав экранов — тем же приёмом, что и `plugins`: пересобирается на
+  // каждый такт заново (`activeScreens`, `src/ui/server.ts`).
+  let sentScreensKey: string | undefined;
   let closed = false;
   // Очередь на состав: он приходит из асинхронного вызова, и два такта подряд
   // иначе разошлись бы в порядке отправки.
   let pluginsTail: Promise<void> = Promise.resolve();
+  let screensTail: Promise<void> = Promise.resolve();
 
   const pushPlugins = (): void => {
     pluginsTail = pluginsTail
@@ -78,6 +91,30 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, env: RequestEnv
       });
   };
 
+  /**
+   * Состав экранов потоком — тем же правилом, что и `plugins` (`ui-daemon`,
+   * «Поток событий несёт действующие маршруты и состав экранов»): снятие
+   * ограничения «новый состав виден только после перезагрузки»
+   * (`docs/ui-plugins.md`).
+   */
+  const pushScreens = (): void => {
+    screensTail = screensTail
+      .then(async () => {
+        const { screens, buildError } = await env.activeScreens();
+        if (closed) return;
+        const payload = screensPayload(screens, buildError);
+        const key = JSON.stringify(payload);
+        if (key === sentScreensKey) return;
+        sentScreensKey = key;
+        send('screens', payload);
+      })
+      .catch(() => {
+        // Тем же правилом, что и `pushPlugins`: причина уже названа `GET
+        // /api/screens`, а поток от неё не рвётся и не молчит по остальным
+        // своим событиям.
+      });
+  };
+
   const push = (): void => {
     send('overview', env.watcher.current());
     const backlog = env.watcher.currentBacklog();
@@ -90,12 +127,24 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, env: RequestEnv
       sentWidgets = widgets;
       send('widgets', widgets);
     }
-    // Действующий состав браузерных строк — первым же обменом при подключении
-    // и дальше по правилу «только при отличии от отправленного», тем же
-    // приёмом, что и `widgets` (design.md изменения `hot-swap-preserves-data`,
-    // Решение 11). Отправка отстаёт от прочих событий такта на микрозадачу:
-    // состав спрашивается у ядра демона, а это `await`.
+    // Таблица маршрутов — синхронно из наблюдателя (`ui-routes`, Решение 10):
+    // ему не нужно ядро демона, поэтому, в отличие от `screens`/`plugins`,
+    // отправка не отстаёт от прочих событий такта на микрозадачу.
+    const routesPayloadValue = routesPayload(env.watcher.currentRoutes());
+    const routesBuildError = env.watcher.currentRoutesError();
+    const routesKey = JSON.stringify({ routes: routesPayloadValue, buildError: routesBuildError });
+    if (routesKey !== sentRoutesKey) {
+      sentRoutesKey = routesKey;
+      send('routes', { routes: routesPayloadValue, ...(routesBuildError === undefined ? {} : { buildError: routesBuildError }) });
+    }
+    // Действующий состав браузерных строк и состав экранов — первым же
+    // обменом при подключении и дальше по правилу «только при отличии от
+    // отправленного», тем же приёмом, что и `widgets` (design.md изменения
+    // `hot-swap-preserves-data`, Решение 11). Отправка отстаёт от прочих
+    // событий такта на микрозадачу: оба спрашиваются у ядра демона, а это
+    // `await`.
     pushPlugins();
+    pushScreens();
     if (followed === undefined) return;
     const snapshot = snapshotOrRecord(env.runsRoot, followed.key, followed.runId);
     if (snapshot !== undefined) send('run', snapshot);
@@ -113,30 +162,34 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, env: RequestEnv
 }
 
 /**
- * Состав экранов: `id`, заголовок, место в навигации, параметры, путь и
- * происхождение строки по каждому действующему экрану, плюс причина отказа
- * последней сборки дерева (`ui-screens`, «Витрина узнаёт действующий состав
- * экранов у демона»; `ui-daemon`, «Отказ сборки состава не гасит витрину»).
- * И причина, и происхождение приходят окружением, а не читаются здесь заново:
- * `src/ui/kernel.ts` — единственное место, знающее, удалась ли последняя
- * сборка, а происхождение ставит реестр по применившей строке.
+ * Состав экранов в форме ответа: `id`, заголовок, параметры и происхождение
+ * строки по каждому действующему экрану, плюс причина отказа последней сборки
+ * дерева (`ui-screens`, «Витрина узнаёт действующий состав экранов у демона»;
+ * `ui-daemon`, «Отказ сборки состава не гасит витрину»). Адрес и место в
+ * навигации сюда не входят — это поля маршрута (`ui-routes`), а не экрана;
+ * их несёт `GET /api/routes` и событие потока `routes`.
+ *
+ * Общая форма для `GET /api/screens` и события потока `screens`: расхождение
+ * между ними значило бы, что открытая вкладка и свежая загрузка страницы
+ * видят разные составы одного и того же демона.
  */
-const handleScreens: ApiHandler = (_req, res, env) => {
-  sendJson(res, 200, {
-    screens: [...env.screens.values()].map(({ declaration, builtin }) => ({
+function screensPayload(screens: ReadonlyMap<string, ActiveScreen>, buildError: string | undefined) {
+  return {
+    screens: [...screens.values()].map(({ declaration, builtin }) => ({
       id: declaration.id,
       title: declaration.title,
-      ...(declaration.nav === undefined ? {} : { nav: declaration.nav }),
       params: declaration.params,
-      path: declaration.path,
-      ...(declaration.paramValues === undefined ? {} : { paramValues: declaration.paramValues }),
       // Происхождение строки: по нему страница решает, вправе ли она взять
       // браузерную половину из своего бандла (`ui-screens`, «Экран
       // отключается и заменяется патчем состава»).
       builtin,
     })),
-    ...(env.buildError === undefined ? {} : { buildError: env.buildError }),
-  });
+    ...(buildError === undefined ? {} : { buildError }),
+  };
+}
+
+const handleScreens: ApiHandler = (_req, res, env) => {
+  sendJson(res, 200, screensPayload(env.screens, env.buildError));
 };
 
 /**
@@ -166,6 +219,7 @@ export const SCREEN_ROWS: readonly BuiltinRow[] = [
   cleanupRow,
   agentsRow,
   settingsRow,
+  routesRow,
 ];
 
 /** Строки поставки витрины целиком: каркас, затем экраны. */

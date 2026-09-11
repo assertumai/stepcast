@@ -24,6 +24,7 @@ import {
 import { ROOT } from '@stepcast/slots';
 import { LIVE_SERVICE_NAME, LiveService, type EventSourceFactory } from './services/live';
 import { SCREENS_SERVICE_NAME, ScreensService } from './services/screens';
+import { ROUTES_SERVICE_NAME, RoutesService } from './services/routes';
 import { PLUGINS_SERVICE_NAME, PluginsService, type PluginModuleLoader } from './services/plugins';
 import type { StyleSink } from './services/styles';
 
@@ -71,6 +72,7 @@ const KERNEL_SERVICE_NAMES: Readonly<Record<string, string>> = {
   [SLOTS_SERVICE_NAME]: 'реестр слотов',
   [LIVE_SERVICE_NAME]: 'живые данные витрины',
   [SCREENS_SERVICE_NAME]: 'состав экранов витрины',
+  [ROUTES_SERVICE_NAME]: 'таблица маршрутов витрины',
   [PLUGINS_SERVICE_NAME]: 'состав браузерных строк',
 };
 
@@ -237,6 +239,9 @@ export function createBrowserKernel(options: BrowserKernelOptions = {}): Browser
   // (`ui/src/router.tsx`) и плагин `screens` читают его с первой отрисовки, а
   // не с той, на которую попадёт какой-то конкретный плагин.
   new ScreensService(ctx);
+  // Таблица маршрутов — тем же приёмом, что и `screens`: маршрутизатор и
+  // каркас читают её с первой отрисовки (`ui-routes`, design.md Решение 9).
+  new RoutesService(ctx);
   // Состав браузерных строк и их замена — тоже собственность ядра, а не
   // плагина (design.md `hot-swap-preserves-data`, Решение 1): плагин обязан
   // пережить замену любой строки, включая свою собственную, а заменяющий

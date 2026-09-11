@@ -1,5 +1,7 @@
 import { Service, type Context } from 'cordis';
 
+import type { RouteDefinition } from '../../../src/ui/routes.ts';
+import type { ScreenDeclaration } from '../../../src/ui/screens/declaration.ts';
 import type { BacklogOverview, Overview, PluginRowView, RunSnapshot, WidgetsOverview } from '../api';
 
 /**
@@ -22,6 +24,18 @@ export const LIVE_SERVICE_NAME = 'live';
 
 export type LiveState = 'connecting' | 'live' | 'offline';
 
+/** Событие `routes` потока — та же форма, что и ответ `GET /api/routes` (`ui-daemon`). */
+export interface RoutesEvent {
+  readonly routes: readonly RouteDefinition[];
+  readonly buildError?: string;
+}
+
+/** Событие `screens` потока — та же форма, что и ответ `GET /api/screens` (`ui-daemon`). */
+export interface ScreensEvent {
+  readonly screens: readonly (ScreenDeclaration & { readonly builtin: boolean })[];
+  readonly buildError?: string;
+}
+
 export interface LiveSnapshot {
   readonly overview: Overview | undefined;
   readonly backlog: BacklogOverview | undefined;
@@ -36,6 +50,15 @@ export interface LiveSnapshot {
    * ссылке и решает, звать ли сверку заново.
    */
   readonly plugins: readonly PluginRowView[];
+  /**
+   * Таблица маршрутов и состав экранов — событиями `routes`/`screens`
+   * потока (`ui-daemon`, «Поток событий несёт действующие маршруты и состав
+   * экранов»). `undefined` — обмена ещё не было; плагины `routes`/`screens`
+   * (`ui/src/plugins/`) читают их отсюда и пишут в свои сервисы тем же
+   * приёмом, каким ядро сверяет `plugins` ниже.
+   */
+  readonly routes: RoutesEvent | undefined;
+  readonly screens: ScreensEvent | undefined;
 }
 
 /** Поверхность `EventSource`, которой пользуется сервис — минимум, достаточный для проверки без браузера. */
@@ -57,6 +80,8 @@ const INITIAL_SNAPSHOT: LiveSnapshot = {
   snapshot: undefined,
   state: 'connecting',
   plugins: EMPTY_PLUGINS,
+  routes: undefined,
+  screens: undefined,
 };
 
 export class LiveService extends Service {
@@ -129,6 +154,12 @@ export class LiveService extends Service {
       source.addEventListener('plugins', (event) => {
         const parsed = JSON.parse(event.data) as { readonly plugins: readonly PluginRowView[] };
         this.patch({ state: 'live', plugins: parsed.plugins });
+      });
+      source.addEventListener('routes', (event) => {
+        this.patch({ state: 'live', routes: JSON.parse(event.data) as RoutesEvent });
+      });
+      source.addEventListener('screens', (event) => {
+        this.patch({ state: 'live', screens: JSON.parse(event.data) as ScreensEvent });
       });
       source.addEventListener('error', () => this.patch({ state: 'offline' }));
 

@@ -1,151 +1,107 @@
 /**
- * Разбор адресов витрины — общий для демона и браузера.
+ * Разбор адресов витрины — общий для демона и браузера (`ui-routes`, design.md
+ * Решение 9).
  *
- * Адрес страницы прогона — контракт двух сторон: демон обязан отдать страницу
- * витрины на этот путь (см. `src/ui/server.ts`), а витрина — узнать в нём
- * прогон. Разъедься они, и ссылка молча перестанет открывать прогон, поэтому
- * разбор живёт одним модулем: сервер импортирует его напрямую, витрина —
- * относительным путём из `ui/`.
+ * Таблица маршрутов приходит сюда уже собранной: чтение трёх файлов слоёв,
+ * проверка схемой, слияние по `id` и диагностика — забота `src/ui/routesFile.ts`
+ * (модуля демона, у которого есть диск). Этот модуль — чистые функции над
+ * готовой таблицей, без единого импорта Node: сервер импортирует его напрямую,
+ * витрина — относительным путём из `ui/`.
  *
- * Модуль не зависит ни от React, ни от `window`: всё, что зависит от браузера
- * (хук на History API), лежит в `ui/src/router.tsx`.
- *
- * `parseRoute` и `hrefFor` — чистые функции над таблицей объявленных экранов
- * (`ui-screens`, «Навигация и разбор адреса собираются из зарегистрированных
- * экранов»): ни то ни другое не перечисляет экраны по имени. Таблицу держит
- * реестр экранов демона (`src/ui/screens/registry.ts`) и браузерный сервис
- * `screens` (`ui/src/plugins/screens.tsx`) — этот модуль знает только форму
- * записи, минимально нужную для разбора и сборки ссылки.
+ * Вид цели (`RouteTarget.kind`) — не перечисление здесь, а ключ, который
+ * читает браузерный слот `route.target` (`ui-routes`, design.md Решение 5):
+ * этот модуль не знает ни `screen`, ни `widget` по имени.
  */
 
-/** Часть объявления экрана, нужная разбору адреса и сборке ссылки (design.md, Решение 10). */
-export interface RouteScreen {
+/** Цель маршрута: вид (`screen`, `widget`, …) и идентификатор внутри вида. */
+export interface RouteTarget {
+  readonly kind: string;
   readonly id: string;
-  /** Место в навигации: по нему выбирается экран по умолчанию (`defaultScreenId`). Нет — не участвует в выборе. */
-  readonly nav?: { readonly order: number };
-  /**
-   * Шаблон адреса: сегмент `:имя` — обязательный параметр, `:имя?` —
-   * необязательный (допустим только последним сегментом).
-   */
+}
+
+/** Место маршрута в навигации. Нет объявления — пункта меню нет, адрес всё равно открывается. */
+export interface RouteNav {
+  readonly title?: string;
+  readonly order?: number;
+  /** Маршруты, на которых пункт этого маршрута остаётся подсвеченным. */
+  readonly activeFor?: readonly string[];
+}
+
+/**
+ * Действующий маршрут — итог слияния слоёв, готовый к разбору и сборке ссылок.
+ * `params` несёт литералы и подстановки `${params.<имя>}`, ещё не применённые:
+ * применяются они на каждое сопоставление своими значениями параметров пути.
+ */
+export interface RouteDefinition {
+  readonly id: string;
   readonly path: string;
-  /**
-   * Закрытые перечни значений параметров, объявленные самим экраном
-   * (`ScreenDeclaration.paramValues`). Значение вне перечня шаблону не
-   * подходит: адрес разбирается дальше и достаётся экрану по умолчанию, а не
-   * открывает экран с подставленным умолчанием.
-   */
-  readonly paramValues?: Readonly<Record<string, readonly string[]>>;
+  readonly target: RouteTarget;
+  readonly params?: Readonly<Record<string, string>>;
+  readonly values?: Readonly<Record<string, readonly string[]>>;
+  readonly nav?: RouteNav;
 }
 
-export interface ParsedRoute {
-  /** `undefined` — ни один экран действующего состава не подошёл и нет ни одного экрана с местом в навигации. */
-  readonly screenId: string | undefined;
-  readonly params: Readonly<Record<string, string>>;
+/** Таблица маршрутов: порядок — порядок слоёв и файлов (design.md, Решение 8). */
+export type RouteTable = readonly RouteDefinition[];
+
+export interface MatchedRoute {
+  readonly route: RouteDefinition;
+  /** Значения параметров, снятые с сегментов адреса, по именам шаблона пути. */
+  readonly pathParams: Readonly<Record<string, string>>;
+  /** Параметры цели с применёнными подстановками. */
+  readonly targetParams: Readonly<Record<string, string>>;
+}
+
+export type TemplateSegment =
+  | { readonly kind: 'static'; readonly value: string }
+  | { readonly kind: 'param'; readonly name: string; readonly optional: boolean };
+
+/**
+ * Разбор шаблона пути на сегменты: `:имя` — обязательный параметр, `:имя?` —
+ * необязательный. Необязательным считается только последний сегмент шаблона —
+ * `?` в любом другом месте остаётся частью имени, как и до появления файла
+ * маршрутов.
+ */
+export function parseTemplate(path: string): readonly TemplateSegment[] {
+  const parts = path.split('/').filter((part) => part !== '');
+  return parts.map((part, index): TemplateSegment => {
+    if (!part.startsWith(':')) return { kind: 'static', value: part };
+    const isLast = index === parts.length - 1;
+    const optional = isLast && part.endsWith('?');
+    const name = optional ? part.slice(1, -1) : part.slice(1);
+    return { kind: 'param', name, optional };
+  });
 }
 
 /**
- * Экран по умолчанию — не литерал имени, а тот, у кого меньше всего `nav.order`
- * действующего состава: неразобранный путь и ключ, которого нет в слоте экранов
- * (`ui-kernel`, «Ключа нет в слоте экранов»), ведут на один и тот же экран этим
- * правилом, а замена или отключение экрана с наименьшим `order` меняют
- * умолчание сами, без правки кода.
+ * Ключ сравнения путей: имя параметра — дело маршрута, адрес от него не
+ * зависит (`ui-routes`, «Путь принадлежит одному маршруту»). Два шаблона с
+ * одинаковым нормализованным ключом — конфликт, даже если различаются только
+ * именами параметров.
  */
-export function defaultScreenId(screens: ReadonlyMap<string, RouteScreen>): string | undefined {
-  let best: { readonly id: string; readonly order: number } | undefined;
-  for (const screen of screens.values()) {
-    if (screen.nav === undefined) continue;
-    if (best === undefined || screen.nav.order < best.order) best = { id: screen.id, order: screen.nav.order };
-  }
-  return best?.id;
+export function normalizedTemplate(path: string): string {
+  return parseTemplate(path)
+    .map((segment) => (segment.kind === 'static' ? segment.value : segment.optional ? ':?' : ':'))
+    .join('/');
 }
 
-function templateSegments(path: string): readonly string[] {
-  return path.split('/').filter((part) => part !== '');
+/** Имена параметров, объявленных шаблоном (без учёта необязательности). */
+export function templateParamNames(path: string): readonly string[] {
+  return parseTemplate(path)
+    .filter((segment): segment is Extract<TemplateSegment, { kind: 'param' }> => segment.kind === 'param')
+    .map((segment) => segment.name);
 }
 
-/** Сопоставить сегменты действующего пути шаблону экрана — `undefined`, если не подошёл. */
-function matchTemplate(
-  template: readonly string[],
-  actual: readonly string[],
-  paramValues: Readonly<Record<string, readonly string[]>> | undefined,
-): Record<string, string> | undefined {
-  const last = template[template.length - 1];
-  const lastOptional = last !== undefined && last.startsWith(':') && last.endsWith('?');
-  if (actual.length !== template.length && !(lastOptional && actual.length === template.length - 1)) {
-    return undefined;
-  }
+const PARAM_PLACEHOLDER = /\$\{params\.([A-Za-z0-9_]+)\}/g;
 
-  const params: Record<string, string> = {};
-  for (let i = 0; i < actual.length; i++) {
-    const templateSegment = template[i] as string;
-    const actualSegment = actual[i] as string;
-    if (!templateSegment.startsWith(':')) {
-      if (templateSegment !== actualSegment) return undefined;
-      continue;
-    }
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(actualSegment);
-    } catch {
-      return undefined;
-    }
-    if (!isSafeSegment(decoded)) return undefined;
-    const name = templateSegment.slice(1).replace(/\?$/, '');
-    const allowed = paramValues?.[name];
-    // Закрытый перечень: значение вне его — не этот экран. Так `/usage/вчера`
-    // остаётся неизвестным адресом и ведёт на экран по умолчанию, как вёл до
-    // перевода экранов в строки состава.
-    if (allowed !== undefined && !allowed.includes(decoded)) return undefined;
-    params[name] = decoded;
-  }
-  return params;
+/** Имена параметров, на которые ссылается значение подстановкой `${params.<имя>}`. */
+export function paramPlaceholderNames(value: string): readonly string[] {
+  return [...value.matchAll(PARAM_PLACEHOLDER)].map((match) => match[1] as string);
 }
 
-/**
- * Путь в маршрут по таблице действующих экранов. Путь, не разобранный ни
- * одним из них, ведёт на экран по умолчанию (`defaultScreenId`) — включая
- * лишний хвост сегментов или сегмент, не прошедший `isSafeSegment`.
- */
-export function parseRoute(pathname: string, screens: ReadonlyMap<string, RouteScreen>): ParsedRoute {
-  const actual = templateSegments(pathname);
-
-  for (const screen of screens.values()) {
-    const params = matchTemplate(templateSegments(screen.path), actual, screen.paramValues);
-    if (params !== undefined) return { screenId: screen.id, params };
-  }
-
-  return { screenId: defaultScreenId(screens), params: {} };
-}
-
-/**
- * Ссылка на экран по его `id` и параметрам. `id`, которого в таблице нет,
- * либо параметр, не заполнивший обязательный сегмент шаблона, дают корень —
- * вызывающий код не должен строить адрес по несуществующему экрану, а отказ
- * посреди отрисовки меню хуже неверной ссылки.
- */
-export function hrefFor(
-  id: string,
-  params: Readonly<Record<string, string>>,
-  screens: ReadonlyMap<string, RouteScreen>,
-): string {
-  const screen = screens.get(id);
-  if (screen === undefined) return '/';
-
-  const built: string[] = [];
-  for (const segment of templateSegments(screen.path)) {
-    if (!segment.startsWith(':')) {
-      built.push(segment);
-      continue;
-    }
-    const optional = segment.endsWith('?');
-    const value = params[segment.slice(1).replace(/\?$/, '')];
-    if (value === undefined) {
-      if (optional) continue;
-      return '/';
-    }
-    built.push(encodeURIComponent(value));
-  }
-  return `/${built.join('/')}`;
+/** Применить подстановки `${params.<имя>}` значениями параметров пути. Имя обязано существовать — проверено при сборке таблицы. */
+export function substituteParams(value: string, pathParams: Readonly<Record<string, string>>): string {
+  return value.replace(PARAM_PLACEHOLDER, (_match, name: string) => pathParams[name] ?? '');
 }
 
 /**
@@ -155,6 +111,137 @@ export function hrefFor(
  */
 export function isSafeSegment(value: string): boolean {
   return value !== '' && !value.includes('..') && !value.includes('/') && !value.includes('\\');
+}
+
+interface Candidate {
+  readonly route: RouteDefinition;
+  readonly pathParams: Record<string, string>;
+  /** Специфичность по сегментам: 1 — статический, 0 — параметр, слева направо. */
+  readonly specificity: readonly number[];
+  /** Шаблону пришлось опустить свой хвостовой необязательный сегмент, чтобы подойти. */
+  readonly omittedOptional: boolean;
+}
+
+function matchTemplate(
+  route: RouteDefinition,
+  actual: readonly string[],
+): Candidate | undefined {
+  const template = parseTemplate(route.path);
+  const last = template[template.length - 1];
+  const lastOptional = last !== undefined && last.kind === 'param' && last.optional;
+  const omittedOptional = lastOptional && actual.length === template.length - 1;
+  if (actual.length !== template.length && !omittedOptional) return undefined;
+
+  const pathParams: Record<string, string> = {};
+  const specificity: number[] = [];
+  for (let i = 0; i < actual.length; i++) {
+    const segment = template[i] as TemplateSegment;
+    const actualSegment = actual[i] as string;
+    if (segment.kind === 'static') {
+      if (segment.value !== actualSegment) return undefined;
+      specificity.push(1);
+      continue;
+    }
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(actualSegment);
+    } catch {
+      return undefined;
+    }
+    if (!isSafeSegment(decoded)) return undefined;
+    const allowed = route.values?.[segment.name];
+    if (allowed !== undefined && !allowed.includes(decoded)) return undefined;
+    pathParams[segment.name] = decoded;
+    specificity.push(0);
+  }
+  return { route, pathParams, specificity, omittedOptional };
+}
+
+/** `a` более конкретен, чем `b`, для одного и того же адреса (`ui-routes`, Решение 4). */
+function moreSpecific(a: Candidate, b: Candidate): boolean {
+  if (a.omittedOptional !== b.omittedOptional) return !a.omittedOptional;
+  for (let i = 0; i < Math.max(a.specificity.length, b.specificity.length); i++) {
+    const av = a.specificity[i] ?? 0;
+    const bv = b.specificity[i] ?? 0;
+    if (av !== bv) return av > bv;
+  }
+  return false;
+}
+
+/**
+ * Путь в маршрут по действующей таблице: выбор идёт по конкретности шаблона,
+ * а не по порядку строк (`ui-routes`, Решение 4). Неразобранный адрес отдаёт
+ * `undefined` — вызывающий код показывает перечень маршрутов, а не подменяет
+ * цель.
+ */
+export function parseRoute(pathname: string, table: RouteTable): MatchedRoute | undefined {
+  const actual = pathname.split('/').filter((part) => part !== '');
+
+  let best: Candidate | undefined;
+  for (const route of table) {
+    const candidate = matchTemplate(route, actual);
+    if (candidate === undefined) continue;
+    if (best === undefined || moreSpecific(candidate, best)) best = candidate;
+  }
+  if (best === undefined) return undefined;
+
+  const targetParams: Record<string, string> = {};
+  for (const [name, value] of Object.entries(best.route.params ?? {})) {
+    targetParams[name] = substituteParams(value, best.pathParams);
+  }
+  return { route: best.route, pathParams: best.pathParams, targetParams };
+}
+
+/**
+ * Ссылка на цель по параметрам: первый по таблице маршрут, способный принять
+ * названные параметры (`ui-routes`, Решение 8). Нет ни одного — `undefined`, а
+ * не корень: место вызова обязано показать отсутствие ссылки с причиной.
+ */
+export function hrefFor(
+  target: RouteTarget,
+  params: Readonly<Record<string, string>>,
+  table: RouteTable,
+): string | undefined {
+  for (const route of table) {
+    if (route.target.kind !== target.kind || route.target.id !== target.id) continue;
+    const built = buildPath(route.path, params);
+    if (built !== undefined) return built;
+  }
+  return undefined;
+}
+
+/**
+ * Адрес самого маршрута по его параметрам — для мест, которые знают, какой
+ * именно маршрут открывают: пункт меню собирается из своей строки таблицы, а
+ * не поиском по цели. Два маршрута на одну цель — законное состояние
+ * (`ui-routes`, Решение 8), и пункт пользовательского `/release` обязан вести
+ * на свой путь, а не на первый по таблице адрес той же цели.
+ *
+ * `undefined` — шаблон требует параметра, которого в `params` нет: собрать
+ * адрес нечем, и место вызова обязано назвать это, а не подставлять корень.
+ */
+export function hrefForRoute(
+  route: RouteDefinition,
+  params: Readonly<Record<string, string>> = {},
+): string | undefined {
+  return buildPath(route.path, params);
+}
+
+function buildPath(path: string, params: Readonly<Record<string, string>>): string | undefined {
+  const built: string[] = [];
+  for (const segment of parseTemplate(path)) {
+    if (segment.kind === 'static') {
+      built.push(segment.value);
+      continue;
+    }
+    const value = params[segment.name];
+    if (value === undefined) {
+      if (segment.optional) continue;
+      return undefined;
+    }
+    built.push(encodeURIComponent(value));
+  }
+  return `/${built.join('/')}`;
 }
 
 /**
@@ -224,4 +311,13 @@ export function isSharedPath(pathname: string): boolean {
 /** Адрес переходника общего модуля по сегменту записи таблицы (`SharedModuleEntry.routeSegment`). */
 export function sharedModuleHref(routeSegment: string): string {
   return `/shared/${routeSegment}.js`;
+}
+
+/**
+ * Путь, зарезервированный под адреса, которые разбирает сам демон: страница
+ * витрины по ним не открывается никогда (`ui-routes`, «Путь принадлежит
+ * одному маршруту»).
+ */
+export function isReservedPath(pathname: string): boolean {
+  return isApiPath(pathname) || isWidgetPath(pathname) || isPluginPath(pathname) || isSharedPath(pathname);
 }

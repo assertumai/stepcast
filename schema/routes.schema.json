@@ -1,0 +1,109 @@
+{
+  "title": "stepcast routes",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "routes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^\\/"
+          },
+          "target": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "screen": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "screen"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "widget": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "widget"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "params": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_]+$"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "values": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_]+$"
+            },
+            "additionalProperties": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "nav": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1
+              },
+              "order": {
+                "type": "number"
+              },
+              "active_for": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "enabled": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "routes"
+  ],
+  "additionalProperties": false
+}

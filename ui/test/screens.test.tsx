@@ -8,40 +8,50 @@ import { createBrowserKernel, KernelContext, type BrowserKernel } from '../src/k
 import { KernelFrame, Slot } from '../src/slots.tsx';
 import shellPlugin, { SCREEN } from '../src/plugins/shell.tsx';
 import screensPlugin from '../src/plugins/screens.tsx';
+import routesPlugin from '../src/plugins/routes.tsx';
 import { bindRouterKernel } from '../src/router';
 import { fakeEventSources } from './support/live';
+import { ROUTE_TARGET } from '@stepcast/slots';
 
 /**
  * Плагин `screens` (`ui/src/plugins/screens.tsx`): читает состав у демона и
  * применяет встроенные половины по таблице `ui/src/screens/index.ts`
- * (design.md, Решение 12, 13; тесты 1.10, 1.11 изменения
- * `builtin-pages-as-plugins`).
+ * (design.md, Решение 12, 13). Адрес и место в меню больше не поле
+ * объявления экрана — они приходят маршрутом (`ui-routes`), поэтому здесь
+ * подставной демон отвечает и на `/api/screens`, и на `/api/routes`.
  */
 
 interface FakeScreen {
   readonly id: string;
   readonly title: string;
-  readonly nav?: { readonly order: number };
   readonly params: readonly string[];
-  readonly path: string;
   /** Происхождение строки в ответе демона. Не названо — строка поставки витрины, как у встроенного состава. */
   readonly builtin?: boolean;
 }
 
-function installFetch(screens: readonly FakeScreen[], buildError?: string): () => void {
+interface FakeRoute {
+  readonly id: string;
+  readonly path: string;
+  readonly target: { readonly kind: 'screen'; readonly id: string };
+  readonly nav?: { readonly order: number; readonly title?: string };
+}
+
+function installFetch(screens: readonly FakeScreen[], routes: readonly FakeRoute[], buildError?: string): () => void {
   const previous = (globalThis as { fetch?: unknown }).fetch;
   (globalThis as { fetch?: unknown }).fetch = async (input: unknown) => {
     const url = String(input);
-    assert.equal(url, '/api/screens');
-    const body = JSON.stringify({
-      screens: screens.map((screen) => ({ builtin: true, ...screen })),
-      ...(buildError === undefined ? {} : { buildError }),
-    });
-    return {
-      ok: true,
-      status: 200,
-      json: async () => JSON.parse(body) as unknown,
-    };
+    if (url === '/api/screens') {
+      const body = JSON.stringify({
+        screens: screens.map((screen) => ({ builtin: true, ...screen })),
+        ...(buildError === undefined ? {} : { buildError }),
+      });
+      return { ok: true, status: 200, json: async () => JSON.parse(body) as unknown };
+    }
+    if (url === '/api/routes') {
+      const body = JSON.stringify({ routes });
+      return { ok: true, status: 200, json: async () => JSON.parse(body) as unknown };
+    }
+    throw new Error(`неожиданный fetch в тесте: ${url}`);
   };
   return () => {
     (globalThis as { fetch?: unknown }).fetch = previous;
@@ -70,23 +80,31 @@ function freshKernel(): BrowserKernel {
 
 async function bootShellAndScreens(kernel: BrowserKernel): Promise<void> {
   await kernel.ctx.plugin({ name: 'shell', apply: shellPlugin });
+  await kernel.ctx.plugin({ name: 'routes', apply: routesPlugin });
   await kernel.ctx.plugin({ name: 'screens', apply: screensPlugin });
-  // `screens` пишет состав асинхронно, отдельным `.then()` внутри своего
-  // `apply` — сама область плагина успокаивается раньше, чем придёт ответ
-  // `fetch`. Подставной `fetch` в этих тестах разрешается синхронно
-  // (`Promise.resolve`), но микрозадаче всё равно нужен тик.
+  // `screens`/`routes` пишут состав асинхронно, отдельным `.then()` внутри
+  // своего `apply` — сама область плагина успокаивается раньше, чем придёт
+  // ответ `fetch`. Подставной `fetch` в этих тестах разрешается синхронно
+  // (`Promise.resolve`), но микрозадаче всё равно нужно несколько тиков.
   await Promise.resolve();
   await Promise.resolve();
   await Promise.resolve();
 }
 
 describe('screens: состав применяется по ответу демона', () => {
-  it('навигация собрана из вкладов экранов в объявленном порядке, а не в порядке ответа демона', async () => {
-    const restoreFetch = installFetch([
-      { id: 'screen-steps', title: 'Шаги', nav: { order: 2 }, params: [], path: '/steps' },
-      { id: 'screen-pipelines', title: 'Пайплайны', nav: { order: 1 }, params: [], path: '/pipelines' },
-      { id: 'screen-runs', title: 'Прогоны', nav: { order: 0 }, params: [], path: '/' },
-    ]);
+  it('навигация собрана из маршрутов в порядке nav.order, а не в порядке ответа демона', async () => {
+    const restoreFetch = installFetch(
+      [
+        { id: 'screen-steps', title: 'Шаги', params: [] },
+        { id: 'screen-pipelines', title: 'Пайплайны', params: [] },
+        { id: 'screen-runs', title: 'Прогоны', params: [] },
+      ],
+      [
+        { id: 'route-steps', path: '/steps', target: { kind: 'screen', id: 'screen-steps' }, nav: { order: 2 } },
+        { id: 'route-pipelines', path: '/pipelines', target: { kind: 'screen', id: 'screen-pipelines' }, nav: { order: 1 } },
+        { id: 'route-runs', path: '/', target: { kind: 'screen', id: 'screen-runs' }, nav: { order: 0 } },
+      ],
+    );
     const restoreWindow = installWindow('/');
     try {
       const kernel = freshKernel();
@@ -105,10 +123,16 @@ describe('screens: состав применяется по ответу дем�
   });
 
   it('экран открыт по ключу маршрута', async () => {
-    const restoreFetch = installFetch([
-      { id: 'screen-runs', title: 'Прогоны', nav: { order: 0 }, params: [], path: '/' },
-      { id: 'screen-backlog', title: 'Бэклог', nav: { order: 1 }, params: [], path: '/backlog' },
-    ]);
+    const restoreFetch = installFetch(
+      [
+        { id: 'screen-runs', title: 'Прогоны', params: [] },
+        { id: 'screen-backlog', title: 'Бэклог', params: [] },
+      ],
+      [
+        { id: 'route-runs', path: '/', target: { kind: 'screen', id: 'screen-runs' }, nav: { order: 0 } },
+        { id: 'route-backlog', path: '/backlog', target: { kind: 'screen', id: 'screen-backlog' }, nav: { order: 1 } },
+      ],
+    );
     const restoreWindow = installWindow('/backlog');
     try {
       const kernel = freshKernel();
@@ -124,8 +148,11 @@ describe('screens: состав применяется по ответу дем�
     }
   });
 
-  it('экрана, которого демон не назвал, нет ни в навигации, ни в слоте экранов', async () => {
-    const restoreFetch = installFetch([{ id: 'screen-runs', title: 'Прогоны', nav: { order: 0 }, params: [], path: '/' }]);
+  it('адрес, не разобранный ни одним маршрутом, показывает перечень маршрутов, а не экран по умолчанию', async () => {
+    const restoreFetch = installFetch(
+      [{ id: 'screen-runs', title: 'Прогоны', params: [] }],
+      [{ id: 'route-runs', path: '/', target: { kind: 'screen', id: 'screen-runs' }, nav: { order: 0 } }],
+    );
     const restoreWindow = installWindow('/settings');
     try {
       const kernel = freshKernel();
@@ -134,19 +161,25 @@ describe('screens: состав применяется по ответу дем�
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
       assert.doesNotMatch(markup, /Настройки/);
-      // Путь /settings не разобран ни одним действующим экраном — ведёт на умолчание (`screen-runs`).
-      assert.match(markup, /class="empty">Загрузка/);
+      // Путь /settings не разобран ни одним действующим маршрутом (`ui-routes», «Адрес без маршрута показывает перечень объявленных маршрутов»).
+      assert.match(markup, /Адрес не разобран/);
     } finally {
       restoreWindow();
       restoreFetch();
     }
   });
 
-  it('экран, названный демоном без доступной браузерной половины, показан с причиной', async () => {
-    const restoreFetch = installFetch([
-      { id: 'screen-runs', title: 'Прогоны', nav: { order: 0 }, params: [], path: '/' },
-      { id: 'screen-mystery', title: 'Загадка', nav: { order: 1 }, params: [], path: '/mystery' },
-    ]);
+  it('маршрут на экран без доступной браузерной половины показан с причиной', async () => {
+    const restoreFetch = installFetch(
+      [
+        { id: 'screen-runs', title: 'Прогоны', params: [] },
+        { id: 'screen-mystery', title: 'Загадка', params: [] },
+      ],
+      [
+        { id: 'route-runs', path: '/', target: { kind: 'screen', id: 'screen-runs' }, nav: { order: 0 } },
+        { id: 'route-mystery', path: '/mystery', target: { kind: 'screen', id: 'screen-mystery' }, nav: { order: 1 } },
+      ],
+    );
     const restoreWindow = installWindow('/mystery');
     try {
       const kernel = freshKernel();
@@ -163,14 +196,20 @@ describe('screens: состав применяется по ответу дем�
     }
   });
 
-  it('экран, чью строку заменил чужой модуль, показан заглушкой с причиной, а не встроенной половиной', async () => {
+  it('экран, чью строку заменил чужой модуль, показан причиной, а не встроенной половиной', async () => {
     // Признак `builtin: false` — единственное, чем страница отличает
     // заменённую строку от встроенной: `id` у замены тот же самый
     // (`ui-screens`, «встроенная половина MUST NOT применяться вовсе»).
-    const restoreFetch = installFetch([
-      { id: 'screen-runs', title: 'Прогоны', nav: { order: 0 }, params: [], path: '/' },
-      { id: 'screen-backlog', title: 'Бэклог (свой)', nav: { order: 1 }, params: [], path: '/backlog', builtin: false },
-    ]);
+    const restoreFetch = installFetch(
+      [
+        { id: 'screen-runs', title: 'Прогоны', params: [] },
+        { id: 'screen-backlog', title: 'Бэклог (свой)', params: [], builtin: false },
+      ],
+      [
+        { id: 'route-runs', path: '/', target: { kind: 'screen', id: 'screen-runs' }, nav: { order: 0 } },
+        { id: 'route-backlog', path: '/backlog', target: { kind: 'screen', id: 'screen-backlog' }, nav: { order: 1 } },
+      ],
+    );
     const restoreWindow = installWindow('/backlog');
     try {
       const kernel = freshKernel();
@@ -192,7 +231,8 @@ describe('screens: состав применяется по ответу дем�
 
   it('причина отказа сборки состава названа на странице', async () => {
     const restoreFetch = installFetch(
-      [{ id: 'screen-runs', title: 'Прогоны', nav: { order: 0 }, params: [], path: '/' }],
+      [{ id: 'screen-runs', title: 'Прогоны', params: [] }],
+      [{ id: 'route-runs', path: '/', target: { kind: 'screen', id: 'screen-runs' }, nav: { order: 0 } }],
       'Модуль плагина ./my-screen.mjs не загружается',
     );
     const restoreWindow = installWindow('/');
@@ -213,7 +253,10 @@ describe('screens: состав применяется по ответу дем�
   });
 
   it('состав без отказа сборки полосы не показывает', async () => {
-    const restoreFetch = installFetch([{ id: 'screen-runs', title: 'Прогоны', nav: { order: 0 }, params: [], path: '/' }]);
+    const restoreFetch = installFetch(
+      [{ id: 'screen-runs', title: 'Прогоны', params: [] }],
+      [{ id: 'route-runs', path: '/', target: { kind: 'screen', id: 'screen-runs' }, nav: { order: 0 } }],
+    );
     const restoreWindow = installWindow('/');
     try {
       const kernel = freshKernel();
@@ -229,7 +272,10 @@ describe('screens: состав применяется по ответу дем�
   });
 
   it('вклад с тем же id вместо встроенного даёт по тому же адресу другой экран', async () => {
-    const restoreFetch = installFetch([{ id: 'screen-runs', title: 'Прогоны', nav: { order: 0 }, params: [], path: '/' }]);
+    const restoreFetch = installFetch(
+      [{ id: 'screen-runs', title: 'Прогоны', params: [] }],
+      [{ id: 'route-runs', path: '/', target: { kind: 'screen', id: 'screen-runs' }, nav: { order: 0 } }],
+    );
     const restoreWindow = installWindow('/');
     try {
       const kernel = freshKernel();
@@ -245,6 +291,7 @@ describe('screens: состав применяется по ответу дем�
         name: 'impostor',
         apply: (ctx) => ctx.slots.contribute(SCREEN, { component: Impostor, key: 'screen-runs' }),
       });
+      await kernel.ctx.plugin({ name: 'routes', apply: routesPlugin });
       await kernel.ctx.plugin({ name: 'screens', apply: screensPlugin });
       await Promise.resolve();
       await Promise.resolve();
@@ -261,13 +308,14 @@ describe('screens: состав применяется по ответу дем�
   });
 });
 
-describe('screens: слот screen напрямую, вне каркаса', () => {
-  it('заглушка недоступного экрана несёт его id и объяснение', async () => {
-    const restoreFetch = installFetch([{ id: 'screen-riddle', title: 'Ребус', params: [], path: '/riddle' }]);
+describe('screens: вид цели route.target напрямую, вне маршрутизации', () => {
+  it('цель, известная составу, но без бандловой половины, показана причиной с id и объяснением', async () => {
+    const restoreFetch = installFetch([{ id: 'screen-riddle', title: 'Ребус', params: [] }], []);
     try {
       const kernel = createBrowserKernel({ createEventSource: fakeEventSources().factory });
       bindRouterKernel(kernel.ctx);
       await kernel.ctx.plugin({ name: 'shell', apply: shellPlugin });
+      await kernel.ctx.plugin({ name: 'routes', apply: routesPlugin });
       await kernel.ctx.plugin({ name: 'screens', apply: screensPlugin });
       await Promise.resolve();
       await Promise.resolve();
@@ -277,21 +325,63 @@ describe('screens: слот screen напрямую, вне каркаса', () 
       const markup = renderToStaticMarkup(
         <KernelContext.Provider value={kernel.ctx}>
           <Slot
-            of={SCREEN}
+            of={ROUTE_TARGET}
             props={{
+              target: { kind: 'screen', id: 'screen-riddle' },
+              pathParams: {},
+              targetParams: {},
               overview: undefined,
               navigate: () => {},
-              params: {},
               backlog: undefined,
               widgets: undefined,
               snapshot: undefined,
             }}
-            k="screen-riddle"
+            k="screen"
             default={null}
           />
         </KernelContext.Provider>,
       );
       assert.match(markup, /screen-riddle/);
+      assert.match(markup, /браузерная половина недоступна/);
+    } finally {
+      restoreFetch();
+    }
+  });
+
+  it('цель, которой нет в действующем составе, показана отдельной причиной', async () => {
+    const restoreFetch = installFetch([], []);
+    try {
+      const kernel = createBrowserKernel({ createEventSource: fakeEventSources().factory });
+      bindRouterKernel(kernel.ctx);
+      await kernel.ctx.plugin({ name: 'shell', apply: shellPlugin });
+      await kernel.ctx.plugin({ name: 'routes', apply: routesPlugin });
+      await kernel.ctx.plugin({ name: 'screens', apply: screensPlugin });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await kernel.settle();
+
+      const markup = renderToStaticMarkup(
+        <KernelContext.Provider value={kernel.ctx}>
+          <Slot
+            of={ROUTE_TARGET}
+            props={{
+              target: { kind: 'screen', id: 'screen-nowhere' },
+              pathParams: {},
+              targetParams: {},
+              overview: undefined,
+              navigate: () => {},
+              backlog: undefined,
+              widgets: undefined,
+              snapshot: undefined,
+            }}
+            k="screen"
+            default={null}
+          />
+        </KernelContext.Provider>,
+      );
+      assert.match(markup, /screen-nowhere/);
+      assert.match(markup, /не найден в действующем составе/);
     } finally {
       restoreFetch();
     }

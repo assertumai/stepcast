@@ -8,6 +8,8 @@ import { buildBacklog, type BacklogOverview } from './backlog.js';
 import { buildOverview, type Overview, type RunOverview } from './overview.js';
 import { buildProjectWidgets, buildWidgets, type WidgetsOverview } from './widgets.js';
 import { buildHomePlugins, type PluginsOverview } from './plugins.js';
+import { buildRouteTable, builtinRoutesPath, homeRoutesPath, projectRoutesPath, type RouteBuildResult } from './routesFile.js';
+import { StepcastError } from '../core/errors.js';
 import type { JournalProblem } from '../core/journal/reader.js';
 
 /**
@@ -43,6 +45,14 @@ export interface WatcherOptions {
    * (`src/ui/kernel.ts`).
    */
   readonly home?: string;
+  /** Корень проекта, в котором поднят демон — проектный слой таблицы маршрутов (`ui-daemon`). */
+  readonly projectRoot?: string;
+  /**
+   * Файл маршрутов поставки. У поставки он один (`builtinRoutesPath()`) и
+   * подменяется только проверкой сценария «Встроенный файл сломан»: сломать
+   * настоящий файл пакета ей негде.
+   */
+  readonly builtinRoutesPath?: string;
 }
 
 /** Строка лога демона: прогон, файл, место, обе версии и, при расхождении, лекарство. */
@@ -76,6 +86,15 @@ export interface Watcher {
    * `currentDaemonKernel` (`src/ui/kernel.ts`), решение записано там же.
    */
   currentPlugins(): PluginsOverview;
+  /**
+   * Действующая таблица маршрутов с источниками, без ожидания следующего
+   * опроса (`ui-routes`, Решение 10). Пересобирается только по сдвигу своей
+   * части отпечатка — правка `routes.yml` не заставляет перечитывать очередь,
+   * виджеты или прогоны, и наоборот.
+   */
+  currentRoutes(): RouteBuildResult;
+  /** Причина последнего отказа сборки таблицы маршрутов — действующей остаётся прежняя (`ui-routes`, «Отказ таблицы не гасит витрину»). */
+  currentRoutesError(): string | undefined;
   /** Подписаться на обновления. Возвращает функцию отписки. */
   subscribe(listener: (overview: Overview, backlog: BacklogOverview) => void): () => void;
   /** Проверить корень прогонов немедленно, не дожидаясь таймера. */
@@ -95,6 +114,7 @@ interface Fingerprint {
   readonly backlog: string;
   readonly widgets: string;
   readonly plugins: string;
+  readonly routes: string;
 }
 
 /**
@@ -133,14 +153,41 @@ interface Fingerprint {
  * `poll()` увидел бы неизменными `runs`/`backlog`/`widgets` и ушёл бы ранним
  * возвратом (ниже), даже когда на диске поменялся только каталог плагинов, —
  * и событие `plugins` не отправилось бы вовсе, пока не изменится что-то ещё.
+ *
+ * Часть `routes` — три файла слоя таблицы маршрутов, `mtime` и размер каждого
+ * (`ui-routes`, Решение 10): своя часть, а не слияние с `plugins`, — правка
+ * `routes.yml` не должна перечитывать каталог плагинов домашнего слоя, и
+ * наоборот. Отсутствие файла слоя — законное состояние, тем же приёмом, что и
+ * `backlog`.
  */
-function fingerprint(runsRoot: string, home: string): Fingerprint {
+function statPart(path: string): string {
+  try {
+    const stat = statSync(path);
+    return `${path}:${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return `${path}:-`;
+  }
+}
+
+function routesFingerprint(builtinPath: string, home: string, projectRoot: string | undefined): string {
+  const paths = [builtinPath, homeRoutesPath(home)];
+  if (projectRoot !== undefined) paths.push(projectRoutesPath(projectRoot));
+  return paths.map(statPart).join('|');
+}
+
+function fingerprint(
+  runsRoot: string,
+  home: string,
+  projectRoot: string | undefined,
+  builtinPath: string,
+): Fingerprint {
   const parts: string[] = [];
   const backlogParts: string[] = [];
   const widgetParts: string[] = [];
   const pluginParts = buildHomePlugins(home)
     .plugins.map((plugin) => `${plugin.id}:${plugin.version}`)
     .join(',');
+  const routes = routesFingerprint(builtinPath, home, projectRoot);
 
   try {
     const store = statSync(usageStorePath(runsRoot));
@@ -199,7 +246,13 @@ function fingerprint(runsRoot: string, home: string): Fingerprint {
     backlog: backlogParts.join('|'),
     widgets: widgetParts.join('|'),
     plugins: pluginParts,
+    routes,
   };
+}
+
+/** Отказ сборки в текст — та же форма, что и у прочих причин демона. */
+function reasonOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
@@ -214,7 +267,7 @@ function projectList(overview: Overview): string {
 }
 
 export function createWatcher(options: WatcherOptions): Watcher {
-  const { runsRoot } = options;
+  const { runsRoot, projectRoot } = options;
   const home = options.home ?? homedir();
   const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const listeners = new Set<(overview: Overview, backlog: BacklogOverview) => void>();
@@ -241,29 +294,64 @@ export function createWatcher(options: WatcherOptions): Watcher {
     }
   };
 
-  let mark = fingerprint(runsRoot, home);
+  const builtinPath = options.builtinRoutesPath ?? builtinRoutesPath();
+  const routeOptions = {
+    home,
+    ...(projectRoot === undefined ? {} : { projectRoot }),
+    ...(options.builtinRoutesPath === undefined ? {} : { builtinPath: options.builtinRoutesPath }),
+  };
+
+  let mark = fingerprint(runsRoot, home, projectRoot, builtinPath);
   let overview = buildOverview(runsRoot);
   let projects = projectList(overview);
   let backlog = buildBacklog(overview);
   let widgets = buildWidgets(runsRoot);
   let plugins = buildHomePlugins(home);
+  // Отказ первой сборки не имеет прежней таблицы, которой можно было бы
+  // остаться: пустая таблица с названной причиной — единственный разумный
+  // старт (`ui-routes`, «Отказ таблицы не гасит витрину» касается уже
+  // поднятой витрины, а не самого первого построения).
+  //
+  // Кроме одного случая: отказ самого файла поставки — отказ подъёма витрины
+  // (`ui-routes`, «Встроенный файл сломан»; design.md, Migration Plan). Без
+  // файла поставки маршрутов нет вовсе, и молчаливый подъём с пустой таблицей
+  // был бы неотличим от «пользователь отключил всё сам» — ровно та подмена
+  // причины, которой изменение не допускает.
+  let routes: RouteBuildResult = { table: [], entries: [], disabled: [] };
+  let routesError: string | undefined;
+  try {
+    routes = buildRouteTable(routeOptions);
+  } catch (error) {
+    if (error instanceof StepcastError && error.file === builtinPath) throw error;
+    routesError = reasonOf(error);
+  }
   reportProblems(overview);
 
   const poll = (): void => {
-    const next = fingerprint(runsRoot, home);
+    const next = fingerprint(runsRoot, home, projectRoot, builtinPath);
     if (
       next.runs === mark.runs &&
       next.backlog === mark.backlog &&
       next.widgets === mark.widgets &&
-      next.plugins === mark.plugins
+      next.plugins === mark.plugins &&
+      next.routes === mark.routes
     ) {
       return;
     }
     const backlogChanged = next.backlog !== mark.backlog;
     const widgetsChanged = next.widgets !== mark.widgets;
     const pluginsChanged = next.plugins !== mark.plugins;
+    const routesChanged = next.routes !== mark.routes;
+    const runsChanged = next.runs !== mark.runs;
     mark = next;
-    overview = buildOverview(runsRoot);
+    // Обзор пересобирается только по своей части отпечатка, тем же правилом,
+    // что и соседи ниже: правка `routes.yml` (как и каталога плагинов) не
+    // должна заставлять перечитывать прогоны корня (`ui-routes`, «Правка файла
+    // маршрутов применяется в открытой витрине»: «MUST NOT перечитывать ради
+    // неё очередь, виджеты и прогоны»).
+    if (runsChanged) {
+      overview = buildOverview(runsRoot);
+    }
     const nextProjects = projectList(overview);
     // Очереди перечитываются только когда изменились их файлы либо состав
     // проектов обзора (сценарий «Неизменный файл не перечитывается»): такт, на
@@ -285,6 +373,17 @@ export function createWatcher(options: WatcherOptions): Watcher {
     if (pluginsChanged) {
       plugins = buildHomePlugins(home);
     }
+    // Тем же приёмом — таблица маршрутов пересобирается только по своей части
+    // отпечатка (`ui-routes`, Решение 10). Отказ сборки не заменяет прежнюю
+    // действующую таблицу — остаётся последняя успешная, причина рядом с ней.
+    if (routesChanged) {
+      try {
+        routes = buildRouteTable(routeOptions);
+        routesError = undefined;
+      } catch (error) {
+        routesError = reasonOf(error);
+      }
+    }
     reportProblems(overview);
     for (const listener of listeners) listener(overview, backlog);
   };
@@ -298,6 +397,8 @@ export function createWatcher(options: WatcherOptions): Watcher {
     currentBacklog: () => backlog,
     currentWidgets: () => widgets,
     currentPlugins: () => plugins,
+    currentRoutes: () => routes,
+    currentRoutesError: () => routesError,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

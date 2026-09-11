@@ -139,36 +139,22 @@ describe('shell: слот screen по ключу маршрута', () => {
 });
 
 describe('shell: настоящий каркас на настоящем ядре', () => {
-  /** Объявление минимального экрана — те же поля, что несёт `ScreenDeclaration` (`src/ui/screens/declaration.ts`). */
-  const SAMPLE_DECLARATION = { id: 'screen-sample', title: 'Пример', nav: { order: 0 }, params: [], path: '/' };
+  /** Объявление минимального экрана — те же поля, что несёт `ScreenDeclaration` (`src/ui/screens/declaration.ts`): путь и место в меню больше не его поля (`ui-routes`). */
+  const SAMPLE_DECLARATION = { id: 'screen-sample', title: 'Пример', params: [] };
 
-  function sampleNavItem({ navigate }: { readonly navigate: (href: string) => void }): ReactElement {
-    return (
-      <a
-        className="nav-item"
-        href="/"
-        onClick={(event) => {
-          event.preventDefault();
-          navigate('/');
-        }}
-      >
-        {SAMPLE_DECLARATION.title}
-      </a>
-    );
-  }
+  /** Маршрут корня на этот экран, с местом в навигации — таблица маршрутов, а не поля объявления экрана. */
+  const SAMPLE_ROUTE = { id: 'route-sample', path: '/', target: { kind: 'screen', id: SAMPLE_DECLARATION.id }, nav: { order: 0 } };
 
   async function bootSampleScreen(kernel: BrowserKernel): Promise<void> {
     kernel.ctx.screens.set(new Map([[SAMPLE_DECLARATION.id, SAMPLE_DECLARATION]]), undefined);
+    kernel.ctx.routes.set([SAMPLE_ROUTE], undefined);
     await kernel.ctx.plugin({
       name: 'sample-screen',
-      apply: (ctx) => {
-        ctx.slots.contribute(NAV, { component: sampleNavItem, order: 0 });
-        ctx.slots.contribute(SCREEN, { component: Sample, key: SAMPLE_DECLARATION.id });
-      },
+      apply: (ctx) => ctx.slots.contribute(SCREEN, { component: Sample, key: SAMPLE_DECLARATION.id }),
     });
   }
 
-  it('отрисовывается целиком: пункт меню, экран по маршруту `/`, состояние связи', async () => {
+  it('отрисовывается целиком: пункт меню из маршрута, экран по маршруту `/`, состояние связи', async () => {
     const restore = installWindow('/');
     try {
       const kernel = freshKernel();
@@ -179,6 +165,8 @@ describe('shell: настоящий каркас на настоящем ядр�
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
       assert.match(markup, /class="shell"/);
+      // Название пункта меню — из заголовка цели: маршрут не объявил своё
+      // `nav.title` (`ui-routes`, «Название пункта берётся из заголовка цели»).
       assert.match(markup, /Пример/);
       assert.match(markup, /подключение к демону/);
       assert.match(markup, /id="sample"/);
@@ -187,20 +175,20 @@ describe('shell: настоящий каркас на настоящем ядр�
     }
   });
 
-  it('ключ маршрута, которого нет в слоте экранов, открывает экран по умолчанию действующего состава', async () => {
+  it('маршрут на экран, которого нет в действующем составе, показывает причину, а не пустое место', async () => {
     const restore = installWindow('/orphan');
     try {
       const kernel = freshKernel();
       await kernel.ctx.plugin({ name: 'shell', apply: shellPlugin });
-      // Состав называет два экрана, вклад в слот есть только у первого:
-      // адрес второго разбирается, но показывать по нему нечего — и это ведёт
-      // на экран по умолчанию (`ui-kernel`, «Ключа нет в слоте экранов»), а не
-      // на пустое место.
-      kernel.ctx.screens.set(
-        new Map([
-          [SAMPLE_DECLARATION.id, SAMPLE_DECLARATION],
-          ['screen-orphan', { id: 'screen-orphan', title: 'Сирота', nav: { order: 1 }, params: [], path: '/orphan' }],
-        ]),
+      kernel.ctx.screens.set(new Map([[SAMPLE_DECLARATION.id, SAMPLE_DECLARATION]]), undefined);
+      // Маршрут `/orphan` называет экран, которого состав не знает: диагностика
+      // называет причину на месте цели (`ui-routes`, «Цели нет в составе»), а
+      // не подменяет её каким-то другим экраном.
+      kernel.ctx.routes.set(
+        [
+          SAMPLE_ROUTE,
+          { id: 'route-orphan', path: '/orphan', target: { kind: 'screen', id: 'screen-orphan' }, nav: { order: 1 } },
+        ],
         undefined,
       );
       await kernel.ctx.plugin({
@@ -210,8 +198,9 @@ describe('shell: настоящий каркас на настоящем ядр�
       const diagnostics = await kernel.settle();
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
-      assert.match(markup, /id="sample"/);
-      assert.doesNotMatch(markup, /Экран не найден в действующем составе/);
+      assert.doesNotMatch(markup, /id="sample"/);
+      assert.match(markup, /screen-orphan/);
+      assert.match(markup, /не найден в действующем составе/);
     } finally {
       restore();
     }
@@ -231,6 +220,7 @@ describe('shell: настоящий каркас на настоящем ядр�
         return <span id="sample">sample</span>;
       };
       kernel.ctx.screens.set(new Map([[SAMPLE_DECLARATION.id, SAMPLE_DECLARATION]]), undefined);
+      kernel.ctx.routes.set([SAMPLE_ROUTE], undefined);
       await kernel.ctx.plugin({
         name: 'sample-screen',
         apply: (ctx) => ctx.slots.contribute(SCREEN, { component: Watching, key: SAMPLE_DECLARATION.id }),

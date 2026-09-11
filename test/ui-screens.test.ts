@@ -93,13 +93,14 @@ describe('ui-screens: состав экранов у демона', () => {
 
     const { code, json } = await fetchJson(server, '/api/screens');
     assert.equal(code, 200);
-    const screens = json.screens as Array<{ id: string; title: string; path: string; params: readonly string[] }>;
+    const screens = json.screens as Array<{ id: string; title: string; params: readonly string[] }>;
     const ids = screens.map((screen) => screen.id).sort();
     assert.deepEqual(ids, [
       'screen-agents',
       'screen-backlog',
       'screen-cleanup',
       'screen-pipelines',
+      'screen-routes',
       'screen-run',
       'screen-runs',
       'screen-settings',
@@ -150,7 +151,7 @@ describe('ui-screens: состав экранов у демона', () => {
         name: 'user-usage',
         inject: ['screens', 'api'],
         apply(ctx) {
-          ctx.screens.register({ id: 'screen-usage', title: 'Расход (свой)', params: [], path: '/usage' });
+          ctx.screens.register({ id: 'screen-usage', title: 'Расход (свой)', params: [] });
           ctx.api.register('GET', '/api/usage', (req, res) => {
             res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ custom: true }));
@@ -183,7 +184,7 @@ describe('ui-screens: состав экранов у демона', () => {
         name: '${name}',
         inject: ['screens'],
         apply(ctx) {
-          ctx.screens.register({ id: 'screen-twin', title: 'Двойник', params: [], path: '/twin' });
+          ctx.screens.register({ id: 'screen-twin', title: 'Двойник', params: [] });
         },
       };
       `;
@@ -332,7 +333,7 @@ describe('ui-screens: строка каркаса снята патчем', () =
     // нет. Без разбора этого случая первое же обращение к составу дало бы
     // `TypeError` мимо всякого разбора отказа и уронило бы демон.
     const rows = ['ui-shell', 'screen-runs', 'screen-run', 'screen-pipelines', 'screen-steps', 'screen-widgets',
-      'screen-backlog', 'screen-usage', 'screen-cleanup', 'screen-agents', 'screen-settings'];
+      'screen-backlog', 'screen-usage', 'screen-cleanup', 'screen-agents', 'screen-settings', 'screen-routes'];
     writePatch(
       home,
       `version: 1\nkind: plugins-patch\nplugins:\n${rows

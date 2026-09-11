@@ -608,3 +608,20 @@ pre {
 .widget-card-error { border-left: 3px solid var(--status-failed); padding-left: .6rem; }
 .widget-card-title { font-weight: 650; color: var(--status-failed); margin-bottom: .3rem; }
 .widget-card-detail { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: .84rem; margin: .3rem 0 0; }
+
+/*
+ * Маршруты витрины (`ui-routes`). Не-ссылка с названной причиной — один вид
+ * на всю витрину (`ui/src/routeLink.tsx`): место ссылки остаётся, причина
+ * набрана мелким и приглушённым, чтобы не спорить с содержимым строки.
+ */
+.missing-link { display: inline-block; }
+.missing-link-reason { display: block; font-size: .78rem; color: var(--muted-foreground); }
+.nav-item-disabled { display: block; padding: .4rem .6rem; color: var(--muted-foreground); }
+.routes-notice h1 { margin-bottom: .3rem; }
+.routes-listing-error { color: var(--status-failed); }
+.routes-table { width: 100%; border-collapse: collapse; }
+.routes-table th, .routes-table td { text-align: left; vertical-align: top; padding: .3rem .5rem; border-bottom: 1px solid var(--border); }
+.routes-sources { list-style: none; margin: 0; padding: 0; font-size: .8rem; }
+.routes-source-field { font-weight: 650; }
+.routes-row-disabled td { opacity: .6; }
+.routes-form { display: flex; flex-direction: column; gap: .4rem; max-width: 32rem; margin-top: 1rem; }

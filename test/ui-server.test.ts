@@ -26,7 +26,7 @@ import {
   resolveWithCachedKernel,
   type KernelCache,
 } from '../src/ui/pipelines.js';
-import { hrefFor, type RouteScreen } from '../src/ui/routes.js';
+import { hrefFor, type RouteTable } from '../src/ui/routes.js';
 import { declaration as runDeclaration } from '../src/ui/screens/run/declaration.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
@@ -61,6 +61,7 @@ async function startServer(
     log?: (line: string) => void;
     config?: Config;
     home?: string;
+    projectRoot?: string;
     dashboardFile?: string;
     kernelCache?: KernelCache;
   },
@@ -70,8 +71,11 @@ async function startServer(
   return server;
 }
 
-function startWatcher(t: TestContext, runsRoot: string, intervalMs: number): Watcher {
-  const watcher = createWatcher({ runsRoot, intervalMs });
+function startWatcher(t: TestContext, runsRoot: string, intervalMs: number, home?: string): Watcher {
+  // Домашний каталог называется там, где проверка трогает файлы слоёв
+  // (маршруты, плагины): иначе наблюдатель отпечатывал бы настоящий
+  // `~/.stepcast` того, кто запустил проверку.
+  const watcher = createWatcher({ runsRoot, intervalMs, ...(home === undefined ? {} : { home }) });
   t.after(() => watcher.dispose());
   return watcher;
 }
@@ -131,11 +135,15 @@ function address(key: string, runId: string): string {
   return encodeURIComponent(`${key}/${runId}`);
 }
 
-/** Адрес страницы прогона: та же таблица из одного экрана, которой в браузере пользуется `hrefFor`. */
-const RUN_SCREEN_TABLE: ReadonlyMap<string, RouteScreen> = new Map([[runDeclaration.id, runDeclaration]]);
+/** Адрес страницы прогона: тот же встроенный маршрут, которым в браузере пользуется `hrefFor`. */
+const RUN_ROUTE_TABLE: RouteTable = [
+  { id: 'screen-run', path: '/runs/:projectKey/:runId', target: { kind: 'screen', id: runDeclaration.id } },
+];
 
 function runHref(projectKey: string, runId: string): string {
-  return hrefFor(runDeclaration.id, { projectKey, runId }, RUN_SCREEN_TABLE);
+  const href = hrefFor({ kind: 'screen', id: runDeclaration.id }, { projectKey, runId }, RUN_ROUTE_TABLE);
+  assert.ok(href !== undefined, 'маршрут страницы прогона обязан быть в таблице');
+  return href;
 }
 
 function initGitRepo(dir: string): void {
@@ -500,8 +508,12 @@ describe('ui-dashboard: HTTP-витрина', () => {
     const stream = openStream(t, server, '/api/events');
     await settle();
 
-    // Каждый кадр несёт обзор, очередь, состав виджетов и состав плагинов — тем же потоком, той же подпиской.
-    assert.deepEqual(stream.events.map((event) => event.event), ['overview', 'backlog', 'widgets', 'plugins']);
+    // Каждый кадр несёт обзор, очередь, состав виджетов, таблицу маршрутов,
+    // состав плагинов и состав экранов — тем же потоком, той же подпиской.
+    assert.deepEqual(
+      stream.events.map((event) => event.event),
+      ['overview', 'backlog', 'widgets', 'routes', 'plugins', 'screens'],
+    );
     assert.deepEqual(pick(stream.events[0]?.data, 'projects'), []);
 
     seedRun(runsRoot, projectRoot, { runId: 'новый' });
@@ -521,17 +533,18 @@ describe('ui-dashboard: HTTP-витрина', () => {
     const stream = openStream(t, server, `/api/events?run=${address(key, 'a')}`);
     await settle();
 
-    // Состав браузерных строк отстаёт от прочих событий такта: он спрашивается
-    // у ядра демона (`activePlugins`, `src/ui/server.ts`), а это `await` —
-    // отсюда он последним, а не между `widgets` и `run`. Порядок событий
-    // клиенту безразличен (каждое ложится в своё поле снимка `live`), но
-    // перечень обмена проверяется целиком, чтобы пропажа события не осталась
-    // незамеченной.
+    // Состав браузерных строк и состав экранов отстают от прочих событий
+    // такта: оба спрашиваются у ядра демона (`activePlugins`/`activeScreens`,
+    // `src/ui/server.ts`), а это `await` — отсюда они последними, а не между
+    // `widgets` и `run`. Таблица маршрутов — синхронно из наблюдателя, поэтому
+    // идёт прежде `run`. Порядок событий клиенту безразличен (каждое ложится в
+    // своё поле снимка `live`), но перечень обмена проверяется целиком, чтобы
+    // пропажа события не осталась незамеченной.
     assert.deepEqual(
       stream.events.map((item) => item.event),
-      ['overview', 'backlog', 'widgets', 'run', 'plugins'],
+      ['overview', 'backlog', 'widgets', 'routes', 'run', 'plugins', 'screens'],
     );
-    assert.equal(pick(stream.events[3]?.data, 'runId'), 'a');
+    assert.equal(pick(stream.events[4]?.data, 'runId'), 'a');
   });
 
   // Сценарий: «Закрытая вкладка не роняет демон»
@@ -609,7 +622,7 @@ describe('ui-dashboard: маршрут и поток очереди', () => {
 
     assert.deepEqual(
       stream.events.map((event) => event.event),
-      ['overview', 'backlog', 'widgets', 'plugins'],
+      ['overview', 'backlog', 'widgets', 'routes', 'plugins', 'screens'],
     );
     assert.deepEqual(pick(stream.events[1]?.data, 'projects'), []);
 
@@ -3653,7 +3666,7 @@ describe('ui-dashboard: событие widgets в потоке /api/events', () 
     await settle();
     assert.deepEqual(
       stream.events.map((event) => event.event),
-      ['overview', 'backlog', 'widgets', 'plugins'],
+      ['overview', 'backlog', 'widgets', 'routes', 'plugins', 'screens'],
     );
     assert.deepEqual(pick(stream.events[2]?.data, 'projects'), [{ projectKey: projectKey(projectRoot), widgets: [] }]);
 
@@ -3890,5 +3903,192 @@ describe('ui-dashboard: жизненный цикл компилятора ви�
       `в логе демона обязана быть строка об отказе: ${JSON.stringify(result.lines)}`,
     );
     assert.equal(result.overviewCode, 200, 'остальные экраны витрины отвечают как прежде');
+  });
+});
+
+describe('ui-routes: экран «Маршруты»', () => {
+  it('GET /api/routes отдаёт действующую таблицу с источником каждого поля', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const server = await startServer(t, { runsRoot });
+
+    const { code, json } = await fetchJson(server, '/api/routes');
+    assert.equal(code, 200);
+    const routes = json.routes as Array<{ id: string; path: string; sources: { path: { layer: string; file: string } } }>;
+    const runsEntry = routes.find((route) => route.id === 'screen-runs');
+    assert.equal(runsEntry?.path, '/');
+    assert.equal(runsEntry?.sources.path.layer, 'builtin');
+  });
+
+  it('POST /api/routes пишет строку в домашний слой, встроенный файл не переписывается', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+
+    const newRoute = { id: 'my-route', path: '/mine', target: { screen: 'screen-runs' } };
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/routes',
+      body: JSON.stringify({ layer: 'home', route: newRoute }),
+    });
+    assert.equal(written.code, 200);
+
+    const after = await fetchJson(server, '/api/routes');
+    const mine = (after.json.routes as Array<{ id: string; path: string; sources: { path: { layer: string } } }>).find(
+      (route) => route.id === 'my-route',
+    );
+    assert.equal(mine?.path, '/mine');
+    assert.equal(mine?.sources.path.layer, 'home');
+
+    const builtinContent = readFileSync(join(process.cwd(), 'src', 'builtin', 'routes.yml'), 'utf8');
+    assert.doesNotMatch(builtinContent, /my-route/, 'встроенный файл поставки не должен быть переписан');
+  });
+
+  it('POST /api/routes на проектный слой без известного корня проекта отказывает', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+
+    const newRoute = { id: 'my-route', path: '/mine', target: { screen: 'screen-runs' } };
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/routes',
+      body: JSON.stringify({ layer: 'project', route: newRoute }),
+    });
+    assert.equal(written.code, 400);
+  });
+
+  it('POST /api/routes в проектный слой поднятого в каталоге проекта демона пишет туда', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home, projectRoot });
+
+    const newRoute = { id: 'my-route', path: '/mine', target: { screen: 'screen-runs' } };
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/routes',
+      body: JSON.stringify({ layer: 'project', route: newRoute }),
+    });
+    assert.equal(written.code, 200);
+    assert.match(readFileSync(join(projectRoot, '.stepcast', 'routes.yml'), 'utf8'), /my-route/);
+  });
+
+  it('POST /api/routes в файл, который не разбирается, отказывает и не переписывает файл', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    const brokenPath = join(home, '.stepcast', 'routes.yml');
+    const brokenContent = 'routes: [{ id: bad, path: 7 }]\n';
+    writeFileSync(brokenPath, brokenContent);
+    const server = await startServer(t, { runsRoot, home });
+
+    const newRoute = { id: 'my-route', path: '/mine', target: { screen: 'screen-runs' } };
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/routes',
+      body: JSON.stringify({ layer: 'home', route: newRoute }),
+    });
+    assert.equal(written.code, 400);
+    assert.equal(readFileSync(brokenPath, 'utf8'), brokenContent);
+  });
+
+  it('такт без правки маршрутов и состава не повторяет события routes и screens', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    const watcher = startWatcher(t, runsRoot, 20, home);
+    const server = await startServer(t, { runsRoot, home, watcher });
+
+    const stream = openStream(t, server, '/api/events');
+    await settle();
+
+    // Такты идут: появление прогона будит наблюдателя, и обзор приходит
+    // снова. Ни таблица маршрутов, ни состав экранов при этом не менялись —
+    // значит, и повторяться не должны (`ui-daemon`, «Неизменное не
+    // пересылается»).
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    await settle(300);
+
+    const overviews = stream.events.filter((event) => event.event === 'overview').length;
+    assert.ok(overviews > 1, 'такты обязаны идти, иначе проверка ничего не сторожит');
+    assert.equal(stream.events.filter((event) => event.event === 'routes').length, 1);
+    assert.equal(stream.events.filter((event) => event.event === 'screens').length, 1);
+  });
+
+  it('правка файла маршрутов при открытом потоке присылает новую таблицу событием routes', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    const watcher = startWatcher(t, runsRoot, 20, home);
+    const server = await startServer(t, { runsRoot, home, watcher });
+
+    const stream = openStream(t, server, '/api/events');
+    await settle();
+
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    writeFileSync(join(home, '.stepcast', 'routes.yml'), 'routes:\n  - id: screen-cleanup\n    nav:\n      title: Чистка\n');
+    await settle(300);
+
+    const routeEvents = stream.events.filter((event) => event.event === 'routes');
+    assert.equal(routeEvents.length, 2, 'правка обязана дойти до открытой вкладки вторым событием');
+    const routes = (routeEvents.at(-1)?.data.routes ?? []) as Array<{ id: string; nav?: { title?: string } }>;
+    assert.equal(routes.find((route) => route.id === 'screen-cleanup')?.nav?.title, 'Чистка');
+  });
+
+  it('GET /api/routes отдаёт отключённые строки отдельно от действующих', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    writeFileSync(join(home, '.stepcast', 'routes.yml'), 'routes:\n  - id: screen-agents\n    enabled: false\n');
+    const server = await startServer(t, { runsRoot, home });
+
+    const { json } = await fetchJson(server, '/api/routes');
+    const routes = json.routes as Array<{ id: string }>;
+    assert.equal(routes.some((route) => route.id === 'screen-agents'), false, 'отключённый маршрут не действует');
+    const disabled = json.disabled as Array<{ id: string; path: string; disabledBy: { layer: string } }>;
+    // Перечень отключённых — вход обратно: без него включить маршрут можно
+    // было бы только правкой файла руками.
+    assert.equal(disabled.find((route) => route.id === 'screen-agents')?.path, '/agents');
+    assert.equal(disabled.find((route) => route.id === 'screen-agents')?.disabledBy.layer, 'home');
+  });
+
+  it('отказ сборки таблицы при работающем демоне не гасит прежнюю: она отдаётся вместе с причиной', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
+    t.after(() => watcher.dispose());
+    const server = await startServer(t, { runsRoot, home, watcher });
+
+    const before = await fetchJson(server, '/api/routes');
+    assert.equal(before.json.buildError, undefined);
+
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    writeFileSync(join(home, '.stepcast', 'routes.yml'), 'routes:\n  - id: bad\n    bogus: 1\n');
+    watcher.poll();
+
+    const after = await fetchJson(server, '/api/routes');
+    const routes = after.json.routes as Array<{ id: string; path: string }>;
+    assert.equal(routes.find((route) => route.id === 'screen-runs')?.path, '/', 'прежние маршруты продолжают действовать');
+    assert.match(String(after.json.buildError), /bogus/, 'причина отказа едет рядом с прежней таблицей');
+  });
+
+  it('сохраняет комментарии и другие строки файла при записи', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    const path = join(home, '.stepcast', 'routes.yml');
+    writeFileSync(path, '# мои маршруты\nroutes:\n  - id: screen-cleanup # правил вручную\n    enabled: false\n');
+    const server = await startServer(t, { runsRoot, home });
+
+    const newRoute = { id: 'my-route', path: '/mine', target: { screen: 'screen-runs' } };
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/routes',
+      body: JSON.stringify({ layer: 'home', route: newRoute }),
+    });
+    assert.equal(written.code, 200);
+
+    const text = readFileSync(path, 'utf8');
+    assert.match(text, /# мои маршруты/);
+    assert.match(text, /# правил вручную/);
+    assert.match(text, /enabled: false/);
+    assert.match(text, /my-route/);
   });
 });

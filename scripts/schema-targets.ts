@@ -4,6 +4,7 @@ import { PipelineDocumentSchema, JobDocumentSchema, StepManifestSchema } from '.
 import { PluginsPatchDocumentSchema, RawConfigSchema } from '../src/core/config/schema.js';
 import { PluginManifestSchema } from '../src/core/plugins/manifest.js';
 import { BacklogItemSchema, BacklogSlotsResponseSchema } from '../src/core/backlog/schema.js';
+import { RouteDocumentSchema } from '../src/ui/routesFile.js';
 
 /**
  * Перечень целей генерации JSON Schema — общий для скрипта печати
@@ -72,5 +73,11 @@ export const SCHEMA_TARGETS: readonly SchemaTarget[] = [
     schema: BacklogSlotsResponseSchema,
     title: 'stepcast backlog pick --lanes',
     io: 'output',
+  },
+  {
+    file: 'schema/routes.schema.json',
+    schema: RouteDocumentSchema,
+    title: 'stepcast routes',
+    io: 'input',
   },
 ];

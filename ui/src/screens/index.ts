@@ -4,6 +4,7 @@ import agents from './agents';
 import backlog from './backlog';
 import cleanup from './cleanup';
 import pipelines from './pipelines';
+import routes from './routes';
 import run from './run';
 import runs from './runs';
 import settings from './settings';
@@ -31,4 +32,5 @@ export const BUILTIN_SCREENS: Readonly<Record<string, ScreenPlugin>> = {
   'screen-cleanup': cleanup,
   'screen-agents': agents,
   'screen-settings': settings,
+  'screen-routes': routes,
 };

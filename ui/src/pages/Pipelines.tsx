@@ -11,7 +11,8 @@ import {
 } from '../api';
 import { fmtTime } from '../format';
 import { JobGraph } from '../components/JobGraph';
-import { runHref } from '../screens/run';
+import { TargetLink } from '../routeLink';
+import { RUN_TARGET } from '../screens/run';
 
 /**
  * Пайплайны проектов — их устройство, а не их прогоны.
@@ -227,16 +228,15 @@ function PipelineCard({
             {last === undefined ? null : (
               <>
                 {' · последний '}
-                <a
-                  href={runHref(pipeline.projectKey, last.runId)}
-                  onClick={(event) => {
-                    if (event.metaKey || event.ctrlKey || event.button !== 0) return;
-                    event.preventDefault();
-                    navigate(runHref(pipeline.projectKey, last.runId));
-                  }}
+                {/* Маршрут страницы прогона отключён — не-ссылка с названной
+                    причиной, общий вид витрины (`ui-routes`, Решение 8). */}
+                <TargetLink
+                  target={RUN_TARGET}
+                  params={{ projectKey: pipeline.projectKey, runId: last.runId }}
+                  navigate={navigate}
                 >
                   <span className="run-id">{last.shortId}</span>
-                </a>{' '}
+                </TargetLink>{' '}
                 <span className={`badge ${last.status ?? ''}`}>{last.status ?? 'неизвестно'}</span>{' '}
                 {fmtTime(last.startedAt)}
               </>

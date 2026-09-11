@@ -11,6 +11,7 @@ import { WIDGET_RUNTIME_GLOBAL } from '../../src/ui/sharedModules';
 import { createBrowserKernel } from './kernel';
 import { bindRouterKernel } from './router';
 import { KernelRoot } from './slots.tsx';
+import routes from './plugins/routes';
 import screens from './plugins/screens';
 import shell from './plugins/shell';
 import './styles.css';
@@ -57,6 +58,7 @@ import './styles.css';
 const kernel = createBrowserKernel();
 bindRouterKernel(kernel.ctx);
 kernel.ctx.plugin(shell);
+kernel.ctx.plugin(routes);
 kernel.ctx.plugin(screens);
 
 const container = document.getElementById('root');

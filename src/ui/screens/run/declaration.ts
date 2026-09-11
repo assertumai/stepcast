@@ -5,5 +5,4 @@ export const declaration: ScreenDeclaration = {
   id: 'screen-run',
   title: 'Прогон',
   params: ['projectKey', 'runId'],
-  path: '/runs/:projectKey/:runId',
 };

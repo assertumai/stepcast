@@ -1,14 +1,16 @@
 import { createElement, type ComponentType, type ReactElement } from 'react';
 
 import type { BacklogOverview, Overview, RunSnapshot, WidgetsOverview } from './api';
-import type { ParsedRoute } from '../../src/ui/routes.ts';
-// Дополнение типов контекста: `declare module 'cordis'` в `services/screens.ts`
-// и `services/live.ts` типизирует `ctx.screens` и `ctx.live` (реестр слотов —
-// в `slots.ts`, откуда эта поверхность и так берёт `slot()`). Импорт только
-// ради побочного эффекта декларации — поверхность не отдаёт сами сервисы
-// (design.md, Решение 5): плагин получает типизированный `ctx`, а не доступ к
-// `LiveService`/`ScreensService`.
+import type { RouteDefinition, RouteTarget } from '../../src/ui/routes.ts';
+// Дополнение типов контекста: `declare module 'cordis'` в `services/screens.ts`,
+// `services/routes.ts` и `services/live.ts` типизирует `ctx.screens`,
+// `ctx.routes` и `ctx.live` (реестр слотов — в `slots.ts`, откуда эта
+// поверхность и так берёт `slot()`). Импорт только ради побочного эффекта
+// декларации — поверхность не отдаёт сами сервисы (design.md, Решение 5):
+// плагин получает типизированный `ctx`, а не доступ к
+// `LiveService`/`ScreensService`/`RoutesService`.
 import type {} from './services/screens';
+import type {} from './services/routes';
 import type {} from './services/live';
 import {
   slot,
@@ -42,18 +44,47 @@ export type { AnySlotDescriptor, ChainLinkProps, Contribution, SlotDescriptor, S
 /** Слот, которому некуда встать, кроме как на сам корень (design.md `cordis-kernel-browser`, Решение 7). */
 export const ROOT = slot<Record<string, never>, 'single'>('root', 'single');
 
-/** Пункт навигации — по маршруту (design.md `cordis-kernel-browser`). */
-export const NAV = slot<{ readonly route: ParsedRoute; readonly navigate: (href: string) => void }, 'list'>(
-  'nav',
-  'list',
-);
+/**
+ * Пункт навигации — ключ слота теперь `id` маршрута, а не список
+ * (`ui-routes`, design.md Решение 13): каркас рисует общий вид по `nav`
+ * каждого маршрута действующей таблицы, а экран, желающий свой вид (значок,
+ * счётчик), вносит вклад по этому же ключу и заменяет общий вид только для
+ * своего маршрута. `active` — вычислен каркасом по `nav.active_for`, а не
+ * знанием одного экрана о другом.
+ */
+export interface NavItemProps {
+  readonly route: RouteDefinition;
+  readonly title: string;
+  readonly href: string | undefined;
+  readonly active: boolean;
+  readonly navigate: (href: string) => void;
+}
 
-/** Экран по ключу маршрута — данные витрины раздаются props, а не через контекст (design.md `cordis-kernel-browser`, Решение 10). */
+export const NAV = slot<NavItemProps, 'keyed'>('nav', 'keyed');
+
+/** Данные витрины, общие экрану и хосту виджета — раздаются props, а не через контекст (design.md `cordis-kernel-browser`, Решение 10). */
+export interface LiveDataProps {
+  readonly overview: Overview | undefined;
+  readonly navigate: (href: string) => void;
+  readonly backlog: BacklogOverview | undefined;
+  readonly widgets: WidgetsOverview | undefined;
+  readonly snapshot: RunSnapshot | undefined;
+}
+
+/**
+ * Экран по ключу маршрута — данные витрины раздаются props, а не через
+ * контекст (design.md `cordis-kernel-browser`, Решение 10).
+ *
+ * Тип раскрыт заново, а не через пересечение с `LiveDataProps`: тип-пересечение
+ * не проходит проверку ограничения `Props extends Record<string, unknown>`
+ * дженерика `elementSlotComponent` (`examples/plugins/element`) — там, где
+ * плоский литерал объекта проходит её сам.
+ */
 export const SCREEN = slot<
   {
     readonly overview: Overview | undefined;
     readonly navigate: (href: string) => void;
-    /** Параметры адреса, разобранные по объявлению экрана (`ui-screens`, «Параметры доезжают до экрана»). */
+    /** Параметры адреса, разобранные по шаблону пути маршрута (`ui-screens`, «Параметры доезжают до экрана»). */
     readonly params: Readonly<Record<string, string>>;
     readonly backlog: BacklogOverview | undefined;
     readonly widgets: WidgetsOverview | undefined;
@@ -61,6 +92,32 @@ export const SCREEN = slot<
   },
   'keyed'
 >('screen', 'keyed');
+
+/**
+ * Ключ, которым экран «Маршруты» вносит перечень маршрутов на место экрана —
+ * тем же слотом `SCREEN`, что и любой другой экран (`ui-routes`, design.md
+ * Решение 12). Каркас показывает его, когда открытый адрес не разобран ни
+ * одним маршрутом.
+ */
+export const ROUTES_LISTING_KEY = '__routes-listing__';
+
+/**
+ * Вид цели маршрута — ключ слота — `target.kind` (`ui-routes`, design.md
+ * Решение 5): строка, приносящая новый вид цели (дашборд —
+ * `dashboards-as-files`), вносит сюда свой вклад, не меняя ни каркаса, ни
+ * разбора адреса. Маршрут на вид, которого действующий состав не знает, —
+ * ключ без вкладчика, и `default` вызова `<Slot of={ROUTE_TARGET}>` называет
+ * причину.
+ */
+export interface RouteTargetSlotProps extends LiveDataProps {
+  readonly target: RouteTarget;
+  /** Значения параметров пути, снятые с адреса. */
+  readonly pathParams: Readonly<Record<string, string>>;
+  /** Параметры цели маршрута с применёнными подстановками `${params.<имя>}`. */
+  readonly targetParams: Readonly<Record<string, string>>;
+}
+
+export const ROUTE_TARGET = slot<RouteTargetSlotProps, 'keyed'>('route.target', 'keyed');
 
 /** Обрамление экрана — цепочка звеньев вокруг `SCREEN` (design.md `cordis-kernel-browser`). */
 export const SCREEN_FRAME = slot<Record<string, never>, 'chain'>('screen.frame', 'chain');

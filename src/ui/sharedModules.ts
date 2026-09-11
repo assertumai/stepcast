@@ -157,6 +157,8 @@ export const SHARED_MODULES: Readonly<Record<SharedModuleSpecifier, SharedModule
       'NAV',
       'SCREEN',
       'SCREEN_FRAME',
+      'ROUTE_TARGET',
+      'ROUTES_LISTING_KEY',
       'elementSlotComponent',
     ],
   },

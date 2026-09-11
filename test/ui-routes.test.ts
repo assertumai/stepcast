@@ -2,116 +2,111 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  hrefFor,
+  hrefForRoute,
   isApiPath,
   isPluginPath,
+  isReservedPath,
+  isSharedPath,
   isWidgetPath,
-  hrefFor,
+  normalizedTemplate,
   parseRoute,
+  paramPlaceholderNames,
   pluginModuleHref,
+  substituteParams,
+  templateParamNames,
   widgetModuleHref,
-  type RouteScreen,
+  type RouteDefinition,
+  type RouteTable,
 } from '../src/ui/routes.js';
-import { declaration as agents } from '../src/ui/screens/agents/declaration.js';
-import { declaration as backlog } from '../src/ui/screens/backlog/declaration.js';
-import { declaration as cleanup } from '../src/ui/screens/cleanup/declaration.js';
-import { declaration as pipelines } from '../src/ui/screens/pipelines/declaration.js';
-import { declaration as run } from '../src/ui/screens/run/declaration.js';
-import { declaration as runs } from '../src/ui/screens/runs/declaration.js';
-import { declaration as settings } from '../src/ui/screens/settings/declaration.js';
-import { declaration as steps } from '../src/ui/screens/steps/declaration.js';
-import { declaration as usage } from '../src/ui/screens/usage/declaration.js';
-import { declaration as widgets } from '../src/ui/screens/widgets/declaration.js';
 
-/** Таблица всех десяти встроенных экранов — то, что демон и витрина держат в действующем составе. */
-const ALL_SCREENS: ReadonlyMap<string, RouteScreen> = new Map(
-  [runs, run, pipelines, steps, widgets, backlog, usage, cleanup, agents, settings].map((screen) => [
-    screen.id,
-    screen,
-  ]),
-);
+/** Небольшая таблица маршрутов, покрывающая специфичность, необязательный сегмент и перечень значений. */
+const TABLE: RouteTable = [
+  { id: 'runs', path: '/', target: { kind: 'screen', id: 'screen-runs' } },
+  { id: 'run', path: '/runs/:projectKey/:runId', target: { kind: 'screen', id: 'screen-run' } },
+  { id: 'runs-new', path: '/runs/new', target: { kind: 'screen', id: 'screen-runs-new' } },
+  {
+    id: 'usage',
+    path: '/usage/:period?',
+    target: { kind: 'screen', id: 'screen-usage' },
+    values: { period: ['7d', '30d', '90d', 'all'] },
+  },
+  { id: 'widget-page', path: '/w/:id', target: { kind: 'widget', id: 'proj/clock' }, params: { note: '${params.id}' } },
+];
 
-describe('ui-routes: разбор адресов по таблице экранов', () => {
+describe('ui-routes: разбор адреса по таблице маршрутов', () => {
   it('строит и разбирает адрес прогона кругом', () => {
-    // Ключ проекта и id прогона — сегменты раскладки журнала: слэш, как и в
-    // адресе API (`isSafeSegment`), в них недопустим, а вот пробел, `&` и `%`
-    // — как раз то, ради чего экранирование нужно.
     const projectKey = 'проект a b';
     const runId = 'ид с пробелом & знак%';
-    const href = hrefFor(run.id, { projectKey, runId }, ALL_SCREENS);
-
-    assert.deepEqual(parseRoute(href, ALL_SCREENS), { screenId: run.id, params: { projectKey, runId } });
+    const href = hrefFor({ kind: 'screen', id: 'screen-run' }, { projectKey, runId }, TABLE);
+    assert.ok(href !== undefined);
+    const matched = parseRoute(href!, TABLE);
+    assert.deepEqual(matched?.pathParams, { projectKey, runId });
+    assert.equal(matched?.route.id, 'run');
   });
 
-  it('неизвестный путь ведёт на экран с наименьшим местом в навигации', () => {
-    assert.deepEqual(parseRoute('/что-то-ещё', ALL_SCREENS), { screenId: runs.id, params: {} });
-    assert.deepEqual(parseRoute('/', ALL_SCREENS), { screenId: runs.id, params: {} });
+  it('статический сегмент побеждает параметр независимо от порядка строк', () => {
+    const dynamic: RouteDefinition = { id: 'run-by-id', path: '/runs/:id', target: { kind: 'screen', id: 'screen-run-by-id' } };
+    const staticRoute: RouteDefinition = { id: 'runs-new', path: '/runs/new', target: { kind: 'screen', id: 'screen-runs-new' } };
+    assert.equal(parseRoute('/runs/new', [dynamic, staticRoute])?.route.id, 'runs-new');
+    assert.equal(parseRoute('/runs/new', [staticRoute, dynamic])?.route.id, 'runs-new');
   });
 
-  it('/runs/<проект> без идентификатора прогона не признаётся адресом прогона', () => {
-    assert.deepEqual(parseRoute('/runs/a', ALL_SCREENS), { screenId: runs.id, params: {} });
+  it('необязательный последний сегмент разбирается и без значения, и со значением', () => {
+    assert.deepEqual(parseRoute('/usage', TABLE)?.pathParams, {});
+    assert.deepEqual(parseRoute('/usage/7d', TABLE)?.pathParams, { period: '7d' });
   });
 
-  it('/runs/<проект>/<прогон>/<хвост> не признаётся адресом прогона', () => {
-    assert.deepEqual(parseRoute('/runs/a/b/c', ALL_SCREENS), { screenId: runs.id, params: {} });
+  it('значение вне закрытого перечня — неразобранный адрес', () => {
+    assert.equal(parseRoute('/usage/вчера', TABLE), undefined);
   });
 
-  it('небезопасный сегмент параметра не признаётся адресом экрана', () => {
-    assert.deepEqual(parseRoute('/runs/../b', ALL_SCREENS), { screenId: runs.id, params: {} });
+  it('неразобранный адрес отдаёт undefined, а не подмену другой целью', () => {
+    assert.equal(parseRoute('/что-то-ещё', TABLE), undefined);
+    assert.equal(parseRoute('/runs/a/b/c', TABLE), undefined);
+    assert.equal(parseRoute('/runs/../b', TABLE), undefined);
   });
 
-  it('каждый объявленный путь разбирается в свой id', () => {
-    for (const screen of [pipelines, steps, widgets, backlog, cleanup, agents, settings]) {
-      assert.deepEqual(parseRoute(screen.path, ALL_SCREENS), { screenId: screen.id, params: {} }, screen.id);
-    }
+  it('hrefFor берёт первый по таблице маршрут, ведущий к цели', () => {
+    assert.equal(hrefFor({ kind: 'screen', id: 'screen-runs' }, {}, TABLE), '/');
   });
 
-  it('хвост за адресом экрана без параметров ведёт на экран по умолчанию', () => {
-    assert.deepEqual(parseRoute('/backlog/что-то', ALL_SCREENS), { screenId: runs.id, params: {} });
-    assert.deepEqual(parseRoute('/settings/что-то', ALL_SCREENS), { screenId: runs.id, params: {} });
+  it('hrefFor цели без маршрута отдаёт undefined, а не корень', () => {
+    assert.equal(hrefFor({ kind: 'screen', id: 'screen-нет-такого' }, {}, TABLE), undefined);
   });
 
-  it('hrefFor даёт адрес, который parseRoute разбирает обратно в тот же id', () => {
-    for (const screen of ALL_SCREENS.values()) {
-      if (screen.nav === undefined) continue; // у экрана без параметров и без пункта меню (run) свой круговой тест выше
-      const href = hrefFor(screen.id, {}, ALL_SCREENS);
-      assert.deepEqual(parseRoute(href, ALL_SCREENS), { screenId: screen.id, params: {} }, screen.id);
-    }
+  it('hrefForRoute отдаёт адрес своего маршрута, а не первый по таблице адрес той же цели', () => {
+    // Ровно случай пользовательского маршрута: своя строка на ту же цель, что
+    // и встроенная. Поиск по цели вернул бы `/` — адрес встроенной строки.
+    const mine: RouteDefinition = { id: 'release', path: '/release', target: { kind: 'screen', id: 'screen-runs' } };
+    assert.equal(hrefFor(mine.target, {}, [...TABLE, mine]), '/');
+    assert.equal(hrefForRoute(mine), '/release');
   });
 
-  it('hrefFor неизвестного id даёт корень, а не бросает исключение', () => {
-    assert.equal(hrefFor('screen-нет-такого', {}, ALL_SCREENS), '/');
+  it('hrefForRoute отдаёт undefined, когда обязательный параметр шаблона не назван', () => {
+    const run = TABLE[1] as RouteDefinition;
+    assert.equal(hrefForRoute(run), undefined);
+    assert.equal(hrefForRoute(run, { projectKey: 'p', runId: 'r' }), '/runs/p/r');
   });
 
-  // Требование ui-dashboard: «Период — в адресе, пресетами» (design.md изменения ui-dashboard, Решение 5).
-  // `:period?` — необязательный параметр: голый /usage разбирается тем же
-  // экраном, что и /usage/<значение>. Перечень значений объявляет сам экран
-  // (`paramValues` объявления), а разбор адреса остаётся общим и имён
-  // пресетов не знает (design.md, Решение 10) — он лишь сверяется с
-  // объявленным перечнем.
-  it('/usage/<период> разбирается в screen-usage c параметром period', () => {
-    assert.deepEqual(parseRoute('/usage', ALL_SCREENS), { screenId: usage.id, params: {} });
-    assert.deepEqual(parseRoute('/usage/7d', ALL_SCREENS), { screenId: usage.id, params: { period: '7d' } });
-    assert.deepEqual(parseRoute('/usage/30d', ALL_SCREENS), { screenId: usage.id, params: { period: '30d' } });
-    assert.deepEqual(parseRoute('/usage/90d', ALL_SCREENS), { screenId: usage.id, params: { period: '90d' } });
-    assert.deepEqual(parseRoute('/usage/all', ALL_SCREENS), { screenId: usage.id, params: { period: 'all' } });
+  it('параметры цели подставляются значениями параметров пути', () => {
+    const matched = parseRoute('/w/clock-1', TABLE);
+    assert.deepEqual(matched?.targetParams, { note: 'clock-1' });
   });
 
-  it('значение периода вне объявленного перечня — неизвестный адрес: ведёт на экран по умолчанию, как вёл до перевода', () => {
-    // Перечень закрыт объявлением экрана (`paramValues`), поэтому
-    // `/usage/вчера` этому экрану не принадлежит вовсе и разбирается как
-    // любой другой неизвестный адрес — экраном по умолчанию (`ui-screens`,
-    // «Переведённые экраны не меняют поведения»: прежний `parseRoute` уводил
-    // такой адрес на экран прогонов, а не открывал расход за подставленный
-    // период).
-    assert.deepEqual(parseRoute('/usage/вчера', ALL_SCREENS), { screenId: runs.id, params: {} });
-    assert.deepEqual(parseRoute('/usage/7', ALL_SCREENS), { screenId: runs.id, params: {} });
+  it('normalizedTemplate считает разные имена параметров одним и тем же адресом', () => {
+    assert.equal(normalizedTemplate('/runs/:projectKey/:runId'), normalizedTemplate('/runs/:a/:b'));
+    assert.notEqual(normalizedTemplate('/runs/:id'), normalizedTemplate('/runs/new'));
   });
 
-  it('параметр без объявленного перечня принимает любой безопасный сегмент', () => {
-    assert.deepEqual(parseRoute('/runs/проект/прогон-17', ALL_SCREENS), {
-      screenId: run.id,
-      params: { projectKey: 'проект', runId: 'прогон-17' },
-    });
+  it('templateParamNames и paramPlaceholderNames', () => {
+    assert.deepEqual(templateParamNames('/runs/:projectKey/:runId'), ['projectKey', 'runId']);
+    assert.deepEqual(paramPlaceholderNames('${params.a}-${params.b}'), ['a', 'b']);
+  });
+
+  it('substituteParams заменяет плейсхолдеры значениями и допускает литералы', () => {
+    assert.equal(substituteParams('prefix-${params.id}', { id: '42' }), 'prefix-42');
+    assert.equal(substituteParams('literal', {}), 'literal');
   });
 
   it('/api/... не признаётся адресом страницы', () => {
@@ -124,8 +119,6 @@ describe('ui-routes: разбор адресов по таблице экран�
   it('isWidgetPath истинен для обеих объявленных форм и для любого пути под /widgets/', () => {
     assert.equal(isWidgetPath('/widgets/proj/clock.js'), true);
     assert.equal(isWidgetPath('/widgets/runtime/react.js'), true);
-    // Любой путь под /widgets/, не совпадающий ни с одной формой, — тоже
-    // предмет демона: он обязан ответить 404, а не отдать страницу витрины.
     assert.equal(isWidgetPath('/widgets/proj/clock.ts'), true);
     assert.equal(isWidgetPath('/widgets/'), true);
   });
@@ -151,11 +144,21 @@ describe('ui-routes: разбор адресов по таблице экран�
   it('isPluginPath истинен для любого пути под /plugins/, ложен для голого /plugins и адресов экранов', () => {
     assert.equal(isPluginPath('/plugins/example.js'), true);
     assert.equal(isPluginPath('/plugins/'), true);
-    // Голый `/plugins` без хвостового разделителя — не адрес этого демонского
-    // механизма: у него нет экрана меню, но предикат остаётся симметричным
-    // `isWidgetPath` ровно в этой части.
     assert.equal(isPluginPath('/plugins'), false);
     assert.equal(isPluginPath('/widgets/proj/clock.js'), false);
     assert.equal(isPluginPath('/'), false);
+  });
+
+  it('isReservedPath покрывает все четыре зарезервированных префикса', () => {
+    assert.equal(isReservedPath('/api/x'), true);
+    assert.equal(isReservedPath('/widgets/x'), true);
+    assert.equal(isReservedPath('/plugins/x'), true);
+    assert.equal(isReservedPath('/shared/x'), true);
+    assert.equal(isReservedPath('/runs'), false);
+  });
+
+  it('isSharedPath ложен для голого /shared', () => {
+    assert.equal(isSharedPath('/shared/cordis.js'), true);
+    assert.equal(isSharedPath('/shared'), false);
   });
 });

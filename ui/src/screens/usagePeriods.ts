@@ -1,17 +1,16 @@
-import { declaration } from '../../../src/ui/screens/usage/declaration.ts';
+import { useRoute } from '../router';
 
 /**
  * Пресеты периода экрана расхода (design.md изменения `ui-dashboard`, Решение
- * 5): своё дело экрана, а не общего маршрутизатора — `src/ui/routes.ts` не
- * обязан знать имена пресетов, чтобы разобрать параметр `period` в общем виде
- * (`ui-screens`, «Навигация и разбор адреса собираются из зарегистрированных
- * экранов»).
+ * 5; `ui-routes`, design.md Решение 6): закрытый перечень значений — теперь
+ * поле маршрута (`values.period` в `src/builtin/routes.yml`), а не объявления
+ * экрана, — маршрут владеет адресом, и перечень значений параметра адреса
+ * принадлежит ему же. Разбор адреса общего модуля (`src/ui/routes.ts`)
+ * по-прежнему не знает имён пресетов — он лишь сверяется с объявленным
+ * перечнем.
  *
- * Состав и порядок пресетов берутся из объявления экрана — того же перечня,
- * которым демон и страница разбирают адрес (`paramValues.period`): иначе
- * переключатель однажды предложил бы период, который разбор адреса уже не
- * признаёт своим. Подписи и длительность живут здесь: объявление — про `id`,
- * параметры и адрес, а не про вид переключателя.
+ * Подписи и длительность остаются делом этого экрана: маршрут называет
+ * только ключи значений, а не то, как их подписать.
  */
 export interface UsagePeriod {
   readonly key: string;
@@ -30,19 +29,30 @@ const PRESETS: Readonly<Record<string, { readonly days?: number; readonly label:
   all: { label: 'всё время' },
 };
 
-export const USAGE_PERIODS: readonly UsagePeriod[] = (declaration.paramValues?.['period'] ?? []).map((key) => ({
-  key,
-  ...(PRESETS[key] ?? { label: key }),
-}));
+/**
+ * Пресеты, объявленные маршрутом, которым сейчас открыт экран расхода — тем
+ * самым, что разобрал адрес и достался экрану параметром `period`, а не
+ * первым по таблице маршрутом на эту цель: второй маршрут пользователя на
+ * экран расхода со своим `values.period` дал бы иначе переключатель от чужого
+ * адреса (design.md, Решение 6).
+ *
+ * Маршрут не объявляет `values.period` — пустой перечень: переключатель тогда
+ * не показывает ни одной кнопки, но сам экран открывается по-прежнему.
+ */
+export function useUsagePeriods(): readonly UsagePeriod[] {
+  const { route } = useRoute();
+  const keys = route?.route.values?.period ?? [];
+  return keys.map((key) => ({ key, ...(PRESETS[key] ?? { label: key }) }));
+}
 
 /**
  * Параметр `period` адреса в число дней. Голый `/usage` — те же 30 дней.
- * Значение вне перечня сюда не доходит: такой адрес этому экрану не
- * принадлежит вовсе (`paramValues` объявления) — умолчание здесь остаётся на
- * случай прямого вызова компонента.
+ * Значение вне перечня сюда не доходит: такой адрес этому маршруту не
+ * принадлежит вовсе (`values` маршрута) — умолчание здесь остаётся на случай
+ * прямого вызова компонента.
  */
-export function daysForPeriod(period: string | undefined): number | undefined {
+export function daysForPeriod(period: string | undefined, periods: readonly UsagePeriod[]): number | undefined {
   if (period === undefined) return DEFAULT_USAGE_DAYS;
-  const found = USAGE_PERIODS.find((candidate) => candidate.key === period);
+  const found = periods.find((candidate) => candidate.key === period);
   return found === undefined ? DEFAULT_USAGE_DAYS : found.days;
 }

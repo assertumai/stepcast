@@ -39,8 +39,10 @@ export async function runUpCommand(
     let server;
     try {
       // Конфигурация нужна витрине для разбора пайплайнов: раскрытие
-      // опирается на умолчания так же, как их применяет прогон.
-      server = await createUiServer({ runsRoot: config.runs.root, port, config });
+      // опирается на умолчания так же, как их применяет прогон. `projectRoot`
+      // — каталог, в котором поднята витрина: проектный слой таблицы
+      // маршрутов ищется от него (`ui-daemon`, «Демон знает корень проекта»).
+      server = await createUiServer({ runsRoot: config.runs.root, port, config, projectRoot: cwd });
     } catch (error) {
       if (isAddressInUse(error)) throw portBusyError(port, error);
       throw error;

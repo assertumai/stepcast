@@ -1,18 +1,24 @@
-import type { JSX } from 'react';
 import type { Context } from 'cordis';
 
 import type { ScreenListing } from '../../../src/ui/screens/declaration.ts';
 import { BUILTIN_SCREENS } from '../screens/index';
-import { navItem } from './navItem';
-import { NAV, SCREEN } from '@stepcast/slots';
 
 /**
  * Плагин `screens` — читает действующий состав у демона и применяет
- * встроенные половины (design.md, Решение 12).
+ * встроенные половины (design.md, Решение 12; `ui-daemon`, «Поток событий
+ * несёт действующие маршруты и состав экранов»).
  *
- * Читается один раз при загрузке страницы: перечитывание состава в открытой
- * вкладке без перезагрузки — `hot-swap-preserves-data`, здесь новый состав
- * приходит только со следующей загрузкой страницы (`docs/ui-plugins.md`).
+ * Заявка состава — сразу же `fetch` при загрузке страницы (быстрее первого
+ * обмена SSE) и дальше событием потока `screens`: строка, ставшая активной
+ * без перезагрузки, получает свою половину тем же тактом (ограничение
+ * «новый состав виден только после перезагрузки», названное в
+ * `docs/ui-plugins.md`, снято этой работой).
+ *
+ * Экран без бандловой половины (чужой модуль, чью браузерную часть страница
+ * взять не может) здесь ничем не отмечается: слот `SCREEN` для него просто
+ * не заводится, и вид цели `route.target` (`ui/src/plugins/shell.tsx`)
+ * реактивно проверяет присутствие `id` в `ctx.screens` — отключённый или
+ * незнакомый экран получает названную причину на месте, без стороннего учёта.
  */
 
 interface ScreensResponse {
@@ -28,21 +34,6 @@ async function fetchScreens(): Promise<ScreensResponse> {
 }
 
 /**
- * Демон назвал экран, чью браузерную половину страница взять не может
- * (design.md, Решение 13): строка заменена чужим модулем либо принесена им же,
- * а чтение браузерных половин с диска ещё не реализовано
- * (`user-plugins-from-files`). Показан с причиной, а не пропущен молча.
- */
-function MissingScreen({ id }: { readonly id: string }): JSX.Element {
-  return (
-    <div className="screen-error">
-      Экран «{id}» объявлен строкой состава, но браузерная половина недоступна:
-      формат плагина, приносящего свою половину, здесь не поддержан.
-    </div>
-  );
-}
-
-/**
  * Встроенная половина применима, только если демон назвал строку своей:
  * строка-замена несёт тот же `id` (`plugin-tree`, замена по `id`), и без
  * признака происхождения страница показала бы встроенный экран там, где
@@ -54,30 +45,36 @@ function halfFor(listing: ScreenListing): ((ctx: Context) => void) | undefined {
 }
 
 export default function screens(ctx: Context): void {
+  // Строки, чью половину уже применили, — приём не звать `ctx.plugin` дважды
+  // на один и тот же `id`, когда состав пришёл повторно (событие `screens`
+  // может прийти с уже применённой строкой, если сменились другие).
+  const applied = new Set<string>();
+
+  const apply = (response: ScreensResponse): void => {
+    ctx.screens.set(new Map(response.screens.map((declaration) => [declaration.id, declaration])), response.buildError);
+
+    for (const declaration of response.screens) {
+      if (applied.has(declaration.id)) continue;
+      const plugin = halfFor(declaration);
+      if (plugin === undefined) continue;
+      applied.add(declaration.id);
+      ctx.plugin(plugin);
+    }
+  };
+
   void fetchScreens()
-    .then((response) => {
-      const table = new Map(response.screens.map((declaration) => [declaration.id, declaration]));
-      ctx.screens.set(table, response.buildError);
-
-      for (const declaration of response.screens) {
-        const plugin = halfFor(declaration);
-        if (plugin !== undefined) {
-          ctx.plugin(plugin);
-          continue;
-        }
-
-        if (declaration.nav !== undefined) {
-          ctx.slots.contribute(NAV, { component: navItem(declaration), order: declaration.nav.order });
-        }
-        ctx.slots.contribute(SCREEN, {
-          component: () => <MissingScreen id={declaration.id} />,
-          key: declaration.id,
-        });
-      }
-    })
+    .then(apply)
     .catch((error: Error) => {
       // Отказ самого запроса (демон не отвечает) не должен погасить каркас:
       // он рисуется независимо от состава, а причина хотя бы попадёт в консоль.
       console.error(`[stepcast] не удалось получить состав экранов: ${error.message}`);
     });
+
+  let lastScreens: ScreensResponse | undefined;
+  ctx.live.subscribe(() => {
+    const next = ctx.live.get().screens;
+    if (next === undefined || next === lastScreens) return;
+    lastScreens = next;
+    apply(next);
+  });
 }
