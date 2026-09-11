@@ -3118,3 +3118,106 @@ describe('run-resume: раскладка сессий входит в ключ �
     );
   });
 });
+
+describe('run-resume: восстановление идёт в дерево работы, а не в каталог запуска', () => {
+  const ISOLATED_PIPELINE = `
+version: 1
+kind: pipeline
+name: изоляция-возобновления
+workspace:
+  mode: worktree
+jobs:
+  # Работа каталога запуска — как slots у петли: её якорь и есть состояние
+  # дерева проекта, с которым возобновление сверяет сегодняшнее.
+  нулевая:
+    session: per_step
+    inputs: [сырьё.txt]
+    workspace:
+      mode: cwd
+    steps:
+      - id: сверяет
+        run: [echo, начало]
+        expect: [{ exit_code: 0 }]
+  первая:
+    session: per_step
+    inputs: [сырьё.txt]
+    steps:
+      - id: пишет
+        run: [sh, -c, 'printf "от первой\\n" > плод.txt']
+        expect: [{ exit_code: 0 }]
+  вторая:
+    needs: [первая]
+    session: per_step
+    until:
+      max_iterations: 1
+      check:
+        - cmd: test -f плод.txt && test -f правка-пользователя.txt
+    steps:
+      - id: шаг
+        run: [echo, готово]
+        expect: [{ exit_code: 0 }]
+`;
+
+  // workspace-modes: изолированное дерево на то и изолированное — ни один шаг
+  // прогона, включая предикаты `until`, не имеет права править главное дерево
+  // проекта. Возобновление приводило к якорю переиспользованных шагов именно
+  // его: работа режима `worktree` возвращала свой результат в репозиторий
+  // пользователя незакоммиченной правкой, а её собственная копия оставалась
+  // пустой — предикаты `until` гоняли проверку по дереву без единой правки.
+  it('переиспользованный результат работы режима worktree не попадает в каталог запуска', async () => {
+    const b = bed({ 'сырьё.txt': 'вход', 'stepcast.yml': ISOLATED_PIPELINE }, { git: true });
+
+    const first = await firstRun(b);
+    assert.equal(first.status, 'failed', 'второй работе не хватает файла пользователя');
+    assert.equal(
+      existsSync(b.project.path('плод.txt')),
+      false,
+      'изолированная работа не пишет в каталог запуска и на первом прогоне',
+    );
+
+    // Причина чинится так же, как её чинит человек: правка попадает в HEAD,
+    // из которого и заводится рабочее дерево.
+    b.project.write('правка-пользователя.txt', 'починил');
+    execFileSync('git', ['-C', b.project.root, 'add', '-A'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync('git', ['-C', b.project.root, 'commit', '--quiet', '-m', 'починка'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const plan = planFor(b, first);
+    assert.deepEqual(decisions(plan), {
+      'нулевая/сверяет': 'reuse',
+      'первая/пишет': 'reuse',
+      'вторая/шаг': 'rerun',
+    });
+    assert.equal(plan.restore, undefined, 'каталогу запуска восстанавливать нечего');
+    assert.deepEqual(
+      plan.restoreWorkspace.map((item) => ({ job: item.job, paths: item.paths })),
+      [{ job: 'первая', paths: ['плод.txt'] }],
+      'результат переиспользованной работы возвращается в её собственное дерево',
+    );
+
+    const second = await resume(b, first);
+
+    assert.equal(
+      existsSync(b.project.path('плод.txt')),
+      false,
+      'возобновление не имеет права оставлять в дереве проекта результат изолированной работы',
+    );
+    assert.equal(
+      execFileSync('git', ['-C', b.project.root, 'status', '--porcelain'], { encoding: 'utf8' }),
+      '',
+      'дерево проекта после возобновления обязано остаться чистым',
+    );
+
+    // Предикат `until` второй работы видит плод первой: восстановление легло
+    // в то дерево, в котором работа и исполняется.
+    assert.equal(second.status, 'success');
+    const workspace = readStatus(second.journal.paths).jobs.find((job) => job.id === 'первая')?.workspace;
+    assert.ok(
+      readEvents(second.journal.paths).some(
+        (event) => event.kind === 'tree.restored' && event.path === workspace?.path,
+      ),
+      'восстановление объявлено по каталогу работы',
+    );
+  });
+});

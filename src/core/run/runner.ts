@@ -877,6 +877,11 @@ async function runJob(
     });
   }
 
+  // Дерево работы приводится к состоянию переиспользованных шагов сразу после
+  // подготовки: раньше каталога нет, позже его уже читают шаги и предикаты
+  // `until`.
+  restoreJobWorkspace(context, job, prepared);
+
   try {
     job = resolveLate(declared, {
       jobs: (scope.jobs ?? {}) as Readonly<Record<string, JobScopeEntry>>,
@@ -3078,7 +3083,15 @@ function carryOverRunDir(resume: ResumeContext, journal: RunJournal): void {
 }
 
 /**
- * Привести дерево к состоянию, на котором остановилось переиспользование.
+ * Привести каталог запуска к состоянию, на котором остановилось
+ * переиспользование.
+ *
+ * Только каталог запуска и только пути работ, которые в нём и работали:
+ * результат работы изолированного режима лежит в её собственном дереве и
+ * туда же возвращается — своей записью плана (`restoreWorkspace`,
+ * `restoreJobWorkspace`). Наложить его на главное дерево проекта значило бы
+ * испортить репозиторий пользователя возобновлением, которое ничего такого не
+ * обещает.
  *
  * Недоступный якорь не отказ: возобновление отступает к ближайшему
  * предшествующему восстановимому состоянию, в пределе — к началу пайплайна.
@@ -3093,18 +3106,75 @@ function restoreForResume(
 ): void {
   const restore = resume.plan.restore;
   if (restore === undefined) return;
-
-  const anchorer = createAnchorer({
+  restoreTree({
+    journal,
     dir: cwd,
-    stateDir: journal.paths.anchors,
-    kind: anchorKind,
     scope: 'resume',
-    ...(nestedRepos === undefined ? {} : { nested: nestedRepos }),
+    anchorKind,
+    ...(nestedRepos === undefined ? {} : { nestedRepos }),
+    anchor: restore.anchor,
+    paths: restore.paths,
+  });
+}
+
+/**
+ * Привести рабочий каталог работы изолированного режима к состоянию, на
+ * котором остановилось переиспользование её шагов.
+ *
+ * Возобновление заводит новое дерево (`worktree` — от HEAD проекта, `copy` —
+ * копией каталога запуска), а переиспользованный шаг в нём не исполняется и
+ * ничего не пишет: без этого восстановления переисполняемый шаг и предикаты
+ * `until` работы увидели бы дерево без единой правки предшественников —
+ * проверка гоняла бы код, которого там нет.
+ *
+ * Перенятый каталог (продолжение оборванной сессии) не трогается: он и есть
+ * то состояние, которое диалог оставил (design.md, решение 4).
+ */
+function restoreJobWorkspace(context: RunContext, job: Job, prepared: PreparedWorkspace): void {
+  if (prepared.mode === 'cwd' || prepared.adoptedFrom !== undefined) return;
+  const restore = context.resume?.plan.restoreWorkspace.find((item) => item.job === job.id);
+  if (restore === undefined) return;
+
+  restoreTree({
+    journal: context.journal,
+    dir: prepared.dir,
+    // Своя область на работу: индексный файл якоря у параллельных дорожек
+    // общим быть не может.
+    scope: `resume:${job.id}`,
+    anchorKind: context.anchorKind,
+    repoDir: context.cwd,
+    ...(context.config.project.nestedRepos === undefined
+      ? {}
+      : { nestedRepos: context.config.project.nestedRepos }),
+    anchor: restore.anchor,
+    paths: restore.paths,
+  });
+}
+
+/** Общая механика обоих восстановлений: якорь, пути, каталог — и мягкий отказ. */
+function restoreTree(options: {
+  readonly journal: RunJournal;
+  readonly dir: string;
+  readonly scope: string;
+  readonly anchorKind: AnchorKind;
+  readonly repoDir?: string;
+  readonly nestedRepos?: readonly string[];
+  readonly anchor: Anchor;
+  readonly paths: readonly string[];
+}): void {
+  const { journal, dir, anchor, paths } = options;
+  const anchorer = createAnchorer({
+    dir,
+    stateDir: journal.paths.anchors,
+    kind: options.anchorKind,
+    scope: options.scope,
+    ...(options.repoDir === undefined ? {} : { repoDir: options.repoDir }),
+    ...(options.nestedRepos === undefined ? {} : { nested: options.nestedRepos }),
   });
 
   try {
-    anchorer.restorePaths(restore.anchor, restore.paths);
-    journal.event({ kind: 'tree.restored', anchor: restore.anchor.id, path: cwd });
+    anchorer.restorePaths(anchor, paths);
+    journal.event({ kind: 'tree.restored', anchor: anchor.id, path: dir });
   } catch (error) {
     // Недоступный якорь не отказ: переисполнить лишнее дороже, но это ровно
     // то, что пользователь получил бы без возобновления вообще.

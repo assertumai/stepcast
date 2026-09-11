@@ -347,6 +347,7 @@ jobs:
           outputs: new Map(),
           observedInputs: new Map(),
           ignoredEdits: [],
+          restoreWorkspace: [],
           fromScratch: true,
           failureNoteJob: 'работа',
           adoptWorkspace: [],

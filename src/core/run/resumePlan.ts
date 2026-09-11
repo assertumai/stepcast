@@ -68,13 +68,29 @@ export interface ResumePlan {
    */
   readonly ignoredEdits: readonly string[];
   /**
-   * Что и до какого состояния восстановить перед первым переисполнением.
+   * Что и до какого состояния восстановить перед первым переисполнением **в
+   * каталоге запуска**.
    *
    * Восстанавливаются **только пути, произведённые переиспользованными
    * шагами**. Полный сброс дерева стёр бы то, что пользователь создал после
    * прогона, — в том числе правку, ради которой он и возобновляет.
+   *
+   * И только пути работ, которые в каталоге запуска и работали: работа режима
+   * `worktree` или `copy` правит свою копию, и наложить её результат на
+   * главное дерево проекта значило бы испортить репозиторий пользователя
+   * командой, которая ничего подобного не обещает. Такой работе полагается
+   * своя запись в `restoreWorkspace`.
    */
   readonly restore?: { readonly anchor: Anchor; readonly paths: readonly string[] };
+  /**
+   * То же восстановление, но для работ, чьё дерево изолировано: по записи на
+   * работу, потому что каталог у каждой свой, а цепочка `continue` приводит
+   * общий каталог к своему состоянию по частям, в порядке графа.
+   *
+   * Накладывается не перед прогоном, а в момент подготовки рабочего каталога
+   * работы: раньше его попросту нет.
+   */
+  readonly restoreWorkspace: readonly JobRestore[];
   /** Ничего переиспользовать не удалось: пайплайн идёт с начала. */
   readonly fromScratch: boolean;
   /**
@@ -95,6 +111,13 @@ export interface ResumePlan {
    * worktree или copy. Пусто, если план не назначил ни одного продолжения.
    */
   readonly adoptWorkspace: readonly AdoptedWorkspace[];
+}
+
+/** Восстановление дерева отдельной работы — для изолированных режимов. */
+export interface JobRestore {
+  readonly job: string;
+  readonly anchor: Anchor;
+  readonly paths: readonly string[];
 }
 
 /** Каталог работы исходного прогона, перенимаемый ради продолжения сессии. */
@@ -144,8 +167,20 @@ export type ChangedSince = readonly string[] | 'all';
  * пайплайна, где работа объявлена раньше своей зависимости, объявить конечным
  * состоянием промежуточное — и весь вывод исполнившихся позже работ выглядел
  * бы правкой пользователя.
+ *
+ * Состояние — каталога запуска: с ним сравнивают его же сегодняшнее дерево.
+ * Поэтому предпочитается якорь работы, которая в каталоге запуска и работала:
+ * якорь изолированного режима описывает копию, и у пайплайна, где в каталоге
+ * запуска работает хоть кто-то (у петли — `slots` и `finalize`), весь вывод
+ * изолированных работ в таком сравнении выглядел бы удалённым пользователем.
+ *
+ * Если в каталоге запуска не работал никто, берётся последний якорь какой
+ * угодно работы — прежнее поведение: у такого прогона других свидетельств о
+ * дереве нет вовсе, а изолированное дерево заводится от того же HEAD, то есть
+ * расходится с каталогом запуска лишь незакоммиченным.
  */
 export function finalAnchorOf(status: RunStatus, fallback: AnchorKind): Anchor | undefined {
+  const inCwd = (job: JobRecord): boolean => (job.workspace?.mode ?? 'cwd') === 'cwd';
   const byFinish = [...status.jobs]
     .map((job, index) => ({ job, index }))
     .sort((a, b) => {
@@ -153,16 +188,21 @@ export function finalAnchorOf(status: RunStatus, fallback: AnchorKind): Anchor |
       const right = b.job.finished_at ?? '';
       return left === right ? a.index - b.index : left < right ? -1 : 1;
     })
-    .map((item) => item.job);
+    .map((item) => item.job)
+    .reverse();
 
-  for (const job of byFinish.reverse()) {
-    for (const step of [...job.steps].reverse()) {
-      if (step.tree_id !== undefined) {
-        return { kind: step.anchor_kind ?? fallback, id: step.tree_id };
+  const lastAnchorOf = (jobs: readonly JobRecord[]): Anchor | undefined => {
+    for (const job of jobs) {
+      for (const step of [...job.steps].reverse()) {
+        if (step.tree_id !== undefined) {
+          return { kind: step.anchor_kind ?? fallback, id: step.tree_id };
+        }
       }
     }
-  }
-  return undefined;
+    return undefined;
+  };
+
+  return lastAnchorOf(byFinish.filter(inCwd)) ?? lastAnchorOf(byFinish);
 }
 
 /** Пути, изменившиеся между концом прошлого прогона и текущим деревом. */
@@ -234,6 +274,10 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
   /** Пути, произведённые переиспользованными шагами, по работам. */
   const producedByJob = new Map<string, Set<string>>();
   const adoptWorkspace: AdoptedWorkspace[] = [];
+  /** Последний переиспользованный шаг работы — по работам. */
+  const lastReusedByJob = new Map<string, StepRecord>();
+  /** Режим рабочего каталога работы этого прогона: им решается, куда ложится восстановление. */
+  const workspaceModeByJob = new Map<string, Job['workspace']['mode']>();
   let lastReused: StepRecord | undefined;
   let poisoned: string | undefined;
   // Обход идёт в порядке исполнения, а не объявления: и каскад пересчёта, и
@@ -244,6 +288,7 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
   let reachedFrom = false;
 
   for (const job of order) {
+    workspaceModeByJob.set(job.id, job.workspace.mode);
     const record = source.status.jobs.find((item) => item.id === job.id);
     // Работа объявила выход, и артефакт исходного прогона недоступен —
     // удалён уборкой или испорчен. Переиспользовать её значило бы отдать
@@ -302,7 +347,11 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
             own.add(path);
           }
           producedByJob.set(job.id, own);
-          lastReused = previous;
+          lastReusedByJob.set(job.id, previous);
+          // Якорь каталога запуска — только от работы, которая в нём и
+          // работала: якорь изолированного дерева описывает чужую копию, и
+          // приводить к нему главное дерево проекта нельзя.
+          if (job.workspace.mode === 'cwd') lastReused = previous;
           continue;
         }
 
@@ -410,9 +459,34 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
   const keptByContinuation = new Set(
     [...continuingJobs].flatMap((jobId) => [...(producedByJob.get(jobId) ?? [])]),
   );
+  const isRestorable = (path: string): boolean =>
+    !ignoredEdits.has(path) && !keptByContinuation.has(path);
+  // Каталогу запуска — только произведённое работами, которые в нём и
+  // работали. Остальное лежит в своих деревьях и туда же восстанавливается.
   const restorable = [...produced].filter(
-    (path) => !ignoredEdits.has(path) && !keptByContinuation.has(path),
+    (path) => isRestorable(path) && cwdProduced(path, producedByJob, workspaceModeByJob),
   );
+
+  // По записи на работу изолированного режима, в порядке исполнения: работы
+  // цепочки `continue` делят один каталог, и порядок графа приводит его к
+  // нужному состоянию так же, как это делал бы один общий откат.
+  const reusedJobs = new Set(
+    coarsened.filter((plan) => plan.decision.kind === 'reuse').map((plan) => plan.job),
+  );
+  const restoreWorkspace: JobRestore[] = [];
+  for (const job of order) {
+    if (job.workspace.mode === 'cwd') continue;
+    if (!reusedJobs.has(job.id)) continue;
+    const last = lastReusedByJob.get(job.id);
+    if (last?.tree_id === undefined) continue;
+    const paths = [...(producedByJob.get(job.id) ?? [])].filter(isRestorable).sort();
+    if (paths.length === 0) continue;
+    restoreWorkspace.push({
+      job: job.id,
+      anchor: { kind: last.anchor_kind ?? 'git', id: last.tree_id },
+      paths,
+    });
+  }
 
   return {
     sourceRunId: source.manifest.run_id,
@@ -423,10 +497,37 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
     ...(anyReuse && anchor !== undefined && restorable.length > 0
       ? { restore: { anchor, paths: restorable.sort() } }
       : {}),
+    restoreWorkspace: anyReuse ? restoreWorkspace : [],
     fromScratch: !anyReuse,
     ...(failureNoteJob === undefined ? {} : { failureNoteJob }),
     adoptWorkspace: coarsenedResult.adoptWorkspace,
   };
+}
+
+/**
+ * Произведён ли путь хоть одной работой, работавшей в каталоге запуска.
+ *
+ * Путь, произведённый только работами изолированных режимов, в каталоге
+ * запуска никогда не появлялся: восстановить его там значило бы вписать в
+ * репозиторий пользователя результат чужой копии дерева — молча и без единого
+ * слова об этом в команде возобновления.
+ *
+ * Путь, произведённый и той и другой работой, восстанавливается в обоих
+ * деревьях: каждое приводится к своему якорю.
+ */
+function cwdProduced(
+  path: string,
+  producedByJob: ReadonlyMap<string, ReadonlySet<string>>,
+  workspaceModeByJob: ReadonlyMap<string, Job['workspace']['mode']>,
+): boolean {
+  for (const [job, paths] of producedByJob) {
+    if (!paths.has(path)) continue;
+    // Работа, о режиме которой плану ничего не известно (запись прогона от
+    // старой раскладки), считается работавшей в каталоге запуска: таким и
+    // было поведение до разделения деревьев.
+    if ((workspaceModeByJob.get(job) ?? 'cwd') === 'cwd') return true;
+  }
+  return false;
 }
 
 /**
