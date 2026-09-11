@@ -110,6 +110,69 @@ export const BuiltinPredicateSchema = z.union([
     .strict(),
 ]);
 
+/**
+ * Форма имени переиспользуемого шага (design.md, решение 2): один сегмент из
+ * строчных латинских букв, цифр и дефисов. Путь и форма `автор/имя` отклонены
+ * отдельными сообщениями, а не общим «недопустимый символ»: обе формы
+ * напрашиваются, и отказ должен сказать, что делать, а не просто что не так.
+ */
+const STEP_NAME_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+function describeUsesNameIssue(value: string): string | undefined {
+  if (value.startsWith('./') || value.startsWith('../') || value.startsWith('/')) {
+    return 'uses называет переиспользуемый шаг по имени, а не путь к файлу — для файла по пути есть шаг script';
+  }
+  if (value.includes('/')) {
+    return 'uses пока не поддерживает форму автор/имя — назовите один сегмент имени шага';
+  }
+  if (!STEP_NAME_PATTERN.test(value)) {
+    return 'uses: имя шага — один сегмент из строчных латинских букв, цифр и дефисов';
+  }
+  return undefined;
+}
+
+const UsesNameSchema = z.string().superRefine((value, ctx) => {
+  const issue = describeUsesNameIssue(value);
+  if (issue !== undefined) ctx.addIssue(issue);
+});
+
+/**
+ * Ключ шага `uses`, который объявляет манифест шага (design.md, решение 10):
+ * присутствие отклоняется своим сообщением, отсутствие — норма. Строгий объект
+ * отклонил бы такой ключ и сам, но сказал бы «неизвестный ключ», отправив
+ * автора искать опечатку там, где её нет: ключ известен формату и объявляется
+ * в `step.yml`, а не на месте вызова.
+ */
+function declaredByManifest(key: string) {
+  return z
+    .never({ error: `ключ ${key} объявляет манифест шага, а не место вызова` })
+    .describe(`Объявляется манифестом переиспользуемого шага (step.yml), а не шагом uses`)
+    .optional();
+}
+
+/**
+ * Документ манифеста переиспользуемого шага (`step.yml`, design.md). Строгий
+ * объект: незнакомое поле — почти всегда опечатка, как и у документов
+ * пайплайна и работы. `params` и `output_schema` — не сами схемы, а значения,
+ * которые читает `src/core/pipeline/steps.ts`: `params` обязана быть
+ * объектной JSON Schema, но это проверяется при чтении манифеста, а не здесь
+ * — zod не выражает «объектная JSON Schema» точнее, чем «объект».
+ */
+export const StepManifestSchema = z
+  .object({
+    version: z.literal(1),
+    kind: z.literal('step'),
+    name: z.string().min(1),
+    description: z.string().min(1),
+    file: z.string().min(1).regex(/\S/),
+    params: z.record(z.string(), z.unknown()).optional(),
+    output_schema: z.string().optional(),
+    runner: z.string().optional(),
+  })
+  .strict();
+
+export type StepManifestDocument = z.infer<typeof StepManifestSchema>;
+
 export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
   const PredicateSchema =
     pluginPredicates.length === 0
@@ -263,7 +326,32 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
     })
     .strict();
 
-  const StepSchema = z.union([AgentStepSchema, RunStepSchema, ScriptStepSchema]);
+  /**
+   * Шаг `uses`: имя переиспользуемого шага, а не путь (design.md, решение 2).
+   * `script`, `args`, `runner`, `input` и `output_schema` объявляет манифест, и
+   * место вызова их не переопределяет (design.md, решение 10). Объявлены они
+   * здесь `declaredByManifest`, а не просто отсечены строгим объектом:
+   * «неизвестный ключ runner» звучит так, будто ключа нет во всём формате, —
+   * тогда как он есть, просто объявляется в другом месте, и сказать нужно
+   * именно это. `with` — отображение, значения любые представимые в JSON, как
+   * `input` шага `script`: главный случай — объект из выхода работы выше по
+   * графу.
+   */
+  const UsesStepSchema = z
+    .object({
+      ...StepCommonShape,
+      uses: UsesNameSchema,
+      with: z.record(z.string(), z.unknown()).optional(),
+      on_fail: z.object({ analyze: z.string(), prompt: z.string() }).strict().optional(),
+      script: declaredByManifest('script'),
+      args: declaredByManifest('args'),
+      runner: declaredByManifest('runner'),
+      input: declaredByManifest('input'),
+      output_schema: declaredByManifest('output_schema'),
+    })
+    .strict();
+
+  const StepSchema = z.union([AgentStepSchema, RunStepSchema, ScriptStepSchema, UsesStepSchema]);
 
   const ParamSchema = z
     .object({
@@ -443,6 +531,7 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
   return {
     PredicateSchema,
     AgentStepSchema,
+    UsesStepSchema,
     StepSchema,
     BudgetSchema,
     McpSchema,
@@ -476,6 +565,7 @@ export type JobDocument = z.infer<BuiltinSchemas['JobDocumentSchema']>;
 export type JobEntry = z.infer<BuiltinSchemas['JobEntrySchema']>;
 export type RawStep = z.infer<BuiltinSchemas['StepSchema']>;
 export type RawAgentStep = z.infer<BuiltinSchemas['AgentStepSchema']>;
+export type RawUsesStep = z.infer<BuiltinSchemas['UsesStepSchema']>;
 /** Предикат в документе: встроенная ветвь либо ключ, внесённый плагином. */
 export type RawBuiltinPredicate = z.infer<typeof BuiltinPredicateSchema>;
 export type RawPredicate = RawBuiltinPredicate | Readonly<Record<string, unknown>>;

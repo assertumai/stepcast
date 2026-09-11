@@ -152,6 +152,7 @@ lint` предупреждает, если записанная схема ус�
 | Бинарник | `stepcast` (на `PATH` после `npm link`, см. [Установку](#установка)) |
 | Пайплайн | `stepcast.yml` или `.stepcast/pipelines/*.yml` |
 | Работы | `.stepcast/jobs/*.yml` |
+| Переиспользуемые шаги | `.stepcast/steps/<имя>/step.yml` |
 | Конфиг | `~/.stepcast/config.yml` и `.stepcast/config.yml` |
 | Прогоны | `~/.stepcast/runs/<project>/<run>/` |
 | Переменные | `STEPCAST_*` |

@@ -96,6 +96,20 @@ function expandScript(
   return expandPipeline({ pipelinePath: project.path(file), config: project.config, scriptRoots });
 }
 
+/** Корни слоёв каталога шагов `uses`, изолированные от машины — тем же приёмом, что `isolatedScriptRoots`. */
+function usesStepRoots(project: Project): ScriptRoots {
+  return { project: project.root, home: tempDir('step-home-'), builtin: tempDir('step-builtin-') };
+}
+
+function expandUses(project: Project, stepRoots: ScriptRoots, file = 'stepcast.yml') {
+  return expandPipeline({
+    pipelinePath: project.path(file),
+    config: project.config,
+    stepRoots,
+    scriptRoots: isolatedScriptRoots(project),
+  });
+}
+
 /** Записать файл вне дерева проекта — домашний и встроенный слои script туда и указывают. */
 function writeOutsideProject(dir: string, name: string, content: string): void {
   mkdirSync(dir, { recursive: true });
@@ -4657,5 +4671,268 @@ jobs:
     });
     project.write('schema.json', JSON.stringify({ type: 'object' }));
     assert.doesNotThrow(() => expandScript(project, isolatedScriptRoots(project)));
+  });
+});
+
+describe('reusable-step: раскрытие шага uses', () => {
+  const ECHO_MANIFEST = `
+version: 1
+kind: step
+name: echo-input
+description: Записывает вход в выход как есть.
+file: ./main.cjs
+params:
+  type: object
+  properties:
+    item: {}
+    retries: { type: integer, default: 1 }
+    title: { type: string }
+`;
+  const ECHO_MAIN = `
+const fs = require('node:fs');
+const input = JSON.parse(fs.readFileSync(process.env.STEPCAST_INPUT, 'utf8'));
+fs.writeFileSync(process.env.STEPCAST_OUTPUT, JSON.stringify(input));
+`;
+
+  function writeEchoStep(project: Project): void {
+    project.write('.stepcast/steps/echo-input/step.yml', ECHO_MANIFEST);
+    project.write('.stepcast/steps/echo-input/main.cjs', ECHO_MAIN);
+  }
+
+  // Сценарий: «Объект из выхода работы выше по графу» + «Число остаётся числом»
+  it('${params.*} типизированно раскрывается числом при разборе', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+inputs:
+  retries: { type: int, default: 3 }
+jobs:
+  build:
+    steps:
+      - id: c
+        uses: echo-input
+        with: { retries: "\${inputs.retries}" }
+`,
+    });
+    const roots = usesStepRoots(project);
+    writeEchoStep(project);
+
+    const { pipeline } = expandUses(project, roots);
+    const step = asScript(pipeline.jobs[0]!.steps[0]!);
+    assert.equal(step.input && (step.input as Record<string, unknown>).retries, 3);
+  });
+
+  it('строка с текстом вокруг подстановки даёт строку', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+inputs:
+  slug: { type: string, default: bug-42 }
+jobs:
+  build:
+    steps:
+      - id: c
+        uses: echo-input
+        with: { title: "чинить \${inputs.slug}" }
+`,
+    });
+    const roots = usesStepRoots(project);
+    writeEchoStep(project);
+
+    const { pipeline } = expandUses(project, roots);
+    const step = asScript(pipeline.jobs[0]!.steps[0]!);
+    assert.equal((step.input as Record<string, unknown>).title, 'чинить bug-42');
+  });
+
+  it('отложенный ${jobs.*} остаётся текстом до late.ts', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  plan:
+    steps: [{ id: p, run: [echo, hi] }]
+  build:
+    needs: [plan]
+    steps:
+      - id: c
+        uses: echo-input
+        with: { item: "\${jobs.plan.output.item}" }
+`,
+    });
+    const roots = usesStepRoots(project);
+    writeEchoStep(project);
+
+    const { pipeline } = expandUses(project, roots);
+    const step = asScript(pipeline.jobs[1]!.steps[0]!);
+    assert.equal((step.input as Record<string, unknown>).item, '${jobs.plan.output.item}');
+  });
+});
+
+describe('pipeline.lock.yml: шаг uses', () => {
+  const ECHO_MANIFEST = `
+version: 1
+kind: step
+name: echo-input
+description: Записывает вход в выход как есть.
+file: ./main.cjs
+params:
+  type: object
+  properties:
+    retries: { type: integer, default: 1 }
+`;
+  const ECHO_MAIN = `
+const fs = require('node:fs');
+const input = JSON.parse(fs.readFileSync(process.env.STEPCAST_INPUT, 'utf8'));
+fs.writeFileSync(process.env.STEPCAST_OUTPUT, JSON.stringify(input));
+`;
+
+  function writeEchoStep(project: Project, manifest = ECHO_MANIFEST): void {
+    project.write('.stepcast/steps/echo-input/step.yml', manifest);
+    project.write('.stepcast/steps/echo-input/main.cjs', ECHO_MAIN);
+  }
+
+  it('несёт имя, слой, путь и отпечаток манифеста рядом с разрешённым, но не содержимое манифеста', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        uses: echo-input
+`,
+    });
+    const roots = usesStepRoots(project);
+    writeEchoStep(project);
+
+    const { pipeline } = expandUses(project, roots);
+    const lock = serializeLock(pipeline);
+
+    assert.match(lock, /uses:/);
+    assert.match(lock, /name: echo-input/);
+    assert.match(lock, /layer: project/);
+    assert.match(lock, /manifest_path: .*step\.yml/);
+    assert.match(lock, /manifest_fingerprint: [0-9a-f]{16}/);
+    assert.match(lock, /retries: 1/);
+    // Разрешённое рядом с происхождением: путь, раннер, argv шага echo-input.
+    assert.match(lock, /runner: node/);
+    assert.doesNotMatch(lock, /Записывает вход в выход как есть/);
+  });
+
+  it('правка манифеста меняет ключ шага', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        uses: echo-input
+`,
+    });
+    const roots = usesStepRoots(project);
+    writeEchoStep(project);
+    const before = expandUses(project, roots);
+    const beforeStep = asScript(before.pipeline.jobs[0]!.steps[0]!);
+
+    writeEchoStep(project, ECHO_MANIFEST.replace('default: 1', 'default: 2'));
+    const after = expandUses(project, roots);
+    const afterStep = asScript(after.pipeline.jobs[0]!.steps[0]!);
+
+    const keyOf = (pipeline: typeof before.pipeline, step: typeof beforeStep) =>
+      computeStepKey({
+        lockHash: jobLockHash(pipeline, pipeline.jobs[0]!),
+        jobId: 'build',
+        step,
+        inputsFingerprint: undefined,
+        backendCommand: undefined,
+        upstream: [],
+      });
+
+    assert.notEqual(keyOf(before.pipeline, beforeStep), keyOf(after.pipeline, afterStep));
+  });
+
+  it('смена слоя разрешения меняет ключ шага', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        uses: echo-input
+`,
+    });
+    const roots = usesStepRoots(project);
+    // Только встроенный слой знает шаг — до правки.
+    mkdirSync(join(roots.builtin, 'echo-input'), { recursive: true });
+    writeFileSync(join(roots.builtin, 'echo-input', 'step.yml'), ECHO_MANIFEST);
+    writeFileSync(join(roots.builtin, 'echo-input', 'main.cjs'), ECHO_MAIN);
+    const before = expandUses(project, roots);
+    const beforeStep = asScript(before.pipeline.jobs[0]!.steps[0]!);
+    assert.equal(beforeStep.uses?.layer, 'builtin');
+
+    // Теперь тот же шаг есть и в проекте — он побеждает.
+    writeEchoStep(project);
+    const after = expandUses(project, roots);
+    const afterStep = asScript(after.pipeline.jobs[0]!.steps[0]!);
+    assert.equal(afterStep.uses?.layer, 'project');
+
+    const keyOf = (pipeline: typeof before.pipeline, step: typeof beforeStep) =>
+      computeStepKey({
+        lockHash: jobLockHash(pipeline, pipeline.jobs[0]!),
+        jobId: 'build',
+        step,
+        inputsFingerprint: undefined,
+        backendCommand: undefined,
+        upstream: [],
+      });
+
+    assert.notEqual(keyOf(before.pipeline, beforeStep), keyOf(after.pipeline, afterStep));
+  });
+
+  it('правка with на месте вызова меняет ключ шага', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        uses: echo-input
+        with: { retries: 1 }
+`,
+    });
+    const roots = usesStepRoots(project);
+    writeEchoStep(project);
+    const before = expandUses(project, roots);
+    const beforeStep = asScript(before.pipeline.jobs[0]!.steps[0]!);
+
+    project.write(
+      'stepcast.yml',
+      `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        uses: echo-input
+        with: { retries: 2 }
+`,
+    );
+    const after = expandUses(project, roots);
+    const afterStep = asScript(after.pipeline.jobs[0]!.steps[0]!);
+
+    const keyOf = (pipeline: typeof before.pipeline, step: typeof beforeStep) =>
+      computeStepKey({
+        lockHash: jobLockHash(pipeline, pipeline.jobs[0]!),
+        jobId: 'build',
+        step,
+        inputsFingerprint: undefined,
+        backendCommand: undefined,
+        upstream: [],
+      });
+
+    assert.notEqual(keyOf(before.pipeline, beforeStep), keyOf(after.pipeline, afterStep));
   });
 });

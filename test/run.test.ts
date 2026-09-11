@@ -90,6 +90,32 @@ async function runWithScriptRoots(
   });
 }
 
+/** Корни трёх слоёв каталога шагов `uses`, изолированные от машины. */
+function isolatedStepRoots(project: Project): { project: string; home: string; builtin: string } {
+  return { project: project.root, home: tempDir('step-home-'), builtin: tempDir('step-builtin-') };
+}
+
+/** Прогнать пайплайн проекта целиком с заданными корнями слоёв каталога шагов `uses`. */
+async function runWithStepRoots(
+  project: Project,
+  stepRoots: { project: string; home: string; builtin: string },
+  config: Config = project.config,
+): Promise<RunResult> {
+  const runsRoot = tempDir('runs-');
+  const expanded = expandPipeline({
+    pipelinePath: project.path('stepcast.yml'),
+    config,
+    stepRoots,
+    scriptRoots: isolatedScriptRoots(project),
+  });
+  return runPipeline({
+    expanded,
+    config: { ...config, runs: { ...config.runs, root: runsRoot } },
+    projectRoot: project.root,
+    cwd: project.root,
+  });
+}
+
 /** Якорь, который не умеет ничего: подставляется, чтобы проверить границы. */
 function brokenAnchorer(): never {
   throw new Error('фиксация состояния недоступна');
@@ -1690,6 +1716,330 @@ jobs:
     assert.equal(job?.output, undefined, 'выход неуспешной работы не публикуется');
     const stepDir = findStepDir(result.journal.paths, 'build', 'c');
     assert.equal(existsSync(join(stepDir!, 'output.json')), false, 'файл второй попытки снят и не записан заново');
+  });
+});
+
+describe('step-execution: шаг uses', () => {
+  const GREET_MANIFEST = `
+version: 1
+kind: step
+name: greet
+description: Приветствует по имени.
+file: ./main.cjs
+params:
+  type: object
+  properties:
+    name: { type: string, default: world }
+output_schema: ./output.schema.json
+`;
+  const GREET_MAIN = `
+const fs = require('node:fs');
+const input = JSON.parse(fs.readFileSync(process.env.STEPCAST_INPUT, 'utf8'));
+fs.writeFileSync(process.env.STEPCAST_OUTPUT, JSON.stringify({ greeting: 'привет, ' + input.name }));
+`;
+  const GREET_OUTPUT_SCHEMA = JSON.stringify({
+    type: 'object',
+    properties: { greeting: { type: 'string' } },
+    required: ['greeting'],
+  });
+
+  function writeGreetStep(project: Project): void {
+    project.write('.stepcast/steps/greet/step.yml', GREET_MANIFEST);
+    project.write('.stepcast/steps/greet/main.cjs', GREET_MAIN);
+    project.write('.stepcast/steps/greet/output.schema.json', GREET_OUTPUT_SCHEMA);
+  }
+
+  // Сценарий: «Параметры доезжают входом контракта» + «Выход доступен как у шага script»
+  it('параметры доезжают в input.json, выход проверяется схемой манифеста и публикуется работой', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    output: { from: c }
+    steps:
+      - id: c
+        uses: greet
+        with: { name: Ann }
+  after:
+    needs: [build]
+    steps:
+      - id: show
+        run: [sh, -c, 'echo "\${jobs.build.output.greeting}"']
+`,
+    });
+    writeGreetStep(project);
+
+    const result = await runWithStepRoots(project, isolatedStepRoots(project));
+    assert.equal(result.status, 'success');
+
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.deepEqual(JSON.parse(readFileSync(join(stepDir!, 'input.json'), 'utf8')), { name: 'Ann' });
+    assert.deepEqual(JSON.parse(readFileSync(join(stepDir!, 'output.json'), 'utf8')), {
+      greeting: 'привет, Ann',
+    });
+
+    const showDir = findStepDir(result.journal.paths, 'after', 'show');
+    assert.match(readFileSync(join(showDir!, 'stdout.log'), 'utf8'), /привет, Ann/);
+  });
+
+  // Сценарий: «Объект из выхода работы выше по графу» (pipeline-definition)
+  it('объект из выхода работы выше по графу доезжает параметром целиком, а не строкой', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  plan:
+    output: { from: p }
+    steps: [{ id: p, script: plan.sh }]
+  build:
+    needs: [plan]
+    output: { from: c }
+    steps:
+      - id: c
+        uses: echo-item
+        with: { item: "\${jobs.plan.output.item}", files: "\${jobs.plan.output.files}" }
+`,
+    });
+    project.write(
+      '.stepcast/steps/echo-item/step.yml',
+      `
+version: 1
+kind: step
+name: echo-item
+description: Возвращает переданное обратно.
+file: ./main.cjs
+params:
+  type: object
+  properties:
+    item: { type: object }
+    files: { type: array }
+  required: [item, files]
+`,
+    );
+    project.write(
+      '.stepcast/steps/echo-item/main.cjs',
+      "const fs = require('node:fs');\n" +
+        "fs.copyFileSync(process.env.STEPCAST_INPUT, process.env.STEPCAST_OUTPUT);\n",
+    );
+    project.write(
+      '.stepcast/scripts/plan.sh',
+      '#!/bin/sh\necho \'{"item": {"slug": "bug-42", "count": 3}, "files": ["a.ts", "b.ts"]}\' > "$STEPCAST_OUTPUT"\n',
+    );
+
+    const result = await runWithStepRoots(project, isolatedStepRoots(project));
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.deepEqual(JSON.parse(readFileSync(join(stepDir!, 'input.json'), 'utf8')), {
+      item: { slug: 'bug-42', count: 3 },
+      files: ['a.ts', 'b.ts'],
+    });
+  });
+
+  // Сценарий: «Умолчание попадает во вход»
+  it('умолчание манифеста попадает во вход, когда with не передан', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps: [{ id: c, uses: greet }]
+`,
+    });
+    writeGreetStep(project);
+
+    const result = await runWithStepRoots(project, isolatedStepRoots(project));
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'c');
+    assert.deepEqual(JSON.parse(readFileSync(join(stepDir!, 'input.json'), 'utf8')), { name: 'world' });
+  });
+
+  // Сценарий: «Выход проверяется схемой манифеста»
+  it('выход не по output_schema манифеста отказывает попытке с замечаниями валидатора', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps: [{ id: c, uses: greet }]
+`,
+    });
+    project.write('.stepcast/steps/greet/step.yml', GREET_MANIFEST);
+    project.write(
+      '.stepcast/steps/greet/main.cjs',
+      "const fs = require('node:fs');\nfs.writeFileSync(process.env.STEPCAST_OUTPUT, JSON.stringify({ wrong: true }));\n",
+    );
+    project.write('.stepcast/steps/greet/output.schema.json', GREET_OUTPUT_SCHEMA);
+
+    const result = await runWithStepRoots(project, isolatedStepRoots(project));
+    assert.equal(result.status, 'failed');
+    const record = steps(result).find((entry) => entry.id === 'c');
+    assert.match(record?.reason ?? '', /output_schema/);
+  });
+
+  // Сценарий: «Гарантии исполнения те же»
+  it('timeout, expect и attempts.max действуют у шага uses как у script', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: c
+        uses: greet
+        expect: [{ exit_code: 0 }]
+        attempts: { max: 2 }
+`,
+    });
+    writeGreetStep(project);
+
+    const result = await runWithStepRoots(project, isolatedStepRoots(project));
+    assert.equal(result.status, 'success');
+    const record = steps(result).find((entry) => entry.id === 'c');
+    assert.equal(record?.attempts.length, 1);
+  });
+
+  // Сценарий: «Прогон отказывает неразрешённому шагу»
+  it('uses с неизвестным именем отказывает одной терминальной попыткой тем же текстом, что дал бы линт', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps: [{ id: c, uses: no-such-step, attempts: { max: 3 } }]
+`,
+    });
+
+    const result = await runWithStepRoots(project, isolatedStepRoots(project));
+    assert.equal(result.status, 'failed');
+    const record = steps(result).find((entry) => entry.id === 'c');
+    assert.equal(record?.attempts.length, 1);
+    assert.match(record?.reason ?? '', /no-such-step/);
+    assert.match(record?.reason ?? '', /не найден/);
+  });
+
+  // Сценарий: «Отложенный параметр не по схеме»
+  it('параметр, пришедший выходом работы выше по графу не по схеме, отказывает одной терминальной попыткой', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  plan:
+    output: { from: p }
+    steps: [{ id: p, script: plan.sh }]
+  build:
+    needs: [plan]
+    steps:
+      - id: c
+        uses: greet
+        with: { name: "\${jobs.plan.output.name}" }
+        attempts: { max: 3 }
+`,
+    });
+    writeGreetStep(project);
+    project.write(
+      '.stepcast/steps/greet/step.yml',
+      GREET_MANIFEST.replace('name: { type: string, default: world }', 'name: { type: integer }'),
+    );
+    project.write('.stepcast/scripts/plan.sh', '#!/bin/sh\necho \'{"name": "not-a-number"}\' > "$STEPCAST_OUTPUT"\n');
+
+    const result = await runWithStepRoots(project, isolatedStepRoots(project));
+    assert.equal(result.status, 'failed');
+    const record = steps(result).find((entry) => entry.id === 'c');
+    assert.equal(record?.attempts.length, 1, 'отказ терминален и не расходует оставшиеся попытки');
+    assert.equal(record?.attempts[0]?.exit_code, null, 'процесс не запускался');
+    assert.match(record?.reason ?? '', /greet/);
+    assert.match(record?.reason ?? '', /name/);
+    // Отказ отличим от отказа самого шага: причина называет проверку параметров.
+    assert.doesNotMatch(record?.reason ?? '', /код возврата/);
+  });
+});
+
+describe('step-execution: встроенный образец changed-files', () => {
+  it('перечисляет изменённые файлы рабочего дерева проекта без каталогов .stepcast/steps/', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    output: { from: c }
+    steps: [{ id: c, uses: changed-files }]
+`,
+    });
+    project.write('tracked.txt', 'исходное\n');
+    gitInit(project.root);
+    gitCommit(project.root, 'init');
+    // `git diff --name-only` видит правку отслеживаемого файла — тем же
+    // якорем, каким гоняются остальные тесты якоря рабочего дерева
+    // (`workspace-anchor`); свежесозданный файл в diff не попал бы вовсе,
+    // только в `git status`.
+    project.write('tracked.txt', 'изменено\n');
+
+    // Встроенный слой находится от расположения движка (`findPackageRoot`),
+    // а не переопределяется здесь: тест обязан видеть настоящий пакетный
+    // каталог `src/builtin/steps/changed-files`.
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: tempDir('runs-') } },
+      projectRoot: project.root,
+      cwd: project.root,
+    });
+
+    assert.equal(result.status, 'success', JSON.stringify(steps(result).map((step) => step.reason)));
+    const status = readStatus(result.journal.paths);
+    const job = status.jobs.find((entry) => entry.id === 'build');
+    const output = JSON.parse(readFileSync(job!.output as string, 'utf8'));
+    assert.ok(Array.isArray(output.files));
+    assert.ok(output.files.includes('tracked.txt'), JSON.stringify(output));
+  });
+
+  it('исполняется раннером node со снятой обёрткой (wrapper: none)', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    output: { from: c }
+    steps: [{ id: c, uses: changed-files }]
+`,
+    });
+    project.write('tracked.txt', 'исходное\n');
+    gitInit(project.root);
+    gitCommit(project.root, 'init');
+    project.write('tracked.txt', 'изменено\n');
+
+    // Раннер node переопределён без ключа wrapper вовсе — тем же приёмом,
+    // каким `test/expand.test.ts` снимает обёртку (`resolveWrapper` не находит
+    // объявления и не добавляет её в argv).
+    const config: Config = {
+      ...project.config,
+      runners: {
+        ...project.config.runners,
+        node: { command: ['node'], extensions: ['.js', '.mjs', '.cjs'] },
+      },
+    };
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+      config: { ...config, runs: { ...config.runs, root: tempDir('runs-') } },
+      projectRoot: project.root,
+      cwd: project.root,
+    });
+
+    assert.equal(result.status, 'success', JSON.stringify(steps(result).map((step) => step.reason)));
+    const status = readStatus(result.journal.paths);
+    const job = status.jobs.find((entry) => entry.id === 'build');
+    const output = JSON.parse(readFileSync(job!.output as string, 'utf8'));
+    assert.ok(Array.isArray(output.files));
+    assert.ok(output.files.includes('tracked.txt'), JSON.stringify(output));
   });
 });
 

@@ -213,6 +213,21 @@ export const StepRecordSchema = z
       })
       .strict()
       .optional(),
+    /**
+     * Происхождение шага, собранного из манифеста переиспользуемого шага
+     * (design.md изменения reusable-steps, решение 11): имя, слой, в котором
+     * найден манифест, и его путь — рядом с `script`, а не вместо него, чтобы
+     * запись отвечала и на вопрос «что исполнится», и на вопрос «что здесь
+     * было написано». Есть только у `kind: script`, собранного из `uses`.
+     */
+    uses: z
+      .object({
+        name: z.string(),
+        layer: z.enum(['project', 'home', 'builtin']).optional(),
+        manifest_path: z.string().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

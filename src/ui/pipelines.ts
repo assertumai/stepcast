@@ -61,6 +61,16 @@ export interface PipelineStepView {
   readonly hasScriptInput?: boolean;
   /** Путь объявленной схемы выхода — тем же полем, что и у `run`/`agent`, но у script означает проверку файла, а не разбор stdout. */
   readonly scriptOutputSchemaPath?: string;
+  /**
+   * Имя переиспользуемого шага и слой, из которого разрешён его манифест, —
+   * у script, собранного из `uses`. Имя занимает место пути на карточке: путь
+   * в чужой `node_modules` не говорит читателю ничего (design.md изменения
+   * reusable-steps, решение 13).
+   */
+  readonly usesName?: string;
+  readonly usesLayer?: 'project' | 'home' | 'builtin';
+  /** Переданные параметры вызова — со сведёнными умолчаниями. */
+  readonly usesParams?: Readonly<Record<string, unknown>>;
 }
 
 export interface PipelineJobView {
@@ -186,6 +196,9 @@ function toJobView(
       ...(step.kind === 'script' && step.outputSchemaPath !== undefined
         ? { scriptOutputSchemaPath: step.outputSchemaPath }
         : {}),
+      ...(step.kind === 'script' && step.uses !== undefined ? { usesName: step.uses.name } : {}),
+      ...(step.kind === 'script' && step.uses?.layer !== undefined ? { usesLayer: step.uses.layer } : {}),
+      ...(step.kind === 'script' && step.uses?.params !== undefined ? { usesParams: step.uses.params } : {}),
     })),
   };
 }

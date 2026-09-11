@@ -30,6 +30,7 @@ import type { BacklogOverview } from './backlog.js';
 import { readJournalFile } from './file.js';
 import { readModels } from './models.js';
 import { buildPipelines, createRegistryCache, type RegistryCache } from './pipelines.js';
+import { buildSteps } from './steps.js';
 import { isApiPath, isSafeSegment } from './routes.js';
 import { readSettings, writeSettings } from './settings.js';
 import { buildSnapshot, buildSnapshotFromRecord } from './snapshot.js';
@@ -761,6 +762,15 @@ async function handlePipelines(
   }
 }
 
+/** Каталог переиспользуемых шагов: чтение файлов, синхронно, как и остальной обход манифестов. */
+function handleSteps(runsRoot: string, home: string | undefined, res: ServerResponse): void {
+  try {
+    sendJson(res, 200, buildSteps(runsRoot, home === undefined ? {} : { home }));
+  } catch (error) {
+    sendJson(res, 500, { error: (error as Error).message });
+  }
+}
+
 function handleEvents(
   runsRoot: string,
   watcher: Watcher,
@@ -896,6 +906,9 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
         return;
       case '/api/pipelines':
         void handlePipelines(runsRoot, config, home, registryCache, res);
+        return;
+      case '/api/steps':
+        handleSteps(runsRoot, home, res);
         return;
       case '/api/settings':
         void readSettings(home)

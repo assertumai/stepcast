@@ -1909,6 +1909,134 @@ jobs:
   });
 });
 
+describe('ui-dashboard: каталог переиспользуемых шагов', () => {
+  const GREET_MANIFEST = `
+version: 1
+kind: step
+name: greet
+description: Приветствует по имени.
+file: ./main.cjs
+params:
+  type: object
+  properties:
+    name: { type: string, default: world, description: Кого приветствовать }
+output_schema: ./output.schema.json
+`;
+
+  // Сценарий: «Каталог перечисляет шаги трёх слоёв»
+  it('перечисляет шаг проекта наравне со встроенными пакета, называя слой каждого', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    mkdirSync(join(projectRoot, '.stepcast', 'steps', 'greet'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'steps', 'greet', 'step.yml'), GREET_MANIFEST);
+    writeFileSync(join(projectRoot, '.stepcast', 'steps', 'greet', 'main.cjs'), 'module.exports = () => {};\n');
+    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const steps = await fetchJson(server, '/api/steps');
+    assert.equal(steps.code, 200);
+    const projectSteps = pick(steps.json, 'projects', 0, 'steps') as Array<{ name: string; layer: string }>;
+    const greet = projectSteps.find((step) => step.name === 'greet');
+    assert.equal(greet?.layer, 'project');
+    // Пакет всегда поставляет хотя бы один встроенный образец — каталог не
+    // пуст даже без единого шага проекта (design.md, решение 12).
+    assert.ok(projectSteps.some((step) => step.layer === 'builtin'), JSON.stringify(projectSteps));
+  });
+
+  // Сценарий: «Параметры видны с типами и умолчаниями»
+  it('показывает параметр именем, типом, обязательностью, умолчанием и описанием', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    mkdirSync(join(projectRoot, '.stepcast', 'steps', 'greet'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'steps', 'greet', 'step.yml'), GREET_MANIFEST);
+    writeFileSync(join(projectRoot, '.stepcast', 'steps', 'greet', 'main.cjs'), 'module.exports = () => {};\n');
+    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const steps = await fetchJson(server, '/api/steps');
+    const projectSteps = pick(steps.json, 'projects', 0, 'steps') as Array<{
+      name: string;
+      params: Array<{ name: string; type?: string; required: boolean; default?: unknown; description?: string }>;
+    }>;
+    const param = projectSteps.find((step) => step.name === 'greet')?.params[0];
+    assert.equal(param?.name, 'name');
+    assert.equal(param?.type, 'string');
+    assert.equal(param?.required, false);
+    assert.equal(param?.default, 'world');
+    assert.equal(param?.description, 'Кого приветствовать');
+  });
+
+  // Сценарий: «Перекрытый шаг отмечен»
+  it('отмечает перекрытый шаг домашнего слоя, а не пропускает его', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    mkdirSync(join(projectRoot, '.stepcast', 'steps', 'greet'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'steps', 'greet', 'step.yml'), GREET_MANIFEST);
+    writeFileSync(join(projectRoot, '.stepcast', 'steps', 'greet', 'main.cjs'), 'module.exports = () => {};\n');
+    mkdirSync(join(home, '.stepcast', 'steps', 'greet'), { recursive: true });
+    writeFileSync(join(home, '.stepcast', 'steps', 'greet', 'step.yml'), GREET_MANIFEST);
+    writeFileSync(join(home, '.stepcast', 'steps', 'greet', 'main.cjs'), 'module.exports = () => {};\n');
+    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const steps = await fetchJson(server, '/api/steps');
+    const projectSteps = pick(steps.json, 'projects', 0, 'steps') as Array<{
+      name: string;
+      layer: string;
+      overridden: boolean;
+    }>;
+    const greetSteps = projectSteps.filter((step) => step.name === 'greet');
+    assert.deepEqual(
+      greetSteps.map((step) => [step.layer, step.overridden]).sort(),
+      [
+        ['home', true],
+        ['project', false],
+      ],
+    );
+  });
+
+  // Сценарий: «Чистый проект»
+  it('проект без .stepcast/steps/ показывает встроенные шаги пакета, а не пустой список', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const steps = await fetchJson(server, '/api/steps');
+    const projectSteps = pick(steps.json, 'projects', 0, 'steps') as unknown[];
+    assert.ok(projectSteps.length > 0);
+  });
+
+  // Сценарий: «Дефектный манифест»
+  it('дефектный манифест показан с причиной отказа и файлом манифеста', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
+    mkdirSync(join(projectRoot, '.stepcast', 'steps', 'greet'), { recursive: true });
+    writeFileSync(
+      join(projectRoot, '.stepcast', 'steps', 'greet', 'step.yml'),
+      `${GREET_MANIFEST}\nunexpected_field: 1\n`,
+    );
+    writeFileSync(join(projectRoot, '.stepcast', 'steps', 'greet', 'main.cjs'), 'module.exports = () => {};\n');
+    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+
+    const steps = await fetchJson(server, '/api/steps');
+    const projectSteps = pick(steps.json, 'projects', 0, 'steps') as Array<{
+      name: string;
+      error?: string;
+      manifestPath: string;
+    }>;
+    const greet = projectSteps.find((step) => step.name === 'greet');
+    assert.match(greet?.error ?? '', /unexpected_field/);
+    assert.match(greet?.manifestPath ?? '', /step\.yml$/);
+  });
+});
+
 describe('ui-dashboard: пайплайн раскрыт реестром вкладов своего проекта', () => {
   it('предикат плагина в expect раскрывает пайплайн устройством, а не ошибкой', async (t) => {
     const { runsRoot, projectRoot, home } = makeJournalBed();

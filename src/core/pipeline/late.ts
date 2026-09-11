@@ -80,10 +80,23 @@ function explain(scope: LateScope) {
   };
 }
 
-/** `input` шага script снят перед обходом — тем же приёмом, что и `display`. */
-function omitInput(step: Step): Step {
-  if (step.kind !== 'script' || step.input === undefined) return step;
-  const { input: _input, ...rest } = step;
+/**
+ * `input` шага `script` и блок `uses` сняты перед обходом — тем же приёмом,
+ * что и `display`.
+ *
+ * `uses` снимается целиком, а не одним полем: он несёт **вторую копию** тех же
+ * нераскрытых значений (`params` — сведённый `with`) и, сверх того, схему
+ * параметров манифеста (`paramsSchema`). Общий `interpolateTree` раскрыл бы
+ * `${jobs.plan.output.item}` в копии строкой — и упал бы на объекте и списке
+ * прежде, чем работа дошла до шага; а `description` или `pattern` схемы, где
+ * `${` — литерал автора манифеста, он принял бы за подстановку. Обе величины
+ * возвращаются на место в `resolveLate` — `params` наравне с `input`,
+ * `paramsSchema` нетронутой.
+ */
+function omitLateSkipped(step: Step): Step {
+  if (step.kind !== 'script') return step;
+  if (step.input === undefined && step.uses === undefined) return step;
+  const { input: _input, uses: _uses, ...rest } = step;
   return rest;
 }
 
@@ -100,6 +113,11 @@ function omitInput(step: Step): Step {
  * бы `${jobs.plan.output.item}` строкой, а не объектом. Типизированный проход
  * зовётся здесь же, отдельно на каждый шаг, — теперь уже по-настоящему
  * отложенными `${jobs.*}`, `${run.*}` и `${env.*}`.
+ *
+ * Блок `uses` шага, собранного из манифеста, отделяется вместе с `input`
+ * (`omitLateSkipped`) и возвращается с тем же раскрытым значением: `params`
+ * там — та же величина, что и `input` шага, и разъехаться им нельзя, иначе
+ * замок и витрина показали бы параметры, отличные от уехавших в `input.json`.
  */
 export function resolveLate(job: Job, scope: LateScope): Job {
   const { display, ...resolvable } = job;
@@ -110,7 +128,7 @@ export function resolveLate(job: Job, scope: LateScope): Job {
     explain: explain(scope),
   };
   try {
-    const stepsWithoutInput = resolvable.steps.map(omitInput);
+    const stepsWithoutInput = resolvable.steps.map(omitLateSkipped);
     const resolved = interpolateTree(
       { ...resolvable, steps: stepsWithoutInput },
       lateScope,
@@ -118,17 +136,34 @@ export function resolveLate(job: Job, scope: LateScope): Job {
     ).value;
     const resolvedSteps = resolved.steps.map((step, index) => {
       const original = resolvable.steps[index];
-      if (
-        original === undefined ||
-        original.kind !== 'script' ||
-        original.input === undefined ||
-        step.kind !== 'script'
-      ) {
-        return step;
-      }
+      if (original === undefined || original.kind !== 'script' || step.kind !== 'script') return step;
+      if (original.input === undefined && original.uses === undefined) return step;
+      // Место объявления в документе: у шага `uses` это `with`, у шага
+      // `script` — `input`. Сообщение о непроходимой подстановке должно
+      // называть ключ, который автор действительно писал.
+      const at =
+        original.uses === undefined
+          ? `jobs.${job.id}.steps.${index}.input`
+          : `jobs.${job.id}.steps.${index}.with`;
+      const input =
+        original.input === undefined
+          ? undefined
+          : interpolateTypedTree(original.input, lateScope, at).value;
+      // `params` блока `uses` и `input` шага — одна и та же величина:
+      // `expand.ts` кладёт в `input` ровно сведённый `with`. Раскрытая один
+      // раз, она ставится обеим, чтобы замок и `input.json` не разъехались.
+      const params =
+        original.uses?.params === undefined
+          ? undefined
+          : original.uses.params === original.input
+            ? (input as Readonly<Record<string, unknown>>)
+            : interpolateTypedTree(original.uses.params, lateScope, at).value;
       return {
         ...step,
-        input: interpolateTypedTree(original.input, lateScope, `jobs.${job.id}.steps.${index}.input`).value,
+        ...(input === undefined ? {} : { input }),
+        ...(original.uses === undefined
+          ? {}
+          : { uses: { ...original.uses, ...(params === undefined ? {} : { params }) } }),
       };
     });
     const withSteps = { ...resolved, steps: resolvedSteps };

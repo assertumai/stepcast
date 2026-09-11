@@ -10,6 +10,7 @@ import { RunDetail } from './pages/RunDetail';
 import { Runs } from './pages/Runs';
 import { Agents } from './pages/Agents';
 import { Settings } from './pages/Settings';
+import { Steps } from './pages/Steps';
 import { Usage } from './pages/Usage';
 
 /**
@@ -74,6 +75,7 @@ export function App(): JSX.Element {
       <main className="content">
         {route.page === 'runs' ? <Runs overview={overview} navigate={navigate} /> : null}
         {route.page === 'pipelines' ? <Pipelines overview={overview} navigate={navigate} /> : null}
+        {route.page === 'steps' ? <Steps /> : null}
         {route.page === 'backlog' ? <Backlog backlog={backlog} /> : null}
         {route.page === 'usage' ? (
           <Usage overview={overview} {...(route.days === undefined ? {} : { days: route.days })} navigate={navigate} />

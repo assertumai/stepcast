@@ -7,6 +7,7 @@ import { effectivePermissions } from './backend/permissions.js';
 import { parseExpression, references } from './expr/parse.js';
 import { buildGraph } from './graph.js';
 import { isStepcastError } from './errors.js';
+import { describeScriptUnresolved } from './pipeline/expand.js';
 import { buildPublishedSchemas, pluginPredicateEntries } from './pipeline/published-schema.js';
 import { builtinRegistry } from './plugins/builtin.js';
 import { availableNames, type Registry } from './plugins/registry.js';
@@ -1334,16 +1335,29 @@ function checkStep(
     (step.kind === 'agent' || step.kind === 'run' || step.kind === 'script') &&
     step.outputSchemaPath !== undefined
   ) {
-    checkDeclaredPath(
-      {
-        path: step.outputSchemaPath,
-        declaredAt: `${at}.output_schema`,
-        file: job.source,
-        kind: 'Файл схемы',
-      },
-      substitutions,
-      push,
-    );
+    // Схему выхода шага `uses` объявляет манифест, а не место вызова: ключа
+    // `output_schema` в документе у такого шага нет вовсе, и указывать на
+    // него значило бы отправить автора править файл, где искомого нет.
+    const uses = step.kind === 'script' ? step.uses : undefined;
+    if (uses?.manifestPath === undefined) {
+      checkDeclaredPath(
+        {
+          path: step.outputSchemaPath,
+          declaredAt: `${at}.output_schema`,
+          file: job.source,
+          kind: 'Файл схемы',
+        },
+        substitutions,
+        push,
+      );
+    } else if (!existsSync(step.outputSchemaPath)) {
+      push({
+        severity: 'error',
+        message: `Шаг ${job.id}/${step.id}: файл схемы выхода шага ${uses.name} не найден: ${step.outputSchemaPath}`,
+        file: uses.manifestPath,
+        at: 'output_schema',
+      });
+    }
   }
 
   if (step.kind === 'script') checkScriptStep(job, step, at, substitutions, push);
@@ -1469,36 +1483,129 @@ function checkScriptStep(
   const unresolved = step.unresolved;
   if (unresolved === undefined) return;
 
-  if (unresolved.reason === 'file_not_found') {
-    if (pathCheckSkipped(step.path, [`${at}.script`], substitutions)) return;
-    push({
-      severity: 'error',
-      message: `Файл скрипта шага ${job.id}/${step.id} не найден ни в одном слое`,
-      file: job.source,
-      at: `${at}.script`,
-      hint: `Искали: ${unresolved.searched.join(', ')}`,
-    });
-    return;
-  }
+  // Шаг, собранный из манифеста, отказывает и по причинам, общим с шагом
+  // `script`: раннер выбирается теми же тремя правилами. Место объявления у
+  // них при этом другое — манифест, а не документ пайплайна, — и сообщение
+  // обязано называть его, а не ключи `runner`/`script`, которых у шага `uses`
+  // в документе нет.
+  const uses = step.uses;
 
-  if (unresolved.reason === 'unknown_runner') {
-    push({
-      severity: 'error',
-      message: `Шаг ${job.id}/${step.id} называет неизвестный раннер ${unresolved.runner}`,
-      file: job.source,
-      at: `${at}.runner`,
-      hint: `Известны: ${unresolved.known.join(', ') || '(таблица раннеров пуста)'}`,
-    });
-    return;
-  }
+  switch (unresolved.reason) {
+    case 'file_not_found': {
+      if (pathCheckSkipped(step.path, [`${at}.script`], substitutions)) return;
+      push({
+        severity: 'error',
+        message: `Файл скрипта шага ${job.id}/${step.id} не найден ни в одном слое`,
+        file: job.source,
+        at: `${at}.script`,
+        hint: `Искали: ${unresolved.searched.join(', ')}`,
+      });
+      return;
+    }
 
-  push({
-    severity: 'error',
-    message: `Раннер шага ${job.id}/${step.id} не определяется ни расширением, ни shebang`,
-    file: job.source,
-    at: `${at}.script`,
-    hint: `Известные расширения таблицы раннеров: ${unresolved.extensions.join(', ') || '(таблица раннеров пуста)'}. Назовите runner явно`,
-  });
+    case 'unknown_runner': {
+      const known = `Известны: ${unresolved.known.join(', ') || '(таблица раннеров пуста)'}`;
+      push(
+        uses === undefined
+          ? {
+              severity: 'error',
+              message: `Шаг ${job.id}/${step.id} называет неизвестный раннер ${unresolved.runner}`,
+              file: job.source,
+              at: `${at}.runner`,
+              hint: known,
+            }
+          : {
+              severity: 'error',
+              message: `Шаг ${job.id}/${step.id}: манифест шага ${uses.name} называет неизвестный раннер ${unresolved.runner}`,
+              file: uses.manifestPath ?? job.source,
+              at: uses.manifestPath === undefined ? `${at}.uses` : 'runner',
+              hint: known,
+            },
+      );
+      return;
+    }
+
+    case 'runner_undetermined': {
+      const extensions = `Известные расширения таблицы раннеров: ${unresolved.extensions.join(', ') || '(таблица раннеров пуста)'}`;
+      push(
+        uses === undefined
+          ? {
+              severity: 'error',
+              message: `Раннер шага ${job.id}/${step.id} не определяется ни расширением, ни shebang`,
+              file: job.source,
+              at: `${at}.script`,
+              hint: `${extensions}. Назовите runner явно`,
+            }
+          : {
+              severity: 'error',
+              message: `Шаг ${job.id}/${step.id}: раннер шага ${uses.name} не определяется ни расширением файла, ни shebang`,
+              file: uses.manifestPath ?? job.source,
+              at: uses.manifestPath === undefined ? `${at}.uses` : 'file',
+              hint: `${extensions}. Назовите runner в манифесте шага`,
+            },
+      );
+      return;
+    }
+
+    // Пять причин ниже — отказ шага `uses` (design.md изменения
+    // reusable-steps, решение 8). Имя шага `uses` никогда не несёт
+    // подстановки — форма проверена разбором (`UsesNameSchema`), — и
+    // `pathCheckSkipped` здесь не нужен ни одной из них.
+    case 'step_not_found': {
+      push({
+        severity: 'error',
+        message: `Шаг ${job.id}/${step.id}: переиспользуемый шаг ${unresolved.name} не найден ни в одном слое`,
+        file: job.source,
+        at: `${at}.uses`,
+        hint: `Искали: ${unresolved.searched.join(', ')}`,
+      });
+      return;
+    }
+
+    case 'manifest_invalid': {
+      push({
+        severity: 'error',
+        message: `Шаг ${job.id}/${step.id}: манифест шага ${unresolved.name} некорректен`,
+        file: job.source,
+        at: `${at}.uses`,
+        hint: `${unresolved.manifestPath}: ${unresolved.detail}`,
+      });
+      return;
+    }
+
+    case 'name_mismatch': {
+      push({
+        severity: 'error',
+        message: `Шаг ${job.id}/${step.id}: манифест объявляет name: ${unresolved.manifestName}, а каталог называется ${unresolved.name}`,
+        file: job.source,
+        at: `${at}.uses`,
+        hint: unresolved.manifestPath,
+      });
+      return;
+    }
+
+    case 'step_file_missing': {
+      push({
+        severity: 'error',
+        message: `Шаг ${job.id}/${step.id}: файл шага ${unresolved.name} не найден`,
+        file: job.source,
+        at: `${at}.uses`,
+        hint: `Ожидался ${unresolved.expectedPath} (манифест ${unresolved.manifestPath})`,
+      });
+      return;
+    }
+
+    case 'params_invalid': {
+      push({
+        severity: 'error',
+        message: `Шаг ${job.id}/${step.id}: параметры не проходят манифест шага ${unresolved.name}`,
+        file: job.source,
+        at: `${at}.with`,
+        hint: `${unresolved.manifestPath}: ${unresolved.detail}`,
+      });
+      return;
+    }
+  }
 }
 
 /**
@@ -1541,12 +1648,27 @@ function checkScriptPredicate(
     return;
   }
 
+  if (unresolved.reason === 'runner_undetermined') {
+    push({
+      severity: 'error',
+      message: `Раннер предиката script у ${label} не определяется ни расширением, ни shebang`,
+      file,
+      at: `${at}.script`,
+      hint: `Известные расширения таблицы раннеров: ${unresolved.extensions.join(', ') || '(таблица раннеров пуста)'}`,
+    });
+    return;
+  }
+
+  // Причины `uses` шага сюда не доходят: предикат `script` собирается
+  // `resolveScript`, которая их не производит вовсе (`src/core/pipeline/steps.ts`
+  // — только у шага `uses`). Ветка на случай будущего расхождения типов —
+  // с тем же текстом, что даёт движок.
   push({
     severity: 'error',
-    message: `Раннер предиката script у ${label} не определяется ни расширением, ни shebang`,
+    message: `Предикат script у ${label} не разрешился`,
     file,
     at: `${at}.script`,
-    hint: `Известные расширения таблицы раннеров: ${unresolved.extensions.join(', ') || '(таблица раннеров пуста)'}`,
+    hint: describeScriptUnresolved(unresolved),
   });
 }
 

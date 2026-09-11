@@ -31,6 +31,7 @@ describe('ui-routes: разбор адресов', () => {
 
   it('экраны меню разбираются каждый в свой маршрут', () => {
     assert.deepEqual(parseRoute('/pipelines'), { page: 'pipelines' });
+    assert.deepEqual(parseRoute('/steps'), { page: 'steps' });
     assert.deepEqual(parseRoute('/backlog'), { page: 'backlog' });
     assert.deepEqual(parseRoute('/settings'), { page: 'settings' });
     assert.deepEqual(parseRoute('/agents'), { page: 'agents' });

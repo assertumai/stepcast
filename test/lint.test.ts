@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -48,6 +48,33 @@ function lintScript(
 ): Diagnostic[] {
   const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config, scriptRoots });
   return lintPipeline(expanded, { config });
+}
+
+/** Корни трёх слоёв каталога шагов `uses`, изолированные от машины. */
+function isolatedStepRoots(project: Project): { project: string; home: string; builtin: string } {
+  return { project: project.root, home: tempDir('step-home-'), builtin: tempDir('step-builtin-') };
+}
+
+function lintUses(
+  project: Project,
+  stepRoots: { project: string; home: string; builtin: string },
+  config: Config = project.config,
+): Diagnostic[] {
+  const expanded = expandPipeline({
+    pipelinePath: project.path('stepcast.yml'),
+    config,
+    stepRoots,
+    scriptRoots: isolatedScriptRoots(project),
+  });
+  return lintPipeline(expanded, { config });
+}
+
+/** Каталог переиспользуемого шага с манифестом и файлом. */
+function writeUsesStep(layerDir: string, name: string, manifest: string, file: string, content: string): void {
+  const dir = join(layerDir, name);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'step.yml'), manifest);
+  writeFileSync(join(dir, file), content);
 }
 
 function errors(diagnostics: readonly Diagnostic[]): string[] {
@@ -3085,6 +3112,259 @@ jobs:
     const diagnostics = lintScript(project, isolatedScriptRoots(project));
     assert.deepEqual(
       errors(diagnostics).filter((text) => /предиката script/.test(text)),
+      [],
+    );
+  });
+});
+
+describe('pipeline-definition: статическая проверка шага uses', () => {
+  const GREET_MANIFEST = `
+version: 1
+kind: step
+name: greet
+description: Приветствует по имени.
+file: ./main.cjs
+params:
+  type: object
+  properties:
+    name: { type: string, default: world }
+  required: []
+`;
+  const GREET_MAIN = 'module.exports = () => {};\n';
+
+  // Сценарий: «Имя не найдено»
+  it('неизвестное имя шага — ошибка с именем шага и перечнем просмотренных каталогов', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, uses: no-such-step }]
+`,
+    });
+    const roots = isolatedStepRoots(project);
+    const diagnostics = lintUses(project, roots);
+
+    const message = errors(diagnostics).find((text) => /no-such-step/.test(text));
+    assert.ok(message !== undefined, errors(diagnostics).join('\n'));
+    const diagnostic = diagnostics.find((item) => item.message === message);
+    assert.match(diagnostic?.message ?? '', /build\/c/);
+    assert.match(
+      diagnostic?.hint ?? '',
+      new RegExp(join(roots.project, '.stepcast', 'steps', 'no-such-step').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')),
+    );
+  });
+
+  // Сценарий: «Несколько промахов за один проход»
+  it('два шага uses с разными промахами дают два сообщения за один проход', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: a
+        uses: no-such-step
+      - id: b
+        uses: greet
+        with: { unknown_param: 1 }
+`,
+    });
+    const roots = isolatedStepRoots(project);
+    writeUsesStep(join(roots.project, '.stepcast', 'steps'), 'greet', GREET_MANIFEST, 'main.cjs', GREET_MAIN);
+    const diagnostics = lintUses(project, roots);
+
+    assert.ok(errors(diagnostics).some((text) => /no-such-step/.test(text)));
+    assert.ok(diagnostics.some((item) => /unknown_param/.test(item.hint ?? '')));
+  });
+
+  it('несовпадение имени манифеста — ошибка, называющая оба имени и файл манифеста', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, uses: greet }]
+`,
+    });
+    const roots = isolatedStepRoots(project);
+    writeUsesStep(
+      join(roots.project, '.stepcast', 'steps'),
+      'greet',
+      GREET_MANIFEST.replace('name: greet', 'name: list-changes'),
+      'main.cjs',
+      GREET_MAIN,
+    );
+    const diagnostics = lintUses(project, roots);
+
+    const message = errors(diagnostics).find((text) => /list-changes/.test(text) && /greet/.test(text));
+    assert.ok(message !== undefined, errors(diagnostics).join('\n'));
+    const diagnostic = diagnostics.find((item) => item.message === message);
+    assert.match(diagnostic?.hint ?? '', /step\.yml$/);
+  });
+
+  it('отсутствующий файл шага — ошибка, называющая шаг и путь манифеста', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, uses: greet }]
+`,
+    });
+    const roots = isolatedStepRoots(project);
+    const dir = join(roots.project, '.stepcast', 'steps', 'greet');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'step.yml'), GREET_MANIFEST);
+    const diagnostics = lintUses(project, roots);
+
+    const message = errors(diagnostics).find((text) => /файл шага greet не найден/.test(text));
+    assert.ok(message !== undefined, errors(diagnostics).join('\n'));
+  });
+
+  it('неизвестный параметр — ошибка с перечнем объявленных, именем шага и файлом манифеста', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, uses: greet, with: { nam: 1 } }]
+`,
+    });
+    const roots = isolatedStepRoots(project);
+    writeUsesStep(join(roots.project, '.stepcast', 'steps'), 'greet', GREET_MANIFEST, 'main.cjs', GREET_MAIN);
+    const diagnostics = lintUses(project, roots);
+
+    const message = errors(diagnostics).find((text) => /greet/.test(text));
+    assert.ok(message !== undefined, errors(diagnostics).join('\n'));
+    const diagnostic = diagnostics.find((item) => item.message === message);
+    assert.match(diagnostic?.hint ?? '', /nam/);
+    assert.match(diagnostic?.hint ?? '', /name/);
+    assert.match(diagnostic?.hint ?? '', /step\.yml:/);
+  });
+
+  /**
+   * Промах, объявленный манифестом, диагностируется как промах манифеста:
+   * ключей `runner`, `script` и `output_schema` у шага `uses` в документе нет
+   * вовсе (design.md, решение 10), и указывать на них значило бы отправить
+   * автора править файл, где искомого нет.
+   */
+  const USES_AT = 'jobs.build.steps.0';
+
+  it('неизвестный раннер манифеста — ошибка называет манифест, а не ключ runner документа', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, uses: greet }]
+`,
+    });
+    const roots = isolatedStepRoots(project);
+    writeUsesStep(
+      join(roots.project, '.stepcast', 'steps'),
+      'greet',
+      `${GREET_MANIFEST}runner: nosuch\n`,
+      'main.cjs',
+      GREET_MAIN,
+    );
+    const diagnostics = lintUses(project, roots);
+
+    const diagnostic = diagnostics.find((item) => /nosuch/.test(item.message));
+    assert.ok(diagnostic !== undefined, errors(diagnostics).join('\n'));
+    assert.match(diagnostic.message, /build\/c/);
+    assert.match(diagnostic.message, /greet/);
+    assert.match(diagnostic.file ?? '', /step\.yml$/);
+    assert.notEqual(diagnostic.at, `${USES_AT}.runner`);
+  });
+
+  it('неопределимый раннер файла манифеста — ошибка называет манифест, а не ключ script документа', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, uses: greet }]
+`,
+    });
+    const roots = isolatedStepRoots(project);
+    writeUsesStep(
+      join(roots.project, '.stepcast', 'steps'),
+      'greet',
+      GREET_MANIFEST.replace('file: ./main.cjs', 'file: ./main.zzz'),
+      'main.zzz',
+      'ни расширения из таблицы, ни shebang\n',
+    );
+    const diagnostics = lintUses(project, roots);
+
+    const diagnostic = diagnostics.find((item) => /shebang/.test(item.message));
+    assert.ok(diagnostic !== undefined, errors(diagnostics).join('\n'));
+    assert.match(diagnostic.message, /build\/c/);
+    assert.match(diagnostic.message, /greet/);
+    assert.match(diagnostic.file ?? '', /step\.yml$/);
+    assert.notEqual(diagnostic.at, `${USES_AT}.script`);
+  });
+
+  it('отсутствующий файл схемы выхода манифеста — ошибка называет манифест, а не ключ output_schema документа', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps: [{ id: c, uses: greet }]
+`,
+    });
+    const roots = isolatedStepRoots(project);
+    writeUsesStep(
+      join(roots.project, '.stepcast', 'steps'),
+      'greet',
+      `${GREET_MANIFEST}output_schema: ./output.schema.json\n`,
+      'main.cjs',
+      GREET_MAIN,
+    );
+    const diagnostics = lintUses(project, roots);
+
+    const diagnostic = diagnostics.find((item) => /output\.schema\.json/.test(item.message));
+    assert.ok(diagnostic !== undefined, errors(diagnostics).join('\n'));
+    assert.match(diagnostic.message, /build\/c/);
+    assert.match(diagnostic.message, /greet/);
+    assert.match(diagnostic.file ?? '', /step\.yml$/);
+    assert.notEqual(diagnostic.at, `${USES_AT}.output_schema`);
+  });
+
+  it('значение с отложенной подстановкой не проверяется схемой, а состав — проверяется', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  plan:
+    steps: [{ id: p, run: [echo, hi] }]
+  build:
+    needs: [plan]
+    steps: [{ id: c, uses: greet, with: { name: "\${jobs.plan.output.slug}" } }]
+`,
+    });
+    const roots = isolatedStepRoots(project);
+    writeUsesStep(
+      join(roots.project, '.stepcast', 'steps'),
+      'greet',
+      GREET_MANIFEST.replace('name: { type: string, default: world }', 'name: { type: integer }'),
+      'main.cjs',
+      GREET_MAIN,
+    );
+    const diagnostics = lintUses(project, roots);
+
+    assert.deepEqual(
+      errors(diagnostics).filter((text) => /greet/.test(text)),
       [],
     );
   });

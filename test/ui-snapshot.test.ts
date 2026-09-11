@@ -222,6 +222,64 @@ jobs:
     assert.equal(step?.scriptOutputSchemaPath, project.path('schema.json'));
   });
 
+  // Сценарий ui-dashboard: «Шаг назван именем» + «Переданные параметры видны»
+  it('карточка шага uses называет имя, слой и переданные параметры', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: витрина-uses
+jobs:
+  build:
+    steps:
+      - id: greet
+        uses: greet
+        with: { name: Ann }
+`,
+    });
+    project.write(
+      '.stepcast/steps/greet/step.yml',
+      `
+version: 1
+kind: step
+name: greet
+description: Приветствует по имени.
+file: ./main.cjs
+params:
+  type: object
+  properties:
+    name: { type: string, default: world }
+`,
+    );
+    project.write('.stepcast/steps/greet/main.cjs', 'module.exports = () => {};\n');
+    const lock = serializeLock(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }).pipeline,
+    );
+
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-uses',
+      lock,
+      jobs: [
+        {
+          id: 'build',
+          status: 'success',
+          steps: [{ id: 'greet', index: 1, kind: 'script', key: 'k1', status: 'success', attempts: [] }],
+        },
+      ],
+    });
+
+    const snapshot = buildSnapshot(journal.paths, projectKey(bed.projectRoot));
+    const step = snapshot.jobs.find((job) => job.id === 'build')?.steps[0];
+    assert.equal(step?.kind, 'script');
+    assert.equal(step?.usesName, 'greet');
+    assert.equal(step?.usesLayer, 'project');
+    assert.deepEqual(step?.usesParams, { name: 'Ann' });
+    // Путь и раннер остаются доступны рядом с именем, а не пропадают.
+    assert.match(step?.scriptPath ?? '', /main\.cjs$/);
+    assert.equal(step?.scriptRunner, 'node');
+  });
+
   // Сценарий: «Разрез контекста агентского шага»
   it('разбирает context.json агентского шага по четырём уровням', () => {
     const { journal, key } = seed();

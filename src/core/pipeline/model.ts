@@ -220,11 +220,74 @@ export interface ResolvedScript {
  * раннер, не определённый ни расширением, ни shebang. Не исключение
  * раскрытия (design.md, решение 1) — диагностику даёт `stepcast lint`, а
  * прогон отказывает шагу названно (`src/core/run/runner.ts`).
+ *
+ * Пять последних вариантов — причины отказа шага `uses` (design.md, решение
+ * 8): ненайденное имя, дефектный манифест (нечитаемый файл, не прошедшая
+ * схему форма документа, схема параметров не объектная либо не
+ * компилируется), несовпадение `name` манифеста с именем каталога,
+ * отсутствующий файл шага `file`, промах параметров вызова (неизвестный,
+ * непереданный обязательный, значение не по схеме — когда оно известно
+ * статически). Ни один не бросает исключение при чтении манифеста по той же
+ * причине, по которой его не бросает `file_not_found`: `stepcast lint`
+ * обязан назвать все промахи документа за один проход.
  */
 export type ScriptUnresolved =
   | { readonly reason: 'file_not_found'; readonly searched: readonly string[] }
   | { readonly reason: 'unknown_runner'; readonly runner: string; readonly known: readonly string[] }
-  | { readonly reason: 'runner_undetermined'; readonly extensions: readonly string[] };
+  | { readonly reason: 'runner_undetermined'; readonly extensions: readonly string[] }
+  | { readonly reason: 'step_not_found'; readonly name: string; readonly searched: readonly string[] }
+  | {
+      readonly reason: 'manifest_invalid';
+      readonly name: string;
+      readonly manifestPath: string;
+      readonly detail: string;
+    }
+  | {
+      readonly reason: 'name_mismatch';
+      readonly name: string;
+      readonly manifestName: string;
+      readonly manifestPath: string;
+    }
+  | {
+      readonly reason: 'step_file_missing';
+      readonly name: string;
+      readonly manifestPath: string;
+      readonly expectedPath: string;
+    }
+  | {
+      readonly reason: 'params_invalid';
+      readonly name: string;
+      readonly manifestPath: string;
+      readonly detail: string;
+    };
+
+/** Слой, в котором может быть найден переиспользуемый шаг — без `explicit`: `uses` путём не бывает (design.md, решение 2). */
+export type StepLayer = Exclude<ScriptLayer, 'explicit'>;
+
+/**
+ * Происхождение шага `uses`: то, что было написано в документе и чем это
+ * разрешилось, — рядом с исполняемым, а не вместо него (design.md, решение
+ * 11). Поля, кроме `name`, отсутствуют, пока разрешение не дошло до них:
+ * ненайденное имя не оставляет ни слоя, ни манифеста, ни параметров.
+ */
+export interface UsesOrigin {
+  readonly name: string;
+  readonly layer?: StepLayer;
+  readonly manifestPath?: string;
+  /** Короткий sha256 содержимого манифеста на момент раскрытия. */
+  readonly manifestFingerprint?: string;
+  /** Сведённый `with` — после применения умолчаний манифеста. */
+  readonly params?: Readonly<Record<string, unknown>>;
+  /**
+   * Схема параметров манифеста — не публикуется в замок (design.md, решение
+   * 11: содержимое манифеста в замок не попадает, отпечатка достаточно).
+   * Живёт только в раскрытом пайплайне в памяти: движок сверяет ей параметры
+   * ещё раз после позднего раскрытия, перед записью `input.json`
+   * (`src/core/run/runner.ts`), — до этого момента значение могло нести
+   * отложенную подстановку, непроверимую статически.
+   */
+  readonly paramsSchema?: Readonly<Record<string, unknown>>;
+}
 
 export interface ScriptStep extends StepCommon {
   readonly kind: 'script';
@@ -249,6 +312,14 @@ export interface ScriptStep extends StepCommon {
   /** Ровно одно из двух: разрешённый скрипт либо причина, почему не вышло. */
   readonly resolved?: ResolvedScript;
   readonly unresolved?: ScriptUnresolved;
+  /**
+   * Происхождение шага, собранного из манифеста переиспользуемого шага
+   * (`uses`, design.md решение 1). Отсутствует у шага, объявленного `script`
+   * напрямую. Шаг `uses` — та же `ScriptStep`: `path`, `resolved`,
+   * `outputSchemaPath` и `input` несут ровно то же, чем шаг исполнится, а
+   * `uses` — чем это было объявлено и откуда разрешилось.
+   */
+  readonly uses?: UsesOrigin;
 }
 
 export type Step = AgentStep | RunStep | ScriptStep;

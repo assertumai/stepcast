@@ -39,7 +39,7 @@ import { createSessionRegistry, executeAgentStep } from '../exec/agentStep.js';
 import { buildStepEnv, injectedVariables } from '../exec/env.js';
 import { executeRunStep } from '../exec/runStep.js';
 import { runJudgePass } from '../exec/judgePass.js';
-import { evaluatePredicates, validateAgainstSchemaFile } from '../expect/evaluate.js';
+import { evaluatePredicates, validateAgainstSchema, validateAgainstSchemaFile } from '../expect/evaluate.js';
 import { createKnowledgeSource } from '../knowledge/source.js';
 import type { KnowledgeSource } from '../knowledge/types.js';
 import { buildGraph, upstreamOutputs, type Graph } from '../graph.js';
@@ -1770,6 +1770,15 @@ async function runJobSteps(
             },
           }
         : {}),
+      ...(step.kind === 'script' && step.uses !== undefined
+        ? {
+            uses: {
+              name: step.uses.name,
+              ...(step.uses.layer === undefined ? {} : { layer: step.uses.layer }),
+              ...(step.uses.manifestPath === undefined ? {} : { manifest_path: step.uses.manifestPath }),
+            },
+          }
+        : {}),
     };
     steps.push(stepRecord);
     journal.writeStepJson(stepDirPath, 'step.json', stepRecord);
@@ -1980,7 +1989,7 @@ function checkCostUnreported(context: RunContext, job: Job, step: Step, attempt:
  * попытки, терминальная, тем же приёмом, что и отказ бэкенда.
  */
 function unresolvedScriptOutcome(step: Extract<Step, { kind: 'script' }>): StepOutcome {
-  const reason = describeScriptUnresolved(step.unresolved as ScriptUnresolved);
+  const reason = describeScriptUnresolved(step.unresolved as ScriptUnresolved, step.uses);
   const startedAt = new Date().toISOString();
   const record: StepRecord['attempts'][number] = {
     attempt: 1,
@@ -1995,6 +2004,34 @@ function unresolvedScriptOutcome(step: Extract<Step, { kind: 'script' }>): StepO
     reason,
     attempts: [record],
     results: [[{ predicate: 'spawn_failed', passed: false, hard: true, detail: reason }]],
+    cause: HaltCause.spawnFailed,
+  };
+}
+
+/**
+ * Шаг `uses`, чьи параметры несли отложенную подстановку и потому не прошли
+ * проверку схемой ни при разборе, ни при линте (design.md решение 7):
+ * значение стало известно только сейчас, после позднего раскрытия. Отказ —
+ * тем же приёмом, что `unresolvedScriptOutcome`: одна терминальная попытка,
+ * без запуска процесса, попыток не расходует — повторный запуск не исправит
+ * значение, пришедшее выходом работы выше по графу.
+ */
+function unresolvedUsesParamsOutcome(reason: ScriptUnresolved): StepOutcome {
+  const message = describeScriptUnresolved(reason);
+  const startedAt = new Date().toISOString();
+  const record: StepRecord['attempts'][number] = {
+    attempt: 1,
+    status: 'failed',
+    reason: message,
+    started_at: startedAt,
+    finished_at: new Date().toISOString(),
+    exit_code: null,
+  };
+  return {
+    status: 'failed',
+    reason: message,
+    attempts: [record],
+    results: [[{ predicate: 'params_schema', passed: false, hard: true, detail: message }]],
     cause: HaltCause.spawnFailed,
   };
 }
@@ -2069,6 +2106,22 @@ async function runCommandStep(
 ): Promise<StepOutcome> {
   if (step.kind === 'script' && step.resolved === undefined) {
     return unresolvedScriptOutcome(step);
+  }
+
+  // Параметры шага `uses`, не проверенные схемой статически — значение несло
+  // отложенную подстановку, и ни разбор, ни линт не могли знать его заранее
+  // (design.md, решение 7). Проверяется здесь, один раз, по окончательным
+  // значениям — после позднего раскрытия, до записи `input.json`.
+  if (step.kind === 'script' && step.uses?.paramsSchema !== undefined) {
+    const validated = validateAgainstSchema(step.uses.paramsSchema, step.input ?? {});
+    if (!validated.passed) {
+      return unresolvedUsesParamsOutcome({
+        reason: 'params_invalid',
+        name: step.uses.name,
+        manifestPath: step.uses.manifestPath ?? '',
+        detail: validated.detail ?? 'значение не проходит схему',
+      });
+    }
   }
 
   const { journal, config } = context;

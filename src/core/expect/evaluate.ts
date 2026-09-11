@@ -441,35 +441,20 @@ function matches(glob: string, path: string): boolean {
 }
 
 /**
- * Проверить значение схемой из файла — общая механика для предиката `schema`
- * и для проверки объявленного `output_schema` шага `script` движком
- * (`runner.ts`, design.md решение 6): один компилятор, одно сообщение о
- * дефектной схеме, а не по реализации на потребителя.
+ * Проверить значение JSON Schema, данной значением, — тем же Ajv и тем же
+ * форматом замечаний, каким проверяются схема выхода `script` и манифест
+ * переиспользуемого шага (`src/core/pipeline/steps.ts`). Дефект схемы —
+ * ошибка конфигурации с текстом причины, а не исключение с чужим стеком.
  */
-export function validateAgainstSchemaFile(
-  path: string,
+export function validateAgainstSchema(
+  schema: unknown,
   value: unknown,
 ): { readonly passed: boolean; readonly detail?: string } {
-  let schema: unknown;
-  try {
-    schema = JSON.parse(readFileSync(path, 'utf8'));
-  } catch (error) {
-    throw new StepcastError(`Не удалось прочитать схему ${path}: ${(error as Error).message}`, {
-      file: path,
-      cause: error,
-    });
-  }
-
   let validate: ValidateFunction;
   try {
     validate = ajv.compile(schema as object);
   } catch (error) {
-    // Схему писал пользователь: её дефект — ошибка конфигурации с указанием
-    // файла, а не внутренний сбой движка со стеком.
-    throw new StepcastError(`Схема ${path} некорректна: ${(error as Error).message}`, {
-      file: path,
-      cause: error,
-    });
+    throw new StepcastError(`Схема некорректна: ${(error as Error).message}`, { cause: error });
   }
 
   const passed = validate(value) === true;
@@ -486,6 +471,40 @@ export function validateAgainstSchemaFile(
             .join('\n'),
         }),
   };
+}
+
+/**
+ * Проверить значение схемой из файла — общая механика для предиката `schema`
+ * и для проверки объявленного `output_schema` шага `script` движком
+ * (`runner.ts`, design.md решение 6): один компилятор, одно сообщение о
+ * дефектной схеме, а не по реализации на потребителя. Тонкая обёртка над
+ * `validateAgainstSchema`: читает файл и привязывает ошибки к нему.
+ */
+export function validateAgainstSchemaFile(
+  path: string,
+  value: unknown,
+): { readonly passed: boolean; readonly detail?: string } {
+  let schema: unknown;
+  try {
+    schema = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (error) {
+    throw new StepcastError(`Не удалось прочитать схему ${path}: ${(error as Error).message}`, {
+      file: path,
+      cause: error,
+    });
+  }
+
+  try {
+    return validateAgainstSchema(schema, value);
+  } catch (error) {
+    if (error instanceof StepcastError) {
+      throw new StepcastError(`Схема ${path} некорректна: ${(error.cause as Error).message}`, {
+        file: path,
+        cause: error.cause,
+      });
+    }
+    throw error;
+  }
 }
 
 function evaluateSchema(path: string, input: EvaluationInput): PredicateResult {

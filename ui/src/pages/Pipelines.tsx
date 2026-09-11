@@ -92,12 +92,23 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
               </span>
             )}
             {step.scriptRunner === undefined ? null : <span className="kind">{step.scriptRunner}</span>}
+            {step.usesName === undefined ? null : (
+              <span className="badge">
+                uses: {step.usesName}
+                {step.usesLayer === undefined ? '' : ` · ${step.usesLayer}`}
+              </span>
+            )}
             {step.modelOrigin === undefined ? null : (
               <span className="kind dim model-origin">{modelOriginLabel(step.modelOrigin)}</span>
             )}
           </div>
           {step.command === undefined ? null : <div className="ctx">$ {step.command}</div>}
+          {/* Имя занимает место пути на карточке (design.md, решение 13); путь и
+              раннер остаются доступны рядом, а не пропадают. */}
           {step.scriptPath === undefined ? null : <div className="ctx">script: {step.scriptPath}</div>}
+          {step.usesParams === undefined ? null : (
+            <div className="ctx dim">with: {JSON.stringify(step.usesParams)}</div>
+          )}
           {step.hasScriptInput !== true ? null : <div className="ctx dim">input объявлен</div>}
           {step.scriptOutputSchemaPath === undefined ? null : (
             <div className="ctx dim">output_schema: {step.scriptOutputSchemaPath}</div>

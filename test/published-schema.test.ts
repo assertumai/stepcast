@@ -230,3 +230,24 @@ describe('published-schema: непригодная схема значения �
     expectBoth(schemas, { text_has: 42 }, false);
   });
 });
+
+// Сценарий pipeline-definition: «Ветвь есть в опубликованной схеме»
+describe('published-schema: ветвь шага uses', () => {
+  it('допускает ключи uses и with наравне с run, script и agent', () => {
+    const { pipeline, job } = buildPublishedSchemas();
+    const validateJob = compileAny(job);
+    const validatePipeline = compileAny(pipeline);
+
+    const step = { id: 'greet', uses: 'greet', with: { name: 'Ann' } };
+    assert.equal(validateJob({ version: 1, kind: 'job', steps: [step] }), true);
+    assert.equal(
+      validatePipeline({
+        version: 1,
+        kind: 'pipeline',
+        name: 'проверка',
+        jobs: { build: { steps: [step] } },
+      }),
+      true,
+    );
+  });
+});

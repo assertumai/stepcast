@@ -1847,6 +1847,79 @@ jobs:
   });
 });
 
+/**
+ * Тот же образец, что и у `script` выше: правка манифеста (design.md
+ * изменения reusable-steps, решение 11) должна обесценивать переиспользование
+ * шага так же надёжно, как правка самого файла скрипта. Манифест лежит в
+ * `.stepcast/steps/greet/` внутри корня проекта — том же корне, от которого
+ * `expandPipeline` без явных `stepRoots` находит проектный слой сама.
+ */
+describe('run-resume: правка манифеста и with обесценивает переиспользование шага uses', () => {
+  const GREET_MANIFEST = `
+version: 1
+kind: step
+name: greet
+description: Приветствует по имени.
+file: ./main.cjs
+params:
+  type: object
+  properties:
+    name: { type: string, default: world }
+`;
+  const GREET_MAIN =
+    "const fs = require('node:fs');\n" +
+    "const input = JSON.parse(fs.readFileSync(process.env.STEPCAST_INPUT, 'utf8'));\n" +
+    "fs.writeFileSync(process.env.STEPCAST_OUTPUT, JSON.stringify({ greeting: 'привет, ' + input.name }));\n";
+
+  const USES_PIPELINE = `
+version: 1
+kind: pipeline
+name: uses-key-sensitivity
+jobs:
+  build:
+    session: per_step
+    inputs: [неподходящее.txt]
+    steps:
+      - id: task
+        uses: greet
+        expect: [{ exit_code: 0 }]
+`;
+
+  function withGreetStep(project: Project, manifest = GREET_MANIFEST): void {
+    project.write('.stepcast/steps/greet/step.yml', manifest);
+    project.write('.stepcast/steps/greet/main.cjs', GREET_MAIN);
+  }
+
+  // Сценарий: «Правка манифеста даёт другой ключ»
+  it('правка умолчания параметра в манифесте обесценивает шаг', async () => {
+    const b = bed({ 'stepcast.yml': USES_PIPELINE, 'неподходящее.txt': 'исходно' });
+    withGreetStep(b.project);
+
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+    assert.equal(planFor(b, first).steps[0]?.decision.kind, 'reuse');
+
+    withGreetStep(b.project, GREET_MANIFEST.replace('default: world', 'default: everyone'));
+    assert.equal(planFor(b, first).steps[0]?.decision.kind, 'rerun');
+  });
+
+  // Сценарий: «Другой параметр даёт другой ключ»
+  it('правка with на месте вызова обесценивает шаг', async () => {
+    const b = bed({ 'stepcast.yml': USES_PIPELINE, 'неподходящее.txt': 'исходно' });
+    withGreetStep(b.project);
+
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+    assert.equal(planFor(b, first).steps[0]?.decision.kind, 'reuse');
+
+    b.project.write(
+      'stepcast.yml',
+      USES_PIPELINE.replace('uses: greet', 'uses: greet\n        with: { name: Ann }'),
+    );
+    assert.equal(planFor(b, first).steps[0]?.decision.kind, 'rerun');
+  });
+});
+
 describe('run-resume: перенос выхода переиспользованного шага script', () => {
   const SCRIPT_OUTPUT_PIPELINE = `
 version: 1
@@ -1890,6 +1963,76 @@ jobs:
     assert.equal(existsSync(artifactPath), true);
     assert.deepEqual(JSON.parse(readFileSync(artifactPath, 'utf8')), { slug: 'add-oauth' });
     assert.equal(readFileSync(b.project.path('slug.txt'), 'utf8').trim(), 'add-oauth');
+
+    const buildStep = steps(second).find((step) => step.id === 'build');
+    assert.equal(buildStep?.reused_from, first.journal.paths.runId);
+  });
+});
+
+describe('run-resume: перенос выхода переиспользованного шага uses', () => {
+  const GREET_MANIFEST = `
+version: 1
+kind: step
+name: greet
+description: Приветствует по имени.
+file: ./main.cjs
+params:
+  type: object
+  properties:
+    name: { type: string, default: world }
+output_schema: ./output.schema.json
+`;
+  const GREET_MAIN =
+    "const fs = require('node:fs');\n" +
+    "const input = JSON.parse(fs.readFileSync(process.env.STEPCAST_INPUT, 'utf8'));\n" +
+    "fs.writeFileSync(process.env.STEPCAST_OUTPUT, JSON.stringify({ greeting: 'привет, ' + input.name }));\n";
+  const GREET_OUTPUT_SCHEMA = JSON.stringify({
+    type: 'object',
+    properties: { greeting: { type: 'string' } },
+    required: ['greeting'],
+  });
+
+  const USES_OUTPUT_PIPELINE = `
+version: 1
+kind: pipeline
+name: uses-output-resume
+jobs:
+  plan:
+    output: { from: build }
+    session: per_step
+    inputs: [неподходящее.txt]
+    steps:
+      - id: build
+        uses: greet
+        with: { name: Ann }
+        expect: [{ exit_code: 0 }]
+  use:
+    needs: [plan]
+    session: per_step
+    steps:
+      - id: c
+        run: [sh, -c, 'echo "\${jobs.plan.output.greeting}" > greeting.txt']
+        expect: [{ exit_code: 0 }]
+`;
+
+  // Сценарий: «Выход доступен как у шага script», перенесённый через resume —
+  // тем же путём, каким переносится выход переиспользованного шага script.
+  it('переносит output.json переиспользованного шага uses и работа публикует его как свой выход', async () => {
+    const b = bed({ 'stepcast.yml': USES_OUTPUT_PIPELINE, 'неподходящее.txt': 'исходно' });
+    b.project.write('.stepcast/steps/greet/step.yml', GREET_MANIFEST);
+    b.project.write('.stepcast/steps/greet/main.cjs', GREET_MAIN);
+    b.project.write('.stepcast/steps/greet/output.schema.json', GREET_OUTPUT_SCHEMA);
+
+    const first = await firstRun(b);
+    assert.equal(first.status, 'success');
+
+    const second = await resume(b, first, 'use');
+    assert.equal(second.status, 'success');
+
+    const artifactPath = join(second.journal.paths.artifacts, 'plan.json');
+    assert.equal(existsSync(artifactPath), true);
+    assert.deepEqual(JSON.parse(readFileSync(artifactPath, 'utf8')), { greeting: 'привет, Ann' });
+    assert.equal(readFileSync(b.project.path('greeting.txt'), 'utf8').trim(), 'привет, Ann');
 
     const buildStep = steps(second).find((step) => step.id === 'build');
     assert.equal(buildStep?.reused_from, first.journal.paths.runId);

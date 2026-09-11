@@ -92,6 +92,14 @@ export interface StepSnapshot {
   readonly hasScriptInput?: boolean;
   /** Путь объявленной схемы выхода — у script означает проверку файла, а не разбор stdout. */
   readonly scriptOutputSchemaPath?: string;
+  /** Имя переиспользуемого шага — у script, собранного из манифеста (`uses`). */
+  readonly usesName?: string;
+  /** Слой, в котором разрешён манифест. */
+  readonly usesLayer?: string;
+  /** Путь манифеста, из которого собран шаг. */
+  readonly usesManifestPath?: string;
+  /** Сведённые параметры вызова, с применёнными умолчаниями. */
+  readonly usesParams?: Readonly<Record<string, unknown>>;
   readonly context: readonly string[];
   /** Разрез контекста: есть только у исполнившегося агентского шага. */
   readonly contextBreakdown?: ContextBreakdown;
@@ -273,6 +281,10 @@ function buildStep(
     ...(definition?.scriptOutputSchemaPath === undefined
       ? {}
       : { scriptOutputSchemaPath: definition.scriptOutputSchemaPath }),
+    ...(definition?.usesName === undefined ? {} : { usesName: definition.usesName }),
+    ...(definition?.usesLayer === undefined ? {} : { usesLayer: definition.usesLayer }),
+    ...(definition?.usesManifestPath === undefined ? {} : { usesManifestPath: definition.usesManifestPath }),
+    ...(definition?.usesParams === undefined ? {} : { usesParams: definition.usesParams }),
     context: definition?.context ?? [],
     ...(breakdown === undefined ? {} : { contextBreakdown: breakdown }),
     files: stepFiles(paths.dir, dir),

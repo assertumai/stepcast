@@ -246,6 +246,28 @@ describe('run-engine-snapshot: pinEngine — снятие снимка', () => {
 });
 
 /**
+ * design.md изменения reusable-steps, пункт 5.4: встроенный слой шагов
+ * обязан находиться и из снимка движка, а не только из исходников, — тем же
+ * доводом, что уже подтверждён для `src/builtin/scripts`
+ * (`src/builtin/README.md`). `files` пакета объявляет `src/builtin` целиком
+ * (`package.json`), так что копирование не требует отдельной записи; тест
+ * проверяет это фактом, а не осмотром объявления.
+ */
+describe('run-engine-snapshot: встроенный слой переиспользуемых шагов входит в снимок', () => {
+  it('снимок настоящего пакета несёт src/builtin/steps/changed-files/step.yml', () => {
+    const engine = locateEngine();
+    const snapshotDir = join(tempDir('stepcast-run-'), 'engine');
+
+    pinEngine({ engine, snapshotDir });
+
+    assert.ok(
+      existsSync(join(snapshotDir, 'src', 'builtin', 'steps', 'changed-files', 'step.yml')),
+      'встроенный образец обязан попасть в снимок вместе с остальным src/builtin',
+    );
+  });
+});
+
+/**
  * Зависимости снимка: ссылка на `node_modules` исходного пакета отдаёт снимку
  * его зависимости, но только те, что лежат в самом пакете. Движок в
  * монорепозитории с поднятыми в корень зависимостями — конфигурация, названная

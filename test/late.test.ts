@@ -559,3 +559,109 @@ jobs:
     assert.equal(readFileSync(project.path('after.txt'), 'utf8').trim(), 'done');
   });
 });
+
+/**
+ * `with` шага `uses` — та же `ScriptStep.input`, что и у шага `script`
+ * (design.md изменения reusable-steps, решение 1): собран вручную, минуя
+ * файловую систему и `expandPipeline`, чтобы проверить ровно то, что
+ * `resolveLate` не отличает происхождение шага — общий проход
+ * `omitLateSkipped` уже обслуживает оба случая одним кодом.
+ *
+ * Шаг собран так, как его собирает раскрытие: `uses.params` — **та же**
+ * величина, что и `input` (`expand.ts` кладёт в `input` сведённый `with`), и
+ * рядом лежит схема параметров манифеста. Обе они обязаны пережить общий
+ * обход: вторая копия нераскрытых значений упала бы на объекте, а схема — на
+ * литеральном `${` в описании параметра.
+ */
+describe('раскрытие отложенных подстановок в with шага uses', () => {
+  function usesJob(input: Record<string, unknown>, paramsSchema?: Record<string, unknown>): Job {
+    return {
+      id: 'build',
+      source: '/fake/stepcast.yml',
+      needs: [],
+      on: 'success',
+      session: 'per_step',
+      workspace: { mode: 'cwd' },
+      env: {},
+      context: [],
+      contextUpstream: 'all',
+      inputs: [],
+      data: [],
+      steps: [
+        {
+          kind: 'script',
+          id: 'c',
+          index: 1,
+          env: {},
+          context: [],
+          contextInherit: true,
+          contextExclude: [],
+          timeoutMs: 60_000,
+          expect: [],
+          attempts: { max: 1, escalation: [] },
+          path: '/abs/main.mjs',
+          args: [],
+          input,
+          uses: {
+            name: 'echo-input',
+            layer: 'project',
+            manifestPath: '/abs/.stepcast/steps/echo-input/step.yml',
+            manifestFingerprint: 'a1b2c3d4',
+            // Та же величина, что и `input`, — ровно как её кладёт раскрытие.
+            params: input,
+            ...(paramsSchema === undefined ? {} : { paramsSchema }),
+          },
+        },
+      ],
+    };
+  }
+
+  /** Раскрытые `input` шага и `params` его блока `uses` — одно и то же. */
+  function resolvedWith(job: Job): unknown {
+    const step = resolveLate(job, SCOPE).steps[0] as {
+      readonly input: unknown;
+      readonly uses: { readonly params: unknown };
+    };
+    assert.deepEqual(step.uses.params, step.input, 'params блока uses разошлись с input шага');
+    return step.input;
+  }
+
+  it('${jobs.plan.output} даёт объект целиком', () => {
+    assert.deepEqual(resolvedWith(usesJob({ item: '${jobs.plan.output}' })), {
+      item: SCOPE.jobs.plan!.output as unknown,
+    });
+  });
+
+  it('${jobs.*} списком строк тоже доезжает списком, а не строкой', () => {
+    assert.deepEqual(resolvedWith(usesJob({ files: '${jobs.plan.output.files}' })), {
+      files: (SCOPE.jobs.plan!.output as Record<string, unknown>).files as unknown,
+    });
+  });
+
+  it('${run.*} и ${env.*} раскрываются', () => {
+    assert.deepEqual(resolvedWith(usesJob({ dir: '${run.dir}', env: '${env.NODE_ENV}' })), {
+      dir: SCOPE.run.dir,
+      env: SCOPE.env.NODE_ENV,
+    });
+  });
+
+  it('строка с подстановкой внутри текста даёт строку', () => {
+    assert.deepEqual(resolvedWith(usesJob({ title: 'план: ${jobs.plan.output.slug}' })), {
+      title: `план: ${(SCOPE.jobs.plan!.output as Record<string, unknown>).slug as string}`,
+    });
+  });
+
+  it('схема параметров манифеста проходит раскрытие нетронутой', () => {
+    // `${` в описании и в шаблоне параметра — литерал автора манифеста, а не
+    // подстановка: раскрытие о нём ничего не знает и знать не должно.
+    const paramsSchema = {
+      type: 'object',
+      properties: {
+        item: { type: 'object', description: 'объект, например ${jobs.plan.output}' },
+      },
+    };
+    const step = resolveLate(usesJob({ item: '${jobs.plan.output}' }, paramsSchema), SCOPE)
+      .steps[0] as { readonly uses: { readonly paramsSchema: unknown } };
+    assert.deepEqual(step.uses.paramsSchema, paramsSchema);
+  });
+});

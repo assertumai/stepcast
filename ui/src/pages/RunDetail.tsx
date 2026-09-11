@@ -79,6 +79,12 @@ function Step({
           </span>
         )}
         {step.scriptRunner === undefined ? null : <span className="kind">{step.scriptRunner}</span>}
+        {step.usesName === undefined ? null : (
+          <span className="badge">
+            uses: {step.usesName}
+            {step.usesLayer === undefined ? '' : ` · ${step.usesLayer}`}
+          </span>
+        )}
         {attemptModelsNote(step) === undefined ? null : (
           <span className="kind dim">{attemptModelsNote(step)}</span>
         )}
@@ -99,6 +105,9 @@ function Step({
       {step.reason === undefined ? null : <div className="desc">{step.reason}</div>}
       {step.command === undefined ? null : <div className="ctx">$ {step.command}</div>}
       {step.scriptPath === undefined ? null : <div className="ctx">script: {step.scriptPath}</div>}
+      {step.usesParams === undefined ? null : (
+        <div className="ctx dim">with: {JSON.stringify(step.usesParams)}</div>
+      )}
       {step.hasScriptInput !== true ? null : <div className="ctx dim">input объявлен</div>}
       {step.scriptOutputSchemaPath === undefined ? null : (
         <div className="ctx dim">output_schema: {step.scriptOutputSchemaPath}</div>

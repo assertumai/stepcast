@@ -1,6 +1,6 @@
 import type { z } from 'zod';
 
-import { PipelineDocumentSchema, JobDocumentSchema } from '../src/core/pipeline/schema.js';
+import { PipelineDocumentSchema, JobDocumentSchema, StepManifestSchema } from '../src/core/pipeline/schema.js';
 import { RawConfigSchema } from '../src/core/config/schema.js';
 import { BacklogItemSchema, BacklogSlotsResponseSchema } from '../src/core/backlog/schema.js';
 
@@ -42,6 +42,12 @@ export const SCHEMA_TARGETS: readonly SchemaTarget[] = [
     published: 'job',
   },
   { file: 'schema/config.schema.json', schema: RawConfigSchema, title: 'stepcast config', io: 'input' },
+  {
+    file: 'schema/step-manifest.schema.json',
+    schema: StepManifestSchema,
+    title: 'stepcast step manifest',
+    io: 'input',
+  },
   {
     file: 'schema/backlog.schema.json',
     schema: BacklogItemSchema,

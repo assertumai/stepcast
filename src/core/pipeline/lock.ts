@@ -96,6 +96,25 @@ function stepToPlain(step: Step): Record<string, unknown> {
             },
           }),
       ...(step.unresolved === undefined ? {} : { unresolved: step.unresolved }),
+      // Происхождение — имя, слой, путь и отпечаток манифеста, сведённые
+      // параметры — рядом с разрешённым, а не вместо него (design.md
+      // изменения reusable-steps, решение 11). Схема параметров манифеста
+      // (`uses.paramsSchema`) сюда не идёт: отпечатка манифеста достаточно,
+      // чтобы отличить одну версию шага от другой, а содержимому манифеста в
+      // замке не место.
+      ...(step.uses === undefined
+        ? {}
+        : {
+            uses: {
+              name: step.uses.name,
+              ...(step.uses.layer === undefined ? {} : { layer: step.uses.layer }),
+              ...(step.uses.manifestPath === undefined ? {} : { manifest_path: step.uses.manifestPath }),
+              ...(step.uses.manifestFingerprint === undefined
+                ? {}
+                : { manifest_fingerprint: step.uses.manifestFingerprint }),
+              ...(step.uses.params === undefined ? {} : { params: step.uses.params }),
+            },
+          }),
     };
   }
 

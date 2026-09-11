@@ -14,6 +14,7 @@
 export type Route =
   | { readonly page: 'runs' }
   | { readonly page: 'pipelines' }
+  | { readonly page: 'steps' }
   | { readonly page: 'backlog' }
   | { readonly page: 'usage'; readonly days?: number }
   | { readonly page: 'settings' }
@@ -62,6 +63,7 @@ export const MENU: readonly {
 }[] = [
   { page: 'runs', href: '/', title: 'Прогоны', pages: ['runs', 'run'] },
   { page: 'pipelines', href: '/pipelines', title: 'Пайплайны', pages: ['pipelines'] },
+  { page: 'steps', href: '/steps', title: 'Шаги', pages: ['steps'] },
   { page: 'backlog', href: '/backlog', title: 'Бэклог', pages: ['backlog'] },
   { page: 'usage', href: '/usage', title: 'Расход', pages: ['usage'] },
   { page: 'cleanup', href: '/cleanup', title: 'Уборка', pages: ['cleanup'] },
@@ -104,6 +106,7 @@ export function parseRoute(pathname: string): Route {
 
   if (parts.length === 1) {
     if (parts[0] === 'pipelines') return { page: 'pipelines' };
+    if (parts[0] === 'steps') return { page: 'steps' };
     if (parts[0] === 'backlog') return { page: 'backlog' };
     if (parts[0] === 'agents') return { page: 'agents' };
     if (parts[0] === 'settings') return { page: 'settings' };

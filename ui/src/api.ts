@@ -176,6 +176,14 @@ export interface StepSnapshot {
   readonly hasScriptInput?: boolean;
   /** Путь объявленной схемы выхода — у script означает проверку файла, а не разбор stdout. */
   readonly scriptOutputSchemaPath?: string;
+  /** Имя переиспользуемого шага — у script, собранного из манифеста (`uses`). */
+  readonly usesName?: string;
+  /** Слой, в котором разрешён манифест. */
+  readonly usesLayer?: string;
+  /** Путь манифеста, из которого собран шаг. */
+  readonly usesManifestPath?: string;
+  /** Сведённые параметры вызова, с применёнными умолчаниями. */
+  readonly usesParams?: Readonly<Record<string, unknown>>;
   readonly context: readonly string[];
   readonly contextBreakdown?: ContextBreakdown;
   readonly files: readonly JournalFileRef[];
@@ -254,6 +262,11 @@ export interface PipelineStepView {
   readonly hasScriptInput?: boolean;
   /** Путь объявленной схемы выхода — у script означает проверку файла, а не разбор stdout. */
   readonly scriptOutputSchemaPath?: string;
+  /** Имя переиспользуемого шага и слой, из которого разрешён его манифест, — у script, собранного из `uses`. */
+  readonly usesName?: string;
+  readonly usesLayer?: 'project' | 'home' | 'builtin';
+  /** Переданные параметры вызова — со сведёнными умолчаниями. */
+  readonly usesParams?: Readonly<Record<string, unknown>>;
 }
 
 export interface PipelineJobView {
@@ -286,6 +299,38 @@ export interface PipelineView {
 
 export interface PipelinesOverview {
   readonly pipelines: readonly PipelineView[];
+  readonly generatedAt: string;
+}
+
+export type StepLayerName = 'project' | 'home' | 'builtin';
+
+export interface StepParamView {
+  readonly name: string;
+  readonly type?: string;
+  readonly required: boolean;
+  readonly default?: unknown;
+  readonly description?: string;
+}
+
+export interface StepCatalogEntry {
+  readonly name: string;
+  readonly layer: StepLayerName;
+  readonly manifestPath: string;
+  readonly description?: string;
+  readonly params: readonly StepParamView[];
+  readonly hasOutputSchema: boolean;
+  readonly overridden: boolean;
+  readonly error?: string;
+}
+
+export interface ProjectStepsView {
+  readonly projectKey: string;
+  readonly projectPath: string;
+  readonly steps: readonly StepCatalogEntry[];
+}
+
+export interface StepsOverview {
+  readonly projects: readonly ProjectStepsView[];
   readonly generatedAt: string;
 }
 
@@ -625,6 +670,10 @@ export async function fetchStepOutput(options: {
 
 export async function fetchPipelines(): Promise<PipelinesOverview> {
   return json<PipelinesOverview>(await fetch('/api/pipelines'));
+}
+
+export async function fetchSteps(): Promise<StepsOverview> {
+  return json<StepsOverview>(await fetch('/api/steps'));
 }
 
 /**

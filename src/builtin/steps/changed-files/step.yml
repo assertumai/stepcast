@@ -1,0 +1,19 @@
+version: 1
+kind: step
+name: changed-files
+description: >-
+  Перечень файлов рабочего дерева, изменённых относительно ref, — опционально
+  вместе с неотслеживаемыми.
+file: ./main.mjs
+params:
+  type: object
+  properties:
+    ref:
+      type: string
+      default: HEAD
+      description: Точка сравнения для git diff --name-only.
+    include_untracked:
+      type: boolean
+      default: false
+      description: Включить файлы, которые git ещё не отслеживает.
+output_schema: ./output.schema.json

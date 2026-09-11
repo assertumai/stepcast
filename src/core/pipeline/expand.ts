@@ -19,6 +19,7 @@ import { parseCount, parseDuration, parseExitCode, parseMoney, parsePercent, par
 import { interpolateTree, interpolateTypedTree, placeholderNamespaces, type Scope } from './interpolate.js';
 import { readYamlDocument, rejectWiringKeys, validateDocument } from './load.js';
 import { resolveParams, type ParamValue } from './params.js';
+import { resolveUsesStep } from './steps.js';
 import {
   buildDocumentSchemas,
   JobDocumentSchema,
@@ -53,11 +54,16 @@ import type {
   Substitution,
   SubstitutionMap,
   Triggers,
+  UsesOrigin,
   Workspace,
 } from './model.js';
 
-/** Пространства, чьи значения известны только в прогоне. */
-const DEFERRED_NAMESPACES = new Set(['jobs', 'run', 'env']);
+/**
+ * Пространства, чьи значения известны только в прогоне. Экспортировано для
+ * `steps.ts`: та же проверка «значение ещё содержит отложенную подстановку»
+ * нужна параметрам шага `uses` — единый набор пространств, а не копия.
+ */
+export const DEFERRED_NAMESPACES = new Set(['jobs', 'run', 'env']);
 
 /**
  * Состав пространства `project`: имя команды проверки, инструменты
@@ -245,6 +251,14 @@ export interface ExpandOptions {
    * прогона, но держит их на каталогах машины и повторяемости тестов не даёт.
    */
   readonly scriptRoots?: ScriptRoots;
+  /**
+   * Корни слоёв разрешения имени `uses` — тот же приём, что у `scriptRoots`:
+   * тесты подставляют свои, умолчание (`scriptRoots.project`/`.home`,
+   * `src/builtin/steps` от расположения движка) годится для настоящего
+   * прогона. Форма та же, что у `ScriptRoots`, но `builtin` указывает на
+   * каталог переиспользуемых шагов пакета, а не на каталог скриптов.
+   */
+  readonly stepRoots?: ScriptRoots;
 }
 
 /**
@@ -659,27 +673,34 @@ function recordPromptSubstitutions(
 }
 
 /**
- * Снять `input` с каждого шага перед общим `interpolateTree` тела работы:
- * подстановка внутри `input` разрешается типизированным проходом в `toStep`,
- * а не общим, который вернул бы всё строкой (design.md, решение 4). Тот же
- * приём, каким из общего обхода уже вынесен `display` работы.
+ * Снять `input`/`with` с каждого шага перед общим `interpolateTree` тела
+ * работы: подстановка внутри них разрешается типизированным проходом в
+ * `toStep`, а не общим, который вернул бы всё строкой (design.md, решение 4).
+ * `with` шага `uses` — тот же случай, что и `input` шага `script`: главный
+ * смысл контракта — объект из выхода работы выше по графу, а не строка. Тот
+ * же приём, каким из общего обхода уже вынесен `display` работы.
  */
 function omitStepInputs(rawSteps: unknown): unknown {
   if (!Array.isArray(rawSteps)) return rawSteps;
   return rawSteps.map((step) => {
-    if (step === null || typeof step !== 'object' || !('input' in step)) return step;
-    const { input: _input, ...rest } = step as Record<string, unknown>;
+    if (step === null || typeof step !== 'object') return step;
+    const { input: _input, with: _with, ...rest } = step as Record<string, unknown>;
     return rest;
   });
 }
 
-/** Вернуть на место `input`, снятый `omitStepInputs`, — нераскрытым, для `toStep`. */
+/** Вернуть на место `input`/`with`, снятые `omitStepInputs`, — нераскрытыми, для `toStep`. */
 function restoreStepInputs(interpolatedSteps: unknown, rawSteps: unknown): unknown {
   if (!Array.isArray(interpolatedSteps) || !Array.isArray(rawSteps)) return interpolatedSteps;
   return interpolatedSteps.map((step, index) => {
     const original = rawSteps[index];
-    if (original === null || typeof original !== 'object' || !('input' in original)) return step;
-    return { ...(step as Record<string, unknown>), input: (original as Record<string, unknown>).input };
+    if (original === null || typeof original !== 'object') return step;
+    const originalRecord = original as Record<string, unknown>;
+    return {
+      ...(step as Record<string, unknown>),
+      ...('input' in originalRecord ? { input: originalRecord.input } : {}),
+      ...('with' in originalRecord ? { with: originalRecord.with } : {}),
+    };
   });
 }
 
@@ -733,7 +754,7 @@ function resolveScriptFile(
  * названного отказа. Символьная ссылка на файл — находка: `statSync` идёт по
  * ссылке, и раннер получит ровно то, что получил бы вручную.
  */
-function isFile(path: string): boolean {
+export function isFile(path: string): boolean {
   return statSync(path, { throwIfNoEntry: false })?.isFile() === true;
 }
 
@@ -759,7 +780,7 @@ function extractShebangName(content: string): string | undefined {
 }
 
 /** Короткий отпечаток содержимого файла: тем же образцом, что и другие хеши движка. */
-function fingerprintContent(content: string): string {
+export function fingerprintContent(content: string): string {
   return createHash('sha256').update(content).digest('hex').slice(0, 16);
 }
 
@@ -769,7 +790,7 @@ function fingerprintContent(content: string): string {
  * запись таблицы, либо причину, по которой выбор не состоялся, — тоже не
  * исключение: диагностику даёт линт, а прогон отказывает названно.
  */
-function selectRunner(
+export function selectRunner(
   declaredRunner: string | undefined,
   absolutePath: string,
   content: string,
@@ -813,7 +834,7 @@ const STEPCAST_WRAPPER_PREFIX = 'stepcast:';
  * значение `script` (слоями для голого имени, от места объявления —
  * `runner.wrapperFile` — для `./` и `../`). Не объявлена — `undefined`.
  */
-function resolveWrapper(runner: RunnerConfig, roots: ScriptRoots): string | undefined {
+export function resolveWrapper(runner: RunnerConfig, roots: ScriptRoots): string | undefined {
   const value = runner.wrapper;
   if (value === undefined) return undefined;
   if (value.startsWith(STEPCAST_WRAPPER_PREFIX)) {
@@ -892,15 +913,37 @@ function resolveScript(
  * предиката `script`: оба несут один и тот же перечень причин
  * (`ScriptUnresolved`), и текст должен звучать одинаково что в журнале
  * прогона, что в вердикте предиката (`run/runner.ts`, `expect/evaluate.ts`).
+ *
+ * Происхождение `uses` передаётся там, где шаг собран из манифеста: две
+ * причины выбора раннера общие с шагом `script`, а объявлены они в манифесте,
+ * и без него текст отправил бы автора искать `runner:` в документе пайплайна,
+ * где его у шага `uses` нет вовсе.
  */
-export function describeScriptUnresolved(unresolved: ScriptUnresolved): string {
+export function describeScriptUnresolved(
+  unresolved: ScriptUnresolved,
+  uses?: UsesOrigin,
+): string {
   switch (unresolved.reason) {
     case 'file_not_found':
       return `Файл скрипта не найден ни в одном слое. Искали: ${unresolved.searched.join(', ')}`;
     case 'unknown_runner':
-      return `Неизвестный раннер ${unresolved.runner}. Известны: ${unresolved.known.join(', ')}`;
+      return uses === undefined
+        ? `Неизвестный раннер ${unresolved.runner}. Известны: ${unresolved.known.join(', ')}`
+        : `Манифест шага ${uses.name} (${uses.manifestPath}) называет неизвестный раннер ${unresolved.runner}. Известны: ${unresolved.known.join(', ')}`;
     case 'runner_undetermined':
-      return `Раннер не определяется ни расширением, ни shebang. Известные расширения: ${unresolved.extensions.join(', ')}`;
+      return uses === undefined
+        ? `Раннер не определяется ни расширением, ни shebang. Известные расширения: ${unresolved.extensions.join(', ')}`
+        : `Шаг ${uses.name}: раннер файла, объявленного манифестом ${uses.manifestPath}, не определяется ни расширением, ни shebang. Известные расширения: ${unresolved.extensions.join(', ')}`;
+    case 'step_not_found':
+      return `Переиспользуемый шаг ${unresolved.name} не найден ни в одном слое. Искали: ${unresolved.searched.join(', ')}`;
+    case 'manifest_invalid':
+      return `Манифест шага ${unresolved.name} (${unresolved.manifestPath}) некорректен: ${unresolved.detail}`;
+    case 'name_mismatch':
+      return `Манифест ${unresolved.manifestPath} объявляет name: ${unresolved.manifestName}, а каталог шага называется ${unresolved.name}`;
+    case 'step_file_missing':
+      return `Шаг ${unresolved.name}: файл ${unresolved.expectedPath} не найден (манифест ${unresolved.manifestPath})`;
+    case 'params_invalid':
+      return `Шаг ${unresolved.name}: параметры не проходят манифест ${unresolved.manifestPath} — ${unresolved.detail}`;
   }
 }
 
@@ -939,6 +982,7 @@ function toStep(
   at: string,
   registry: Registry,
   scriptRoots: ScriptRoots,
+  stepRoots: ScriptRoots,
 ): { readonly step: Step; readonly modelOrigin?: ModelOrigin } {
   const common = {
     id: raw.id,
@@ -978,6 +1022,58 @@ function toStep(
         ...(raw.output_schema === undefined
           ? {}
           : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
+      },
+    };
+  }
+
+  // Шаг `uses` разбирается до шага `script`: ключи, объявляемые манифестом,
+  // названы в его схеме (`declaredByManifest`) необязательными — и по
+  // присутствию ключа `script` два вида шага уже не различаются. Различает их
+  // сам `uses`, которого у шага `script` нет вовсе.
+  if ('uses' in raw) {
+    let onFail: { readonly analyze: string; readonly prompt: string } | undefined;
+    if (raw.on_fail !== undefined) {
+      const onFailKey = `${at}.on_fail.prompt`;
+      const onFailPrompt = readPrompt(raw.on_fail.prompt, declaringFile, scope, onFailKey);
+      recordPromptSubstitutions(substitutions, onFailKey, onFailPrompt.substitutions);
+      onFail = { analyze: raw.on_fail.analyze, prompt: onFailPrompt.text };
+    }
+    // `raw.with` дошёл сюда нераскрытым, тем же приёмом, что и `raw.input`
+    // шага `script` (`omitStepInputs`/`restoreStepInputs`): типизированный
+    // проход разрешает `${params.*}`/`${inputs.*}` здесь, а `${jobs.*}`,
+    // `${run.*}` и `${env.*}` остаются текстом до `late.ts`.
+    const withResult = interpolateTypedTree(raw.with ?? {}, scope, `${at}.with`);
+    for (const [path, list] of withResult.substitutions) substitutions.set(path, list);
+
+    const build = resolveUsesStep(
+      raw.uses,
+      withResult.value,
+      stepRoots,
+      scriptRoots,
+      config,
+    );
+    const usesResolved = 'resolved' in build ? build.resolved : undefined;
+
+    return {
+      step: {
+        ...common,
+        kind: 'script',
+        // Абсолютный путь, если файл разрешился; иначе — имя, которым шаг
+        // назван на месте вызова: `path` шага `script` тоже несёт то, чем
+        // читатель мог бы опознать шаг до разрешения.
+        path: usesResolved?.absolutePath ?? raw.uses,
+        args: [],
+        ...(onFail === undefined ? {} : { onFail }),
+        // Сведённые параметры — с применёнными умолчаниями, если состав
+        // прошёл проверку, иначе то, что передало место вызова: шаг всё
+        // равно не исполнится (design.md, решение 6).
+        input: build.uses.params ?? withResult.value,
+        ...(build.outputSchemaPath === undefined ? {} : { outputSchemaPath: build.outputSchemaPath }),
+        ...('resolved' in build ? { resolved: build.resolved } : { unresolved: build.unresolved }),
+        uses: {
+          ...build.uses,
+          ...(build.paramsSchema === undefined ? {} : { paramsSchema: build.paramsSchema }),
+        },
       },
     };
   }
@@ -1099,6 +1195,14 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     project: findProjectRoot(dirname(pipelinePath)),
     home: homedir(),
     builtin: join(findPackageRoot(fileURLToPath(new URL('.', import.meta.url))), 'src', 'builtin', 'scripts'),
+  };
+  // `project` и `home` — те же корни, что и у слоёв `script`: оба каталога
+  // ищутся от одного и того же проекта и домашнего каталога, различается
+  // только имя подкаталога (`steps` вместо `scripts`) и встроенный слой.
+  const stepRoots: ScriptRoots = options.stepRoots ?? {
+    project: scriptRoots.project,
+    home: scriptRoots.home,
+    builtin: join(findPackageRoot(fileURLToPath(new URL('.', import.meta.url))), 'src', 'builtin', 'steps'),
   };
   // Схемы документа зависят от загруженных плагинов: ключ предиката —
   // закрытое объединение, и без плагинных ветвей их предикат отклонялся бы
@@ -1466,6 +1570,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
           `${at}.steps.${index}`,
           registry,
           scriptRoots,
+          stepRoots,
         );
         if (expanded.modelOrigin !== undefined) {
           modelOrigins.set(`${id}/${expanded.step.id}`, expanded.modelOrigin);

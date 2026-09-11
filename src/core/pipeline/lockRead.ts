@@ -35,6 +35,14 @@ export interface LockStep {
   readonly hasScriptInput?: boolean;
   /** Путь объявленной схемы выхода — у script означает проверку файла, а не разбор stdout. */
   readonly scriptOutputSchemaPath?: string;
+  /** Имя переиспользуемого шага — у script, собранного из манифеста (`uses`). */
+  readonly usesName?: string;
+  /** Слой, в котором разрешён манифест — `project`, `home` либо `builtin`. */
+  readonly usesLayer?: string;
+  /** Путь манифеста, из которого собран шаг. */
+  readonly usesManifestPath?: string;
+  /** Сведённые параметры вызова, с применёнными умолчаниями. */
+  readonly usesParams?: Readonly<Record<string, unknown>>;
   readonly context: readonly string[];
 }
 
@@ -124,6 +132,11 @@ function toStep(value: unknown): LockStep | undefined {
   const scriptPath = asString(record.script);
   const scriptRunner = asString(asRecord(record.resolved)?.runner);
   const scriptOutputSchemaPath = scriptPath === undefined ? undefined : asString(record.output_schema);
+  const usesRecord = asRecord(record.uses);
+  const usesName = usesRecord === undefined ? undefined : asString(usesRecord.name);
+  const usesLayer = usesRecord === undefined ? undefined : asString(usesRecord.layer);
+  const usesManifestPath = usesRecord === undefined ? undefined : asString(usesRecord.manifest_path);
+  const usesParams = usesRecord === undefined ? undefined : asRecord(usesRecord.params);
 
   return {
     id,
@@ -138,6 +151,10 @@ function toStep(value: unknown): LockStep | undefined {
     ...(scriptRunner === undefined ? {} : { scriptRunner }),
     ...(scriptPath === undefined ? {} : { hasScriptInput: record.input !== undefined }),
     ...(scriptOutputSchemaPath === undefined ? {} : { scriptOutputSchemaPath }),
+    ...(usesName === undefined ? {} : { usesName }),
+    ...(usesLayer === undefined ? {} : { usesLayer }),
+    ...(usesManifestPath === undefined ? {} : { usesManifestPath }),
+    ...(usesParams === undefined ? {} : { usesParams }),
     context: contextLabels(record.context),
   };
 }
