@@ -420,6 +420,8 @@ describe('self-improvement-loop: настоящий пайплайн петли 
       'README.md',
       'eslint.config.js',
       'examples/**',
+      // ui-runtime-widget-spike: каталог виджетов пользователя внутри проекта.
+      '.stepcast/widgets/**',
     ]);
   }
 

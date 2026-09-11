@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { MENU, USAGE_PERIODS, isApiPath, parseRoute, runHref } from '../src/ui/routes.js';
+import { MENU, USAGE_PERIODS, isApiPath, isWidgetPath, parseRoute, runHref, widgetModuleHref } from '../src/ui/routes.js';
 
 describe('ui-routes: разбор адресов', () => {
   it('строит и разбирает адрес прогона кругом', () => {
@@ -32,6 +32,7 @@ describe('ui-routes: разбор адресов', () => {
   it('экраны меню разбираются каждый в свой маршрут', () => {
     assert.deepEqual(parseRoute('/pipelines'), { page: 'pipelines' });
     assert.deepEqual(parseRoute('/steps'), { page: 'steps' });
+    assert.deepEqual(parseRoute('/widgets'), { page: 'widgets' });
     assert.deepEqual(parseRoute('/backlog'), { page: 'backlog' });
     assert.deepEqual(parseRoute('/settings'), { page: 'settings' });
     assert.deepEqual(parseRoute('/agents'), { page: 'agents' });
@@ -96,5 +97,26 @@ describe('ui-routes: разбор адресов', () => {
     assert.equal(isApiPath('/api'), true);
     assert.equal(isApiPath('/runs/a/b'), false);
     assert.equal(isApiPath('/'), false);
+  });
+
+  it('isWidgetPath истинен для обеих объявленных форм и для любого пути под /widgets/', () => {
+    assert.equal(isWidgetPath('/widgets/proj/clock.js'), true);
+    assert.equal(isWidgetPath('/widgets/runtime/react.js'), true);
+    // Любой путь под /widgets/, не совпадающий ни с одной формой, — тоже
+    // предмет демона: он обязан ответить 404, а не отдать страницу витрины.
+    assert.equal(isWidgetPath('/widgets/proj/clock.ts'), true);
+    assert.equal(isWidgetPath('/widgets/'), true);
+  });
+
+  it('isWidgetPath ложен для голого /widgets — это адрес экрана меню', () => {
+    assert.equal(isWidgetPath('/widgets'), false);
+    assert.equal(isWidgetPath('/runs'), false);
+    assert.equal(isWidgetPath('/'), false);
+  });
+
+  it('widgetModuleHref экранирует сегменты и несёт версию параметром', () => {
+    const href = widgetModuleHref('проект a', 'clock b', '123:45');
+    assert.equal(href, `/widgets/${encodeURIComponent('проект a')}/${encodeURIComponent('clock b')}.js?v=123%3A45`);
+    assert.equal(isWidgetPath(href), true);
   });
 });

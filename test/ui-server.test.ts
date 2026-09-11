@@ -3,8 +3,19 @@ import { execFileSync } from 'node:child_process';
 import { get, request } from 'node:http';
 import { describe, it, type TestContext } from 'node:test';
 
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join, relative } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { resetModelDiscoveryCache } from '../src/core/backend/models.js';
 import { dashboardPath } from '../src/ui/assets.js';
@@ -16,6 +27,13 @@ import { projectKey, runPaths, shortRunId, stepDir, usageStorePath } from '../sr
 import { MAX_FILE_BYTES } from '../src/ui/file.js';
 import { runGcCommand } from '../src/cli/commands/gc.js';
 import type { ParsedArgs } from '../src/cli/args.js';
+import {
+  createWidgetCompiler,
+  widgetsDirPath,
+  type EsbuildTransformApi,
+  type WidgetCompiler,
+} from '../src/ui/widgets.js';
+import { WIDGET_RUNTIME_ROUTES } from '../src/ui/widgetRuntime.js';
 import { makeJournalBed, seedRun, withHome } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -33,6 +51,8 @@ async function startServer(
   options: {
     runsRoot: string;
     watcher?: Watcher;
+    widgetCompiler?: WidgetCompiler;
+    log?: (line: string) => void;
     config?: Config;
     home?: string;
     dashboardFile?: string;
@@ -61,6 +81,22 @@ function fetchPath(server: UiServer, path: string): Promise<Fetched> {
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => (body += chunk));
       res.on('end', () => resolve({ code: res.statusCode ?? 0, body }));
+    }).on('error', reject);
+  });
+}
+
+interface FetchedWithHeaders extends Fetched {
+  readonly headers: Record<string, string | string[] | undefined>;
+}
+
+/** Как `fetchPath`, но с заголовками — виджет с ошибкой компиляции помечает ответ заголовком (design.md, Решение 8). */
+function fetchWithHeaders(server: UiServer, path: string): Promise<FetchedWithHeaders> {
+  return new Promise((resolve, reject) => {
+    get({ host: LOOPBACK, port: server.port, path }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => (body += chunk));
+      res.on('end', () => resolve({ code: res.statusCode ?? 0, body, headers: res.headers }));
     }).on('error', reject);
   });
 }
@@ -450,8 +486,8 @@ describe('ui-dashboard: HTTP-витрина', () => {
     const stream = openStream(t, server, '/api/events');
     await settle();
 
-    // Каждый кадр несёт и обзор, и очередь — тем же потоком, той же подпиской.
-    assert.deepEqual(stream.events.map((event) => event.event), ['overview', 'backlog']);
+    // Каждый кадр несёт обзор, очередь и состав виджетов — тем же потоком, той же подпиской.
+    assert.deepEqual(stream.events.map((event) => event.event), ['overview', 'backlog', 'widgets']);
     assert.deepEqual(pick(stream.events[0]?.data, 'projects'), []);
 
     seedRun(runsRoot, projectRoot, { runId: 'новый' });
@@ -473,9 +509,9 @@ describe('ui-dashboard: HTTP-витрина', () => {
 
     assert.deepEqual(
       stream.events.map((item) => item.event),
-      ['overview', 'backlog', 'run'],
+      ['overview', 'backlog', 'widgets', 'run'],
     );
-    assert.equal(pick(stream.events[2]?.data, 'runId'), 'a');
+    assert.equal(pick(stream.events[3]?.data, 'runId'), 'a');
   });
 
   // Сценарий: «Закрытая вкладка не роняет демон»
@@ -553,7 +589,7 @@ describe('ui-dashboard: маршрут и поток очереди', () => {
 
     assert.deepEqual(
       stream.events.map((event) => event.event),
-      ['overview', 'backlog'],
+      ['overview', 'backlog', 'widgets'],
     );
     assert.deepEqual(pick(stream.events[1]?.data, 'projects'), []);
 
@@ -3136,5 +3172,426 @@ describe('ui-dashboard: конфигурация агентов и tier', () => 
     assert.equal(backends.find((b) => b.name === 'claude')?.defaultModel, 'sonnet');
     assert.equal(backends.find((b) => b.name === 'codex')?.defaultModel, 'gpt-5.6-terra');
     assert.equal(backends.find((b) => b.name === 'codex')?.available, false);
+  });
+});
+
+const HOOK_WIDGET = `import { useState } from 'react';
+
+export default function Clock() {
+  const [n, setN] = useState(0);
+  return <button onClick={() => setN(n + 1)}>{n}</button>;
+}
+`;
+
+const BROKEN_WIDGET = `export default function Broken() {
+  return <div>
+}
+`;
+
+function writeWidget(projectRoot: string, id: string, source: string): string {
+  const dir = widgetsDirPath(projectRoot);
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${id}.tsx`);
+  writeFileSync(file, source);
+  return file;
+}
+
+describe('ui-dashboard: маршрут модуля виджета', () => {
+  it('отдаёт рабочий виджет ES-модулем text/javascript', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    writeWidget(projectRoot, 'clock', HOOK_WIDGET);
+    const server = await startServer(t, { runsRoot });
+
+    const res = await fetchWithHeaders(server, `/widgets/${encodeURIComponent(key)}/clock.js`);
+    assert.equal(res.code, 200);
+    assert.match(String(res.headers['content-type']), /text\/javascript/);
+    assert.match(res.body, /from "react\/jsx-runtime"/);
+    assert.match(res.body, /Clock as default/);
+    assert.equal(res.headers['x-stepcast-widget-error'], undefined);
+  });
+
+  it('непроходящий файл — 200, модуль ошибки и заголовок-пометка', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    writeWidget(projectRoot, 'broken', BROKEN_WIDGET);
+    const server = await startServer(t, { runsRoot });
+
+    const res = await fetchWithHeaders(server, `/widgets/${encodeURIComponent(key)}/broken.js`);
+    assert.equal(res.code, 200);
+    assert.equal(res.headers['x-stepcast-widget-error'], '1');
+    assert.match(res.body, /__stepcastWidgetError/);
+    assert.match(res.body, /broken\.tsx/);
+  });
+
+  it('исправление файла даёт рабочий модуль по следующему запросу, без перезапуска демона', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    const file = writeWidget(projectRoot, 'flaky', BROKEN_WIDGET);
+    const server = await startServer(t, { runsRoot });
+
+    const before = await fetchWithHeaders(server, `/widgets/${encodeURIComponent(key)}/flaky.js`);
+    assert.equal(before.headers['x-stepcast-widget-error'], '1');
+
+    writeFileSync(file, HOOK_WIDGET);
+    const bumped = new Date(Date.now() + 5_000);
+    utimesSync(file, bumped, bumped);
+
+    const after = await fetchWithHeaders(server, `/widgets/${encodeURIComponent(key)}/flaky.js`);
+    assert.equal(after.headers['x-stepcast-widget-error'], undefined);
+    assert.match(after.body, /Clock as default/);
+  });
+
+  it('неизвестный ключ проекта, неизвестный id и путь под /widgets сверх объявленных форм — один и тот же 404', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    writeWidget(projectRoot, 'clock', HOOK_WIDGET);
+    const server = await startServer(t, { runsRoot });
+
+    const unknownKey = await fetchJson(server, '/widgets/no-such-project-key/clock.js');
+    const unknownId = await fetchJson(server, `/widgets/${encodeURIComponent(key)}/ghost.js`);
+    const extraSegment = await fetchPath(server, `/widgets/${encodeURIComponent(key)}/clock.js/extra`);
+    const bareRuntime = await fetchPath(server, '/widgets/runtime/does-not-exist.js');
+
+    assert.equal(unknownKey.code, 404);
+    assert.equal(unknownId.code, 404);
+    assert.equal(extraSegment.code, 404);
+    assert.equal(bareRuntime.code, 404);
+    // Ответы неотличимы по составу: причина отказа демоном не называется.
+    assert.deepEqual(unknownKey.json, unknownId.json);
+  });
+
+  it('обход каталога и символическая ссылка наружу отклонены на маршруте, содержимое не отдано', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    const dir = widgetsDirPath(projectRoot);
+    mkdirSync(dir, { recursive: true });
+    const outside = tempDir('outside-widget-');
+    writeFileSync(join(outside, 'secret.tsx'), 'export default "секрет";\n');
+    symlinkSync(join(outside, 'secret.tsx'), join(dir, 'escape.tsx'));
+    const server = await startServer(t, { runsRoot });
+
+    const dotdot = await fetchPath(
+      server,
+      `/widgets/${encodeURIComponent(key)}/${encodeURIComponent('../secret')}.js`,
+    );
+    const separator = await fetchPath(
+      server,
+      `/widgets/${encodeURIComponent(key)}/${encodeURIComponent('sub/clock')}.js`,
+    );
+    const escaped = await fetchPath(server, `/widgets/${encodeURIComponent(key)}/escape.js`);
+
+    assert.equal(dotdot.code, 404);
+    assert.equal(separator.code, 404);
+    assert.equal(escaped.code, 404);
+    assert.doesNotMatch(escaped.body, /секрет/);
+  });
+
+  it('запрос виджета не пишет в каталог проекта', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    const file = writeWidget(projectRoot, 'clock', HOOK_WIDGET);
+    const before = readFileSync(file, 'utf8');
+    const entriesBefore = readdirSync(projectRoot).sort();
+    const server = await startServer(t, { runsRoot });
+
+    await fetchPath(server, `/widgets/${encodeURIComponent(key)}/clock.js`);
+
+    assert.equal(readFileSync(file, 'utf8'), before);
+    assert.deepEqual(readdirSync(projectRoot).sort(), entriesBefore);
+  });
+
+  it('два сервера витрины с разными корнями не смешивают виджеты проектов', async (t) => {
+    const bedA = makeJournalBed();
+    const bedB = makeJournalBed();
+    seedRun(bedA.runsRoot, bedA.projectRoot, { runId: 'a' });
+    seedRun(bedB.runsRoot, bedB.projectRoot, { runId: 'b' });
+    const keyA = projectKey(bedA.projectRoot);
+    const keyB = projectKey(bedB.projectRoot);
+    writeWidget(bedA.projectRoot, 'clock', HOOK_WIDGET);
+    writeWidget(bedB.projectRoot, 'clock', HOOK_WIDGET.replace(/Clock/g, 'ClockB'));
+
+    const serverA = await startServer(t, { runsRoot: bedA.runsRoot });
+    const serverB = await startServer(t, { runsRoot: bedB.runsRoot });
+
+    const resA = await fetchPath(serverA, `/widgets/${encodeURIComponent(keyA)}/clock.js`);
+    const resB = await fetchPath(serverB, `/widgets/${encodeURIComponent(keyB)}/clock.js`);
+    const crossA = await fetchPath(serverA, `/widgets/${encodeURIComponent(keyB)}/clock.js`);
+
+    assert.match(resA.body, /Clock as default/);
+    assert.match(resB.body, /ClockB as default/);
+    assert.equal(crossA.code, 404, 'ключ чужого проекта неизвестен этому серверу');
+  });
+});
+
+describe('ui-dashboard: маршрут переходников виджетов', () => {
+  it('отдаёт переходник для каждого объявленного имени и 404 для прочих', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const server = await startServer(t, { runsRoot });
+
+    for (const routeName of Object.keys(WIDGET_RUNTIME_ROUTES)) {
+      const res = await fetchWithHeaders(server, `/widgets/runtime/${routeName}.js`);
+      assert.equal(res.code, 200, routeName);
+      assert.match(String(res.headers['content-type']), /text\/javascript/, routeName);
+    }
+
+    const unknown = await fetchPath(server, '/widgets/runtime/lodash.js');
+    assert.equal(unknown.code, 404);
+  });
+});
+
+describe('ui-dashboard: событие widgets в потоке /api/events', () => {
+  it('присылает widgets при появлении файла, не присылает повторно на такте без изменений', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const watcher = startWatcher(t, runsRoot, 10_000);
+    const server = await startServer(t, { runsRoot, watcher });
+
+    const stream = openStream(t, server, '/api/events');
+    await settle();
+    assert.deepEqual(
+      stream.events.map((event) => event.event),
+      ['overview', 'backlog', 'widgets'],
+    );
+    assert.deepEqual(pick(stream.events[2]?.data, 'projects'), [{ projectKey: projectKey(projectRoot), widgets: [] }]);
+
+    writeWidget(projectRoot, 'clock', HOOK_WIDGET);
+    watcher.poll();
+    await settle();
+
+    const widgetsEvents = stream.events.filter((event) => event.event === 'widgets');
+    assert.equal(widgetsEvents.length, 2, 'появление файла обязано прислать второе событие widgets');
+    assert.equal(pick(widgetsEvents.at(-1)?.data, 'projects', 0, 'widgets', 0, 'id'), 'clock');
+  });
+
+  it('не присылает widgets на такте, где сдвинулся только обзор идущего прогона', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, { runId: 'a', status: 'running' });
+    writeWidget(projectRoot, 'clock', HOOK_WIDGET);
+    const watcher = startWatcher(t, runsRoot, 10_000);
+    const server = await startServer(t, { runsRoot, watcher });
+
+    const stream = openStream(t, server, '/api/events');
+    await settle();
+    const before = stream.events.filter((event) => event.event === 'widgets').length;
+
+    journal.writeStatus({
+      run_id: journal.paths.runId,
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'success',
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      jobs: [],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T01:00:00.000Z',
+    });
+    watcher.poll();
+    await settle();
+
+    const after = stream.events.filter((event) => event.event === 'widgets').length;
+    assert.equal(after, before, 'смена только обзора не должна прислать widgets повторно');
+  });
+
+  it('версия виджета в событии меняется вместе с файлом', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const file = writeWidget(projectRoot, 'clock', HOOK_WIDGET);
+    const watcher = startWatcher(t, runsRoot, 10_000);
+    const server = await startServer(t, { runsRoot, watcher });
+
+    const stream = openStream(t, server, '/api/events');
+    await settle();
+    const firstVersion = pick(
+      stream.events.filter((event) => event.event === 'widgets').at(-1)?.data,
+      'projects',
+      0,
+      'widgets',
+      0,
+      'version',
+    );
+
+    writeFileSync(file, HOOK_WIDGET.replace('Clock', 'ClockV2'));
+    const bumped = new Date(Date.now() + 5_000);
+    utimesSync(file, bumped, bumped);
+    watcher.poll();
+    await settle();
+
+    const secondVersion = pick(
+      stream.events.filter((event) => event.event === 'widgets').at(-1)?.data,
+      'projects',
+      0,
+      'widgets',
+      0,
+      'version',
+    );
+    assert.notEqual(secondVersion, firstVersion);
+  });
+});
+
+describe('ui-dashboard: жизненный цикл компилятора виджетов', () => {
+  it('компилятор, полученный снаружи, не останавливается при close()', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    let disposed = false;
+    const compiler: WidgetCompiler = {
+      compile: async () => undefined,
+      dispose: async () => {
+        disposed = true;
+      },
+    };
+    const server = await startServer(t, { runsRoot, widgetCompiler: compiler });
+    await server.close();
+    assert.equal(disposed, false, 'сервер не должен останавливать компилятор, полученный снаружи');
+  });
+
+  /**
+   * Нативный `esbuild` держит служебный дочерний процесс; не остановленный,
+   * он удерживает событийный цикл, и процесс, поднимавший сервер, не
+   * завершается сам (design.md, Решение 12). Проверяется отдельным процессом:
+   * зависший `execFileSync` — сам по себе диагноз, а не только его вывод.
+   */
+  it('после запроса виджета и закрытия сервера служебный процесс компилятора не остаётся, процесс завершается сам', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    writeWidget(projectRoot, 'clock', HOOK_WIDGET);
+
+    const serverModulePath = fileURLToPath(new URL('../src/ui/server.js', import.meta.url));
+    const serverModuleUrl = pathToFileURL(serverModulePath).href;
+    const probe = [
+      `import { createUiServer } from ${JSON.stringify(serverModuleUrl)};`,
+      `const server = await createUiServer({ runsRoot: ${JSON.stringify(runsRoot)}, port: 0 });`,
+      `const res = await fetch(\`http://127.0.0.1:\${server.port}/widgets/${encodeURIComponent(key)}/clock.js\`);`,
+      'await res.text();',
+      'await server.close();',
+      "console.log('done');",
+    ].join('\n');
+
+    const out = execFileSync(process.execPath, ['--input-type=module', '-e', probe], {
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+    assert.match(out, /done/);
+  });
+
+  it('до первого запроса виджета компилятор не поднят, а первый запрос поднимает его один раз', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    writeWidget(projectRoot, 'clock', HOOK_WIDGET);
+
+    let loads = 0;
+    const stub: EsbuildTransformApi = {
+      transform: async () => ({ code: 'export default null;\n' }),
+      stop: () => undefined,
+    };
+    // Счётчик стоит на самом подъёме компилятора: так проверка ловит и
+    // прогрев виджетов сервером при старте, и перенос импорта из `compile()`
+    // в фабрику — оба сделали бы демон без виджетов платящим за компилятор
+    // (требование ui-daemon, сценарий «Демон без виджетов не поднимает компилятор»).
+    const compiler = createWidgetCompiler({
+      loadCompiler: async () => {
+        loads += 1;
+        return stub;
+      },
+    });
+    t.after(() => compiler.dispose());
+
+    const server = await startServer(t, { runsRoot, widgetCompiler: compiler });
+    assert.equal(loads, 0, 'заведение компилятора и подъём сервера не должны поднимать службу');
+
+    await fetchPath(server, '/');
+    await fetchJson(server, '/api/overview');
+    await fetchJson(server, '/api/backlog');
+    assert.equal(loads, 0, 'экраны витрины без виджетов не поднимают компилятор');
+
+    await fetchPath(server, `/widgets/${encodeURIComponent(key)}/clock.js`);
+    assert.equal(loads, 1, 'первый запрос виджета обязан поднять компилятор');
+
+    await fetchPath(server, `/widgets/${encodeURIComponent(key)}/clock.js`);
+    assert.equal(loads, 1, 'подъём службы платится один раз за жизнь компилятора');
+  });
+
+  /**
+   * Сценарий «Зависимости компилятора нет» целиком, как его видит демон:
+   * отдельным процессом, где разрешение `esbuild` отказывает хуком загрузчика.
+   * Внутри этого процесса пакет установлен, и снести его проверка не может —
+   * а именно эта ветка обязана дать и названную ошибку в ответе, и строку в
+   * логе демона, не уронив остальные экраны (требование ui-daemon).
+   */
+  it('без зависимости компилятора виджет отвечает названной ошибкой, лог получает строку, остальные экраны живы', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const key = projectKey(projectRoot);
+    writeWidget(projectRoot, 'clock', HOOK_WIDGET);
+
+    const probeDir = tempDir('no-esbuild-');
+    const loader = join(probeDir, 'loader.mjs');
+    writeFileSync(
+      loader,
+      [
+        'export function resolve(specifier, context, next) {',
+        "  if (specifier === 'esbuild') {",
+        "    const error = new Error('Cannot find package esbuild');",
+        "    error.code = 'ERR_MODULE_NOT_FOUND';",
+        '    throw error;',
+        '  }',
+        '  return next(specifier, context);',
+        '}',
+      ].join('\n'),
+    );
+    const register = join(probeDir, 'register.mjs');
+    writeFileSync(
+      register,
+      [
+        "import { register } from 'node:module';",
+        `register(${JSON.stringify(pathToFileURL(loader).href)});`,
+      ].join('\n'),
+    );
+
+    const serverModuleUrl = pathToFileURL(fileURLToPath(new URL('../src/ui/server.js', import.meta.url))).href;
+    const probe = [
+      `import { createUiServer } from ${JSON.stringify(serverModuleUrl)};`,
+      'const lines = [];',
+      `const server = await createUiServer({ runsRoot: ${JSON.stringify(runsRoot)}, port: 0, log: (line) => lines.push(line) });`,
+      `const res = await fetch(\`http://127.0.0.1:\${server.port}/widgets/${encodeURIComponent(key)}/clock.js\`);`,
+      'const body = await res.text();',
+      'const overview = await fetch(`http://127.0.0.1:${server.port}/api/overview`);',
+      'const overviewCode = overview.status;',
+      'await overview.text();',
+      'await server.close();',
+      'console.log(JSON.stringify({ status: res.status, mark: res.headers.get("x-stepcast-widget-error"), body, lines, overviewCode }));',
+    ].join('\n');
+
+    // `--no-deprecation`: `module.register()` объявлен устаревшим в пользу
+    // `registerHooks()`, которого нет в ранних 22.x из объявленных `engines`.
+    // Предупреждение — шум в отчёте проверки, а не свойство демона.
+    const out = execFileSync(
+      process.execPath,
+      ['--no-deprecation', '--import', register, '--input-type=module', '-e', probe],
+      { encoding: 'utf8', timeout: 20_000 },
+    );
+    const result = JSON.parse(out.trim().split('\n').at(-1) as string) as {
+      status: number;
+      mark: string | null;
+      body: string;
+      lines: string[];
+      overviewCode: number;
+    };
+
+    assert.equal(result.status, 200, 'ошибка компилятора приходит модулем, а не отказом запроса');
+    assert.equal(result.mark, '1');
+    assert.match(result.body, /esbuild/, 'ответ обязан называть отсутствующую зависимость');
+    assert.ok(
+      result.lines.some((line) => /esbuild/.test(line)),
+      `в логе демона обязана быть строка об отказе: ${JSON.stringify(result.lines)}`,
+    );
+    assert.equal(result.overviewCode, 200, 'остальные экраны витрины отвечают как прежде');
   });
 });

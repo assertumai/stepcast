@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -7,9 +7,12 @@ import { createWatcher } from '../src/ui/watcher.js';
 import { cleanupRun, removeRunWithStats } from '../src/core/run/cleanup.js';
 import { projectKey } from '../src/core/journal/paths.js';
 import { removeUsageRecords } from '../src/core/journal/usageStore.js';
+import { widgetsDirPath } from '../src/ui/widgets.js';
 import type { BacklogOverview } from '../src/ui/backlog.js';
 import type { Overview } from '../src/ui/overview.js';
+import type { WidgetsOverview } from '../src/ui/widgets.js';
 import { makeJournalBed, seedRun } from './helpers.js';
+import { tempDir } from './tmp.js';
 
 /** Минимальный, но валидный текст очереди с одним пунктом. */
 function backlogText(status: string): string {
@@ -354,5 +357,145 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
     const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
     assert.equal(watcher.currentBacklog().projects[0]?.items[0]?.slug, 'work-item');
     watcher.dispose();
+  });
+
+  // Часть отпечатка `widgets` (design.md изменения `ui-runtime-widget-spike`, Решение 7).
+  describe('часть widgets', () => {
+    function widgetOf(overview: WidgetsOverview, projectKeyValue: string): readonly { id: string; version: string }[] {
+      return overview.projects.find((project) => project.projectKey === projectKeyValue)?.widgets ?? [];
+    }
+
+    it('появление файла виджета меняет состав и будит подписчика', () => {
+      const { runsRoot, projectRoot } = makeJournalBed();
+      seedRun(runsRoot, projectRoot, { runId: 'a' });
+      const key = projectKey(projectRoot);
+      const dir = widgetsDirPath(projectRoot);
+      mkdirSync(dir, { recursive: true });
+
+      const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+      assert.deepEqual(widgetOf(watcher.currentWidgets(), key), []);
+      let calls = 0;
+      watcher.subscribe(() => (calls += 1));
+
+      writeFileSync(join(dir, 'clock.tsx'), 'export default function Clock() { return null; }\n');
+      watcher.poll();
+
+      assert.equal(calls, 1, 'появление виджета обязано разбудить подписчика');
+      assert.deepEqual(
+        widgetOf(watcher.currentWidgets(), key).map((w) => w.id),
+        ['clock'],
+      );
+      watcher.dispose();
+    });
+
+    it('правка файла виджета меняет его версию', () => {
+      const { runsRoot, projectRoot } = makeJournalBed();
+      seedRun(runsRoot, projectRoot, { runId: 'a' });
+      const key = projectKey(projectRoot);
+      const dir = widgetsDirPath(projectRoot);
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, 'clock.tsx');
+      writeFileSync(file, 'export default function Clock() { return null; }\n');
+
+      const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+      const before = widgetOf(watcher.currentWidgets(), key)[0]?.version;
+
+      writeFileSync(file, 'export default function Clock() { return 1; }\n');
+      const bumped = new Date(Date.now() + 5_000);
+      utimesSync(file, bumped, bumped);
+      watcher.poll();
+
+      const after = widgetOf(watcher.currentWidgets(), key)[0]?.version;
+      assert.notEqual(after, before, 'правка файла обязана сменить версию виджета');
+      watcher.dispose();
+    });
+
+    it('удаление файла виджета убирает его из состава', () => {
+      const { runsRoot, projectRoot } = makeJournalBed();
+      seedRun(runsRoot, projectRoot, { runId: 'a' });
+      const key = projectKey(projectRoot);
+      const dir = widgetsDirPath(projectRoot);
+      mkdirSync(dir, { recursive: true });
+      const file = join(dir, 'clock.tsx');
+      writeFileSync(file, 'export default function Clock() { return null; }\n');
+
+      const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+      assert.equal(widgetOf(watcher.currentWidgets(), key).length, 1);
+
+      unlinkSync(file);
+      watcher.poll();
+
+      assert.deepEqual(widgetOf(watcher.currentWidgets(), key), []);
+      watcher.dispose();
+    });
+
+    it('такт, на котором сдвинулся только идущий прогон, оставляет тот же объект состава виджетов', () => {
+      const { runsRoot, projectRoot } = makeJournalBed();
+      const journal = seedRun(runsRoot, projectRoot, { runId: 'a', status: 'running' });
+      const dir = widgetsDirPath(projectRoot);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'clock.tsx'), 'export default function Clock() { return null; }\n');
+
+      const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+      const before = watcher.currentWidgets();
+
+      journal.writeStatus({
+        run_id: journal.paths.runId,
+        pipeline: 'demo',
+        lock_hash: 'abc',
+        status: 'success',
+        workspace: { mode: 'cwd' },
+        inputs: {},
+        jobs: [],
+        budget: { tokens_used: 0, wallclock_ms: 0 },
+        updated_at: '2026-08-01T01:00:00.000Z',
+      });
+      watcher.poll();
+
+      assert.equal(watcher.currentWidgets(), before, 'состав виджетов не должен пересобираться, когда сдвинулся только прогон');
+      watcher.dispose();
+    });
+
+    it('появление проекта без виджетов даёт ему раздел в составе', () => {
+      const { runsRoot, projectRoot } = makeJournalBed();
+      seedRun(runsRoot, projectRoot, { runId: 'a' });
+
+      const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+      const before = watcher.currentWidgets();
+
+      // Ни одного файла виджета у нового проекта нет: состав обязан
+      // пересобраться всё равно — иначе экран не покажет его пустым разделом
+      // до первой правки какого-нибудь виджета (требование ui-dashboard).
+      const other = tempDir('other-project-');
+      seedRun(runsRoot, other, { runId: 'b' });
+      watcher.poll();
+
+      const after = watcher.currentWidgets();
+      assert.notEqual(after, before, 'регистрация проекта обязана пересобрать состав виджетов');
+      assert.deepEqual(widgetOf(after, projectKey(other)), []);
+      assert.ok(
+        after.projects.some((project) => project.projectKey === projectKey(other)),
+        'проект без виджетов обязан попасть в состав своим разделом',
+      );
+      watcher.dispose();
+    });
+
+    it('правка очереди улучшений не пересобирает состав виджетов', () => {
+      const { runsRoot, projectRoot } = makeJournalBed();
+      seedRun(runsRoot, projectRoot, { runId: 'a' });
+      const dir = widgetsDirPath(projectRoot);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'clock.tsx'), 'export default function Clock() { return null; }\n');
+      writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+
+      const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+      const before = watcher.currentWidgets();
+
+      writeFileSync(join(projectRoot, 'backlog.md'), backlogText('done'));
+      watcher.poll();
+
+      assert.equal(watcher.currentWidgets(), before, 'состав виджетов не должен пересобираться от правки очереди');
+      watcher.dispose();
+    });
   });
 });

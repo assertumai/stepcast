@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-import type { BacklogOverview, Overview, RunSnapshot } from './api';
+import type { BacklogOverview, Overview, RunSnapshot, WidgetsOverview } from './api';
 
 /**
  * Живое состояние страницы: один `EventSource` на демон.
@@ -24,6 +24,7 @@ export type LiveState = 'connecting' | 'live' | 'offline';
 export interface Live {
   readonly overview: Overview | undefined;
   readonly backlog: BacklogOverview | undefined;
+  readonly widgets: WidgetsOverview | undefined;
   readonly snapshot: RunSnapshot | undefined;
   readonly state: LiveState;
 }
@@ -31,6 +32,7 @@ export interface Live {
 export function useLive(followedAddress?: string): Live {
   const [overview, setOverview] = useState<Overview | undefined>(undefined);
   const [backlog, setBacklog] = useState<BacklogOverview | undefined>(undefined);
+  const [widgets, setWidgets] = useState<WidgetsOverview | undefined>(undefined);
   const [snapshot, setSnapshot] = useState<RunSnapshot | undefined>(undefined);
   const [state, setState] = useState<LiveState>('connecting');
 
@@ -51,6 +53,10 @@ export function useLive(followedAddress?: string): Live {
       setState('live');
       setBacklog(JSON.parse((event as MessageEvent<string>).data) as BacklogOverview);
     });
+    source.addEventListener('widgets', (event) => {
+      setState('live');
+      setWidgets(JSON.parse((event as MessageEvent<string>).data) as WidgetsOverview);
+    });
     source.addEventListener('run', (event) => {
       setState('live');
       setSnapshot(JSON.parse((event as MessageEvent<string>).data) as RunSnapshot);
@@ -62,5 +68,5 @@ export function useLive(followedAddress?: string): Live {
     };
   }, [followedAddress]);
 
-  return { overview, backlog, snapshot, state };
+  return { overview, backlog, widgets, snapshot, state };
 }

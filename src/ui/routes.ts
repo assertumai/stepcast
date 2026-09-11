@@ -20,6 +20,7 @@ export type Route =
   | { readonly page: 'settings' }
   | { readonly page: 'agents' }
   | { readonly page: 'cleanup' }
+  | { readonly page: 'widgets' }
   | { readonly page: 'run'; readonly projectKey: string; readonly runId: string };
 
 /**
@@ -64,6 +65,7 @@ export const MENU: readonly {
   { page: 'runs', href: '/', title: 'Прогоны', pages: ['runs', 'run'] },
   { page: 'pipelines', href: '/pipelines', title: 'Пайплайны', pages: ['pipelines'] },
   { page: 'steps', href: '/steps', title: 'Шаги', pages: ['steps'] },
+  { page: 'widgets', href: '/widgets', title: 'Виджеты', pages: ['widgets'] },
   { page: 'backlog', href: '/backlog', title: 'Бэклог', pages: ['backlog'] },
   { page: 'usage', href: '/usage', title: 'Расход', pages: ['usage'] },
   { page: 'cleanup', href: '/cleanup', title: 'Уборка', pages: ['cleanup'] },
@@ -96,6 +98,27 @@ export function runHref(projectKey: string, runId: string): string {
 }
 
 /**
+ * Адрес под `/widgets/` — содержимое, разбираемое демоном (`src/ui/server.ts`),
+ * а не подменяемое страницей витрины: обе объявленные формы адреса виджета
+ * лежат под этим префиксом (design.md изменения `ui-runtime-widget-spike`,
+ * Решение 10). Голый `/widgets` (без хвостового разделителя) под предикат не
+ * подпадает — это адрес экрана меню «Виджеты», его отдаёт та же страница, что
+ * и остальные экраны.
+ */
+export function isWidgetPath(pathname: string): boolean {
+  return pathname.startsWith('/widgets/');
+}
+
+/**
+ * Адрес модуля виджета с версией — сегменты экранированы, версия идёт
+ * параметром запроса. Реестр модулей браузера неизменен: замена виджета
+ * возможна только переимпортом по новому адресу (design.md, Решение 6).
+ */
+export function widgetModuleHref(projectKey: string, id: string, version: string): string {
+  return `/widgets/${encodeURIComponent(projectKey)}/${encodeURIComponent(id)}.js?v=${encodeURIComponent(version)}`;
+}
+
+/**
  * Путь в маршрут. Неизвестный путь — включая `/runs/<проект>` без
  * идентификатора прогона и `/runs/<проект>/<прогон>/...` с хвостом — даёт
  * первый экран, прогоны: витрина не обязана объяснять форму адреса, ей
@@ -107,6 +130,7 @@ export function parseRoute(pathname: string): Route {
   if (parts.length === 1) {
     if (parts[0] === 'pipelines') return { page: 'pipelines' };
     if (parts[0] === 'steps') return { page: 'steps' };
+    if (parts[0] === 'widgets') return { page: 'widgets' };
     if (parts[0] === 'backlog') return { page: 'backlog' };
     if (parts[0] === 'agents') return { page: 'agents' };
     if (parts[0] === 'settings') return { page: 'settings' };

@@ -12,6 +12,7 @@ import { Agents } from './pages/Agents';
 import { Settings } from './pages/Settings';
 import { Steps } from './pages/Steps';
 import { Usage } from './pages/Usage';
+import { Widgets } from './pages/Widgets';
 
 /**
  * Каркас витрины: боковое меню слева, экран справа, один живой поток на
@@ -30,7 +31,7 @@ import { Usage } from './pages/Usage';
 export function App(): JSX.Element {
   const { route, navigate } = useRoute();
   const followedAddress = route.page === 'run' ? `${route.projectKey}/${route.runId}` : undefined;
-  const { overview, backlog, snapshot, state } = useLive(followedAddress);
+  const { overview, backlog, widgets, snapshot, state } = useLive(followedAddress);
   const liveLabel = {
     connecting: 'подключение к демону…',
     live: 'живое обновление',
@@ -76,6 +77,7 @@ export function App(): JSX.Element {
         {route.page === 'runs' ? <Runs overview={overview} navigate={navigate} /> : null}
         {route.page === 'pipelines' ? <Pipelines overview={overview} navigate={navigate} /> : null}
         {route.page === 'steps' ? <Steps /> : null}
+        {route.page === 'widgets' ? <Widgets overview={overview} widgets={widgets} /> : null}
         {route.page === 'backlog' ? <Backlog backlog={backlog} /> : null}
         {route.page === 'usage' ? (
           <Usage overview={overview} {...(route.days === undefined ? {} : { days: route.days })} navigate={navigate} />

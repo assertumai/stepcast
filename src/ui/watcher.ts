@@ -5,6 +5,7 @@ import { listProjects, listRunsByKey } from '../core/journal/reader.js';
 import { runPaths, usageStorePath } from '../core/journal/paths.js';
 import { buildBacklog, type BacklogOverview } from './backlog.js';
 import { buildOverview, type Overview, type RunOverview } from './overview.js';
+import { buildProjectWidgets, buildWidgets, type WidgetsOverview } from './widgets.js';
 import type { JournalProblem } from '../core/journal/reader.js';
 
 /**
@@ -56,6 +57,8 @@ export interface Watcher {
   current(): Overview;
   /** Текущая очередь без ожидания следующего опроса. */
   currentBacklog(): BacklogOverview;
+  /** Текущий состав виджетов без ожидания следующего опроса. */
+  currentWidgets(): WidgetsOverview;
   /** Подписаться на обновления. Возвращает функцию отписки. */
   subscribe(listener: (overview: Overview, backlog: BacklogOverview) => void): () => void;
   /** Проверить корень прогонов немедленно, не дожидаясь таймера. */
@@ -73,6 +76,7 @@ export interface Watcher {
 interface Fingerprint {
   readonly runs: string;
   readonly backlog: string;
+  readonly widgets: string;
 }
 
 /**
@@ -96,10 +100,19 @@ interface Fingerprint {
  * `atomicWrite` подменяет файл переименованием, так что размер меняется вместе
  * с содержимым почти всегда (design.md, Решение 4). Отсутствие файла — такое
  * же законное состояние отпечатка, как и его наличие.
+ *
+ * Часть `widgets` — виджеты `.stepcast/widgets/` каждого проекта с известным
+ * путём, тем же приёмом «`mtime` и размер» (design.md изменения
+ * `ui-runtime-widget-spike`, Решение 7). Отдельная часть, а не слияние с
+ * `backlog`: цена перечитывания разная — очередь весит сотни килобайт разбора
+ * Markdown, состав виджетов — `readdirSync` каталога с единицами файлов, и
+ * слитая часть заставляла бы перечитывать очередь на каждое сохранение
+ * виджета в редакторе.
  */
 function fingerprint(runsRoot: string): Fingerprint {
   const parts: string[] = [];
   const backlogParts: string[] = [];
+  const widgetParts: string[] = [];
 
   try {
     const store = statSync(usageStorePath(runsRoot));
@@ -120,6 +133,25 @@ function fingerprint(runsRoot: string): Fingerprint {
       } catch {
         backlogParts.push(`${project.key}:-`);
       }
+
+      // Версия каждого виджета уже несёт `mtime` и размер (`fingerprintVersion`
+      // в `src/ui/widgets.ts`) — отдельно их здесь не считать.
+      //
+      // Запись идёт на каждый проект с известным путём, а не на каждый файл, —
+      // тем же приёмом, каким `backlog` пишет `${project.key}:-`: проект без
+      // виджетов тоже раздел состава («Проект без виджетов SHALL показываться
+      // пустым»), и без его записи появление такого проекта не сдвинуло бы
+      // часть отпечатка, а состав не пересобрался бы до первой правки
+      // какого-нибудь виджета. Отсутствующий каталог проекта помечен отдельно
+      // от «каталог есть, виджетов нет»: `buildWidgets` такой проект в состав
+      // не берёт вовсе, и появление каталога обязано сдвинуть отпечаток ещё до
+      // первого виджета в нём.
+      const widgets = existsSync(project.path)
+        ? buildProjectWidgets(project.path)
+            .map((widget) => `${widget.id}:${widget.version}`)
+            .join(',') || '-'
+        : '?';
+      widgetParts.push(`${project.key}:${widgets}`);
     }
 
     for (const runId of listRunsByKey(runsRoot, project.key)) {
@@ -134,7 +166,7 @@ function fingerprint(runsRoot: string): Fingerprint {
       parts.push(`${project.key}/${runId}:${mtime}:${existsSync(paths.jobs) ? '1' : '0'}`);
     }
   }
-  return { runs: parts.join('|'), backlog: backlogParts.join('|') };
+  return { runs: parts.join('|'), backlog: backlogParts.join('|'), widgets: widgetParts.join('|') };
 }
 
 /**
@@ -179,12 +211,14 @@ export function createWatcher(options: WatcherOptions): Watcher {
   let overview = buildOverview(runsRoot);
   let projects = projectList(overview);
   let backlog = buildBacklog(overview);
+  let widgets = buildWidgets(runsRoot);
   reportProblems(overview);
 
   const poll = (): void => {
     const next = fingerprint(runsRoot);
-    if (next.runs === mark.runs && next.backlog === mark.backlog) return;
+    if (next.runs === mark.runs && next.backlog === mark.backlog && next.widgets === mark.widgets) return;
     const backlogChanged = next.backlog !== mark.backlog;
+    const widgetsChanged = next.widgets !== mark.widgets;
     mark = next;
     overview = buildOverview(runsRoot);
     const nextProjects = projectList(overview);
@@ -197,6 +231,12 @@ export function createWatcher(options: WatcherOptions): Watcher {
       projects = nextProjects;
       backlog = buildBacklog(overview);
     }
+    // Тем же приёмом — состав виджетов пересобирается только по своей части
+    // отпечатка: такт, где сдвинулись лишь прогон или очередь, оставляет
+    // прежний объект (design.md изменения `ui-runtime-widget-spike`, Решение 7).
+    if (widgetsChanged) {
+      widgets = buildWidgets(runsRoot);
+    }
     reportProblems(overview);
     for (const listener of listeners) listener(overview, backlog);
   };
@@ -208,6 +248,7 @@ export function createWatcher(options: WatcherOptions): Watcher {
   return {
     current: () => overview,
     currentBacklog: () => backlog,
+    currentWidgets: () => widgets,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

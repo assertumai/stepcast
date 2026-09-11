@@ -554,3 +554,14 @@ pre {
 
 /* Кнопка «перечислить заново» стоит прямо в строке пояснения, а не над ней. */
 .model-refresh button { padding: 0; font: inherit; }
+
+/*
+ * Экран виджетов — леса спайка (design.md изменения `ui-runtime-widget-spike`,
+ * Решение 13). Рамка вокруг хоста нужна даже исправному виджету: без неё
+ * границу между соседними карточками нечем провести на узком окне.
+ */
+.widget-frame { border: 1px solid var(--border); border-radius: 6px; padding: .6rem .8rem; margin-top: .6rem; }
+.widget-frame-title { margin-bottom: .4rem; }
+.widget-card-error { border-left: 3px solid var(--fail); padding-left: .6rem; }
+.widget-card-title { font-weight: 650; color: var(--fail); margin-bottom: .3rem; }
+.widget-card-detail { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: .84rem; margin: .3rem 0 0; }

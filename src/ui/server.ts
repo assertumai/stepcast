@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { existsSync } from 'node:fs';
 
 import { runPaths } from '../core/journal/paths.js';
-import { isRunAlive } from '../core/journal/reader.js';
+import { isRunAlive, listProjects } from '../core/journal/reader.js';
 import {
   removeRunWithStats,
   removeRuns,
@@ -31,12 +31,20 @@ import { readJournalFile } from './file.js';
 import { readModels } from './models.js';
 import { buildPipelines, createRegistryCache, type RegistryCache } from './pipelines.js';
 import { buildSteps } from './steps.js';
-import { isApiPath, isSafeSegment } from './routes.js';
+import { isApiPath, isSafeSegment, isWidgetPath } from './routes.js';
 import { readSettings, writeSettings } from './settings.js';
 import { buildSnapshot, buildSnapshotFromRecord } from './snapshot.js';
 import { readStepOutput } from './stepOutput.js';
 import { MAX_USAGE_DAYS, buildUsage } from './usage.js';
 import { createWatcher, type Watcher } from './watcher.js';
+import {
+  createWidgetCompiler,
+  errorModuleText,
+  resolveWidgetFile,
+  type WidgetCompiler,
+  type WidgetsOverview,
+} from './widgets.js';
+import { WIDGET_RUNTIME_ROUTES, widgetRuntimeModuleText } from './widgetRuntime.js';
 
 /**
  * HTTP-витрина журнала.
@@ -63,6 +71,12 @@ export interface UiServerOptions {
   readonly runsRoot: string;
   readonly port: number;
   readonly watcher?: Watcher;
+  /**
+   * Компилятор виджетов. Заводится сервером сам, если не передан; переданный
+   * снаружи сервер не останавливает при `close()` — тем же приёмом, что и
+   * `watcher` (design.md изменения `ui-runtime-widget-spike`, Решение 12).
+   */
+  readonly widgetCompiler?: WidgetCompiler;
   /**
    * Конфигурация для разбора пайплайнов. Без неё экран пайплайнов пуст:
    * раскрытие пайплайна опирается на умолчания конфигурации.
@@ -199,6 +213,124 @@ function handleFile(runsRoot: string, url: URL, res: ServerResponse): void {
     const message = isStepcastError(error) ? error.message : 'Файл не читается';
     sendJson(res, isStepcastError(error) ? 400 : 404, { error: message });
   }
+}
+
+/** Содержимое под `/widgets/`: JS всегда 200, `text/javascript` — сам модуль решает, рабочий он или ошибка (design.md, Решение 8). */
+function sendWidgetModule(res: ServerResponse, code: string, options: { readonly error?: true } = {}): void {
+  res.writeHead(200, {
+    'content-type': 'text/javascript; charset=utf-8',
+    'cache-control': 'no-store',
+    // Заголовок-пометка ошибки — для curl и проверки, не разбирающих JS.
+    ...(options.error === true ? { 'x-stepcast-widget-error': '1' } : {}),
+  });
+  res.end(code);
+}
+
+/**
+ * Один и тот же отказ на все причины отсутствия: неизвестный ключ проекта,
+ * проект без известного пути, отсутствующий файл виджета. Ответ не обязан
+ * рассказывать любопытному, какие проекты известны демону (design.md,
+ * Решение 5).
+ */
+function sendWidgetNotFound(res: ServerResponse): void {
+  sendJson(res, 404, { error: 'Виджет не найден' });
+}
+
+/** `<id>.js` → `<id>` — разобранный сегмент раскладки; расширение исходника фиксировано (design.md, Решение 10). */
+function widgetIdFromRoute(raw: string): string | undefined {
+  if (!raw.endsWith('.js')) return undefined;
+  try {
+    return decodeURIComponent(raw.slice(0, -'.js'.length));
+  } catch {
+    return undefined;
+  }
+}
+
+/** `/widgets/<projectKey>/<id>.js`: компиляция при запросе, кеш и ошибка — модулем, а не отказом HTTP. */
+async function handleWidgetModule(
+  runsRoot: string,
+  compiler: WidgetCompiler,
+  rawKey: string,
+  rawId: string,
+  res: ServerResponse,
+): Promise<void> {
+  let key: string;
+  try {
+    key = decodeURIComponent(rawKey);
+  } catch {
+    sendWidgetNotFound(res);
+    return;
+  }
+  const id = widgetIdFromRoute(rawId);
+  if (!isSafeSegment(key) || id === undefined) {
+    sendWidgetNotFound(res);
+    return;
+  }
+
+  const project = listProjects(runsRoot).find((candidate) => candidate.key === key);
+  if (project?.path === undefined || !existsSync(project.path)) {
+    sendWidgetNotFound(res);
+    return;
+  }
+
+  const file = resolveWidgetFile(project.path, id);
+  if (file === undefined) {
+    sendWidgetNotFound(res);
+    return;
+  }
+
+  // Файл мог исчезнуть между разрешением адреса и компиляцией — тот же 404,
+  // что и на отсутствующий файл, не отказ сервера.
+  const outcome = await compiler.compile(file);
+  if (outcome === undefined) {
+    sendWidgetNotFound(res);
+    return;
+  }
+
+  if (outcome.kind === 'ok') {
+    sendWidgetModule(res, outcome.code);
+    return;
+  }
+  sendWidgetModule(res, errorModuleText(outcome.failure), { error: true });
+}
+
+/** `/widgets/runtime/<имя>.js`: закрытый перечень модулей-переходников (design.md, Решения 3—4). */
+function handleWidgetRuntimeModule(rawName: string, res: ServerResponse): void {
+  if (!rawName.endsWith('.js')) {
+    sendWidgetNotFound(res);
+    return;
+  }
+  const specifier = WIDGET_RUNTIME_ROUTES[rawName.slice(0, -'.js'.length)];
+  if (specifier === undefined) {
+    sendWidgetNotFound(res);
+    return;
+  }
+  sendWidgetModule(res, widgetRuntimeModuleText(specifier));
+}
+
+/**
+ * Диспетчер `/widgets/...`: ровно две объявленные формы адреса, остальное —
+ * 404 без перечисления каталога (design.md, Решение 10). Сегменты не несут
+ * `..` и разделителей — та же проверка, что и у прочих адресов витрины
+ * (`isSafeSegment`), внутри `handleWidgetModule`.
+ */
+async function handleWidgetRequest(
+  runsRoot: string,
+  compiler: WidgetCompiler,
+  pathname: string,
+  res: ServerResponse,
+): Promise<void> {
+  const parts = pathname.split('/').filter((part) => part !== '');
+  // `parts[0]` — всегда `widgets`: вызывающий уже проверил `isWidgetPath`.
+  if (parts.length === 3 && parts[1] === 'runtime') {
+    handleWidgetRuntimeModule(parts[2] as string, res);
+    return;
+  }
+  if (parts.length === 3) {
+    await handleWidgetModule(runsRoot, compiler, parts[1] as string, parts[2] as string, res);
+    return;
+  }
+  sendWidgetNotFound(res);
 }
 
 const INVALID = Symbol('invalid');
@@ -796,6 +928,9 @@ function handleEvents(
   // каждым кадром в каждую вкладку (включая страницу прогона, где она не
   // нужна) — ровно то, чего избегает отдельное событие (design.md, Решение 5).
   let sent: BacklogOverview | undefined;
+  // То же правило для виджетов — своя переменная, потому что часть отпечатка
+  // наблюдателя, от которой она зависит, своя (design.md, Решение 7).
+  let sentWidgets: WidgetsOverview | undefined;
 
   const push = (): void => {
     send('overview', watcher.current());
@@ -803,6 +938,11 @@ function handleEvents(
     if (backlog !== sent) {
       sent = backlog;
       send('backlog', backlog);
+    }
+    const widgets = watcher.currentWidgets();
+    if (widgets !== sentWidgets) {
+      sentWidgets = widgets;
+      send('widgets', widgets);
     }
     if (followed === undefined) return;
     const snapshot = snapshotOrRecord(runsRoot, followed.key, followed.runId);
@@ -847,6 +987,16 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
   // демонов в одном процессе, и общий кеш связал бы их между собой
   // (design.md, Решение 3).
   const registryCache = createRegistryCache();
+  // Компилятор виджетов — тем же приёмом, что и `watcher`: заводится сервером
+  // сам, если не передан, и снаружи полученный сервер не останавливает
+  // (design.md, Решение 12). Заведение объекта не поднимает службу: `esbuild`
+  // грузится лениво первым `compile()` (Решение 1). Лог — тот же, что у
+  // наблюдателя: отказ подъёма компилятора обязан оставить строку в логе
+  // демона, а не только в ответе на запрос виджета.
+  const widgetCompiler =
+    options.widgetCompiler ??
+    createWidgetCompiler(options.log === undefined ? {} : { log: options.log });
+  const ownsWidgetCompiler = options.widgetCompiler === undefined;
 
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', `http://${LOOPBACK}`);
@@ -879,6 +1029,14 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
 
     if (method !== 'GET') {
       sendJson(res, 405, { error: 'Такого действия у витрины нет' });
+      return;
+    }
+
+    // Раньше диспетчера `/api`: обе объявленные формы адреса виджета несут
+    // сегменты в пути, а не различаются литералом случая `switch` (design.md,
+    // Решение 10).
+    if (isWidgetPath(url.pathname)) {
+      void handleWidgetRequest(runsRoot, widgetCompiler, url.pathname, res);
       return;
     }
 
@@ -945,12 +1103,15 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
       resolve({
         server,
         port,
-        close: () =>
-          new Promise<void>((done) => {
-            if (ownsWatcher) watcher.dispose();
-            server.closeAllConnections();
-            server.close(() => done());
-          }),
+        close: async () => {
+          if (ownsWatcher) watcher.dispose();
+          // Служебный процесс esbuild переживает `stepcast down` и вешает
+          // `node --test`, если его не остановить (design.md, Решение 12);
+          // компилятор, полученный снаружи, останавливает тот, кто его поднял.
+          if (ownsWidgetCompiler) await widgetCompiler.dispose();
+          server.closeAllConnections();
+          await new Promise<void>((done) => server.close(() => done()));
+        },
       });
     });
   });

@@ -334,6 +334,31 @@ export interface StepsOverview {
   readonly generatedAt: string;
 }
 
+/** Сверено построчно с `WidgetView`/`ProjectWidgetsView`/`WidgetsOverview` (`src/ui/widgets.ts`). */
+export interface WidgetView {
+  readonly id: string;
+  /** Версия — отпечаток файла (`mtime` и размер); идёт в адрес модуля, чтобы отличить новую редакцию от прежней. */
+  readonly version: string;
+}
+
+export interface ProjectWidgetsView {
+  readonly projectKey: string;
+  readonly widgets: readonly WidgetView[];
+}
+
+export interface WidgetsOverview {
+  readonly projects: readonly ProjectWidgetsView[];
+  readonly generatedAt: string;
+}
+
+/** Разобранная ошибка компиляции виджета — сверено с `CompileFailure` (`src/ui/widgets.ts`). */
+export interface WidgetCompileFailure {
+  readonly file: string;
+  readonly line: number;
+  readonly column: number;
+  readonly text: string;
+}
+
 /** Файл, из которого пришёл пункт очереди — открытые либо решённые (`docs/backlog.md`). */
 export type BacklogSourceFile = 'backlog.md' | 'resolved.md';
 

@@ -28,6 +28,7 @@
     "../src/ui/runsView.ts",
     "../src/ui/filters.ts",
     "../src/ui/backlogView.ts",
+    "../src/ui/widgetRuntime.ts",
     "../vite.config.ts"
   ]
 }

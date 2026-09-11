@@ -122,3 +122,8 @@ project:
     # прогона — тем же порядком, каким configurable-check-command заводил
     # .stepcast/config.yml.
     - examples/**
+    # Каталог виджетов спайка ui-runtime-widget-spike. Строка добавлена этим
+    # же заходом, который её и читает, — как и всякая правка edit_paths, она
+    # действует со следующего прогона; образец виджета поэтому лежит в
+    # examples/widgets/, объявленном заранее, а не здесь.
+    - .stepcast/widgets/**
