@@ -4,7 +4,7 @@ import type { Context } from 'cordis';
 import type { ScreenListing } from '../../../src/ui/screens/declaration.ts';
 import { BUILTIN_SCREENS } from '../screens/index';
 import { navItem } from './navItem';
-import { NAV, SCREEN } from './shell';
+import { NAV, SCREEN } from '@stepcast/slots';
 
 /**
  * Плагин `screens` — читает действующий состав у демона и применяет

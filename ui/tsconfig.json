@@ -16,7 +16,16 @@
 
     "noEmit": true,
     "skipLibCheck": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+
+    // Имена таблицы, живущие в репозитории: встроенная половина пишет их так
+    // же, как плагин (design.md изменения `shared-module-table`, Решения 5,
+    // 6). Те же две записи — в `ui/tsconfig.test.json`, `vite.config.ts` и
+    // `scripts/build-ui-tests.mjs`.
+    "paths": {
+      "@stepcast/slots": ["./src/sharedSlots.ts"],
+      "@stepcast/ui": ["./src/ui/index.ts"]
+    }
   },
   "include": [
     "src/**/*.ts",
@@ -28,7 +37,7 @@
     "../src/ui/runsView.ts",
     "../src/ui/filters.ts",
     "../src/ui/backlogView.ts",
-    "../src/ui/widgetRuntime.ts",
+    "../src/ui/sharedModules.ts",
     "../src/ui/screens/declaration.ts",
     "../src/ui/screens/*/declaration.ts",
     "../src/core/plugins/fibers.ts",

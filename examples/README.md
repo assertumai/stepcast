@@ -35,6 +35,15 @@ node examples/acceptance/verify.mjs <каталог-прогона-из-выво
 `clock.tsx` в `<проект>/.stepcast/widgets/`, откройте демон и экран «Виджеты»
 — подробности и границы спайка в [`docs/widgets.md`](../docs/widgets.md).
 
+**`plugins/`** — образцы браузерной половины плагина (`docs/ui-plugins.md`):
+`board/` — на React, с компонентами `@stepcast/ui` (Button, Card, Table,
+Dialog, Tabs, Select, Input) и вкладом в `SCREEN` дескриптором из
+`@stepcast/slots`; `element/` — на другом фреймворке (Preact), встаёт в слот
+пользовательским элементом через адаптер `elementSlotComponent`, не
+импортируя ни React, ни cordis. Скопируйте каталог в
+`~/.stepcast/plugins/<id>/` рядом с `plugin.json` — демон соберёт и отдаст
+браузерную половину сам.
+
 **`target-state/`** — целевое состояние формата. **Не запускается**: использует
 подстановку в числовые поля, `on_exceed: wait` и предикат `judge`, которых в
 текущем срезе нет, — движок отклонит его с указанием, чего не хватает. Лежит

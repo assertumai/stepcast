@@ -28,7 +28,7 @@ const LIST = slot<Record<string, never>, 'list'>('list', 'list');
 
 interface PluginModule {
   readonly default?: (ctx: Context) => void;
-  /** Ошибка сборки, пришедшая исполняемым модулем, — то же имя экспорта, что у виджета (`src/ui/widgetRuntime.ts`). */
+  /** Ошибка сборки, пришедшая исполняемым модулем, — то же имя экспорта, что у виджета (`src/ui/sharedModules.ts`). */
   readonly __stepcastWidgetError?: {
     readonly file: string;
     readonly line: number;

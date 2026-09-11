@@ -1,6 +1,6 @@
 import { Service, type Context, type Fiber } from 'cordis';
 
-import { WIDGET_ERROR_EXPORT, WIDGET_STYLE_EXPORT } from '../../../src/ui/widgetRuntime.ts';
+import { WIDGET_ERROR_EXPORT, WIDGET_STYLE_EXPORT } from '../../../src/ui/sharedModules.ts';
 import { pluginModuleHref } from '../../../src/ui/routes.ts';
 import type { PluginRowView, WidgetCompileFailure } from '../api';
 import type { StyleSink } from './styles.ts';

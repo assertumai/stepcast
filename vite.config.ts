@@ -24,9 +24,24 @@ import { viteSingleFile } from 'vite-plugin-singlefile';
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const DAEMON = 'http://127.0.0.1:7717';
 
+/**
+ * Имена таблицы, живущие в самом репозитории (design.md изменения
+ * `shared-module-table`, Решения 5, 6): у плагина их разрешает карта имён
+ * страницы, у встроенной половины — это отображение. Встроенный экран
+ * обязан писать то же имя, что и плагин: иначе голый специфик ни разу не
+ * проверяется внутри поставки, и первый экран, написанный по документации,
+ * не соберётся. Отображение заведено во всех четырёх местах сразу — здесь,
+ * в `ui/tsconfig.json`, `ui/tsconfig.test.json` и `scripts/build-ui-tests.mjs`.
+ */
+const SHARED_IN_REPO = {
+  '@stepcast/slots': join(ROOT, 'ui', 'src', 'sharedSlots.ts'),
+  '@stepcast/ui': join(ROOT, 'ui', 'src', 'ui', 'index.ts'),
+};
+
 export default defineConfig({
   root: 'ui',
   plugins: [react(), viteSingleFile()],
+  resolve: { alias: SHARED_IN_REPO },
   build: {
     outDir: '../dist/ui-web',
     emptyOutDir: true,
@@ -39,12 +54,16 @@ export default defineConfig({
       '/api': { target: DAEMON, changeOrigin: false },
       // Перечень форм адреса виджета — тот же, что отдаёт демон
       // (`isWidgetPath`, `src/ui/routes.ts`), и это сверено тестом
-      // («карта имён страницы», `test/ui-widgets.test.ts`: каждая форма адреса
-      // обязана попасть под запись прокси). Без записи здесь дев-сервер сам
-      // отвечал бы на `/widgets/...` (и то и молча, 404 встроенным
+      // («карта имён страницы», `test/ui-shared-modules.test.ts`: каждая форма
+      // адреса обязана попасть под запись прокси). Без записи здесь дев-сервер
+      // сам отвечал бы на `/widgets/...` (и то и молча, 404 встроенным
       // обработчиком Vite), и правка витрины перестала бы проверяться на
       // виджетах (design.md, Решение 14).
       '/widgets': { target: DAEMON, changeOrigin: false },
+      // Переходники общих модулей — своя форма адреса демона (design.md
+      // изменения `shared-module-table`, Решение 3); без записи здесь
+      // дев-сервер отвечал бы на `/shared/...` сам.
+      '/shared': { target: DAEMON, changeOrigin: false },
     },
     fs: {
       // Дев-сервер отдаёт браузеру файлы: разрешено ровно то, из чего витрина
@@ -54,8 +73,8 @@ export default defineConfig({
       // `transcript.ts` — разбор потока шага в записи хода, `runsView.ts` —
       // фильтры и порядок списка прогонов, `filters.ts` — общее обоим экранам
       // правило «выбранное значение фильтра не исчезает», `backlogView.ts` —
-      // нумерация, фильтры и порядок очереди улучшений, `widgetRuntime.ts` —
-      // перечень переходников и ключ глобали, которую публикует `main.tsx`,
+      // нумерация, фильтры и порядок очереди улучшений, `sharedModules.ts` —
+      // таблица общих модулей и ключ глобали, которую публикует `main.tsx`,
       // `fibers.ts` — успокоение контекста и поиск зависших областей, общее с
       // ядром демона (design.md `cordis-kernel-browser`, Решение 6)).
       // Целый корень репозитория здесь означал бы,
@@ -80,7 +99,7 @@ export default defineConfig({
         join(ROOT, 'src', 'ui', 'runsView.ts'),
         join(ROOT, 'src', 'ui', 'filters.ts'),
         join(ROOT, 'src', 'ui', 'backlogView.ts'),
-        join(ROOT, 'src', 'ui', 'widgetRuntime.ts'),
+        join(ROOT, 'src', 'ui', 'sharedModules.ts'),
         join(ROOT, 'src', 'ui', 'screens'),
         join(ROOT, 'src', 'core', 'config', 'modelTiers.ts'),
         join(ROOT, 'src', 'core', 'plugins', 'fibers.ts'),

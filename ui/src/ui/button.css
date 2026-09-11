@@ -1,0 +1,52 @@
+/*
+ * Кнопка — вид тот же, что был у голого `<button>` витрины: рамка и текст
+ * приглушённые в покое, акцент на `:hover` (design.md изменения
+ * `shared-module-table`, Решение 7 — токены новые, палитра прежняя).
+ *
+ * Размер шрифта — `font: inherit` и ничего сверх: прежнее глобальное правило
+ * `button` в `styles.css` своего кегля не задавало, и кнопка наследовала 15px
+ * от `body`. Собственный `font-size` здесь выигрывал бы по специфичности у
+ * любого класса экрана и уменьшал бы каждую кнопку, переведённую на
+ * библиотеку, — то есть менял бы вид, ради неизменности которого Решение 12 и
+ * переводит экраны по одному. Меньший кегль там, где он нужен, берётся
+ * размером `sm`.
+ */
+.sc-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: .3rem;
+  font: inherit;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--foreground);
+  padding: .2rem .5rem;
+  cursor: pointer;
+}
+.sc-button:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
+.sc-button:focus-visible { outline: 2px solid var(--ring); outline-offset: -1px; }
+.sc-button:disabled { opacity: .4; cursor: default; }
+
+.sc-button--outline { border-color: var(--input); }
+
+.sc-button--destructive { color: var(--destructive); border-color: var(--destructive); }
+.sc-button--destructive:hover:not(:disabled) {
+  color: var(--destructive);
+  border-color: var(--destructive);
+  background: var(--background);
+}
+
+.sc-button--ghost { border-color: transparent; padding: .1rem .2rem; }
+.sc-button--ghost:hover:not(:disabled) { border-color: transparent; }
+
+.sc-button--link {
+  border-color: transparent;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.sc-button--link:hover:not(:disabled) { border-color: transparent; }
+
+.sc-button--sm { font-size: .78rem; padding: .1rem .35rem; }
+.sc-button--icon { padding: .3rem; }

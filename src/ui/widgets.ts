@@ -1,9 +1,9 @@
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { basename, extname, join, sep } from 'node:path';
+import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 
 import { listProjects } from '../core/journal/reader.js';
 import { isSafeSegment } from './routes.js';
-import { WIDGET_ERROR_EXPORT, WIDGET_STYLE_EXPORT } from './widgetRuntime.js';
+import { SHARED_MODULE_LIST, WIDGET_ERROR_EXPORT, WIDGET_STYLE_EXPORT } from './sharedModules.js';
 
 /**
  * Виджет пользователя — файл `<проект>/.stepcast/widgets/<id>.tsx`.
@@ -154,10 +154,34 @@ export type CompileOutcome =
  * необязателен, чтобы не ломать подставные компиляторы существующих тестов
  * (`test/ui-widgets.test.ts`, `test/ui-server.test.ts`), которым бандл не нужен.
  */
+/** Вход сборки в `metafile` esbuild — только те поля, которые здесь читаются. */
+interface MetafileInput {
+  readonly imports?: readonly {
+    /** Путь, в который разрешён импорт: ключ другого входа — или сам специфик, если импорт внешний. */
+    readonly path: string;
+    /** Импорт остался внешним именем и в бандл не втянут. */
+    readonly external?: boolean;
+  }[];
+}
+
 export interface EsbuildTransformApi {
   transform(input: string, options: Record<string, unknown>): Promise<{ readonly code: string }>;
   build?(options: Record<string, unknown>): Promise<{
     readonly outputFiles: readonly { readonly path: string; readonly text: string }[];
+    /**
+     * Входы сборки (`metafile: true` в опциях) — по ним ловится свой
+     * экземпляр общего модуля, принесённый мимо голого имени (design.md
+     * изменения `shared-module-table`, Решение 9): внешние специфаки
+     * (`external`) сюда не попадают вовсе, esbuild их не читает.
+     *
+     * Поле необязательно только в типе: сборка зовётся с `metafile: true`, и
+     * результат без него — отказ, а не пропуск проверки (`compileBundle`).
+     * У каждого входа читается `imports`: `original` несёт специфик так, как
+     * его написал автор, и отличает свою копию (`./vendor/react.js`) от
+     * подпути установленного пакета (`react-dom/client`) — отказы у них
+     * разные.
+     */
+    readonly metafile?: { readonly inputs: Readonly<Record<string, MetafileInput | undefined>> };
   }>;
   stop(): Promise<void> | void;
 }
@@ -216,6 +240,147 @@ function toFailure(file: string, error: unknown): CompileFailure {
     };
   }
   return { file, line: 0, column: 0, text: failure.message ?? String(error) };
+}
+
+/** Имя пакета npm из специфика таблицы: `react/jsx-runtime` → `react`, `@stepcast/slots` → `@stepcast/slots`. */
+function packageNameFromSpecifier(specifier: string): string {
+  const parts = specifier.split('/');
+  return specifier.startsWith('@') ? `${parts[0]}/${parts[1]}` : (parts[0] as string);
+}
+
+/**
+ * Имена пакетов таблицы общих модулей — множество, не список: `react` и
+ * `react/jsx-runtime` дают один и тот же пакет, и второй записи здесь не
+ * нужно (design.md изменения `shared-module-table`, Решение 9).
+ */
+const SHARED_PACKAGE_NAMES: ReadonlySet<string> = new Set(
+  SHARED_MODULE_LIST.map((entry) => packageNameFromSpecifier(entry.specifier)),
+);
+
+/**
+ * Имя пакета, которому принадлежит файл, — по ближайшему `package.json`
+ * вверх по дереву от файла (design.md, Решение 9). `undefined` — файл не
+ * входит ни в один пакет (ближайший `package.json`, если и есть, не назвал
+ * `name` строкой) или дерево кончилось раньше, чем package.json нашёлся —
+ * свои файлы плагина без единого `package.json` в предках именно так себя и
+ * ведут, и это не отказ, а обычный случай.
+ */
+function nearestPackageName(absFile: string): string | undefined {
+  let dir = dirname(absFile);
+  for (;;) {
+    const candidate = join(dir, 'package.json');
+    if (existsSync(candidate)) {
+      try {
+        const pkg = JSON.parse(readFileSync(candidate, 'utf8')) as { readonly name?: unknown };
+        return typeof pkg.name === 'string' ? pkg.name : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+/**
+ * Свой экземпляр общего модуля в бандле — вход сборки, чей ближайший
+ * `package.json` носит имя пакета из таблицы (design.md, Решение 9).
+ * Внешние специфаки (`external: SHARED_MODULE_LIST...`) в `metafile.inputs`
+ * не попадают вовсе — esbuild не читает их файлов, — поэтому голый
+ * `import 'react'` этой проверки не касается: только копия, принесённая мимо
+ * имени.
+ */
+interface OwnSharedModuleCopy {
+  readonly file: string;
+  readonly packageName: string;
+}
+
+/** Специфик ведёт на пакет, а не на файл рядом: не относительный и не абсолютный. */
+function isBareSpecifier(specifier: string): boolean {
+  return !specifier.startsWith('.') && !specifier.startsWith('/');
+}
+
+/** Специфаки таблицы, принадлежащие одному пакету: у `react` их два — само имя и `react/jsx-runtime`. */
+function sharedSpecifiersOfPackage(packageName: string): string {
+  return SHARED_MODULE_LIST.filter(
+    (sharedEntry) => packageNameFromSpecifier(sharedEntry.specifier) === packageName,
+  )
+    .map((sharedEntry) => `"${sharedEntry.specifier}"`)
+    .join(', ');
+}
+
+function findOwnSharedModuleCopy(metafile: {
+  readonly inputs: Readonly<Record<string, MetafileInput | undefined>>;
+}): OwnSharedModuleCopy | undefined {
+  for (const relativeInput of Object.keys(metafile.inputs)) {
+    const file = resolve(relativeInput);
+    const packageName = nearestPackageName(file);
+    if (packageName !== undefined && SHARED_PACKAGE_NAMES.has(packageName)) return { file, packageName };
+  }
+  return undefined;
+}
+
+/** Отказ сборки, названный файлом, именем таблицы и способом исправления (design.md, Решение 9). */
+function ownSharedModuleCopyFailure(entry: string, copy: OwnSharedModuleCopy): CompileFailure {
+  return {
+    file: entry,
+    line: 0,
+    column: 0,
+    text:
+      `Браузерная половина приносит собственный экземпляр общего модуля витрины: файл ${copy.file} ` +
+      `принадлежит пакету "${copy.packageName}", а это имя есть в таблице общих модулей. Импортируйте ` +
+      `${sharedSpecifiersOfPackage(copy.packageName)} голым именем — экземпляр даст страница, свой в ` +
+      `бандл приносить нельзя.`,
+  };
+}
+
+/** Специфаки таблицы — множество для проверки точного совпадения, не по имени пакета. */
+const SHARED_SPECIFIERS: ReadonlySet<string> = new Set(SHARED_MODULE_LIST.map((entry) => entry.specifier));
+
+/**
+ * Подпуть пакета таблицы, которого в самой таблице нет: `react-dom/client`,
+ * `react/jsx-dev-runtime`. Внешним такой импорт остаётся (esbuild считает
+ * внешними и подпути внешнего пакета), в бандл не втягивается — и потому
+ * мимо проверки своего экземпляра проходит целиком. Но карта имён страницы
+ * несёт ровно специфаки таблицы, и браузер на таком бандле откажет уже при
+ * `import()`: «Failed to resolve module specifier», без строки о причине и
+ * без файла, в котором её искать.
+ *
+ * Отсюда отказ на сборке: подпуть, которого таблица не несёт, — не рабочий
+ * плагин, и узнать об этом автор должен от демона, а не от консоли чужого
+ * браузера.
+ */
+function findUnmappedSharedSubpath(metafile: {
+  readonly inputs: Readonly<Record<string, MetafileInput | undefined>>;
+}): { readonly specifier: string; readonly packageName: string } | undefined {
+  for (const input of Object.values(metafile.inputs)) {
+    for (const imported of input?.imports ?? []) {
+      const specifier = imported.path;
+      if (!isBareSpecifier(specifier) || SHARED_SPECIFIERS.has(specifier)) continue;
+      const packageName = packageNameFromSpecifier(specifier);
+      if (SHARED_PACKAGE_NAMES.has(packageName)) return { specifier, packageName };
+    }
+  }
+  return undefined;
+}
+
+/** Отказ подпути сверх таблицы: назвать сам подпуть, то, что таблица несёт, и способ завести новое имя. */
+function unmappedSharedSubpathFailure(
+  entry: string,
+  subpath: { readonly specifier: string; readonly packageName: string },
+): CompileFailure {
+  return {
+    file: entry,
+    line: 0,
+    column: 0,
+    text:
+      `Браузерная половина импортирует "${subpath.specifier}" — подпуть пакета "${subpath.packageName}", ` +
+      `которого нет в таблице общих модулей: карта имён страницы несёт ровно её специфаки ` +
+      `(${sharedSpecifiersOfPackage(subpath.packageName)}), и браузер отказал бы этому импорту при ` +
+      `загрузке. Возьмите нужное из ${sharedSpecifiersOfPackage(subpath.packageName)}; подпуть сверх ` +
+      `таблицы заводится её пополнением (docs/plugins.md), а не импортом.`,
+  };
 }
 
 /**
@@ -361,17 +526,50 @@ export function createWidgetCompiler(options: WidgetCompilerOptions = {}): Widge
           format: 'esm',
           jsx: 'automatic',
           outdir: 'stepcast-plugin-bundle',
-          external: ['react', 'react-dom', 'react/jsx-runtime'],
+          // Внешними остаются ровно имена таблицы общих модулей — второго
+          // перечня здесь нет (design.md изменения `shared-module-table`,
+          // Решение 1; `ui-dashboard`, «Имена сборки — те же, что у страницы»).
+          external: SHARED_MODULE_LIST.map((sharedEntry) => sharedEntry.specifier),
           loader: { '.css': 'css' },
+          // Входы сборки — чтобы поймать свой экземпляр общего модуля,
+          // принесённый мимо голого имени (design.md, Решение 9).
+          metafile: true,
         });
-        const jsFile = result.outputFiles.find((file) => file.path.endsWith('.js'));
-        const cssFile = result.outputFiles.find((file) => file.path.endsWith('.css'));
-        if (jsFile === undefined) throw new Error('Сборка бандла не дала JS-выхода');
-        const code =
-          cssFile === undefined
-            ? jsFile.text
-            : `${jsFile.text}\nexport const ${WIDGET_STYLE_EXPORT} = ${JSON.stringify(cssFile.text)};\n`;
-        outcome = { kind: 'ok', code };
+
+        // Свой экземпляр общего модуля — отказ раньше, чем результат сборки
+        // вообще стал бы кодом: второй React не должен попасть на страницу
+        // (design.md, Решение 9, `ui-dashboard` «Свой экземпляр общего модуля
+        // в бандле»). Отказ доставляется тем же путём, что и ошибка
+        // компиляции, — `errorModuleText` в `src/ui/server.ts` не знает
+        // разницы между этой причиной и синтаксической ошибкой.
+        //
+        // Результата без `metafile` быть не должно — сборка зовётся с
+        // `metafile: true`, — а если он всё же пришёл (подставной компилятор
+        // теста, чужая сборка esbuild), проверить принесённый экземпляр
+        // нечем. Тихо пропустить бандл дальше значило бы отдать странице
+        // второй React без единой строки лога — ровно тот исход, который
+        // Решение 9 и закрывает; поэтому здесь отказ с названной причиной.
+        if (result.metafile === undefined) {
+          throw new Error(
+            'Сборка бандла не дала metafile: проверить, не принёс ли плагин свой экземпляр общего модуля, нечем',
+          );
+        }
+        const ownCopy = findOwnSharedModuleCopy(result.metafile);
+        const subpath = ownCopy === undefined ? findUnmappedSharedSubpath(result.metafile) : undefined;
+        if (ownCopy !== undefined) {
+          outcome = { kind: 'error', failure: ownSharedModuleCopyFailure(entry, ownCopy) };
+        } else if (subpath !== undefined) {
+          outcome = { kind: 'error', failure: unmappedSharedSubpathFailure(entry, subpath) };
+        } else {
+          const jsFile = result.outputFiles.find((file) => file.path.endsWith('.js'));
+          const cssFile = result.outputFiles.find((file) => file.path.endsWith('.css'));
+          if (jsFile === undefined) throw new Error('Сборка бандла не дала JS-выхода');
+          const code =
+            cssFile === undefined
+              ? jsFile.text
+              : `${jsFile.text}\nexport const ${WIDGET_STYLE_EXPORT} = ${JSON.stringify(cssFile.text)};\n`;
+          outcome = { kind: 'ok', code };
+        }
       } catch (error) {
         outcome = { kind: 'error', failure: toFailure(entry, error) };
       }

@@ -1,0 +1,33 @@
+{
+  // Тот же проект, что у образца на React (`../board/tsconfig.json`), — но
+  // этот образец написан на чужом фреймворке и из имён таблицы берёт только
+  // поверхность композиции. Проверка типов здесь держит и это: если бы
+  // `elementSlotComponent` перестал принимать вкладчика без React, отказ
+  // пришёл бы отсюда.
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+    // Свой фреймворк образца приносит свой же JSX; сам файл JSX не пишет.
+    "jsx": "react-jsx",
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+
+    "paths": {
+      "@stepcast/slots": ["../../../ui/src/sharedSlots.ts"],
+      "@stepcast/ui": ["../../../ui/src/ui/index.ts"]
+    }
+  },
+  "include": ["index.tsx"]
+}

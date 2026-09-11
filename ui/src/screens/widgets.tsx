@@ -5,7 +5,7 @@ import { declaration } from '../../../src/ui/screens/widgets/declaration.ts';
 import type { Overview, WidgetsOverview } from '../api';
 import { Widgets } from '../pages/Widgets';
 import { navItem } from '../plugins/navItem';
-import { NAV, SCREEN } from '../plugins/shell';
+import { NAV, SCREEN } from '@stepcast/slots';
 
 function WidgetsScreen({
   overview,

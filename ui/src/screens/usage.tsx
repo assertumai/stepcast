@@ -5,7 +5,7 @@ import { declaration } from '../../../src/ui/screens/usage/declaration.ts';
 import type { Overview } from '../api';
 import { Usage } from '../pages/Usage';
 import { navItem } from '../plugins/navItem';
-import { NAV, SCREEN } from '../plugins/shell';
+import { NAV, SCREEN } from '@stepcast/slots';
 import { daysForPeriod } from './usagePeriods';
 
 function UsageScreen({

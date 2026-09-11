@@ -1,0 +1,17 @@
+.sc-tabs-list { display: flex; gap: .3rem; flex-wrap: wrap; }
+
+.sc-tabs-trigger {
+  font: inherit;
+  font-size: .82rem;
+  padding: .2rem .6rem;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.sc-tabs-trigger:hover { color: var(--foreground); }
+.sc-tabs-trigger[data-state='active'] { color: var(--foreground); border-color: var(--primary); font-weight: 600; }
+.sc-tabs-trigger:focus-visible { outline: 2px solid var(--ring); outline-offset: -1px; }
+
+.sc-tabs-content { margin-top: .8rem; }

@@ -29,12 +29,13 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:ui": "tsc -p ui/tsconfig.json --noEmit",
     "typecheck:ui-test": "tsc -p ui/tsconfig.test.json --noEmit",
-    "lint": "eslint src test ui",
+    "typecheck:plugin": "tsc -p examples/plugins/board/tsconfig.json && tsc -p examples/plugins/element/tsconfig.json",
+    "lint": "eslint src test ui examples/plugins",
     "test": "npm run build:node && node --test \"dist/test/**/*.test.js\"",
     "test:only": "node --test \"dist/test/**/*.test.js\"",
     "build:ui-test": "node scripts/build-ui-tests.mjs",
     "test:ui": "node --test \"dist/ui-test/**/*.test.js\"",
-    "check": "npm run typecheck && npm run typecheck:ui && npm run typecheck:ui-test && npm run lint && npm run build && npm run build:ui-test && npm run test:only && npm run test:ui",
+    "check": "npm run typecheck && npm run typecheck:ui && npm run typecheck:ui-test && npm run typecheck:plugin && npm run lint && npm run build && npm run build:ui-test && npm run test:only && npm run test:ui",
     "schema": "npm run build:node && node dist/scripts/generate-schema.js"
   },
   "dependencies": {
@@ -46,11 +47,15 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@radix-ui/react-dialog": "^1.1.23",
+    "@radix-ui/react-select": "^2.3.7",
+    "@radix-ui/react-tabs": "^1.1.21",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.5",
     "@vitejs/plugin-react": "^6.1.0",
     "eslint": "^9.0.0",
+    "preact": "^10.29.8",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "typescript": "^5.7.0",

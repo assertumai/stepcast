@@ -15,7 +15,7 @@ import {
   type KernelCache,
 } from './pipelines.js';
 import type { RequestEnv } from './screens/registry.js';
-import { isApiPath, isPluginPath, isSafeSegment, isWidgetPath } from './routes.js';
+import { isApiPath, isPluginPath, isSafeSegment, isSharedPath, isWidgetPath } from './routes.js';
 import { createWatcher, type Watcher } from './watcher.js';
 import {
   createWidgetCompiler,
@@ -23,7 +23,7 @@ import {
   resolveWidgetFile,
   type WidgetCompiler,
 } from './widgets.js';
-import { WIDGET_RUNTIME_ROUTES, widgetRuntimeModuleText } from './widgetRuntime.js';
+import { SHARED_MODULE_BY_SEGMENT, sharedModuleText } from './sharedModules.js';
 import { directoryFingerprint, type PluginsOverview } from './plugins.js';
 
 /**
@@ -185,22 +185,8 @@ async function handleWidgetModule(
   sendWidgetModule(res, errorModuleText(outcome.failure), { error: true });
 }
 
-/** `/widgets/runtime/<имя>.js`: закрытый перечень модулей-переходников (design.md, Решения 3—4). */
-function handleWidgetRuntimeModule(rawName: string, res: ServerResponse): void {
-  if (!rawName.endsWith('.js')) {
-    sendWidgetNotFound(res);
-    return;
-  }
-  const specifier = WIDGET_RUNTIME_ROUTES[rawName.slice(0, -'.js'.length)];
-  if (specifier === undefined) {
-    sendWidgetNotFound(res);
-    return;
-  }
-  sendWidgetModule(res, widgetRuntimeModuleText(specifier));
-}
-
 /**
- * Диспетчер `/widgets/...`: ровно две объявленные формы адреса, остальное —
+ * Диспетчер `/widgets/...`: ровно одна объявленная форма адреса, остальное —
  * 404 без перечисления каталога (design.md, Решение 10). Сегменты не несут
  * `..` и разделителей — та же проверка, что и у прочих адресов витрины
  * (`isSafeSegment`), внутри `handleWidgetModule`.
@@ -213,15 +199,44 @@ async function handleWidgetRequest(
 ): Promise<void> {
   const parts = pathname.split('/').filter((part) => part !== '');
   // `parts[0]` — всегда `widgets`: вызывающий уже проверил `isWidgetPath`.
-  if (parts.length === 3 && parts[1] === 'runtime') {
-    handleWidgetRuntimeModule(parts[2] as string, res);
-    return;
-  }
   if (parts.length === 3) {
     await handleWidgetModule(runsRoot, compiler, parts[1] as string, parts[2] as string, res);
     return;
   }
   sendWidgetNotFound(res);
+}
+
+/** Тот же отказ на все причины отсутствия под `/shared/` — сегмент вне таблицы, путь лишней вложенности. */
+function sendSharedNotFound(res: ServerResponse): void {
+  sendJson(res, 404, { error: 'Общий модуль не найден' });
+}
+
+/**
+ * `/shared/<имя>.js`: закрытый перечень модулей-переходников таблицы общих
+ * модулей витрины (design.md изменения `shared-module-table`, Решения 1, 3—4).
+ */
+function handleSharedModule(rawName: string, res: ServerResponse): void {
+  if (!rawName.endsWith('.js')) {
+    sendSharedNotFound(res);
+    return;
+  }
+  const entry = SHARED_MODULE_BY_SEGMENT.get(rawName.slice(0, -'.js'.length));
+  if (entry === undefined) {
+    sendSharedNotFound(res);
+    return;
+  }
+  sendWidgetModule(res, sharedModuleText(entry));
+}
+
+/** Диспетчер `/shared/...`: ровно одна объявленная форма адреса, остальное — 404 без перечисления каталога. */
+function handleSharedRequest(pathname: string, res: ServerResponse): void {
+  const parts = pathname.split('/').filter((part) => part !== '');
+  // `parts[0]` — всегда `shared`: вызывающий уже проверил `isSharedPath`.
+  if (parts.length === 2) {
+    handleSharedModule(parts[1] as string, res);
+    return;
+  }
+  sendSharedNotFound(res);
 }
 
 /** Тот же отказ на все причины отсутствия плагина — небезопасный сегмент, неизвестный `id`, строка вне действующего состава, строка без браузерной половины. */
@@ -450,8 +465,15 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
       return;
     }
 
+    // Переходники общих модулей — своя форма адреса, не про виджеты
+    // (design.md изменения `shared-module-table`, Решение 3).
+    if (isSharedPath(url.pathname)) {
+      handleSharedRequest(url.pathname, res);
+      return;
+    }
+
     // Браузерная половина плагина домашнего слоя — тем же приёмом, что и
-    // виджет: третья объявленная форма адреса демона (design.md изменения
+    // виджет: форма адреса демона (design.md изменения
     // `hot-swap-preserves-data`, Решение 13).
     if (isPluginPath(url.pathname)) {
       void handlePluginRequest(homeDir, kernelCache, widgetCompiler, url.pathname, res);

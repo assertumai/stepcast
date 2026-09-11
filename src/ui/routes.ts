@@ -207,3 +207,21 @@ export function isPluginPath(pathname: string): boolean {
 export function pluginModuleHref(id: string, version: string): string {
   return `/plugins/${encodeURIComponent(id)}.js?v=${encodeURIComponent(version)}`;
 }
+
+/**
+ * Адрес под `/shared/` — переходники общих модулей витрины (`src/ui/sharedModules.ts`,
+ * design.md изменения `shared-module-table`, Решение 3): перечень перестал
+ * быть про виджеты в тот момент, когда в нём появился `cordis`, и адрес,
+ * говорящий обратное, вводил бы в заблуждение того, кто по нему и придёт
+ * разбираться — автора плагина, читающего сетевую вкладку. Голый `/shared`
+ * (без хвостового разделителя) под предикат не подпадает, тем же приёмом, что
+ * и у `isWidgetPath`/`isPluginPath`.
+ */
+export function isSharedPath(pathname: string): boolean {
+  return pathname.startsWith('/shared/');
+}
+
+/** Адрес переходника общего модуля по сегменту записи таблицы (`SharedModuleEntry.routeSegment`). */
+export function sharedModuleHref(routeSegment: string): string {
+  return `/shared/${routeSegment}.js`;
+}

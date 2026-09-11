@@ -1,31 +1,69 @@
 /*
- * Палитра и плотность те же, что у прежней витрины: смена стека — не повод
- * менять то, к чему пользователь уже привык.
+ * Токены shadcn (design.md изменения `shared-module-table`, Решение 7):
+ * палитра и плотность те же, что у прежней витрины — смена набора токенов не
+ * повод менять то, к чему пользователь уже привык. Шкала состояний —
+ * идущее/успешное/отказавшее — своя тремя токенами: `--destructive` про
+ * опасное действие, а не про отказавший прогон, и сводить их значило бы
+ * перекрашивать одно, целясь в другое.
  */
 :root {
-  --bg: #fbfbfa;
-  --panel: #fff;
+  --background: #fbfbfa;
+  --foreground: #1c1c1a;
+  --card: #fff;
+  --card-foreground: #1c1c1a;
+  --popover: #fff;
+  --popover-foreground: #1c1c1a;
+  --primary: #2f6f4f;
+  --primary-foreground: #fff;
+  --secondary: #f0f0ee;
+  --secondary-foreground: #1c1c1a;
+  --muted: #f0f0ee;
+  --muted-foreground: #6b6b66;
+  --accent: #f0f0ee;
+  --accent-foreground: #1c1c1a;
+  --destructive: #a03030;
+  --destructive-foreground: #fff;
   --border: #e3e3e0;
-  --text: #1c1c1a;
-  --dim: #6b6b66;
-  --accent: #2f6f4f;
-  --run: #b4690e;
-  --fail: #a03030;
+  --input: #e3e3e0;
+  --ring: #2f6f4f;
+  --radius: 6px;
+  --status-running: #b4690e;
+  --status-success: #2f6f4f;
+  --status-failed: #a03030;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   /* Тень у края прокрутки: на светлом фоне тёмная, на тёмном — светлая. */
   --edge: rgb(0 0 0 / 14%);
+  /* Подложка модального окна и тень всплывающего слоя — не часть палитры
+     shadcn, но той же природы «токен, а не литерал в компоненте»: значение
+     объявлено здесь, `@stepcast/ui` (`dialog.css`, `select.css`) его читает. */
+  --overlay: rgb(0 0 0 / 45%);
+  --popover-shadow: 0 4px 16px rgb(0 0 0 / 16%);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #17171a;
-    --panel: #1f1f23;
+    --background: #17171a;
+    --foreground: #e8e8e6;
+    --card: #1f1f23;
+    --card-foreground: #e8e8e6;
+    --popover: #1f1f23;
+    --popover-foreground: #e8e8e6;
+    --primary: #6bbd8e;
+    --primary-foreground: #17171a;
+    --secondary: #26262b;
+    --secondary-foreground: #e8e8e6;
+    --muted: #26262b;
+    --muted-foreground: #9a9a94;
+    --accent: #26262b;
+    --accent-foreground: #e8e8e6;
+    --destructive: #e08585;
+    --destructive-foreground: #17171a;
     --border: #33333a;
-    --text: #e8e8e6;
-    --dim: #9a9a94;
-    --accent: #6bbd8e;
-    --run: #e0a75e;
-    --fail: #e08585;
+    --input: #33333a;
+    --ring: #6bbd8e;
+    --status-running: #e0a75e;
+    --status-success: #6bbd8e;
+    --status-failed: #e08585;
     --edge: rgb(255 255 255 / 16%);
   }
 }
@@ -34,8 +72,8 @@
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
+  background: var(--background);
+  color: var(--foreground);
   font: 15px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
@@ -55,7 +93,7 @@ a { color: inherit; text-decoration: none; }
   display: flex;
   flex-direction: column;
   gap: .3rem;
-  background: var(--bg);
+  background: var(--background);
 }
 
 .brand {
@@ -70,16 +108,16 @@ a { color: inherit; text-decoration: none; }
   display: block;
   padding: .35rem .5rem;
   border-radius: 6px;
-  color: var(--dim);
+  color: var(--muted-foreground);
   font-size: .9rem;
   cursor: pointer;
 }
-.nav-item:hover { background: var(--panel); color: var(--text); }
-.nav-item.active { background: var(--panel); color: var(--text); font-weight: 600; }
+.nav-item:hover { background: var(--card); color: var(--foreground); }
+.nav-item.active { background: var(--card); color: var(--foreground); font-weight: 600; }
 
 /* Признак связи — в подвале колонки: он про всю витрину, а не про экран. */
-.live { margin-top: auto; font-size: .78rem; color: var(--dim); padding: 0 .5rem; }
-.live.on::before { content: '●'; color: var(--accent); margin-right: .3rem; }
+.live { margin-top: auto; font-size: .78rem; color: var(--muted-foreground); padding: 0 .5rem; }
+.live.on::before { content: '●'; color: var(--primary); margin-right: .3rem; }
 .live.off::before { content: '○'; margin-right: .3rem; }
 
 /* `min-width: 0` обязателен: без него широкая таблица распирает flex-колонку
@@ -90,7 +128,7 @@ h1 { font-size: 1.1rem; margin: 0 0 1.2rem; font-weight: 650; letter-spacing: -.
 h2.project {
   font-size: .82rem;
   font-weight: 600;
-  color: var(--dim);
+  color: var(--muted-foreground);
   margin: 1.4rem 0 .5rem;
   font-family: var(--mono);
   word-break: break-all;
@@ -103,21 +141,21 @@ h2.project:first-of-type { margin-top: 0; }
   padding: .1rem .45rem;
   border-radius: 99px;
   border: 1px solid var(--border);
-  color: var(--dim);
+  color: var(--muted-foreground);
   white-space: nowrap;
 }
 /* Статусы прогона и статусы пункта очереди делят одни и те же три цвета:
    идущее — цветом хода, завершённое — цветом успеха, отказавшее — цветом
    отказа. Ожидающий пункт (`pending`) остаётся серым бейджем по умолчанию. */
 .badge.running,
-.badge.in_progress { color: var(--run); border-color: var(--run); }
+.badge.in_progress { color: var(--status-running); border-color: var(--status-running); }
 .badge.success,
-.badge.done { color: var(--accent); border-color: var(--accent); }
+.badge.done { color: var(--status-success); border-color: var(--status-success); }
 .badge.failed,
 .badge.budget_exceeded,
-.badge.canceled { color: var(--fail); border-color: var(--fail); }
+.badge.canceled { color: var(--status-failed); border-color: var(--status-failed); }
 
-.dim { color: var(--dim); }
+.dim { color: var(--muted-foreground); }
 .mono { font-family: var(--mono); }
 .small { font-size: .8rem; }
 
@@ -127,45 +165,45 @@ button {
   background: none;
   border: 1px solid var(--border);
   border-radius: 6px;
-  color: var(--text);
+  color: var(--foreground);
   padding: .2rem .5rem;
   cursor: pointer;
 }
-button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:hover:not(:disabled) { border-color: var(--primary); color: var(--primary); }
 button:disabled { opacity: .4; cursor: default; }
 button.plain { border: none; padding: .1rem .2rem; }
-button.danger { color: var(--fail); border-color: var(--fail); }
-button.danger:hover:not(:disabled) { color: var(--fail); border-color: var(--fail); background: var(--bg); }
+button.danger { color: var(--status-failed); border-color: var(--status-failed); }
+button.danger:hover:not(:disabled) { color: var(--status-failed); border-color: var(--status-failed); background: var(--background); }
 /* Кнопка удаления в строке списка: видна на наведении и на фокусе с
    клавиатуры, иначе доступна только мышью. */
-button.quiet { color: var(--dim); opacity: 0; transition: opacity .1s; }
+button.quiet { color: var(--muted-foreground); opacity: 0; transition: opacity .1s; }
 .run-row:hover button.quiet,
 button.quiet:focus-visible { opacity: 1; }
 
 input, select {
   font: inherit;
   font-size: .86rem;
-  background: var(--panel);
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 6px;
-  color: var(--text);
+  color: var(--foreground);
   padding: .2rem .4rem;
 }
-input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+input:focus, select:focus { outline: 2px solid var(--primary); outline-offset: -1px; }
 input.narrow { width: 7rem; }
 input { min-width: 14rem; max-width: 100%; }
 
 /* Поле формы: подпись слева той же шириной, что `.row > .label`, — экраны
    настроек и уборки должны читаться одной колонкой подписей. */
 .field { display: flex; gap: .5rem; align-items: baseline; margin-top: .6rem; }
-.field > .label { color: var(--dim); min-width: 7.5rem; font-size: .85rem; }
+.field > .label { color: var(--muted-foreground); min-width: 7.5rem; font-size: .85rem; }
 .field-body { display: flex; gap: .6rem; align-items: center; min-width: 0; }
 .field-body.wrap { flex-wrap: wrap; }
 .check { display: flex; gap: .3rem; align-items: center; font-size: .86rem; cursor: pointer; }
-.check input { min-width: 0; accent-color: var(--accent); }
+.check input { min-width: 0; accent-color: var(--primary); }
 
 .card {
-  background: var(--panel);
+  background: var(--card);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: .8rem 1rem;
@@ -174,8 +212,8 @@ input { min-width: 14rem; max-width: 100%; }
 .card-head { display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap; }
 .card-title { font-weight: 650; }
 
-.meta { display: flex; gap: 1.2rem; flex-wrap: wrap; font-size: .84rem; color: var(--dim); margin: .4rem 0 0; }
-.meta b { color: var(--text); font-weight: 600; font-family: var(--mono); }
+.meta { display: flex; gap: 1.2rem; flex-wrap: wrap; font-size: .84rem; color: var(--muted-foreground); margin: .4rem 0 0; }
+.meta b { color: var(--foreground); font-weight: 600; font-family: var(--mono); }
 
 /*
  * Полоса фильтров над таблицей прогонов: одна строка, переносится на узком
@@ -206,25 +244,25 @@ table.runs th {
   text-align: left;
   font-weight: 600;
   font-size: .76rem;
-  color: var(--dim);
+  color: var(--muted-foreground);
   padding: .35rem .5rem;
   border-bottom: 1px solid var(--border);
   white-space: nowrap;
 }
 table.runs th.num { text-align: right; }
 table.runs td { padding: .45rem .5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
-table.runs tbody tr:hover { background: var(--panel); }
+table.runs tbody tr:hover { background: var(--card); }
 table.runs td.num { text-align: right; font-family: var(--mono); white-space: nowrap; }
 table.runs .marks { display: flex; gap: .3rem; flex-wrap: wrap; }
 .run-name { font-weight: 600; }
 /* Причина беды чтения — под именем пайплайна, тем же приглушённым тоном, что .run-id. */
-.run-problem { font-size: .78rem; color: var(--dim); }
+.run-problem { font-size: .78rem; color: var(--muted-foreground); }
 
 /* Колонка флажка: узкая и по центру — она не несёт данных, только отметку. */
 table.runs th.check-cell,
 table.runs td.check-cell { width: 1.6rem; text-align: center; padding-left: .3rem; padding-right: .3rem; }
 table.runs td.check-cell input,
-table.runs th.check-cell input { accent-color: var(--accent); }
+table.runs th.check-cell input { accent-color: var(--primary); }
 
 /* Колонка планового номера очереди: узкая и числовая, подпись называет план, а не строку. */
 table.runs th.plan-no,
@@ -238,7 +276,7 @@ table.runs td.plan-no { width: 3rem; }
  * подпись просто растянула бы колонку и увела таблицу в горизонтальную
  * прокрутку. `max-width` блока входит в этот подсчёт и потому держит колонку.
  */
-table.runs td.project { font-family: var(--mono); font-size: .8rem; color: var(--dim); }
+table.runs td.project { font-family: var(--mono); font-size: .8rem; color: var(--muted-foreground); }
 table.runs td.project .clip {
   display: block;
   max-width: 10rem;
@@ -256,22 +294,22 @@ table.runs .sort-button {
   font: inherit;
   font-weight: 600;
   font-size: .76rem;
-  color: var(--dim);
+  color: var(--muted-foreground);
   text-align: inherit;
   background: none;
 }
 table.runs th.num .sort-button { text-align: right; }
-table.runs .sort-button:hover { color: var(--text); border-color: transparent; }
-table.runs th.sortable.active .sort-button { color: var(--accent); }
+table.runs .sort-button:hover { color: var(--foreground); border-color: transparent; }
+table.runs th.sortable.active .sort-button { color: var(--primary); }
 
 /* Состояние всей витрины (расхождение версий), а не одного прогона — полоса
    поверх экрана, тем же приглушённым видом, что и другие сообщения (.error). */
-.notice { color: var(--run); font-size: .85rem; }
+.notice { color: var(--status-running); font-size: .85rem; }
 
 /* Причина отказа сборки состава экранов на демоне — полосой над экраном
    (`ui-daemon`, «Отказ сборки состава не гасит витрину»): прежние экраны
    работают, но пользователь обязан видеть, что состав не пересобран. */
-.screens-build-error { color: var(--fail); font-size: .85rem; padding-bottom: .75rem; }
+.screens-build-error { color: var(--status-failed); font-size: .85rem; padding-bottom: .75rem; }
 .notice code { font-family: var(--mono); }
 
 button.tokens {
@@ -279,15 +317,15 @@ button.tokens {
   padding: 0;
   font-family: var(--mono);
   font-size: .82rem;
-  color: var(--text);
-  border-bottom: 1px dotted var(--dim);
+  color: var(--foreground);
+  border-bottom: 1px dotted var(--muted-foreground);
   border-radius: 0;
 }
 
 .breakdown {
   font-family: var(--mono);
   font-size: .76rem;
-  color: var(--dim);
+  color: var(--muted-foreground);
   text-align: right;
   padding-top: .25rem;
   white-space: nowrap;
@@ -295,7 +333,7 @@ button.tokens {
 
 /* Подтверждение удаления: спрашивается до, а не после. */
 .confirm { display: flex; gap: .35rem; align-items: center; justify-content: flex-end; }
-.confirm .question { font-size: .78rem; color: var(--fail); }
+.confirm .question { font-size: .78rem; color: var(--status-failed); }
 
 /*
  * Прогоны под пайплайном или отдельной группой «пайплайн не найден».
@@ -344,16 +382,16 @@ button.tokens {
   padding: .2rem .6rem;
   border-radius: 99px;
   border: 1px solid var(--border);
-  color: var(--dim);
+  color: var(--muted-foreground);
   cursor: pointer;
 }
-.periods .period.active { color: var(--text); border-color: var(--accent); font-weight: 600; }
-.periods .period:hover { color: var(--text); }
+.periods .period.active { color: var(--foreground); border-color: var(--primary); font-weight: 600; }
+.periods .period:hover { color: var(--foreground); }
 
 .usage-totals { margin-bottom: .3rem; }
 
 .usage-measure { display: flex; gap: .3rem; margin: .8rem 0 .5rem; }
-.usage-measure button.active { color: var(--accent); border-color: var(--accent); }
+.usage-measure button.active { color: var(--primary); border-color: var(--primary); }
 
 .usage-graph { margin-top: .3rem; }
 .usage-bar-empty { fill: var(--border); }
@@ -374,9 +412,9 @@ button.tokens {
 .usage-series-6 { fill: #4a3aa7; background: #4a3aa7; }
 .usage-series-7 { fill: #e34948; background: #e34948; }
 /* Доля без модели — нейтральный серый: не идентичность, а признание пробела. */
-.usage-series-unknown { fill: var(--dim); background: var(--dim); }
+.usage-series-unknown { fill: var(--muted-foreground); background: var(--muted-foreground); }
 /* Один сужённый на пайплайн ряд — цвет акцента, без категориальной раскраски. */
-.usage-series-selected { fill: var(--accent); background: var(--accent); }
+.usage-series-selected { fill: var(--primary); background: var(--primary); }
 
 @media (prefers-color-scheme: dark) {
   .usage-series-0 { fill: #3987e5; background: #3987e5; }
@@ -389,12 +427,12 @@ button.tokens {
   .usage-series-7 { fill: #e66767; background: #e66767; }
 }
 
-.usage-legend { display: flex; gap: .8rem; flex-wrap: wrap; margin-top: .5rem; font-size: .82rem; color: var(--dim); }
+.usage-legend { display: flex; gap: .8rem; flex-wrap: wrap; margin-top: .5rem; font-size: .82rem; color: var(--muted-foreground); }
 .usage-legend-item { display: flex; align-items: center; gap: .35rem; }
 .usage-swatch { width: .7rem; height: .7rem; border-radius: 2px; display: inline-block; }
 
 .usage-pipeline { cursor: default; }
-.usage-pipeline.selected { border-color: var(--accent); }
+.usage-pipeline.selected { border-color: var(--primary); }
 .usage-pipeline-head { cursor: pointer; }
 
 /*
@@ -452,41 +490,41 @@ button.tokens {
   overflow-x: auto;
   padding: .4rem 0 .8rem;
   background:
-    linear-gradient(to right, var(--bg) 40%, transparent) left center / 2.5rem 100% no-repeat local,
-    linear-gradient(to left, var(--bg) 40%, transparent) right center / 2.5rem 100% no-repeat local,
+    linear-gradient(to right, var(--background) 40%, transparent) left center / 2.5rem 100% no-repeat local,
+    linear-gradient(to left, var(--background) 40%, transparent) right center / 2.5rem 100% no-repeat local,
     radial-gradient(farthest-side at 0 50%, var(--edge), transparent) left center / .7rem 100% no-repeat scroll,
     radial-gradient(farthest-side at 100% 50%, var(--edge), transparent) right center / .7rem 100% no-repeat scroll;
 }
 .graph svg { display: block; }
-.node rect { fill: var(--panel); stroke: var(--border); }
-.node.selected rect { stroke: var(--accent); stroke-width: 2; }
+.node rect { fill: var(--card); stroke: var(--border); }
+.node.selected rect { stroke: var(--primary); stroke-width: 2; }
 .node.conditional rect { stroke-dasharray: 4 3; }
-.node.status-success rect { stroke: var(--accent); }
-.node.status-running rect { stroke: var(--run); }
+.node.status-success rect { stroke: var(--status-success); }
+.node.status-running rect { stroke: var(--status-running); }
 .node.status-failed rect,
 .node.status-canceled rect,
-.node.status-budget_exceeded rect { stroke: var(--fail); }
-.node text { fill: var(--text); font-size: 12px; }
-.node text.sub { fill: var(--dim); font-size: 10px; font-family: var(--mono); }
+.node.status-budget_exceeded rect { stroke: var(--status-failed); }
+.node text { fill: var(--foreground); font-size: 12px; }
+.node text.sub { fill: var(--muted-foreground); font-size: 10px; font-family: var(--mono); }
 /* Подпись, объявленная работой: она про содержание захода, а не про механику,
    и потому набирается обычным шрифтом, а не моноширинным. */
-.node text.sub.display { fill: var(--text); font-family: inherit; font-size: 11px; }
+.node text.sub.display { fill: var(--foreground); font-family: inherit; font-size: 11px; }
 .node { cursor: pointer; }
 .edge { fill: none; stroke: var(--border); stroke-width: 1.5; }
-.edge.blocking { stroke: var(--fail); stroke-dasharray: 4 3; }
+.edge.blocking { stroke: var(--status-failed); stroke-dasharray: 4 3; }
 
 .job { border-top: 1px solid var(--border); padding: .7rem 0; }
 .job:first-child { border-top: none; }
 .job-head { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
 .job-name { font-weight: 600; }
-.desc { color: var(--dim); font-size: .85rem; }
+.desc { color: var(--muted-foreground); font-size: .85rem; }
 .row { margin-top: .4rem; font-size: .85rem; display: flex; gap: .5rem; flex-wrap: wrap; align-items: flex-start; }
-.row > .label { color: var(--dim); min-width: 7.5rem; }
+.row > .label { color: var(--muted-foreground); min-width: 7.5rem; }
 .step { margin-top: .5rem; padding-left: .8rem; border-left: 2px solid var(--border); }
 .step-head { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
-.kind { font-size: .72rem; color: var(--dim); font-family: var(--mono); }
-.ctx { font-family: var(--mono); font-size: .78rem; color: var(--dim); margin-top: .3rem; }
-.ctx b { color: var(--text); font-weight: 600; }
+.kind { font-size: .72rem; color: var(--muted-foreground); font-family: var(--mono); }
+.ctx { font-family: var(--mono); font-size: .78rem; color: var(--muted-foreground); margin-top: .3rem; }
+.ctx b { color: var(--foreground); font-weight: 600; }
 
 /*
  * Вывод шага: ход агентского шага или два потока командного.
@@ -497,7 +535,7 @@ button.tokens {
 .step-output { margin-top: .5rem; }
 .step-output-body { margin-top: .4rem; }
 .attempts { display: flex; gap: .3rem; margin-bottom: .4rem; }
-.attempts button.active { color: var(--accent); border-color: var(--accent); }
+.attempts button.active { color: var(--primary); border-color: var(--primary); }
 
 .transcript { display: flex; flex-direction: column; gap: .4rem; }
 .transcript-entry {
@@ -506,22 +544,22 @@ button.tokens {
   font-size: .85rem;
 }
 .transcript-entry pre { margin: .2rem 0 0; }
-.transcript-entry.session { color: var(--dim); font-size: .78rem; font-family: var(--mono); }
-.transcript-entry.reply.thinking { border-left-color: var(--run); color: var(--dim); font-style: italic; }
-.transcript-entry.tool-call { border-left-color: var(--accent); }
+.transcript-entry.session { color: var(--muted-foreground); font-size: .78rem; font-family: var(--mono); }
+.transcript-entry.reply.thinking { border-left-color: var(--status-running); color: var(--muted-foreground); font-style: italic; }
+.transcript-entry.tool-call { border-left-color: var(--primary); }
 .transcript-entry.tool-call.error,
-.transcript-entry.tool-result.error { border-left-color: var(--fail); }
-.transcript-entry.result { border-left-color: var(--accent); font-weight: 600; }
-.transcript-entry.raw { border-left-color: var(--run); background: var(--bg); white-space: pre-wrap; }
+.transcript-entry.tool-result.error { border-left-color: var(--status-failed); }
+.transcript-entry.result { border-left-color: var(--primary); font-weight: 600; }
+.transcript-entry.raw { border-left-color: var(--status-running); background: var(--background); white-space: pre-wrap; }
 .tool-name { font-weight: 600; }
 .transcript-entry details { margin-top: .2rem; }
-.transcript-entry summary { cursor: pointer; color: var(--dim); }
+.transcript-entry summary { cursor: pointer; color: var(--muted-foreground); }
 
 .stream-block { margin-top: .4rem; }
 .stream-block .kind { display: block; margin-bottom: .2rem; }
 
 pre {
-  background: var(--bg);
+  background: var(--background);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: .6rem;
@@ -531,14 +569,14 @@ pre {
   margin: .4rem 0 0;
   max-height: 26rem;
 }
-.truncated { color: var(--run); font-size: .78rem; margin-top: .3rem; }
-.empty { color: var(--dim); padding: 2rem 0; }
-.error { color: var(--fail); font-size: .85rem; }
+.truncated { color: var(--status-running); font-size: .78rem; margin-top: .3rem; }
+.empty { color: var(--muted-foreground); padding: 2rem 0; }
+.error { color: var(--status-failed); font-size: .85rem; }
 .note { font-size: .85rem; margin: .4rem 0 0; }
 /* Строка про прогоны под карточкой пайплайна: подчинена содержимому карточки. */
 .runs-note { border-top: 1px solid var(--border); padding-top: .5rem; margin-top: .7rem; }
 
-.run-id { font-family: var(--mono); font-size: .78rem; color: var(--dim); }
+.run-id { font-family: var(--mono); font-size: .78rem; color: var(--muted-foreground); }
 
 /* Конфигурация агентов использует те же карточки и поля, что остальные настройки. */
 .agent-settings { border: 0; padding: 0; margin: 0; min-width: 0; }
@@ -567,6 +605,6 @@ pre {
  */
 .widget-frame { border: 1px solid var(--border); border-radius: 6px; padding: .6rem .8rem; margin-top: .6rem; }
 .widget-frame-title { margin-bottom: .4rem; }
-.widget-card-error { border-left: 3px solid var(--fail); padding-left: .6rem; }
-.widget-card-title { font-weight: 650; color: var(--fail); margin-bottom: .3rem; }
+.widget-card-error { border-left: 3px solid var(--status-failed); padding-left: .6rem; }
+.widget-card-title { font-weight: 650; color: var(--status-failed); margin-bottom: .3rem; }
 .widget-card-detail { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: .84rem; margin: .3rem 0 0; }

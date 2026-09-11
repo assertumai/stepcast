@@ -1,0 +1,15 @@
+.sc-table-scroll { overflow-x: auto; }
+.sc-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+
+.sc-table-head {
+  text-align: left;
+  font-weight: 600;
+  font-size: .76rem;
+  color: var(--muted-foreground);
+  padding: .35rem .5rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.sc-table-cell { padding: .45rem .5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+.sc-table-body .sc-table-row:hover { background: var(--muted); }
+.sc-table-caption { color: var(--muted-foreground); font-size: .8rem; margin-top: .4rem; }

@@ -3,8 +3,11 @@ import * as ReactNamespace from 'react';
 import * as ReactDomNamespace from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import * as JsxRuntimeNamespace from 'react/jsx-runtime';
+import * as CordisNamespace from 'cordis';
+import * as SharedSlotsNamespace from '@stepcast/slots';
+import * as SharedUiNamespace from '@stepcast/ui';
 
-import { WIDGET_RUNTIME_GLOBAL, type WidgetRuntimeSpecifier } from '../../src/ui/widgetRuntime';
+import { WIDGET_RUNTIME_GLOBAL } from '../../src/ui/sharedModules';
 import { createBrowserKernel } from './kernel';
 import { bindRouterKernel } from './router';
 import { KernelRoot } from './slots.tsx';
@@ -13,17 +16,25 @@ import shell from './plugins/shell';
 import './styles.css';
 
 /**
- * Публикация экземпляра React страницы — до первой отрисовки, чтобы
- * переходники (`/widgets/runtime/<имя>.js`) нашли его к моменту первого
- * `import()` виджета (design.md изменения `ui-runtime-widget-spike`,
- * Решение 3). Без общего экземпляра виджет, получивший свой React, молча
- * ломает хуки.
+ * Публикация экземпляра каждого имени таблицы общих модулей — до первой
+ * отрисовки, чтобы переходники (`/shared/<имя>.js`) нашли его к моменту
+ * первого `import()` виджета или браузерной половины плагина (design.md
+ * изменения `shared-module-table`, Решение 1). Без общего экземпляра
+ * импортирующий, получивший свой React или свой cordis, молча ломает хуки
+ * или заводит сервис в чужом контексте.
+ *
+ * Таблица общих модулей (`src/ui/sharedModules.ts`) достигла всех шести
+ * имён здесь — объект публикации растёт вместе с самими модулями поверхности
+ * (`ui/src/sharedSlots.ts`, `ui/src/ui/index.ts`), а не раньше их появления.
  */
 (globalThis as Record<string, unknown>)[WIDGET_RUNTIME_GLOBAL] = {
   react: ReactNamespace,
   'react-dom': ReactDomNamespace,
   'react/jsx-runtime': JsxRuntimeNamespace,
-} satisfies Record<WidgetRuntimeSpecifier, unknown>;
+  cordis: CordisNamespace,
+  '@stepcast/slots': SharedSlotsNamespace,
+  '@stepcast/ui': SharedUiNamespace,
+};
 
 /**
  * Ядро поднимается здесь, вне дерева React и до первой отрисовки (design.md

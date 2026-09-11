@@ -1,0 +1,41 @@
+{
+  // Образец типизируется так же, как его будет писать автор плагина: голыми
+  // именами таблицы `@stepcast/slots` и `@stepcast/ui`, а не путями внутрь
+  // репозитория (design.md изменения `shared-module-table`, Решения 5, 6).
+  // Отображение ведёт на те же исходники, которыми пользуется витрина, —
+  // второй копии типов не заводится.
+  //
+  // Без этой проверки образцы не входили бы ни в один проект TypeScript и
+  // ломались бы молча: `npm run typecheck:plugin` ловит разъезд имени с
+  // поверхностью здесь, а не у первого автора плагина.
+  //
+  // Чего эта конфигурация НЕ заменяет: поставку типов автору плагина вне
+  // репозитория (design.md, Решение 11) — она требует собранных объявлений и
+  // конфигурации в корне пакета, и заведена отдельной работой; здесь имена
+  // разрешаются исходниками, доступными только внутри дерева.
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": [],
+    "jsx": "react-jsx",
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowImportingTsExtensions": true,
+
+    "paths": {
+      "@stepcast/slots": ["../../../ui/src/sharedSlots.ts"],
+      "@stepcast/ui": ["../../../ui/src/ui/index.ts"]
+    }
+  },
+  "include": ["index.tsx"]
+}

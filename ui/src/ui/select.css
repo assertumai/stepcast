@@ -1,0 +1,42 @@
+.sc-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .4rem;
+  font: inherit;
+  font-size: .86rem;
+  /* Та же подложка, что у поля (`input.css`): прежнее правило `input, select`
+     рисовало выбор на `--panel` (нынешний `--card`). */
+  background: var(--card);
+  border: 1px solid var(--input);
+  border-radius: var(--radius);
+  color: var(--foreground);
+  padding: .2rem .4rem;
+}
+.sc-select-trigger:focus { outline: 2px solid var(--ring); outline-offset: -1px; }
+.sc-select-trigger[data-placeholder] { color: var(--muted-foreground); }
+
+.sc-select-icon { color: var(--muted-foreground); font-size: .75rem; }
+
+.sc-select-content {
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--popover-shadow);
+  overflow: hidden;
+  z-index: 50;
+}
+.sc-select-viewport { padding: .25rem; }
+
+.sc-select-item {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  font-size: .86rem;
+  padding: .3rem .5rem;
+  border-radius: calc(var(--radius) - 2px);
+  cursor: pointer;
+}
+.sc-select-item[data-highlighted] { background: var(--accent); color: var(--accent-foreground); outline: none; }
+.sc-select-item-indicator { width: .8rem; display: inline-flex; }

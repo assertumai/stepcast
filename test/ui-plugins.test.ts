@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { get, request } from 'node:http';
-import { mkdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it, type TestContext } from 'node:test';
 
 import { resolveConfig } from '../src/core/config/resolve.js';
@@ -11,8 +12,9 @@ import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';
 import { UI_ROWS } from '../src/ui/screens/rows.js';
 import { buildHomePlugins, directoryFingerprint, pluginDirPath } from '../src/ui/plugins.js';
-import { createWidgetCompiler, type WidgetCompiler } from '../src/ui/widgets.js';
+import { createWidgetCompiler, type EsbuildTransformApi, type WidgetCompiler } from '../src/ui/widgets.js';
 import { pluginModuleHref } from '../src/ui/routes.js';
+import { SHARED_MODULE_LIST } from '../src/ui/sharedModules.js';
 import { makeJournalBed } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -173,6 +175,153 @@ describe('ui-plugins: сборка браузерной половины бан�
     await compiler.dispose();
 
     assert.equal(first, second);
+  });
+});
+
+describe('ui-plugins: отказ своему экземпляру общего модуля (design.md изменения shared-module-table, Решение 9)', () => {
+  /** Плагин с копией «react» рядом с собой: `vendor/react` несёт свой `package.json` с именем таблицы. */
+  function writePluginWithOwnReactCopy(home: string, id: string): string {
+    const dir = writePluginDir(
+      home,
+      id,
+      { browser: 'index.tsx' },
+      {
+        'index.tsx':
+          "import { useState } from './vendor/react/index.js';\n" +
+          'export default function plugin() { return useState; }\n',
+      },
+    );
+    const vendorDir = join(dir, 'vendor', 'react');
+    mkdirSync(vendorDir, { recursive: true });
+    writeFileSync(join(vendorDir, 'package.json'), JSON.stringify({ name: 'react', version: '0.0.0' }));
+    writeFileSync(join(vendorDir, 'index.js'), 'export const useState = () => {};\n');
+    return dir;
+  }
+
+  it('копия React, принесённая относительным путём, отклонена с именем файла и именем таблицы', async () => {
+    const home = tempDir('ui-plugins-own-copy-');
+    const dir = writePluginWithOwnReactCopy(home, 'demo');
+
+    const compiler = createWidgetCompiler();
+    const outcome = await compiler.compileBundle(join(dir, 'index.tsx'), directoryFingerprint(dir));
+    await compiler.dispose();
+
+    assert.equal(outcome?.kind, 'error');
+    const failure = (outcome as { readonly kind: 'error'; readonly failure: { readonly text: string } }).failure;
+    assert.match(failure.text, /vendor[/\\]react[/\\]index\.js/, 'отказ обязан называть файл копии');
+    assert.match(failure.text, /"react"/, 'отказ обязан называть имя таблицы');
+  });
+
+  it('голое имя таблицы остаётся внешним и собирается', async () => {
+    const home = tempDir('ui-plugins-own-copy-');
+    const dir = writePluginDir(
+      home,
+      'clean',
+      { browser: 'index.tsx' },
+      { 'index.tsx': "import { useState } from 'react';\nexport default function plugin() { return useState; }\n" },
+    );
+
+    const compiler = createWidgetCompiler();
+    const outcome = await compiler.compileBundle(join(dir, 'index.tsx'), directoryFingerprint(dir));
+    await compiler.dispose();
+
+    assert.equal(outcome?.kind, 'ok', JSON.stringify(outcome));
+    const code = (outcome as { readonly kind: 'ok'; readonly code: string }).code;
+    assert.match(code, /from "react"/, 'голый импорт остаётся внешним, а не разрешается в файл');
+  });
+
+  it('подпуть пакета таблицы отклонён сборкой, а не оставлен браузеру нерезолвимым именем', async () => {
+    const home = tempDir('ui-plugins-subpath-');
+    // Подпуть пакета таблицы (`react-dom/client`) esbuild считает внешним
+    // наравне с самим пакетом: в бандл он не втягивается и проверки своего
+    // экземпляра не касается. Но карта имён страницы несёт ровно специфаки
+    // таблицы, и браузер отказал бы такому импорту при загрузке —
+    // «Failed to resolve module specifier» без файла и без причины.
+    const dir = writePluginDir(
+      home,
+      'subpath',
+      { browser: 'index.tsx' },
+      {
+        'index.tsx':
+          "import { createRoot } from 'react-dom/client';\n" +
+          'export default function plugin() { return createRoot; }\n',
+      },
+    );
+
+    const compiler = createWidgetCompiler();
+    const outcome = await compiler.compileBundle(join(dir, 'index.tsx'), directoryFingerprint(dir));
+    await compiler.dispose();
+
+    assert.equal(outcome?.kind, 'error', JSON.stringify(outcome));
+    const failure = (outcome as { readonly kind: 'error'; readonly failure: { readonly text: string } }).failure;
+    assert.match(failure.text, /react-dom\/client/, 'отказ обязан называть сам подпуть');
+    assert.match(failure.text, /"react-dom"/, 'отказ обязан называть специфик таблицы, которым подпуть заменяется');
+    assert.doesNotMatch(
+      failure.text,
+      /голым именем/,
+      'автор уже написал голое имя: совет написать его же никуда его не ведёт',
+    );
+  });
+
+  it('подпуть пакета вне таблицы остаётся обычным импортом и попадает в бандл', async () => {
+    const home = tempDir('ui-plugins-foreign-subpath-');
+    const dir = writePluginDir(
+      home,
+      'foreign',
+      { browser: 'index.tsx' },
+      {
+        'index.tsx':
+          "import { useState } from 'не-в-таблице/hooks';\n" +
+          'export default function plugin() { return useState; }\n',
+      },
+    );
+    const packageDir = join(dir, 'node_modules', 'не-в-таблице');
+    mkdirSync(packageDir, { recursive: true });
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: 'не-в-таблице', version: '0.0.0' }));
+    writeFileSync(join(packageDir, 'hooks.js'), 'export const useState = () => {};\n');
+
+    const compiler = createWidgetCompiler();
+    const outcome = await compiler.compileBundle(join(dir, 'index.tsx'), directoryFingerprint(dir));
+    await compiler.dispose();
+
+    // `preact` в таблице не значится: отказ подпути её имён на чужой пакет не
+    // распространяется, и плагин волен принести его в своём бандле.
+    assert.equal(outcome?.kind, 'ok', JSON.stringify(outcome));
+  });
+
+  it('сборка без metafile отклонена названной причиной, а не пропущена молча', async () => {
+    const home = tempDir('ui-plugins-no-metafile-');
+    const dir = writePluginDir(home, 'nometa', { browser: 'index.tsx' }, { 'index.tsx': SIMPLE_HALF });
+
+    // Компилятор, собирающий бандл, но не отдающий входов: проверить
+    // принесённый экземпляр нечем, и пропустить такой бандл на страницу
+    // значило бы отдать ей второй React без единой строки лога.
+    const stub: EsbuildTransformApi = {
+      transform: async () => ({ code: '' }),
+      build: async () => ({ outputFiles: [{ path: 'bundle.js', text: 'export default null;\n' }] }),
+      stop: () => undefined,
+    };
+    const compiler = createWidgetCompiler({ loadCompiler: async () => stub });
+    const outcome = await compiler.compileBundle(join(dir, 'index.tsx'), 'v1');
+    await compiler.dispose();
+
+    assert.equal(outcome?.kind, 'error', JSON.stringify(outcome));
+    const failure = (outcome as { readonly kind: 'error'; readonly failure: { readonly text: string } }).failure;
+    assert.match(failure.text, /metafile/, 'отказ обязан называть причину, по которой проверка невозможна');
+  });
+
+  it('сосед, принёсший свой экземпляр, не мешает соседней строке собираться', async () => {
+    const home = tempDir('ui-plugins-own-copy-');
+    const badDir = writePluginWithOwnReactCopy(home, 'bad');
+    const goodDir = writePluginDir(home, 'good', { browser: 'index.tsx' }, { 'index.tsx': SIMPLE_HALF });
+
+    const compiler = createWidgetCompiler();
+    const badOutcome = await compiler.compileBundle(join(badDir, 'index.tsx'), directoryFingerprint(badDir));
+    const goodOutcome = await compiler.compileBundle(join(goodDir, 'index.tsx'), directoryFingerprint(goodDir));
+    await compiler.dispose();
+
+    assert.equal(badOutcome?.kind, 'error');
+    assert.equal(goodOutcome?.kind, 'ok', JSON.stringify(goodOutcome));
   });
 });
 
@@ -483,5 +632,61 @@ describe('ui-plugins: событие plugins потока /api/events', () => {
 
     const last = stream.events.filter((e) => e.event === 'plugins').at(-1);
     assert.deepEqual(pick(last?.data, 'plugins'), []);
+  });
+});
+
+describe('ui-plugins: образцы плагинов (design.md изменения shared-module-table, Решение 12)', () => {
+  const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+  const BOARD_ENTRY = join(ROOT, 'examples', 'plugins', 'board', 'index.tsx');
+  const ELEMENT_ENTRY = join(ROOT, 'examples', 'plugins', 'element', 'index.tsx');
+
+  it('образец на React (board) собирается демоном', async () => {
+    const compiler = createWidgetCompiler();
+    const outcome = await compiler.compileBundle(BOARD_ENTRY, 'v1');
+    await compiler.dispose();
+
+    assert.equal(outcome?.kind, 'ok', JSON.stringify(outcome));
+  });
+
+  it('каждый из семи компонентов библиотеки имеет пользователя в образце board', () => {
+    const source = readFileSync(BOARD_ENTRY, 'utf8');
+    for (const name of ['Button', 'Card', 'Table', 'Dialog', 'Tabs', 'Select', 'Input']) {
+      assert.match(source, new RegExp(`\\b${name}\\b`), `${name}: нет пользователя в examples/plugins/board`);
+    }
+  });
+
+  it('образец на другом фреймворке (element, Preact) собирается демоном, фреймворк лежит внутри бандла', async () => {
+    const compiler = createWidgetCompiler();
+    const outcome = await compiler.compileBundle(ELEMENT_ENTRY, 'v1');
+    await compiler.dispose();
+
+    assert.equal(outcome?.kind, 'ok', JSON.stringify(outcome));
+    const code = (outcome as { readonly kind: 'ok'; readonly code: string }).code;
+
+    // Preact — не внешний импорт: он забандлен внутрь, вместе со своим кодом.
+    assert.doesNotMatch(code, /from "preact/, 'фреймворк обязан лежать внутри бандла, а не остаться внешним');
+    assert.match(code, /customElements\.define/, 'регистрация элемента обязана попасть в бандл');
+    assert.match(code, /ClockElement/, 'собственный код образца обязан попасть в бандл');
+  });
+
+  it('в бандле образца на чужом фреймворке нет ни одного имени таблицы, кроме @stepcast/slots', async () => {
+    const compiler = createWidgetCompiler();
+    const outcome = await compiler.compileBundle(ELEMENT_ENTRY, 'v1');
+    await compiler.dispose();
+
+    assert.equal(outcome?.kind, 'ok', JSON.stringify(outcome));
+    const code = (outcome as { readonly kind: 'ok'; readonly code: string }).code;
+
+    for (const entry of SHARED_MODULE_LIST) {
+      if (entry.specifier === '@stepcast/slots') {
+        assert.match(code, /from "@stepcast\/slots"/, 'адаптер веб-компонента обязан прийти именем таблицы');
+        continue;
+      }
+      assert.doesNotMatch(
+        code,
+        new RegExp(`from "${entry.specifier.replace('/', '\\/')}"`),
+        `${entry.specifier}: образцу на чужом фреймворке нечего делать с этим именем`,
+      );
+    }
   });
 });

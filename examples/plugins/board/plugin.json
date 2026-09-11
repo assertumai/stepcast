@@ -1,0 +1,4 @@
+{
+  "description": "Образец плагина на React: экран из @stepcast/ui (Dialog, Tabs, Select), вклад дескриптором @stepcast/slots",
+  "browser": "index.tsx"
+}

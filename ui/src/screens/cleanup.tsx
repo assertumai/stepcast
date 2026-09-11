@@ -5,7 +5,7 @@ import { declaration } from '../../../src/ui/screens/cleanup/declaration.ts';
 import type { Overview } from '../api';
 import { Cleanup } from '../pages/Cleanup';
 import { navItem } from '../plugins/navItem';
-import { NAV, SCREEN } from '../plugins/shell';
+import { NAV, SCREEN } from '@stepcast/slots';
 
 function CleanupScreen({ overview }: { readonly overview: Overview | undefined }): JSX.Element {
   return <Cleanup overview={overview} />;

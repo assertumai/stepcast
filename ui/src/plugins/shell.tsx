@@ -1,11 +1,10 @@
 import { Component, useContext, useEffect, useSyncExternalStore, type JSX, type ReactNode } from 'react';
 import type { Context } from 'cordis';
 
-import type { BacklogOverview, Overview, RunSnapshot, WidgetsOverview } from '../api';
 import { KernelContext, ROOT } from '../kernel';
-import { useDefaultScreenId, useRoute, useScreens, type ParsedRoute } from '../router';
+import { useDefaultScreenId, useRoute, useScreens } from '../router';
 import { Slot } from '../slots.tsx';
-import { slot, type ChainLinkProps } from '../slots.ts';
+import { NAV, SCREEN, SCREEN_FRAME, type ChainLinkProps } from '@stepcast/slots';
 
 /**
  * Каркас витрины — встроенный плагин (design.md `cordis-kernel-browser`,
@@ -26,23 +25,10 @@ import { slot, type ChainLinkProps } from '../slots.ts';
  * контексту не обращаются вовсе.
  */
 
-export const NAV = slot<{ readonly route: ParsedRoute; readonly navigate: (href: string) => void }, 'list'>(
-  'nav',
-  'list',
-);
-export const SCREEN = slot<
-  {
-    readonly overview: Overview | undefined;
-    readonly navigate: (href: string) => void;
-    /** Параметры адреса, разобранные по объявлению экрана (`ui-screens`, «Параметры доезжают до экрана»). */
-    readonly params: Readonly<Record<string, string>>;
-    readonly backlog: BacklogOverview | undefined;
-    readonly widgets: WidgetsOverview | undefined;
-    readonly snapshot: RunSnapshot | undefined;
-  },
-  'keyed'
->('screen', 'keyed');
-export const SCREEN_FRAME = slot<Record<string, never>, 'chain'>('screen.frame', 'chain');
+// Дескрипторы — из поверхности `@stepcast/slots` (design.md изменения
+// `shared-module-table`, Решение 5), не копии. Ре-экспорт сохраняет прежний
+// путь импорта тем, кто уже на него полагается (`ui/test/shell.test.tsx`).
+export { NAV, SCREEN, SCREEN_FRAME };
 
 interface BoundaryState {
   readonly error: Error | undefined;

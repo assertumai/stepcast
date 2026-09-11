@@ -1,0 +1,13 @@
+.sc-card {
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  padding: .8rem 1rem;
+}
+
+.sc-card-header { display: flex; gap: .6rem; align-items: baseline; flex-wrap: wrap; }
+.sc-card-title { font-weight: 650; margin: 0; }
+.sc-card-description { color: var(--muted-foreground); font-size: .85rem; margin: 0; }
+.sc-card-content { margin-top: .5rem; }
+.sc-card-footer { display: flex; align-items: center; gap: .5rem; margin-top: .6rem; }

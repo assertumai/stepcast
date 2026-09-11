@@ -4,7 +4,7 @@ import type { Context } from 'cordis';
 import { declaration } from '../../../src/ui/screens/run/declaration.ts';
 import type { RunSnapshot } from '../api';
 import { RunDetail } from '../pages/RunDetail';
-import { SCREEN } from '../plugins/shell';
+import { SCREEN } from '@stepcast/slots';
 import { screenHref } from '../router';
 
 /**

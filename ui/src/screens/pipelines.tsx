@@ -5,7 +5,7 @@ import { declaration } from '../../../src/ui/screens/pipelines/declaration.ts';
 import type { Overview } from '../api';
 import { Pipelines } from '../pages/Pipelines';
 import { navItem } from '../plugins/navItem';
-import { NAV, SCREEN } from '../plugins/shell';
+import { NAV, SCREEN } from '@stepcast/slots';
 
 function PipelinesScreen({
   overview,

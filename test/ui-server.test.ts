@@ -40,7 +40,6 @@ import {
   type EsbuildTransformApi,
   type WidgetCompiler,
 } from '../src/ui/widgets.js';
-import { WIDGET_RUNTIME_ROUTES } from '../src/ui/widgetRuntime.js';
 import { makeJournalBed, seedRun, withHome } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -3640,22 +3639,6 @@ describe('ui-dashboard: маршрут модуля виджета', () => {
     assert.match(resA.body, /Clock as default/);
     assert.match(resB.body, /ClockB as default/);
     assert.equal(crossA.code, 404, 'ключ чужого проекта неизвестен этому серверу');
-  });
-});
-
-describe('ui-dashboard: маршрут переходников виджетов', () => {
-  it('отдаёт переходник для каждого объявленного имени и 404 для прочих', async (t) => {
-    const { runsRoot } = makeJournalBed();
-    const server = await startServer(t, { runsRoot });
-
-    for (const routeName of Object.keys(WIDGET_RUNTIME_ROUTES)) {
-      const res = await fetchWithHeaders(server, `/widgets/runtime/${routeName}.js`);
-      assert.equal(res.code, 200, routeName);
-      assert.match(String(res.headers['content-type']), /text\/javascript/, routeName);
-    }
-
-    const unknown = await fetchPath(server, '/widgets/runtime/lodash.js');
-    assert.equal(unknown.code, 404);
   });
 });
 

@@ -16,7 +16,16 @@
 
     "noEmit": true,
     "skipLibCheck": true,
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+
+    // Те же два имени, что у витрины (`ui/tsconfig.json`): браузерный тест
+    // пишет `@stepcast/slots` и `@stepcast/ui`, а не относительный путь, —
+    // так отображение имени проверяется сборкой тестов, а не только сборкой
+    // витрины.
+    "paths": {
+      "@stepcast/slots": ["./src/sharedSlots.ts"],
+      "@stepcast/ui": ["./src/ui/index.ts"]
+    }
   },
   "include": ["test/**/*.ts", "test/**/*.tsx"]
 }

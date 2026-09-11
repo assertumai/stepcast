@@ -5,7 +5,7 @@ import { declaration } from '../../../src/ui/screens/runs/declaration.ts';
 import { declaration as runDeclaration } from '../../../src/ui/screens/run/declaration.ts';
 import type { Overview } from '../api';
 import { Runs } from '../pages/Runs';
-import { NAV, SCREEN } from '../plugins/shell';
+import { NAV, SCREEN } from '@stepcast/slots';
 import { screenHref, type ParsedRoute } from '../router';
 
 /**

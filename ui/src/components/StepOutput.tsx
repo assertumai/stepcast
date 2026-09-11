@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 
+import { Button } from '@stepcast/ui';
 import { fetchStepOutput, type StepOutputStream } from '../api';
 import { fmtBytes } from '../format';
 import { mergeToolOutcomes, parseTranscript, type TranscriptEntry } from '../transcript';
@@ -243,22 +244,22 @@ export function StepOutput({
 
   return (
     <div className="step-output">
-      <button className="mono" onClick={() => void toggle()}>
+      <Button className="mono" onClick={() => void toggle()}>
         вывод шага {open ? '▾' : '▸'}
-      </button>
+      </Button>
       {!open ? null : (
         <div className="step-output-body">
           {attempts.length > 1 ? (
             <div className="attempts">
               {attempts.map((value) => (
-                <button
+                <Button
                   key={value}
                   className={value === attempt ? 'active' : undefined}
                   disabled={value === attempt}
                   onClick={() => void switchAttempt(value)}
                 >
                   попытка {value}
-                </button>
+                </Button>
               ))}
             </div>
           ) : null}

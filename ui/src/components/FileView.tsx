@@ -1,5 +1,6 @@
 import { useState, type JSX } from 'react';
 
+import { Button } from '@stepcast/ui';
 import { fetchFile, type FileSide, type JournalFileRef } from '../api';
 import { fmtBytes } from '../format';
 
@@ -70,18 +71,16 @@ export function FileView({
 
   return (
     <div>
-      <button className="mono" onClick={() => void toggle()}>
+      <Button className="mono" onClick={() => void toggle()}>
         {file.name} · {fmtBytes(file.bytes)}
-      </button>
+      </Button>
       {open && error !== undefined ? <p className="error">{error}</p> : null}
       {/* Плашка над содержимым: читатель должен знать, какой это кусок, до
           того, как начнёт читать оборванный с одного края текст. */}
       {open && truncated !== undefined ? (
         <div className="truncated">
           показан {shownSide === 'head' ? 'первый' : 'последний'} 1 МБ из {fmtBytes(truncated)} —{' '}
-          <button onClick={() => void load(flip)}>
-            показать {flip === 'head' ? 'начало' : 'конец'}
-          </button>
+          <Button onClick={() => void load(flip)}>показать {flip === 'head' ? 'начало' : 'конец'}</Button>
         </div>
       ) : null}
       {open && text !== undefined ? <pre>{text}</pre> : null}

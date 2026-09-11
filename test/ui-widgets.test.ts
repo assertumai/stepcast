@@ -9,10 +9,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 
-import { widgetModuleHref } from '../src/ui/routes.js';
 import {
   buildWidgets,
   createWidgetCompiler,
@@ -21,12 +19,6 @@ import {
   widgetsDirPath,
   type CompileOutcome,
 } from '../src/ui/widgets.js';
-import {
-  WIDGET_RUNTIME_GLOBAL,
-  WIDGET_RUNTIME_IMPORT_MAP,
-  WIDGET_RUNTIME_NAMES,
-  widgetRuntimeModuleText,
-} from '../src/ui/widgetRuntime.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -48,8 +40,6 @@ function widgetsDir(projectRoot: string): string {
   mkdirSync(dir, { recursive: true });
   return dir;
 }
-
-const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 function okCode(outcome: CompileOutcome | undefined): string {
   assert.equal(outcome?.kind, 'ok', `компиляция должна была пройти: ${JSON.stringify(outcome)}`);
@@ -314,96 +304,6 @@ describe('ui-widgets: кеш компиляции', () => {
   });
 });
 
-describe('ui-widgets: перечень переходников', () => {
-  function missingNames(names: readonly string[], mod: Record<string, unknown>): string[] {
-    return names.filter((name) => !Object.prototype.hasOwnProperty.call(mod, name));
-  }
-
-  it('каждое объявленное имя действительно экспортируется установленной версией пакета', async () => {
-    for (const [specifier, names] of Object.entries(WIDGET_RUNTIME_NAMES)) {
-      const mod = (await import(specifier)) as Record<string, unknown>;
-      assert.deepEqual(missingNames(names, mod), [], `${specifier}: перечень разошёлся с реальным экспортом`);
-    }
-  });
-
-  it('отсутствующее в реальном экспорте имя проверка называет', async () => {
-    const mod = (await import('react')) as Record<string, unknown>;
-    const withBogusName = [...(WIDGET_RUNTIME_NAMES.react as readonly string[]), 'совсемНеСуществующееИмя'];
-    assert.deepEqual(missingNames(withBogusName, mod), ['совсемНеСуществующееИмя']);
-  });
-
-  it('текст переходника отказывает названной ошибкой без опубликованного экземпляра', async () => {
-    const dir = tempDir('widget-runtime-');
-    const file = join(dir, 'react.mjs');
-    writeFileSync(file, widgetRuntimeModuleText('react'));
-
-    await assert.rejects(import(pathToFileURL(file).href), /не опубликован витриной/);
-  });
-
-  it('текст переходника реэкспортирует объявленные имена из опубликованного объекта', async () => {
-    const dir = tempDir('widget-runtime-');
-    const file = join(dir, 'react.mjs');
-    writeFileSync(file, widgetRuntimeModuleText('react'));
-
-    (globalThis as Record<string, unknown>)[WIDGET_RUNTIME_GLOBAL] = { react: { useState: 'маркер' } };
-    try {
-      const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
-      assert.equal(mod.useState, 'маркер');
-    } finally {
-      delete (globalThis as Record<string, unknown>)[WIDGET_RUNTIME_GLOBAL];
-    }
-  });
-
-  it('переходники react и react-dom дают экспорт по умолчанию, jsx-runtime — нет', () => {
-    assert.match(widgetRuntimeModuleText('react'), /export default /);
-    assert.match(widgetRuntimeModuleText('react-dom'), /export default /);
-    // У самого пакета экспорта по умолчанию нет — переходник его не выдумывает.
-    assert.doesNotMatch(widgetRuntimeModuleText('react/jsx-runtime'), /export default /);
-  });
-
-  it('идиома `import React, { useState } from "react"` связывается с переходником', async () => {
-    const dir = tempDir('widget-runtime-default-');
-    const shim = join(dir, 'react.mjs');
-    writeFileSync(shim, widgetRuntimeModuleText('react'));
-    // Виджет, написанный самым обычным способом: экспорт по умолчанию рядом с
-    // именованным. Без `export default` у переходника такой модуль не
-    // связывается вовсе («does not provide an export named 'default'»).
-    const widget = join(dir, 'widget.mjs');
-    writeFileSync(
-      widget,
-      "import React, { useState } from './react.mjs';\nexport const pair = [React.useState, useState];\n",
-    );
-
-    const instance = { useState: 'маркер' };
-    (globalThis as Record<string, unknown>)[WIDGET_RUNTIME_GLOBAL] = { react: instance };
-    try {
-      const mod = (await import(pathToFileURL(widget).href)) as { readonly pair: readonly unknown[] };
-      assert.deepEqual(mod.pair, ['маркер', 'маркер']);
-    } finally {
-      delete (globalThis as Record<string, unknown>)[WIDGET_RUNTIME_GLOBAL];
-    }
-  });
-
-  it('экспортом по умолчанию идёт сам объект, а не пространство имён вокруг него', async () => {
-    const dir = tempDir('widget-runtime-namespace-');
-    const file = join(dir, 'react.mjs');
-    writeFileSync(file, widgetRuntimeModuleText('react'));
-
-    // Страница публикует `import * as React from 'react'`: под сборщиком у
-    // такого пространства имён есть поле `default` — сам объект React.
-    const instance = { useState: 'маркер' };
-    (globalThis as Record<string, unknown>)[WIDGET_RUNTIME_GLOBAL] = {
-      react: { ...instance, default: instance },
-    };
-    try {
-      const mod = (await import(pathToFileURL(file).href)) as { readonly default: unknown };
-      assert.equal(mod.default, instance);
-    } finally {
-      delete (globalThis as Record<string, unknown>)[WIDGET_RUNTIME_GLOBAL];
-    }
-  });
-});
-
 describe('ui-widgets: отказ подъёма компилятора', () => {
   /** Тот же отказ, что даёт `import('esbuild')` без пакета или без его платформенного бинарника. */
   function failingLoad(): Promise<never> {
@@ -452,46 +352,5 @@ describe('ui-widgets: отказ подъёма компилятора', () => {
 
     assert.equal(loads, 1, 'отказавший подъём не пробуется заново на каждый запрос');
     assert.equal(lines.length, 1);
-  });
-});
-
-describe('ui-widgets: карта имён страницы', () => {
-  /** Карта имён разметки — объект `imports` единственного `<script type="importmap">`. */
-  function pageImportMap(html: string): Record<string, string> {
-    const block = /<script type="importmap">([\s\S]*?)<\/script>/.exec(html);
-    assert.ok(block !== null, 'разметка витрины обязана нести карту имён');
-    const parsed = JSON.parse((block as RegExpExecArray)[1] as string) as {
-      readonly imports?: Record<string, string>;
-    };
-    assert.ok(parsed.imports !== undefined, 'карта имён обязана нести раздел imports');
-    return parsed.imports as Record<string, string>;
-  }
-
-  it('карта имён разметки совпадает с перечнем форм адреса демона', () => {
-    const html = readFileSync(join(ROOT, 'ui', 'index.html'), 'utf8');
-    assert.deepEqual(pageImportMap(html), WIDGET_RUNTIME_IMPORT_MAP);
-  });
-
-  it('карта имён объявлена до первого модульного скрипта страницы', () => {
-    const html = readFileSync(join(ROOT, 'ui', 'index.html'), 'utf8');
-    const map = html.indexOf('<script type="importmap">');
-    const firstModule = html.indexOf('<script type="module"');
-    assert.ok(map >= 0 && firstModule >= 0);
-    assert.ok(map < firstModule, 'карта имён после модульного скрипта браузером не применяется');
-  });
-
-  it('дев-сервер проксирует на демон каждую форму адреса виджета', () => {
-    const config = readFileSync(join(ROOT, 'vite.config.ts'), 'utf8');
-    // Записи прокси — ровно те, чья цель демон; ключ записи и есть префикс пути.
-    const prefixes = [...config.matchAll(/'([^']+)':\s*\{\s*target:\s*DAEMON/g)].map((match) => match[1] as string);
-    assert.ok(prefixes.length > 0, 'перечень прокси дев-сервера не разобран');
-
-    const addresses = [widgetModuleHref('ключ', 'clock', '1:2'), ...Object.values(WIDGET_RUNTIME_IMPORT_MAP)];
-    for (const address of addresses) {
-      assert.ok(
-        prefixes.some((prefix) => address.startsWith(prefix)),
-        `адрес ${address} не покрыт ни одной записью прокси (${prefixes.join(', ')})`,
-      );
-    }
   });
 });

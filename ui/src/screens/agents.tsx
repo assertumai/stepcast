@@ -3,7 +3,7 @@ import type { Context } from 'cordis';
 import { declaration } from '../../../src/ui/screens/agents/declaration.ts';
 import { Agents } from '../pages/Agents';
 import { navItem } from '../plugins/navItem';
-import { NAV, SCREEN } from '../plugins/shell';
+import { NAV, SCREEN } from '@stepcast/slots';
 
 export default function agents(ctx: Context): void {
   ctx.slots.contribute(NAV, { component: navItem(declaration), order: declaration.nav?.order ?? 0 });

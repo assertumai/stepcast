@@ -5,7 +5,7 @@ import { declaration } from '../../../src/ui/screens/backlog/declaration.ts';
 import type { BacklogOverview } from '../api';
 import { Backlog } from '../pages/Backlog';
 import { navItem } from '../plugins/navItem';
-import { NAV, SCREEN } from '../plugins/shell';
+import { NAV, SCREEN } from '@stepcast/slots';
 
 function BacklogScreen({ backlog }: { readonly backlog: BacklogOverview | undefined }): JSX.Element {
   return <Backlog backlog={backlog} />;

@@ -1,0 +1,40 @@
+.sc-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+}
+
+.sc-dialog-content {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(28rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: calc(var(--radius) + 2px);
+  padding: 1rem 1.2rem;
+}
+
+.sc-dialog-close {
+  position: absolute;
+  top: .6rem;
+  right: .6rem;
+  border: none;
+  background: none;
+  color: var(--muted-foreground);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: .2rem .4rem;
+  border-radius: var(--radius);
+}
+.sc-dialog-close:hover { color: var(--foreground); }
+
+.sc-dialog-header { margin-bottom: .6rem; }
+.sc-dialog-title { font-weight: 650; margin: 0; }
+.sc-dialog-description { color: var(--muted-foreground); font-size: .85rem; margin: .3rem 0 0; }
+.sc-dialog-footer { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }

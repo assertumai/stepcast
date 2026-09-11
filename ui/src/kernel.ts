@@ -12,12 +12,16 @@ import {
   SLOTS_SERVICE_NAME,
   SlotsService,
   isSlotServiceName,
-  slot,
   slotNameFromServiceName,
   slotServiceName,
   translateSlotNameConflict,
   type RejectedContribution,
 } from './slots.ts';
+// Дескриптор — из поверхности `@stepcast/slots`, не копия (design.md
+// изменения `shared-module-table`, Решение 5): переходник плагина отдаёт тот
+// же объект. Ре-экспорт ниже сохраняет прежний путь импорта `ROOT` из
+// `./kernel` тем, кто уже на него полагается (`ui/src/slots.tsx`, тесты).
+import { ROOT } from '@stepcast/slots';
 import { LIVE_SERVICE_NAME, LiveService, type EventSourceFactory } from './services/live';
 import { SCREENS_SERVICE_NAME, ScreensService } from './services/screens';
 import { PLUGINS_SERVICE_NAME, PluginsService, type PluginModuleLoader } from './services/plugins';
@@ -38,8 +42,7 @@ import type { StyleSink } from './services/styles';
  * `src/core/plugins/fibers.ts`.
  */
 
-/** Слот, которому некуда встать, кроме как на сам корень (design.md, Решение 7). */
-export const ROOT = slot<Record<string, never>, 'single'>('root', 'single');
+export { ROOT };
 
 /**
  * Контекст ядра в дереве React — обычным `createContext`, а не своим

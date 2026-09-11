@@ -1,0 +1,19 @@
+/*
+ * Поле — вид прежнего правила `input, select` из `styles.css`: подложка
+ * карточки, не подложка страницы. У shadcn поле берёт `--background`, но
+ * витрина до перевода на библиотеку рисовала его на `--panel` (нынешний
+ * `--card`), и смена набора токенов — не повод перекрашивать поля
+ * (design.md изменения `shared-module-table`, Решение 7).
+ */
+.sc-input {
+  font: inherit;
+  font-size: .86rem;
+  background: var(--card);
+  border: 1px solid var(--input);
+  border-radius: var(--radius);
+  color: var(--foreground);
+  padding: .2rem .4rem;
+  min-width: 14rem;
+  max-width: 100%;
+}
+.sc-input:focus { outline: 2px solid var(--ring); outline-offset: -1px; }

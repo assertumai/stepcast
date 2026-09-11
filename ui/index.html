@@ -5,21 +5,24 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>stepcast</title>
     <!--
-      Карта имён для виджетов пользователя — обязана стоять до первого
-      модульного скрипта страницы, иначе браузер её не применит
-      (design.md изменения `ui-runtime-widget-spike`, Решение 3). Разметка —
+      Карта имён для виджетов и плагинов пользователя — обязана стоять до
+      первого модульного скрипта страницы, иначе браузер её не применит
+      (design.md изменения `shared-module-table`, Решение 1, 3). Разметка —
       единственное место, где карта не выводится из кода, поэтому её сверяет
-      тест: `WIDGET_RUNTIME_IMPORT_MAP` (`src/ui/widgetRuntime.ts`) против этого
+      тест: `SHARED_MODULE_IMPORT_MAP` (`src/ui/sharedModules.ts`) против этого
       блока и против перечня прокси дев-сервера
-      (`test/ui-widgets.test.ts`, «карта имён страницы»). Разойдись они, и
-      виджет получил бы «неизвестный спецификатор» вместо хука.
+      (`test/ui-shared-modules.test.ts`, «карта имён страницы»). Разойдись они,
+      и импортирующий получил бы «неизвестный спецификатор» вместо значения.
     -->
     <script type="importmap">
       {
         "imports": {
-          "react": "/widgets/runtime/react.js",
-          "react-dom": "/widgets/runtime/react-dom.js",
-          "react/jsx-runtime": "/widgets/runtime/jsx-runtime.js"
+          "react": "/shared/react.js",
+          "react-dom": "/shared/react-dom.js",
+          "react/jsx-runtime": "/shared/jsx-runtime.js",
+          "cordis": "/shared/cordis.js",
+          "@stepcast/slots": "/shared/stepcast-slots.js",
+          "@stepcast/ui": "/shared/stepcast-ui.js"
         }
       }
     </script>

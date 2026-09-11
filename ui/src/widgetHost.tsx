@@ -9,7 +9,7 @@ import {
 } from 'react';
 
 import { widgetModuleHref } from '../../src/ui/routes';
-import { WIDGET_ERROR_EXPORT } from '../../src/ui/widgetRuntime';
+import { WIDGET_ERROR_EXPORT } from '../../src/ui/sharedModules';
 import type { WidgetCompileFailure } from './api';
 
 /**

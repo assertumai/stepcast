@@ -15,6 +15,16 @@ import * as esbuild from 'esbuild';
  * в `package.json` напрямую: список файлов собирается обходом каталога, а не
  * шаблоном оболочки, — переносимо между `sh` и `bash` и не зависит от того,
  * включён ли `globstar`.
+ *
+ * Примитивы Radix (`@stepcast/ui`, design.md изменения `shared-module-table`,
+ * Решение 6) — тоже внешние, а не забандленные: их собственные внутренние
+ * зависимости (`react-remove-scroll` и подобные) несут код, рассчитанный на
+ * CJS-разрешение `require()` в самом Node, и бандл esbuild в ESM даёт на нём
+ * «Dynamic require... is not supported» — esbuild сшивает CJS-интероп
+ * внешнего `react` внутрь чужого CJS-модуля и не может сделать это статично.
+ * Не бандлить сам пакет Radix — и разрешать его Node'у напрямую из
+ * `node_modules` — снимает проблему целиком: их собственные транзитивные
+ * зависимости тогда вовсе не попадают в поле зрения esbuild.
  */
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -63,7 +73,16 @@ await esbuild.build({
   platform: 'node',
   format: 'esm',
   target: 'es2023',
-  external: ['react', 'react-dom', 'react-dom/*'],
+  external: ['react', 'react-dom', 'react-dom/*', '@radix-ui/*'],
+  // Имена таблицы, живущие в репозитории (design.md изменения
+  // `shared-module-table`, Решения 5, 6): у плагина их разрешает карта имён
+  // страницы, здесь — то же отображение, что в `vite.config.ts` и обоих
+  // `ui/tsconfig*.json`. Без него браузерный тест был бы единственным местом,
+  // пишущим относительный путь вместо имени.
+  alias: {
+    '@stepcast/slots': join(ROOT, 'ui', 'src', 'sharedSlots.ts'),
+    '@stepcast/ui': join(ROOT, 'ui', 'src', 'ui', 'index.ts'),
+  },
   jsx: 'automatic',
   logLevel: 'info',
 });
