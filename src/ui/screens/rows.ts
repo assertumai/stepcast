@@ -51,6 +51,32 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, env: RequestEnv
   // слать её заново незачем.
   let sent: BacklogOverview | undefined;
   let sentWidgets: WidgetsOverview | undefined;
+  // Состав плагинов сравнивается не по ссылке, как соседи выше, а по
+  // содержимому: он собирается на каждый такт заново (пересечение взгляда
+  // наблюдателя с действующим составом демона, `activePlugins` в
+  // `src/ui/server.ts`), и ссылка у него всегда новая.
+  let sentPluginsKey: string | undefined;
+  let closed = false;
+  // Очередь на состав: он приходит из асинхронного вызова, и два такта подряд
+  // иначе разошлись бы в порядке отправки.
+  let pluginsTail: Promise<void> = Promise.resolve();
+
+  const pushPlugins = (): void => {
+    pluginsTail = pluginsTail
+      .then(async () => {
+        const plugins = await env.activePlugins();
+        if (closed) return;
+        const key = plugins.plugins.map((row) => `${row.id}:${row.version}`).join('|');
+        if (key === sentPluginsKey) return;
+        sentPluginsKey = key;
+        send('plugins', plugins);
+      })
+      .catch(() => {
+        // Отказ сборки дерева уже назван в `GET /api/screens` полем
+        // `buildError`; поток событий от него не рвётся и не молчит по
+        // остальным своим событиям.
+      });
+  };
 
   const push = (): void => {
     send('overview', env.watcher.current());
@@ -64,6 +90,12 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, env: RequestEnv
       sentWidgets = widgets;
       send('widgets', widgets);
     }
+    // Действующий состав браузерных строк — первым же обменом при подключении
+    // и дальше по правилу «только при отличии от отправленного», тем же
+    // приёмом, что и `widgets` (design.md изменения `hot-swap-preserves-data`,
+    // Решение 11). Отправка отстаёт от прочих событий такта на микрозадачу:
+    // состав спрашивается у ядра демона, а это `await`.
+    pushPlugins();
     if (followed === undefined) return;
     const snapshot = snapshotOrRecord(env.runsRoot, followed.key, followed.runId);
     if (snapshot !== undefined) send('run', snapshot);
@@ -74,6 +106,7 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, env: RequestEnv
 
   // Клиент закрыл вкладку — подписка снимается, лишней работы не остаётся.
   req.on('close', () => {
+    closed = true;
     unsubscribe();
     res.end();
   });

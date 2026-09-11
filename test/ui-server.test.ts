@@ -501,8 +501,8 @@ describe('ui-dashboard: HTTP-витрина', () => {
     const stream = openStream(t, server, '/api/events');
     await settle();
 
-    // Каждый кадр несёт обзор, очередь и состав виджетов — тем же потоком, той же подпиской.
-    assert.deepEqual(stream.events.map((event) => event.event), ['overview', 'backlog', 'widgets']);
+    // Каждый кадр несёт обзор, очередь, состав виджетов и состав плагинов — тем же потоком, той же подпиской.
+    assert.deepEqual(stream.events.map((event) => event.event), ['overview', 'backlog', 'widgets', 'plugins']);
     assert.deepEqual(pick(stream.events[0]?.data, 'projects'), []);
 
     seedRun(runsRoot, projectRoot, { runId: 'новый' });
@@ -522,9 +522,15 @@ describe('ui-dashboard: HTTP-витрина', () => {
     const stream = openStream(t, server, `/api/events?run=${address(key, 'a')}`);
     await settle();
 
+    // Состав браузерных строк отстаёт от прочих событий такта: он спрашивается
+    // у ядра демона (`activePlugins`, `src/ui/server.ts`), а это `await` —
+    // отсюда он последним, а не между `widgets` и `run`. Порядок событий
+    // клиенту безразличен (каждое ложится в своё поле снимка `live`), но
+    // перечень обмена проверяется целиком, чтобы пропажа события не осталась
+    // незамеченной.
     assert.deepEqual(
       stream.events.map((item) => item.event),
-      ['overview', 'backlog', 'widgets', 'run'],
+      ['overview', 'backlog', 'widgets', 'run', 'plugins'],
     );
     assert.equal(pick(stream.events[3]?.data, 'runId'), 'a');
   });
@@ -604,7 +610,7 @@ describe('ui-dashboard: маршрут и поток очереди', () => {
 
     assert.deepEqual(
       stream.events.map((event) => event.event),
-      ['overview', 'backlog', 'widgets'],
+      ['overview', 'backlog', 'widgets', 'plugins'],
     );
     assert.deepEqual(pick(stream.events[1]?.data, 'projects'), []);
 
@@ -3664,7 +3670,7 @@ describe('ui-dashboard: событие widgets в потоке /api/events', () 
     await settle();
     assert.deepEqual(
       stream.events.map((event) => event.event),
-      ['overview', 'backlog', 'widgets'],
+      ['overview', 'backlog', 'widgets', 'plugins'],
     );
     assert.deepEqual(pick(stream.events[2]?.data, 'projects'), [{ projectKey: projectKey(projectRoot), widgets: [] }]);
 
@@ -3748,6 +3754,7 @@ describe('ui-dashboard: жизненный цикл компилятора ви�
     let disposed = false;
     const compiler: WidgetCompiler = {
       compile: async () => undefined,
+      compileBundle: async () => undefined,
       dispose: async () => {
         disposed = true;
       },

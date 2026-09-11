@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
+import type { Context } from 'cordis';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ComponentType, ReactNode } from 'react';
 
@@ -26,6 +27,14 @@ const Noop: ComponentType<Record<string, never>> = () => null;
 function freshKernel(): BrowserKernel {
   return createBrowserKernel({ createEventSource: fakeEventSources().factory });
 }
+
+/**
+ * Дать сверке состава дойти до конца: событие потока доставляется синхронно, а
+ * сверка, им запущенная, — цепочка промисов с загрузкой модуля внутри
+ * (`ui/src/services/plugins.ts`). `settle()` ждёт успокоения контекста, но
+ * области, которая ещё не заведена, он не дождётся.
+ */
+const flush = (): Promise<void> => new Promise((done) => setTimeout(done, 0));
 
 describe('kernel: свежее ядро', () => {
   it('слот `root` объявлен, реестр слотов доступен, вкладчиков нет', () => {
@@ -77,6 +86,62 @@ describe('kernel: свежее ядро', () => {
     assert.equal(diagnostics.length, 1);
     assert.equal(diagnostics[0]!.plugin, 'evil');
     assert.match(diagnostics[0]!.message, /живые данные витрины/);
+  });
+
+  it('плагин, объявляющий сервис состава браузерных строк, получает отказ, называющий имя и принадлежность ядру', async () => {
+    const kernel = freshKernel();
+    kernel.ctx.plugin({
+      name: 'evil',
+      apply(ctx) {
+        ctx.provide('plugins');
+      },
+    });
+
+    const diagnostics = await kernel.settle();
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0]!.kind, 'failed');
+    assert.equal(diagnostics[0]!.plugin, 'evil');
+    assert.match(diagnostics[0]!.message, /состав браузерных строк/);
+  });
+
+  it('состав браузерных строк приходит событием `plugins` потока и запускает сверку сам', async () => {
+    // Единственная связь демона с заменой: событие `plugins` → поле снимка
+    // `live` → подписка ядра → сверка состава. Проверяется целиком, а не
+    // прямым вызовом `reconcile` (`ui/test/hotSwap.test.tsx`): без этого шва
+    // сверка не запускается вовсе, и разъехаться он может молча.
+    const { factory, sources } = fakeEventSources();
+    const loaded: string[] = [];
+    const kernel = createBrowserKernel({
+      createEventSource: factory,
+      loadPluginModule: async (id, version) => {
+        loaded.push(`${id}@${version}`);
+        return {
+          default: (ctx: Context) => {
+            ctx.slots.contribute(ROOT, { component: Noop });
+          },
+        };
+      },
+    });
+
+    sources[0]!.emit('plugins', { plugins: [{ id: 'demo', version: '1' }] });
+    await flush();
+    await kernel.settle();
+
+    assert.deepEqual(loaded, ['demo@1']);
+    assert.deepEqual(kernel.ctx.live.get().plugins, [{ id: 'demo', version: '1' }]);
+    assert.equal(kernel.ctx.slots.getEntries(ROOT.name).length, 1);
+
+    // Тот же состав следующим событием — ни второй загрузки, ни повторного
+    // применения: сверка сравнивает версию строки, а ядро — ссылку на состав.
+    sources[0]!.emit('plugins', { plugins: [{ id: 'demo', version: '1' }] });
+    await flush();
+    assert.deepEqual(loaded, ['demo@1']);
+
+    // Строка исчезла из состава, присланного демоном, — её область снята.
+    sources[0]!.emit('plugins', { plugins: [] });
+    await flush();
+    await kernel.settle();
+    assert.deepEqual(kernel.ctx.slots.getEntries(ROOT.name), []);
   });
 
   it('плагин, объявляющий слот с именем `root`, получает отказ — имя уже занято ядром', async () => {

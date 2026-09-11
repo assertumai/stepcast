@@ -351,6 +351,22 @@ export interface WidgetsOverview {
   readonly generatedAt: string;
 }
 
+/**
+ * Строка состава браузерных плагинов — сверено построчно с `PluginRowView`
+ * (`src/ui/plugins.ts`, design.md изменения `hot-swap-preserves-data`,
+ * Решение 12): `id` каталога плагина домашнего слоя, версия — отпечаток
+ * каталога, идёт в адрес модуля и в ключ сверки состава ядра
+ * (`ui/src/services/plugins.ts`).
+ */
+export interface PluginRowView {
+  readonly id: string;
+  readonly version: string;
+}
+
+export interface PluginsOverview {
+  readonly plugins: readonly PluginRowView[];
+}
+
 /** Разобранная ошибка компиляции виджета — сверено с `CompileFailure` (`src/ui/widgets.ts`). */
 export interface WidgetCompileFailure {
   readonly file: string;

@@ -187,3 +187,23 @@ export function isWidgetPath(pathname: string): boolean {
 export function widgetModuleHref(projectKey: string, id: string, version: string): string {
   return `/widgets/${encodeURIComponent(projectKey)}/${encodeURIComponent(id)}.js?v=${encodeURIComponent(version)}`;
 }
+
+/**
+ * Адрес под `/plugins/` — браузерная половина плагина домашнего слоя
+ * (design.md изменения `hot-swap-preserves-data`, Решение 8, 13), тем же
+ * приёмом, что и `isWidgetPath`: голый `/plugins` без хвостового разделителя
+ * под предикат не подпадает.
+ */
+export function isPluginPath(pathname: string): boolean {
+  return pathname.startsWith('/plugins/');
+}
+
+/**
+ * Адрес модуля браузерной половины плагина с версией — сегмент экранирован,
+ * версия параметром запроса, тем же устройством, что и `widgetModuleHref`:
+ * реестр модулей браузера неизменен, замена возможна только переимпортом по
+ * новому адресу (design.md, Решение 8, 12).
+ */
+export function pluginModuleHref(id: string, version: string): string {
+  return `/plugins/${encodeURIComponent(id)}.js?v=${encodeURIComponent(version)}`;
+}

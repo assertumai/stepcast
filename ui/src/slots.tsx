@@ -61,7 +61,7 @@ function renderChain<Props>(
     const entry = entries[index]!;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- см. комментарий в `Slot` про стёртый тип компонента.
     const Link = entry.component as ComponentType<any>;
-    next = <Link key={`${entry.owner}:${index}`} {...props} next={next} />;
+    next = <Link key={entry.id} {...props} next={next} />;
   }
   return next;
 }
@@ -98,10 +98,10 @@ export function Slot<Props, Kind extends SlotKind>(slotProps: SlotProps<Props, K
   // list: все вкладчики в объявленном порядке.
   return (
     <>
-      {entries.map((entry, index) => {
+      {entries.map((entry) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any -- см. комментарий выше про стёртый тип компонента.
         const Component = entry.component as ComponentType<any>;
-        return <Component key={`${entry.owner}:${index}`} {...props} />;
+        return <Component key={entry.id} {...props} />;
       })}
     </>
   );
@@ -163,23 +163,46 @@ export function KernelFrame({
   );
 }
 
-/** Корневой рендерер ядра: сам собирает диагностики `settle()`-ом и держит их в состоянии. */
+/**
+ * Корневой рендерер ядра: сам собирает диагностики `settle()`-ом и держит их
+ * в состоянии.
+ *
+ * Пересобирает их не только монтированием: состав браузерных строк приходит
+ * потоком демона уже после первой отрисовки, и отказ замены (`stale`,
+ * `failed` — `ui/src/services/plugins.ts`) случается позже любого эффекта
+ * монтирования. Без подписки такой отказ оставался бы только в
+ * `console.error`, а полоса — пустой (design.md `hot-swap-preserves-data`,
+ * Решение 6).
+ */
 export function KernelRoot({ kernel }: { readonly kernel: BrowserKernel }): ReactElement {
   const [diagnostics, setDiagnostics] = useState<readonly Diagnostic[]>([]);
 
   useEffect(() => {
     let cancelled = false;
-    void kernel.settle().then((result) => {
-      if (cancelled) return;
-      setDiagnostics(result);
-      for (const diagnostic of result) {
-        const where =
-          diagnostic.slot === undefined ? diagnostic.plugin : `${diagnostic.plugin} → слот ${diagnostic.slot}`;
-        console.error(`[stepcast] ${where}: ${diagnostic.message}`);
-      }
-    });
+    // Одна строка лога на беду, а не на пересборку: тем же правилом, каким
+    // наблюдатель демона не повторяет отказ разбора журнала (`src/ui/watcher.ts`).
+    const logged = new Set<string>();
+
+    const refresh = (): void => {
+      void kernel.settle().then((result) => {
+        if (cancelled) return;
+        setDiagnostics(result);
+        for (const diagnostic of result) {
+          const where =
+            diagnostic.slot === undefined ? diagnostic.plugin : `${diagnostic.plugin} → слот ${diagnostic.slot}`;
+          const line = `[stepcast] ${where}: ${diagnostic.message}`;
+          if (logged.has(line)) continue;
+          logged.add(line);
+          console.error(line);
+        }
+      });
+    };
+
+    refresh();
+    const unsubscribe = kernel.subscribe(refresh);
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, [kernel]);
 

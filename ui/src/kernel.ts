@@ -20,6 +20,8 @@ import {
 } from './slots.ts';
 import { LIVE_SERVICE_NAME, LiveService, type EventSourceFactory } from './services/live';
 import { SCREENS_SERVICE_NAME, ScreensService } from './services/screens';
+import { PLUGINS_SERVICE_NAME, PluginsService, type PluginModuleLoader } from './services/plugins';
+import type { StyleSink } from './services/styles';
 
 /**
  * Ядро витрины — корневой контекст cordis страницы (design.md
@@ -66,6 +68,7 @@ const KERNEL_SERVICE_NAMES: Readonly<Record<string, string>> = {
   [SLOTS_SERVICE_NAME]: 'реестр слотов',
   [LIVE_SERVICE_NAME]: 'живые данные витрины',
   [SCREENS_SERVICE_NAME]: 'состав экранов витрины',
+  [PLUGINS_SERVICE_NAME]: 'состав браузерных строк',
 };
 
 function translateKernelNameConflict(
@@ -166,6 +169,13 @@ async function collectDiagnostics(ctx: Context): Promise<readonly Diagnostic[]> 
     });
   }
 
+  // Строки, чья новая редакция не загрузилась (`stale`) или не применилась
+  // (`failed`), — тем же видом диагностики, что и отказы сборки (design.md
+  // `hot-swap-preserves-data`, Решение 6): не молча, полосой поверх витрины.
+  for (const row of ctx.plugins.diagnostics()) {
+    diagnostics.push({ kind: 'failed', plugin: row.plugin, slot: undefined, message: row.message });
+  }
+
   return diagnostics;
 }
 
@@ -178,12 +188,34 @@ export interface BrowserKernelOptions {
    * там нет.
    */
   readonly createEventSource?: EventSourceFactory;
+  /**
+   * Загрузчик модуля браузерной половины плагина. По умолчанию —
+   * `import(pluginModuleHref(id, version))`; тесты подставляют свой (design.md
+   * `hot-swap-preserves-data`, Решение 8) — замена проверяется без сети.
+   */
+  readonly loadPluginModule?: PluginModuleLoader;
+  /**
+   * Приёмник стилей браузерной половины. По умолчанию — `<style
+   * data-plugin="<id>">` в `document.head`; тесты подставляют свой —
+   * принадлежность стиля области строки проверяется без браузера (design.md,
+   * Решение 7, 8).
+   */
+  readonly styleSink?: StyleSink;
 }
 
 export interface BrowserKernel {
   readonly ctx: Context;
   /** Дождаться успокоения контекста и собрать диагностики сборки (design.md, Решение 6). */
   settle(): Promise<readonly Diagnostic[]>;
+  /**
+   * Подписка на «диагностики могли измениться»: состав браузерных строк
+   * приходит потоком уже после монтирования страницы, и отказ замены обязан
+   * попасть на полосу диагностик (`KernelRoot`, `ui/src/slots.tsx`), а не
+   * только в `console.error` — собранные один раз эффектом монтирования
+   * диагностики о нём не узнали бы вовсе (design.md
+   * `hot-swap-preserves-data`, Решение 6). Возвращает функцию отписки.
+   */
+  subscribe(listener: () => void): () => void;
   /** Снять все области плагинов — то, чем `hot-swap-preserves-data` заменит один плагин, а тесты чистят дерево целиком. */
   dispose(): Promise<void>;
 }
@@ -202,11 +234,33 @@ export function createBrowserKernel(options: BrowserKernelOptions = {}): Browser
   // (`ui/src/router.tsx`) и плагин `screens` читают его с первой отрисовки, а
   // не с той, на которую попадёт какой-то конкретный плагин.
   new ScreensService(ctx);
+  // Состав браузерных строк и их замена — тоже собственность ядра, а не
+  // плагина (design.md `hot-swap-preserves-data`, Решение 1): плагин обязан
+  // пережить замену любой строки, включая свою собственную, а заменяющий
+  // самого себя не может снять и незавершённую замену.
+  new PluginsService(ctx, {
+    ...(options.loadPluginModule === undefined ? {} : { loadModule: options.loadPluginModule }),
+    ...(options.styleSink === undefined ? {} : { styleSink: options.styleSink }),
+  });
   ctx.provide(slotServiceName(ROOT.name), ROOT);
+
+  // Ядро сверяет состав строк на каждое изменение поля `plugins` снимка
+  // `live` (design.md, Решение 11) — сравнением по ссылке: демон присылает ту
+  // же ссылку, пока состав не изменился (`ui/src/services/live.ts`). Подписка
+  // не оформлена `ctx.effect`, как у `LiveService`, — снимать её незачем: она
+  // обязана жить, пока живо само ядро, ровно как и слот `root` выше.
+  let lastPlugins = ctx.live.get().plugins;
+  ctx.live.subscribe(() => {
+    const next = ctx.live.get().plugins;
+    if (next === lastPlugins) return;
+    lastPlugins = next;
+    void ctx.plugins.reconcile(next);
+  });
 
   return {
     ctx,
     settle: () => collectDiagnostics(ctx),
+    subscribe: (listener) => ctx.plugins.subscribe(listener),
     async dispose() {
       await settle(ctx);
       await Promise.all(topLevelFibers(ctx).map((fiber) => fiber.dispose()));

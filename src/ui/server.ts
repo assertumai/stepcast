@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 import { listProjects } from '../core/journal/reader.js';
 import { backfillUsageStore } from '../core/journal/usageStore.js';
@@ -14,7 +15,7 @@ import {
   type KernelCache,
 } from './pipelines.js';
 import type { RequestEnv } from './screens/registry.js';
-import { isApiPath, isSafeSegment, isWidgetPath } from './routes.js';
+import { isApiPath, isPluginPath, isSafeSegment, isWidgetPath } from './routes.js';
 import { createWatcher, type Watcher } from './watcher.js';
 import {
   createWidgetCompiler,
@@ -23,6 +24,7 @@ import {
   type WidgetCompiler,
 } from './widgets.js';
 import { WIDGET_RUNTIME_ROUTES, widgetRuntimeModuleText } from './widgetRuntime.js';
+import { directoryFingerprint, type PluginsOverview } from './plugins.js';
 
 /**
  * HTTP-витрина журнала.
@@ -222,6 +224,85 @@ async function handleWidgetRequest(
   sendWidgetNotFound(res);
 }
 
+/** Тот же отказ на все причины отсутствия плагина — небезопасный сегмент, неизвестный `id`, строка вне действующего состава, строка без браузерной половины. */
+function sendPluginNotFound(res: ServerResponse): void {
+  sendJson(res, 404, { error: 'Плагин не найден' });
+}
+
+/**
+ * `/plugins/<id>.js`: отдаётся только строка действующего состава
+ * (`daemon.plugins`, `src/ui/kernel.ts` — патч и коллизии имени уже учтены),
+ * компиляция бандлом при запросе, кеш по отпечатку каталога, ошибка сборки —
+ * модулем, а не отказом HTTP (design.md изменения `hot-swap-preserves-data`,
+ * Решение 13).
+ */
+async function handlePluginModule(
+  home: string,
+  kernelCache: KernelCache | undefined,
+  compiler: WidgetCompiler,
+  rawId: string,
+  res: ServerResponse,
+): Promise<void> {
+  if (!rawId.endsWith('.js')) {
+    sendPluginNotFound(res);
+    return;
+  }
+  let id: string;
+  try {
+    id = decodeURIComponent(rawId.slice(0, -'.js'.length));
+  } catch {
+    sendPluginNotFound(res);
+    return;
+  }
+
+  if (!isSafeSegment(id)) {
+    sendPluginNotFound(res);
+    return;
+  }
+
+  const daemon = await currentDaemonKernel(kernelCache, home);
+  // Каталог и файл половины берутся у самой строки состава, а не выводятся из
+  // `id`: их назвал манифест, применённый сборкой дерева, и границы каталога
+  // плагина по реальному пути проверены там же (`resolvePluginHalf`,
+  // `src/core/plugins/manifest.ts`) — демон отдаёт то, что назвал манифест, и
+  // ничего сверх.
+  const row = daemon.plugins.find((candidate) => candidate.id === id);
+  if (row === undefined) {
+    sendPluginNotFound(res);
+    return;
+  }
+
+  const cacheKey = directoryFingerprint(row.dir);
+  const outcome = await compiler.compileBundle(row.browser, cacheKey);
+  if (outcome === undefined) {
+    sendPluginNotFound(res);
+    return;
+  }
+
+  if (outcome.kind === 'ok') {
+    sendWidgetModule(res, outcome.code);
+    return;
+  }
+  sendWidgetModule(res, errorModuleText(outcome.failure), { error: true });
+}
+
+/** Диспетчер `/plugins/...`: ровно одна объявленная форма адреса, остальное — 404 без перечисления каталога. */
+async function handlePluginRequest(
+  home: string,
+  kernelCache: KernelCache | undefined,
+  compiler: WidgetCompiler,
+  pathname: string,
+  res: ServerResponse,
+): Promise<void> {
+  const parts = pathname.split('/').filter((part) => part !== '');
+  // `parts[0]` — всегда `plugins`: вызывающий уже проверил `isPluginPath`.
+  if (parts.length === 2) {
+    await handlePluginModule(home, kernelCache, compiler, parts[1] as string, res);
+    return;
+  }
+  sendPluginNotFound(res);
+}
+
 /** Страница витрины. Любой не-API адрес ведёт на неё: маршруты разбирает клиент. */
 function handlePage(res: ServerResponse, dashboardFile: string | undefined): void {
   const html = dashboardFile === undefined ? dashboardHtml() : dashboardHtml(dashboardFile);
@@ -237,6 +318,10 @@ function handlePage(res: ServerResponse, dashboardFile: string | undefined): voi
 
 export function createUiServer(options: UiServerOptions): Promise<UiServer> {
   const { runsRoot, config, home, dashboardFile } = options;
+  // Плагины домашнего слоя читаются от действующего домашнего каталога, тем
+  // же умолчанием, что и `currentDaemonKernel` (`src/ui/kernel.ts`), — здесь
+  // разрешается один раз, а не в каждом запросе `/plugins/...`.
+  const homeDir = home ?? homedir();
   // Перенос накопленного делает тот, кто открывает хранилище — здесь, при
   // старте демона, до первого обзора и до первого запроса, — поэтому
   // `GET /api/usage` и прочие читающие маршруты остаются чтением (design.md
@@ -244,7 +329,7 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
   backfillUsageStore(runsRoot);
   const watcher =
     options.watcher ??
-    createWatcher({ runsRoot, ...(options.log === undefined ? {} : { log: options.log }) });
+    createWatcher({ runsRoot, home: homeDir, ...(options.log === undefined ? {} : { log: options.log }) });
   const ownsWatcher = options.watcher === undefined;
   // Один кеш ядер на сервер, не на модуль: тесты поднимают несколько демонов в
   // одном процессе, и общий кеш связал бы их между собой (design.md,
@@ -262,6 +347,29 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
     options.widgetCompiler ??
     createWidgetCompiler(options.log === undefined ? {} : { log: options.log });
   const ownsWidgetCompiler = options.widgetCompiler === undefined;
+
+  /**
+   * Действующий состав браузерных строк для потока событий — пересечение двух
+   * взглядов, и оба нужны целиком: членство берётся у ядра демона
+   * (`currentDaemonKernel`, патч и итоги применения уже учтены), потому что
+   * этим же составом гейтится адрес `/plugins/<id>.js`, и разойдись они —
+   * страница просила бы строку, на которую демон отвечает 404, и садила бы её
+   * в состояние отказа вместо того, чтобы не знать о ней вовсе. Версия
+   * берётся у наблюдателя: она свежий отпечаток каталога, а состав ядра
+   * переживает попадание в кеш (дерево от правки файла половины не меняется)
+   * и нёс бы версию последней сборки дерева — то есть замена не случалась бы
+   * вовсе.
+   *
+   * Асимметрия одна: строка, чей каталог лежит вне домашнего слоя, у
+   * наблюдателя не отпечатывается и в поток не уходит, хотя по адресу
+   * отдаётся. Это то же самое, чем она была до сих пор, — расширять взгляд
+   * наблюдателя на каталоги, названные конфигом, эта работа не бралась.
+   */
+  const activePlugins = async (): Promise<PluginsOverview> => {
+    const daemon = await currentDaemonKernel(kernelCache, homeDir);
+    const active = new Set(daemon.plugins.map((row) => row.id));
+    return { plugins: watcher.currentPlugins().plugins.filter((row) => active.has(row.id)) };
+  };
 
   /**
    * Обработчик запроса под `/api/`: ядро демона собирается заново на каждый
@@ -291,6 +399,7 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
       kernelCache,
       screens: daemon.screens,
       buildError: daemon.buildError,
+      activePlugins,
     };
     await handler(req, res, env);
   }
@@ -338,6 +447,14 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
     // не по точному совпадению пути реестра.
     if (isWidgetPath(url.pathname)) {
       void handleWidgetRequest(runsRoot, widgetCompiler, url.pathname, res);
+      return;
+    }
+
+    // Браузерная половина плагина домашнего слоя — тем же приёмом, что и
+    // виджет: третья объявленная форма адреса демона (design.md изменения
+    // `hot-swap-preserves-data`, Решение 13).
+    if (isPluginPath(url.pathname)) {
+      void handlePluginRequest(homeDir, kernelCache, widgetCompiler, url.pathname, res);
       return;
     }
 

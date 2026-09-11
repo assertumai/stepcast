@@ -1,4 +1,5 @@
 import { existsSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { listProjects, listRunsByKey } from '../core/journal/reader.js';
@@ -6,6 +7,7 @@ import { runPaths, usageStorePath } from '../core/journal/paths.js';
 import { buildBacklog, type BacklogOverview } from './backlog.js';
 import { buildOverview, type Overview, type RunOverview } from './overview.js';
 import { buildProjectWidgets, buildWidgets, type WidgetsOverview } from './widgets.js';
+import { buildHomePlugins, type PluginsOverview } from './plugins.js';
 import type { JournalProblem } from '../core/journal/reader.js';
 
 /**
@@ -34,6 +36,13 @@ export interface WatcherOptions {
    * чтобы проверка собирала строки, а не писала в общий поток.
    */
   readonly log?: (line: string) => void;
+  /**
+   * Домашний каталог: определяет, чей `.stepcast/plugins/` наблюдатель
+   * отпечатывает (design.md изменения `hot-swap-preserves-data`, задача 12).
+   * По умолчанию — `homedir()`, тем же умолчанием, что у `currentDaemonKernel`
+   * (`src/ui/kernel.ts`).
+   */
+  readonly home?: string;
 }
 
 /** Строка лога демона: прогон, файл, место, обе версии и, при расхождении, лекарство. */
@@ -59,6 +68,14 @@ export interface Watcher {
   currentBacklog(): BacklogOverview;
   /** Текущий состав виджетов без ожидания следующего опроса. */
   currentWidgets(): WidgetsOverview;
+  /**
+   * Текущий состав плагинов домашнего слоя с браузерной половиной, без
+   * ожидания следующего опроса (design.md изменения `hot-swap-preserves-data`,
+   * задача 12) — тот же наивный обход каталога, что и содержимое события
+   * `plugins`; действующий состав демона (с учётом патча и коллизий имени) —
+   * `currentDaemonKernel` (`src/ui/kernel.ts`), решение записано там же.
+   */
+  currentPlugins(): PluginsOverview;
   /** Подписаться на обновления. Возвращает функцию отписки. */
   subscribe(listener: (overview: Overview, backlog: BacklogOverview) => void): () => void;
   /** Проверить корень прогонов немедленно, не дожидаясь таймера. */
@@ -77,6 +94,7 @@ interface Fingerprint {
   readonly runs: string;
   readonly backlog: string;
   readonly widgets: string;
+  readonly plugins: string;
 }
 
 /**
@@ -108,11 +126,21 @@ interface Fingerprint {
  * Markdown, состав виджетов — `readdirSync` каталога с единицами файлов, и
  * слитая часть заставляла бы перечитывать очередь на каждое сохранение
  * виджета в редакторе.
+ *
+ * Часть `plugins` — плагины домашнего слоя с браузерной половиной, тем же
+ * приёмом «`id`:версия» через запятую (design.md изменения
+ * `hot-swap-preserves-data`, задача 12): отдельная часть, потому что без неё
+ * `poll()` увидел бы неизменными `runs`/`backlog`/`widgets` и ушёл бы ранним
+ * возвратом (ниже), даже когда на диске поменялся только каталог плагинов, —
+ * и событие `plugins` не отправилось бы вовсе, пока не изменится что-то ещё.
  */
-function fingerprint(runsRoot: string): Fingerprint {
+function fingerprint(runsRoot: string, home: string): Fingerprint {
   const parts: string[] = [];
   const backlogParts: string[] = [];
   const widgetParts: string[] = [];
+  const pluginParts = buildHomePlugins(home)
+    .plugins.map((plugin) => `${plugin.id}:${plugin.version}`)
+    .join(',');
 
   try {
     const store = statSync(usageStorePath(runsRoot));
@@ -166,7 +194,12 @@ function fingerprint(runsRoot: string): Fingerprint {
       parts.push(`${project.key}/${runId}:${mtime}:${existsSync(paths.jobs) ? '1' : '0'}`);
     }
   }
-  return { runs: parts.join('|'), backlog: backlogParts.join('|'), widgets: widgetParts.join('|') };
+  return {
+    runs: parts.join('|'),
+    backlog: backlogParts.join('|'),
+    widgets: widgetParts.join('|'),
+    plugins: pluginParts,
+  };
 }
 
 /**
@@ -182,6 +215,7 @@ function projectList(overview: Overview): string {
 
 export function createWatcher(options: WatcherOptions): Watcher {
   const { runsRoot } = options;
+  const home = options.home ?? homedir();
   const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const listeners = new Set<(overview: Overview, backlog: BacklogOverview) => void>();
   // Ключ «прогон + файл + причина»: обзор пересобирается на всякое изменение
@@ -207,18 +241,27 @@ export function createWatcher(options: WatcherOptions): Watcher {
     }
   };
 
-  let mark = fingerprint(runsRoot);
+  let mark = fingerprint(runsRoot, home);
   let overview = buildOverview(runsRoot);
   let projects = projectList(overview);
   let backlog = buildBacklog(overview);
   let widgets = buildWidgets(runsRoot);
+  let plugins = buildHomePlugins(home);
   reportProblems(overview);
 
   const poll = (): void => {
-    const next = fingerprint(runsRoot);
-    if (next.runs === mark.runs && next.backlog === mark.backlog && next.widgets === mark.widgets) return;
+    const next = fingerprint(runsRoot, home);
+    if (
+      next.runs === mark.runs &&
+      next.backlog === mark.backlog &&
+      next.widgets === mark.widgets &&
+      next.plugins === mark.plugins
+    ) {
+      return;
+    }
     const backlogChanged = next.backlog !== mark.backlog;
     const widgetsChanged = next.widgets !== mark.widgets;
+    const pluginsChanged = next.plugins !== mark.plugins;
     mark = next;
     overview = buildOverview(runsRoot);
     const nextProjects = projectList(overview);
@@ -237,6 +280,11 @@ export function createWatcher(options: WatcherOptions): Watcher {
     if (widgetsChanged) {
       widgets = buildWidgets(runsRoot);
     }
+    // Тем же приёмом — состав плагинов пересобирается только по своей части
+    // отпечатка (design.md изменения `hot-swap-preserves-data`, задача 12).
+    if (pluginsChanged) {
+      plugins = buildHomePlugins(home);
+    }
     reportProblems(overview);
     for (const listener of listeners) listener(overview, backlog);
   };
@@ -249,6 +297,7 @@ export function createWatcher(options: WatcherOptions): Watcher {
     current: () => overview,
     currentBacklog: () => backlog,
     currentWidgets: () => widgets,
+    currentPlugins: () => plugins,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

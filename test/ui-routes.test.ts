@@ -1,7 +1,16 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { isApiPath, isWidgetPath, hrefFor, parseRoute, widgetModuleHref, type RouteScreen } from '../src/ui/routes.js';
+import {
+  isApiPath,
+  isPluginPath,
+  isWidgetPath,
+  hrefFor,
+  parseRoute,
+  pluginModuleHref,
+  widgetModuleHref,
+  type RouteScreen,
+} from '../src/ui/routes.js';
 import { declaration as agents } from '../src/ui/screens/agents/declaration.js';
 import { declaration as backlog } from '../src/ui/screens/backlog/declaration.js';
 import { declaration as cleanup } from '../src/ui/screens/cleanup/declaration.js';
@@ -131,5 +140,22 @@ describe('ui-routes: разбор адресов по таблице экран�
     const href = widgetModuleHref('проект a', 'clock b', '123:45');
     assert.equal(href, `/widgets/${encodeURIComponent('проект a')}/${encodeURIComponent('clock b')}.js?v=123%3A45`);
     assert.equal(isWidgetPath(href), true);
+  });
+
+  it('pluginModuleHref экранирует сегмент и несёт версию параметром', () => {
+    const href = pluginModuleHref('плагин a', 'abc:123');
+    assert.equal(href, `/plugins/${encodeURIComponent('плагин a')}.js?v=abc%3A123`);
+    assert.equal(isPluginPath(href), true);
+  });
+
+  it('isPluginPath истинен для любого пути под /plugins/, ложен для голого /plugins и адресов экранов', () => {
+    assert.equal(isPluginPath('/plugins/example.js'), true);
+    assert.equal(isPluginPath('/plugins/'), true);
+    // Голый `/plugins` без хвостового разделителя — не адрес этого демонского
+    // механизма: у него нет экрана меню, но предикат остаётся симметричным
+    // `isWidgetPath` ровно в этой части.
+    assert.equal(isPluginPath('/plugins'), false);
+    assert.equal(isPluginPath('/widgets/proj/clock.js'), false);
+    assert.equal(isPluginPath('/'), false);
   });
 });

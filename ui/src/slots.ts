@@ -89,8 +89,19 @@ export type Contribution<Props, Kind extends SlotKind> = {
   readonly slots?: readonly AnySlotDescriptor[];
 } & ContributeExtra<Kind>;
 
-/** Запись реестра, отданная наружу читающему — компонент уже приведён к типу, который объявил дескриптор. */
+/**
+ * Запись реестра, отданная наружу читающему — компонент уже приведён к типу,
+ * который объявил дескриптор.
+ *
+ * `id` — устойчивое опознание вклада, выведенное из `seq` (design.md
+ * `hot-swap-preserves-data`, Решение 4): уникально и монотонно в пределах
+ * страницы, не зависит ни от позиции вклада в слоте, ни от имени владельца.
+ * `<Slot>` (`ui/src/slots.tsx`) ключует им списочные вклады и звенья цепочки
+ * вместо прежнего `${owner}:${index}` — замена соседней строки, сдвигающая
+ * индексы, больше не путает React чужим поддеревом.
+ */
 export interface SlotEntry<Props = unknown> {
+  readonly id: string;
   readonly key: string | undefined;
   readonly owner: string;
   readonly component: ComponentType<Props>;
@@ -162,6 +173,9 @@ export class SlotsService extends Service {
   private readonly mismatched = new Map<number, RejectedContribution>();
   private readonly listeners = new Set<() => void>();
   private seqCounter = 0;
+  /** Глубина вложенности окна замены (`batch`) — досылает уведомление только выход из самого внешнего. */
+  private batchDepth = 0;
+  private notifyPending = false;
 
   constructor(ctx: Context) {
     super(ctx, SLOTS_SERVICE_NAME);
@@ -323,12 +337,51 @@ export class SlotsService extends Service {
 
     this.snapshots.set(
       name,
-      Object.freeze(accepted.map((entry) => ({ key: entry.key, owner: entry.owner, component: entry.component }))),
+      Object.freeze(
+        accepted.map((entry) => ({
+          id: String(entry.seq),
+          key: entry.key,
+          owner: entry.owner,
+          component: entry.component,
+        })),
+      ),
     );
     this.rejectedBySlot.set(name, rejected.length === 0 ? EMPTY_REJECTED : Object.freeze(rejected));
   }
 
+  /**
+   * Окно замены (design.md `hot-swap-preserves-data`, Решение 3): уведомления,
+   * накопленные внутри `fn`, сливаются в одно, отправляемое по выходе — снятие
+   * прежней области и применение новой доходят до рендерера одним изменением
+   * состава, а не двумя. Окно переживает `await` внутри себя (глубина считается
+   * явным счётчиком, а не стеком вызовов) и не теряет накопленного уведомления
+   * при броске внутри: `finally` сбрасывает глубину и шлёт уведомление, даже
+   * когда `fn` отклонился, — отказ пробрасывается вызывающему как есть.
+   * Вложенные окна не дают двух уведомлений: досылает только тот вызов,
+   * который вернул глубину к нулю.
+   */
+  async batch<T>(fn: () => T | Promise<T>): Promise<T> {
+    this.batchDepth += 1;
+    try {
+      return await fn();
+    } finally {
+      this.batchDepth -= 1;
+      if (this.batchDepth === 0 && this.notifyPending) {
+        this.notifyPending = false;
+        this.notifyNow();
+      }
+    }
+  }
+
   private notify(): void {
+    if (this.batchDepth > 0) {
+      this.notifyPending = true;
+      return;
+    }
+    this.notifyNow();
+  }
+
+  private notifyNow(): void {
     for (const listener of this.listeners) listener();
   }
 }

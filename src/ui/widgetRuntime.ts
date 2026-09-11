@@ -26,6 +26,18 @@ export const WIDGET_RUNTIME_GLOBAL = '__stepcastWidgetRuntime';
  */
 export const WIDGET_ERROR_EXPORT = '__stepcastWidgetError';
 
+/**
+ * Имя экспорта стилей собранной браузерной половины плагина (`src/ui/widgets.ts`,
+ * режим сборки бандла) — рядом с `WIDGET_ERROR_EXPORT` по той же причине:
+ * сборщик демона (дописывает экспорт в текст модуля) и хост страницы
+ * (`ui/src/services/plugins.ts`, читает его после загрузки модуля) обязаны
+ * брать имя из одного места (design.md изменения `hot-swap-preserves-data`,
+ * Решение 7). CSS, объявленный половиной (`import './styles.css'`), приходит
+ * этим экспортом, а не побочным эффектом импорта — так стиль можно снять
+ * вместе с областью строки, а не оставить в документе навсегда.
+ */
+export const WIDGET_STYLE_EXPORT = '__stepcastWidgetStyle';
+
 export type WidgetRuntimeSpecifier = 'react' | 'react-dom' | 'react/jsx-runtime';
 
 /**

@@ -1,6 +1,6 @@
 import { Service, type Context } from 'cordis';
 
-import type { BacklogOverview, Overview, RunSnapshot, WidgetsOverview } from '../api';
+import type { BacklogOverview, Overview, PluginRowView, RunSnapshot, WidgetsOverview } from '../api';
 
 /**
  * Живое состояние страницы — сервис контекста на месте прежнего хука
@@ -28,6 +28,14 @@ export interface LiveSnapshot {
   readonly widgets: WidgetsOverview | undefined;
   readonly snapshot: RunSnapshot | undefined;
   readonly state: LiveState;
+  /**
+   * Состав браузерных строк, событие `plugins` потока (design.md изменения
+   * `hot-swap-preserves-data`, Решение 11): ядро сверяет его со своими
+   * применёнными строками (`ui/src/services/plugins.ts`) и запускает замены.
+   * Та же ссылка, пока демон не прислал отличающийся состав — сравнение по
+   * ссылке и решает, звать ли сверку заново.
+   */
+  readonly plugins: readonly PluginRowView[];
 }
 
 /** Поверхность `EventSource`, которой пользуется сервис — минимум, достаточный для проверки без браузера. */
@@ -40,12 +48,15 @@ export type EventSourceFactory = (url: string) => EventSourceLike;
 
 const defaultFactory: EventSourceFactory = (url) => new EventSource(url);
 
+const EMPTY_PLUGINS: readonly PluginRowView[] = Object.freeze([]);
+
 const INITIAL_SNAPSHOT: LiveSnapshot = {
   overview: undefined,
   backlog: undefined,
   widgets: undefined,
   snapshot: undefined,
   state: 'connecting',
+  plugins: EMPTY_PLUGINS,
 };
 
 export class LiveService extends Service {
@@ -114,6 +125,10 @@ export class LiveService extends Service {
       });
       source.addEventListener('run', (event) => {
         this.patch({ state: 'live', snapshot: JSON.parse(event.data) as RunSnapshot });
+      });
+      source.addEventListener('plugins', (event) => {
+        const parsed = JSON.parse(event.data) as { readonly plugins: readonly PluginRowView[] };
+        this.patch({ state: 'live', plugins: parsed.plugins });
       });
       source.addEventListener('error', () => this.patch({ state: 'offline' }));
 

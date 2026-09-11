@@ -7,6 +7,7 @@ import { kernelFromRegistry, type Registry } from '../core/plugins/registry.js';
 import { resolveWithCachedKernel, type KernelCache } from './pipelines.js';
 import { UI_ROWS, UI_SHELL_ROW } from './screens/rows.js';
 import { NO_ROUTES, type ActiveScreen, type ApiRoutes, type ApiService, type ScreensService } from './screens/registry.js';
+import type { ActivePluginRow } from './plugins.js';
 
 /**
  * Единственная точка получения действующего ядра демона (`ui-daemon`,
@@ -34,6 +35,23 @@ export interface DaemonKernel {
    * итоги описывают тот же состав.
    */
   readonly outcomes: readonly RowOutcome[];
+  /**
+   * Действующий состав браузерных строк плагинов домашнего слоя (design.md
+   * изменения `hot-swap-preserves-data`, Решение 1, 12): строка, отключённая
+   * патчем или исчезнувшая из дерева, сюда не попадает. Переживает попадание
+   * в кеш ядра тем же приёмом, что `outcomes`.
+   *
+   * Развилка «кто владеет составом» решена в пользу `currentDaemonKernel`, а
+   * не сервиса на контексте ядра демона (строка `ui-shell` рядом со
+   * `screens`/`api`): состав собирается из `onDirectoryRow`
+   * (`src/core/plugins/load.ts`) — колбэка, который зовётся ПО ХОДУ сборки
+   * дерева, до того как реестр вообще существует, — а `ctx.screens`/`ctx.api`
+   * появляются только ПОСЛЕ того, как дерево применилось (строка каркаса —
+   * такая же строка дерева, как и любая другая). Заводить сервис ради поля,
+   * заполняемого раньше, чем сам сервис появится, значило бы держать
+   * состояние в двух местах и синхронизировать их вручную.
+   */
+  readonly plugins: readonly ActivePluginRow[];
   /** Действующий состав экранов — сервис `screens` ядра, породившего `registry`. */
   readonly screens: ReadonlyMap<string, ActiveScreen>;
   /** Маршруты того же ядра — их ищет диспетчер (`src/ui/server.ts`). */
@@ -60,6 +78,7 @@ interface Built {
   readonly resolved: ResolvedConfig;
   readonly registry: Registry;
   readonly outcomes: readonly RowOutcome[];
+  readonly plugins: readonly ActivePluginRow[];
 }
 
 interface DaemonKernelState {
@@ -106,7 +125,7 @@ async function builtinOnlyKernel(home: string): Promise<Built> {
     builtinRows: UI_ROWS.map((row) => row.id),
   });
   const { registry, outcomes } = await loadPlugins(resolved, { projectRoot: home, builtinRows: UI_ROWS });
-  return { resolved, registry, outcomes };
+  return { resolved, registry, outcomes, plugins: [] };
 }
 
 /**
@@ -137,6 +156,15 @@ export async function currentDaemonKernel(
   const state = stateFor(kernelCache);
   let buildError: string | undefined;
 
+  // Состав браузерных строк собирается по ходу сборки дерева, тем же
+  // колбэком, что и вклад строки каркаса (`onDirectoryRow`, `LoadOptions`,
+  // design.md изменения `hot-swap-preserves-data`, Решение 1): каждая
+  // директорийная строка с браузерной половиной в манифесте добавляет себя
+  // сюда. Строка без браузерной половины, отключённая патчем (не доходит до
+  // `applyTreeRow` вовсе) или отказавшая при применении (кидает раньше, чем
+  // вызовет колбэк) — не добавляется.
+  const collectedPlugins: ActivePluginRow[] = [];
+
   try {
     const { resolved, registry, outcomes } = await resolveWithCachedKernel(
       `home:${home}`,
@@ -144,6 +172,14 @@ export async function currentDaemonKernel(
       home,
       kernelCache,
       UI_ROWS,
+      ({ row, manifest }) => {
+        if (manifest.browser === undefined) return;
+        // Каталог и путь половины — из манифеста, а не из `id`: каталожная
+        // строка вправе лежать вне `~/.stepcast/plugins/` (`use: ./путь`), и
+        // предполагаемый путь дал бы отпечаток несуществующего каталога и
+        // поиск половины не там, где она есть.
+        collectedPlugins.push({ id: row.id, dir: manifest.dir, browser: manifest.browser });
+      },
     );
     if (screenServices(registry) === undefined) {
       // Дерево собралось, но обслуживать им нечего. Прежнее ядро к этому
@@ -156,8 +192,15 @@ export async function currentDaemonKernel(
       // Итоги приходят `undefined`, когда реестр взят из кеша (дерево совпало,
       // `loadPlugins` не звался): описывают тот же состав прежние итоги, и
       // выбрасывать их означало бы потерять состояние каталожных строк на
-      // каждом втором запросе.
-      state.last = { resolved, registry, outcomes: outcomes ?? state.last?.outcomes ?? [] };
+      // каждом втором запросе. Состав браузерных строк — тем же приёмом:
+      // `onDirectoryRow` не звался вовсе, и `collectedPlugins` пуст, но не по
+      // тому, что строк не осталось, а по тому, что сборки не было.
+      state.last = {
+        resolved,
+        registry,
+        outcomes: outcomes ?? state.last?.outcomes ?? [],
+        plugins: outcomes === undefined ? state.last?.plugins ?? [] : collectedPlugins,
+      };
     }
   } catch (error) {
     buildError = reasonOf(error);
@@ -186,6 +229,7 @@ export async function currentDaemonKernel(
     resolved: active.resolved,
     registry: active.registry,
     outcomes: active.outcomes,
+    plugins: active.plugins,
     // Запасное ядро собрано из тех же `UI_ROWS`, поэтому сервисы у него есть
     // всегда; пустой состав — ответ на случай, которого быть не может, но
     // который не имеет права стать `TypeError` в долгоживущем процессе.

@@ -9,6 +9,7 @@ import { describeSource } from '../core/config/merge.js';
 import { resolveConfig, type Config, type ResolveOptions } from '../core/config/resolve.js';
 import { resolveWithPlugins, type ResolvedWithPlugins } from '../core/plugins/resolve.js';
 import type { BuiltinRow } from '../core/plugins/builtin.js';
+import type { LoadOptions } from '../core/plugins/load.js';
 import type { Kernel } from '../core/plugins/kernel.js';
 import { kernelFromRegistry, registryFromKernel, type Registry } from '../core/plugins/registry.js';
 import type { TreeRow } from '../core/plugins/tree.js';
@@ -447,6 +448,13 @@ async function disposeKernel(kernel: Kernel, cache: KernelCache): Promise<void> 
  * (design.md, Решение 2, 6). Собственное ядро демона (`src/ui/kernel.ts`)
  * передаёт их; `projectSection` — нет: строки витрины не должны появиться в
  * дереве, по которому раскрывается пайплайн проекта.
+ *
+ * `onDirectoryRow` (`LoadOptions`, design.md изменения `hot-swap-preserves-data`,
+ * Решение 1) доходит до `loadPlugins` только тогда, когда дерево разошлось с
+ * закешированным и сборка идёт заново: попадание в кеш ядра (дерево совпало)
+ * `loadPlugins` не зовёт вовсе, и вклад вызывающего в этом случае не звучит —
+ * `currentDaemonKernel` переживает это тем же приёмом, что и `outcomes`
+ * (держит прежний собранный состав, а не считает его пустым).
  */
 export async function resolveWithCachedKernel(
   key: string,
@@ -454,6 +462,7 @@ export async function resolveWithCachedKernel(
   projectRoot: string,
   cache: KernelCache | undefined,
   builtinRows: readonly BuiltinRow[] = [],
+  onDirectoryRow?: LoadOptions['onDirectoryRow'],
 ): Promise<ResolvedWithPlugins> {
   const resolveOptions: ResolveOptions =
     builtinRows.length === 0 ? options : { ...options, builtinRows: builtinRows.map((row) => row.id) };
@@ -466,7 +475,9 @@ export async function resolveWithCachedKernel(
 
   const result = await resolveWithPlugins(
     resolveOptions,
-    cachedRegistry === undefined ? { projectRoot, builtinRows } : { projectRoot, registry: cachedRegistry },
+    cachedRegistry === undefined
+      ? { projectRoot, builtinRows, ...(onDirectoryRow === undefined ? {} : { onDirectoryRow }) }
+      : { projectRoot, registry: cachedRegistry },
   );
 
   // Кешируется только успешно собранный реестр: если строка выше не бросила,

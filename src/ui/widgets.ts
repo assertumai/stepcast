@@ -3,7 +3,7 @@ import { basename, extname, join, sep } from 'node:path';
 
 import { listProjects } from '../core/journal/reader.js';
 import { isSafeSegment } from './routes.js';
-import { WIDGET_ERROR_EXPORT } from './widgetRuntime.js';
+import { WIDGET_ERROR_EXPORT, WIDGET_STYLE_EXPORT } from './widgetRuntime.js';
 
 /**
  * Виджет пользователя — файл `<проект>/.stepcast/widgets/<id>.tsx`.
@@ -146,9 +146,19 @@ export type CompileOutcome =
   | { readonly kind: 'ok'; readonly code: string }
   | { readonly kind: 'error'; readonly failure: CompileFailure };
 
-/** Поверхность esbuild, которой пользуется этот модуль — оба API нужны: `transform` компилирует, `stop` останавливает служебный процесс (design.md, Решение 12). */
+/**
+ * Поверхность esbuild, которой пользуется этот модуль: `transform` компилирует
+ * один файл (виджет), `stop` останавливает служебный процесс (design.md,
+ * Решение 12). `build` — второй режим, сборка бандла для браузерной половины
+ * плагина (design.md изменения `hot-swap-preserves-data`, Решение 13);
+ * необязателен, чтобы не ломать подставные компиляторы существующих тестов
+ * (`test/ui-widgets.test.ts`, `test/ui-server.test.ts`), которым бандл не нужен.
+ */
 export interface EsbuildTransformApi {
   transform(input: string, options: Record<string, unknown>): Promise<{ readonly code: string }>;
+  build?(options: Record<string, unknown>): Promise<{
+    readonly outputFiles: readonly { readonly path: string; readonly text: string }[];
+  }>;
   stop(): Promise<void> | void;
 }
 
@@ -252,6 +262,18 @@ export interface WidgetCompiler {
    * файл.
    */
   compile(path: string): Promise<CompileOutcome | undefined>;
+  /**
+   * Собрать браузерную половину плагина бандлом: локальные относительные
+   * импорты разрешаются и попадают в один модуль, React и его подпути — во
+   * внешних именах (тот же контракт, что у виджета — переходники
+   * `src/ui/widgetRuntime.ts`); CSS выхода дописывается в текст модуля
+   * экспортом стилей, а не вставляется модулем самостоятельно (design.md
+   * изменения `hot-swap-preserves-data`, Решение 7, 13). Кеш — по `cacheKey`
+   * (отпечаток каталога плагина, `directoryFingerprint`, `src/ui/plugins.ts`),
+   * не по файлу: правка любого файла каталога обязана обесценить запись.
+   * `undefined` — файл исчез между разрешением адреса и сборкой.
+   */
+  compileBundle(entry: string, cacheKey: string): Promise<CompileOutcome | undefined>;
   /** Остановить служебный процесс компилятора, если он был поднят. */
   dispose(): Promise<void>;
 }
@@ -267,6 +289,7 @@ export function createWidgetCompiler(options: WidgetCompilerOptions = {}): Widge
   const log = options.log ?? ((line: string) => process.stderr.write(`${line}\n`));
   const load = options.loadCompiler ?? importEsbuild;
   const cache = new Map<string, CacheEntry>();
+  const bundleCache = new Map<string, CacheEntry>();
   let esbuild: Promise<EsbuildTransformApi> | undefined;
 
   return {
@@ -310,6 +333,53 @@ export function createWidgetCompiler(options: WidgetCompilerOptions = {}): Widge
       if (cache.size > maxEntries) {
         const oldest = cache.keys().next().value;
         if (oldest !== undefined) cache.delete(oldest);
+      }
+      return outcome;
+    },
+
+    async compileBundle(entry, cacheKey) {
+      if (!existsSync(entry)) return undefined;
+
+      const cached = bundleCache.get(entry);
+      if (cached !== undefined && cached.version === cacheKey) {
+        bundleCache.delete(entry);
+        bundleCache.set(entry, cached);
+        return cached.outcome;
+      }
+
+      let outcome: CompileOutcome;
+      try {
+        esbuild ??= loadEsbuild(load, log);
+        const compiler = await esbuild;
+        if (compiler.build === undefined) {
+          throw new Error('Компилятор виджетов не поддерживает сборку бандла');
+        }
+        const result = await compiler.build({
+          entryPoints: [entry],
+          bundle: true,
+          write: false,
+          format: 'esm',
+          jsx: 'automatic',
+          outdir: 'stepcast-plugin-bundle',
+          external: ['react', 'react-dom', 'react/jsx-runtime'],
+          loader: { '.css': 'css' },
+        });
+        const jsFile = result.outputFiles.find((file) => file.path.endsWith('.js'));
+        const cssFile = result.outputFiles.find((file) => file.path.endsWith('.css'));
+        if (jsFile === undefined) throw new Error('Сборка бандла не дала JS-выхода');
+        const code =
+          cssFile === undefined
+            ? jsFile.text
+            : `${jsFile.text}\nexport const ${WIDGET_STYLE_EXPORT} = ${JSON.stringify(cssFile.text)};\n`;
+        outcome = { kind: 'ok', code };
+      } catch (error) {
+        outcome = { kind: 'error', failure: toFailure(entry, error) };
+      }
+
+      bundleCache.set(entry, { version: cacheKey, outcome });
+      if (bundleCache.size > maxEntries) {
+        const oldest = bundleCache.keys().next().value;
+        if (oldest !== undefined) bundleCache.delete(oldest);
       }
       return outcome;
     },

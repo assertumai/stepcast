@@ -7,6 +7,7 @@ import { StepcastError } from '../../core/errors.js';
 import type { BuiltinRow } from '../../core/plugins/builtin.js';
 import type { Kernel } from '../../core/plugins/kernel.js';
 import type { KernelCache } from '../pipelines.js';
+import type { PluginsOverview } from '../plugins.js';
 import type { Watcher } from '../watcher.js';
 import type { ScreenDeclaration } from './declaration.js';
 
@@ -51,6 +52,18 @@ export interface RequestEnv {
    */
   readonly screens: ReadonlyMap<string, ActiveScreen>;
   readonly buildError: string | undefined;
+  /**
+   * Действующий состав браузерных строк — тот же, которым гейтится адрес
+   * `/plugins/<id>.js` (`src/ui/server.ts`): строка, отключённая патчем или
+   * отказавшая при применении, не уходит ни в поток, ни в ответ по адресу.
+   *
+   * Функция, а не значение: поток событий (`handleEvents`, `rows.ts`) спрашивает
+   * состав на каждом такте наблюдателя, а не один раз на запрос, — за время
+   * жизни соединения и дерево, и отпечатки каталогов успевают измениться.
+   * Собирает её сервер: `currentDaemonKernel` — его забота, а обработчику
+   * маршрута знать о кеше ядер незачем (design.md, Решение 5).
+   */
+  readonly activePlugins: () => Promise<PluginsOverview>;
 }
 
 export type ApiHandler = (req: IncomingMessage, res: ServerResponse, env: RequestEnv) => void | Promise<void>;

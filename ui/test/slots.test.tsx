@@ -381,3 +381,145 @@ describe('slots: устойчивость снимка', () => {
     assert.equal(first, second);
   });
 });
+
+describe('slots: устойчивое опознание вклада (hot-swap-preserves-data, Решение 4)', () => {
+  it('снятие вклада, стоявшего раньше других, не меняет опознания оставшихся', async () => {
+    const ctx = freshCtx();
+    const LIST = slot<ItemProps, 'list'>('list', 'list');
+    await declareSlot(ctx, LIST, 'owner');
+
+    const first = await ctx.plugin({ name: 'a', apply: (inner) => inner.slots.contribute(LIST, { component: Noop }) });
+    await ctx.plugin({ name: 'b', apply: (inner) => inner.slots.contribute(LIST, { component: Noop }) });
+    await ctx.plugin({ name: 'c', apply: (inner) => inner.slots.contribute(LIST, { component: Noop }) });
+    await settle(ctx);
+
+    const before = ctx.slots.getEntries(LIST.name);
+    assert.equal(before.length, 3);
+    const [, bId, cId] = before.map((entry) => entry.id);
+
+    await first.dispose();
+    await settle(ctx);
+
+    const after = ctx.slots.getEntries(LIST.name);
+    assert.equal(after.length, 2);
+    assert.deepEqual(
+      after.map((entry) => entry.id),
+      [bId, cId],
+    );
+  });
+
+  it('два вклада одного владельца в один слот различимы опознанием', async () => {
+    const ctx = freshCtx();
+    const LIST = slot<ItemProps, 'list'>('list', 'list');
+    await declareSlot(ctx, LIST, 'owner');
+
+    await ctx.plugin({
+      name: 'twice',
+      apply(inner) {
+        inner.slots.contribute(LIST, { component: Noop, order: 0 });
+        inner.slots.contribute(LIST, { component: Noop, order: 1 });
+      },
+    });
+    await settle(ctx);
+
+    const entries = ctx.slots.getEntries(LIST.name);
+    assert.equal(entries.length, 2);
+    assert.notEqual(entries[0]!.id, entries[1]!.id);
+  });
+
+  it('снятый и внесённый заново вклад получает опознание, отличное от прежнего', async () => {
+    const ctx = freshCtx();
+    const SINGLE = slot<ItemProps, 'single'>('single', 'single');
+    await declareSlot(ctx, SINGLE, 'owner');
+
+    const first = await ctx.plugin({ name: 'a', apply: (inner) => inner.slots.contribute(SINGLE, { component: Noop }) });
+    await settle(ctx);
+    const firstId = ctx.slots.getEntries(SINGLE.name)[0]!.id;
+
+    await first.dispose();
+    await settle(ctx);
+    await ctx.plugin({ name: 'a2', apply: (inner) => inner.slots.contribute(SINGLE, { component: Noop }) });
+    await settle(ctx);
+
+    const secondId = ctx.slots.getEntries(SINGLE.name)[0]!.id;
+    assert.notEqual(firstId, secondId);
+  });
+});
+
+describe('slots: окно замены — `batch()` (hot-swap-preserves-data, Решение 3)', () => {
+  it('несколько add/remove внутри окна дают ровно одно уведомление', async () => {
+    const ctx = freshCtx();
+    const LIST = slot<ItemProps, 'list'>('list', 'list');
+    await declareSlot(ctx, LIST, 'owner');
+
+    let notifications = 0;
+    ctx.slots.subscribe(() => (notifications += 1));
+
+    await ctx.slots.batch(async () => {
+      const a = await ctx.plugin({ name: 'a', apply: (inner) => inner.slots.contribute(LIST, { component: Noop }) });
+      await settle(ctx);
+      await a.dispose();
+      await settle(ctx);
+      await ctx.plugin({ name: 'b', apply: (inner) => inner.slots.contribute(LIST, { component: Noop }) });
+      await settle(ctx);
+    });
+
+    assert.equal(notifications, 1);
+  });
+
+  it('окно с `await` внутри себя тоже даёт одно уведомление', async () => {
+    const ctx = freshCtx();
+    const SINGLE = slot<ItemProps, 'single'>('single', 'single');
+    await declareSlot(ctx, SINGLE, 'owner');
+
+    let notifications = 0;
+    ctx.slots.subscribe(() => (notifications += 1));
+
+    await ctx.slots.batch(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await ctx.plugin({ name: 'a', apply: (inner) => inner.slots.contribute(SINGLE, { component: Noop }) });
+      await settle(ctx);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    assert.equal(notifications, 1);
+  });
+
+  it('отказ внутри окна пробрасывается, а подписчик всё равно уведомлён', async () => {
+    const ctx = freshCtx();
+    const SINGLE = slot<ItemProps, 'single'>('single', 'single');
+    await declareSlot(ctx, SINGLE, 'owner');
+
+    let notifications = 0;
+    ctx.slots.subscribe(() => (notifications += 1));
+
+    await assert.rejects(
+      ctx.slots.batch(async () => {
+        await ctx.plugin({ name: 'a', apply: (inner) => inner.slots.contribute(SINGLE, { component: Noop }) });
+        await settle(ctx);
+        throw new Error('boom');
+      }),
+      /boom/,
+    );
+
+    assert.equal(notifications, 1);
+  });
+
+  it('вложенные окна не дают двух уведомлений', async () => {
+    const ctx = freshCtx();
+    const SINGLE = slot<ItemProps, 'single'>('single', 'single');
+    await declareSlot(ctx, SINGLE, 'owner');
+
+    let notifications = 0;
+    ctx.slots.subscribe(() => (notifications += 1));
+
+    await ctx.slots.batch(() =>
+      ctx.slots.batch(async () => {
+        await ctx.plugin({ name: 'a', apply: (inner) => inner.slots.contribute(SINGLE, { component: Noop }) });
+        await settle(ctx);
+      }),
+    );
+
+    assert.equal(notifications, 1);
+  });
+});
