@@ -55,6 +55,29 @@ const testPaths = [
   },
 ];
 
+/** Глобали браузера — окружение витрины (`ui/**`), но не её тестов: те идут в Node. */
+const browserGlobals = {
+  window: 'readonly',
+  document: 'readonly',
+  navigator: 'readonly',
+  fetch: 'readonly',
+  Response: 'readonly',
+  EventSource: 'readonly',
+  MessageEvent: 'readonly',
+  URL: 'readonly',
+  URLSearchParams: 'readonly',
+  console: 'readonly',
+  setTimeout: 'readonly',
+  clearTimeout: 'readonly',
+  localStorage: 'readonly',
+  HTMLElement: 'readonly',
+};
+
+/** Те же имена со значением `off`: слияние `globals` гасится только явным отказом, а не умолчанием. */
+function disabled(globals) {
+  return Object.fromEntries(Object.keys(globals).map((name) => [name, 'off']));
+}
+
 export default tseslint.config(
   {
     ignores: ['dist/**', 'node_modules/**'],
@@ -131,21 +154,37 @@ export default tseslint.config(
       parserOptions: {
         ecmaFeatures: { jsx: true },
       },
+      globals: browserGlobals,
+    },
+  },
+  {
+    // Тесты витрины исполняются `node --test`, не браузером: окружение Node
+    // вместо браузерного.
+    //
+    // `languageOptions` — не опции правила: их плоский конфиг как раз СЛИВАЕТ
+    // (`globals` и `parserOptions` объединяются по ключам, `parser`
+    // наследуется), и только поэтому тестам достаётся TS-парсер блока `ui/**`
+    // выше, под шаблон которого `ui/test/**` подпадает тоже. Из того же
+    // слияния следует, что браузерные глобали сами собой отсюда не уходят:
+    // чтобы `window` в тесте, идущем без DOM, не считался объявленным, каждая
+    // из них гасится явным `off`.
+    files: ['ui/test/**/*.ts', 'ui/test/**/*.tsx'],
+    languageOptions: {
+      ecmaVersion: 2023,
+      sourceType: 'module',
+      parserOptions: {
+        ecmaFeatures: { jsx: true },
+      },
       globals: {
-        window: 'readonly',
-        document: 'readonly',
-        navigator: 'readonly',
-        fetch: 'readonly',
-        Response: 'readonly',
-        EventSource: 'readonly',
-        MessageEvent: 'readonly',
-        URL: 'readonly',
-        URLSearchParams: 'readonly',
+        ...disabled(browserGlobals),
+        process: 'readonly',
         console: 'readonly',
+        Buffer: 'readonly',
+        globalThis: 'readonly',
+        __dirname: 'readonly',
+        __filename: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
-        localStorage: 'readonly',
-        HTMLElement: 'readonly',
       },
     },
   },

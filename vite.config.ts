@@ -55,7 +55,9 @@ export default defineConfig({
       // фильтры и порядок списка прогонов, `filters.ts` — общее обоим экранам
       // правило «выбранное значение фильтра не исчезает», `backlogView.ts` —
       // нумерация, фильтры и порядок очереди улучшений, `widgetRuntime.ts` —
-      // перечень переходников и ключ глобали, которую публикует `main.tsx`).
+      // перечень переходников и ключ глобали, которую публикует `main.tsx`,
+      // `fibers.ts` — успокоение контекста и поиск зависших областей, общее с
+      // ядром демона (design.md `cordis-kernel-browser`, Решение 6)).
       // Целый корень репозитория здесь означал бы,
       // что любая открытая в браузере страница читает через `/@fs/` что
       // угодно из рабочего дерева.
@@ -71,6 +73,7 @@ export default defineConfig({
         join(ROOT, 'src', 'ui', 'backlogView.ts'),
         join(ROOT, 'src', 'ui', 'widgetRuntime.ts'),
         join(ROOT, 'src', 'core', 'config', 'modelTiers.ts'),
+        join(ROOT, 'src', 'core', 'plugins', 'fibers.ts'),
       ],
     },
   },

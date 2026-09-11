@@ -1,8 +1,11 @@
-import { Context, FiberState, Service, type Fiber } from 'cordis';
+import { Context, Service, type Fiber } from 'cordis';
 
 import { StepcastError } from '../errors.js';
 import type { Context as PluginContext, ContributionRegistrar } from './context.js';
 import type { BackendContribution, CommandContribution, LoadedPlugin, PredicateContribution } from './contract.js';
+import { settle, topLevelFibers, unresolvedFibers, type UnresolvedFiber } from './fibers.js';
+
+export { unresolvedFibers, type UnresolvedFiber };
 
 /**
  * Ядро движка — корневой контекст cordis.
@@ -21,6 +24,11 @@ import type { BackendContribution, CommandContribution, LoadedPlugin, PredicateC
  * `createKernel()` остаётся синхронной функцией, как была `createRegistry()`.
  * Область самого ядра — фиксированная область корня, и признак «это она»
  * несёт идентичность её `Fiber`, а не имя (Решение 5).
+ *
+ * Успокоение контекста и поиск зависших областей (`settle`, `unresolvedFibers`)
+ * живут в `./fibers.js` — модуле без зависимостей, общем с браузерным ядром
+ * витрины (design.md `cordis-kernel-browser`, Решение 6); здесь только
+ * реэкспорт и использование.
  */
 
 /** Имена служебных сервисов ядра. Плагину заводить сервис с этим именем нельзя. */
@@ -163,57 +171,6 @@ export interface Kernel {
    * нечего, и он остаётся обычным объектом для сборщика мусора.
    */
   dispose(): Promise<void>;
-}
-
-/** Все области дерева — не только верхнего уровня, но и заведённые вложенным `ctx.inject`. */
-function allFibers(ctx: Context): Fiber[] {
-  const fibers: Fiber[] = [];
-  for (const runtime of ctx.registry.values()) {
-    for (const fiber of runtime.fibers) fibers.push(fiber);
-  }
-  return fibers;
-}
-
-async function settle(ctx: Context): Promise<readonly Fiber[]> {
-  let previous = -1;
-  let fibers = allFibers(ctx);
-  // Тело успокоившейся области могло завести новую (вложенный `ctx.inject`) —
-  // поэтому счётчик областей должен стабилизироваться, а не просто перестать
-  // расти за один проход.
-  while (fibers.length !== previous) {
-    previous = fibers.length;
-    await Promise.allSettled(fibers.map((fiber) => fiber.await().catch(() => undefined)));
-    fibers = allFibers(ctx);
-  }
-  return fibers;
-}
-
-/** Верхнеуровневые области — заведённые `ctx.plugin()` на самом корне, а не вложенным `ctx.inject`. */
-function topLevelFibers(ctx: Context): Fiber[] {
-  return allFibers(ctx).filter((fiber) => fiber.parent === ctx);
-}
-
-/** Плагин, чья область осталась ждать сервис после успокоения дерева, — что называть в отказе. */
-export interface UnresolvedFiber {
-  readonly plugin: string;
-  readonly missing: readonly string[];
-  /**
-   * Сама область: по ней загрузчик находит объявление, которым плагин заведён,
-   * и дописывает отказу файл конфигурации — тот же состав полей, что у прочих
-   * отказов загрузки.
-   */
-  readonly fiber: Fiber;
-}
-
-/** Области, зависшие в `PENDING` после успокоения: неудовлетворённое внедрение (Решение 9). */
-export function unresolvedFibers(fibers: readonly Fiber[]): UnresolvedFiber[] {
-  const out: UnresolvedFiber[] = [];
-  for (const fiber of fibers) {
-    if (fiber.state !== FiberState.PENDING) continue;
-    const missing = Object.keys(fiber.inject).filter((name) => fiber.ctx.get(name) === undefined);
-    out.push({ plugin: fiber.name, missing, fiber });
-  }
-  return out;
 }
 
 /**

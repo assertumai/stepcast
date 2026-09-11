@@ -4,7 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": [],
+    "types": ["node"],
     "jsx": "react-jsx",
 
     "strict": true,
@@ -18,18 +18,5 @@
     "skipLibCheck": true,
     "allowImportingTsExtensions": true
   },
-  "include": [
-    "src/**/*.ts",
-    "src/**/*.tsx",
-    "../src/ui/routes.ts",
-    "../src/ui/grouping.ts",
-    "../src/ui/format.ts",
-    "../src/ui/transcript.ts",
-    "../src/ui/runsView.ts",
-    "../src/ui/filters.ts",
-    "../src/ui/backlogView.ts",
-    "../src/ui/widgetRuntime.ts",
-    "../src/core/plugins/fibers.ts",
-    "../vite.config.ts"
-  ]
+  "include": ["test/**/*.ts", "test/**/*.tsx"]
 }

@@ -1,100 +1,14 @@
-import type { JSX } from 'react';
-
-import { MENU } from '../../src/ui/routes';
-import { useLive } from './live';
-import { useRoute } from './router';
-import { Backlog } from './pages/Backlog';
-import { Cleanup } from './pages/Cleanup';
-import { Pipelines } from './pages/Pipelines';
-import { RunDetail } from './pages/RunDetail';
-import { Runs } from './pages/Runs';
-import { Agents } from './pages/Agents';
-import { Settings } from './pages/Settings';
-import { Steps } from './pages/Steps';
-import { Usage } from './pages/Usage';
-import { Widgets } from './pages/Widgets';
-
 /**
- * Каркас витрины: боковое меню слева, экран справа, один живой поток на
- * вкладку.
+ * Каркас витрины переехал в `ui/src/plugins/shell.tsx` — вкладом в корневой
+ * слот `root` (`ui/src/kernel.ts`), а не компонентом, который собирал
+ * `main.tsx` (design.md `cordis-kernel-browser`, Решение 8, 13). Ничто
+ * больше не импортирует этот файл.
  *
- * Меню сбоку, а не полосой сверху: пунктов пять, и колонка держит их в
- * одном столбце, не отнимая ширины у содержимого экрана и не завися от того,
- * сколько их станет. Признак живой связи стоит в подвале той же колонки —
- * он относится ко всей витрине, а не к текущему экрану.
- *
- * `useLive` подписан на адрес текущего прогона, когда он открыт, — и ни на
- * что, когда открыт любой из экранов меню. Переключение экрана меняет этот
- * адрес и тем самым пересоздаёт подписку: второй `EventSource` на вкладке не
- * заводится.
+ * Файл остаётся заглушкой, а не исчезает: физическое удаление файла,
+ * отслеживаемого git, вне прав исполняющей работы
+ * (`openspec/changes/agent-cannot-clean-up/design.md` — Non-Goal «Право
+ * удалять файлы у агента» назван явно и намеренно) — а без git тело,
+ * несущее прежнюю логику, осталось бы вторым, расходящимся источником
+ * правды рядом с `shell.tsx`.
  */
-export function App(): JSX.Element {
-  const { route, navigate } = useRoute();
-  const followedAddress = route.page === 'run' ? `${route.projectKey}/${route.runId}` : undefined;
-  const { overview, backlog, widgets, snapshot, state } = useLive(followedAddress);
-  const liveLabel = {
-    connecting: 'подключение к демону…',
-    live: 'живое обновление',
-    offline: 'нет связи с демоном',
-  }[state];
-
-  return (
-    <div className="shell">
-      <nav className="sidebar">
-        <a
-          className="brand"
-          href="/"
-          onClick={(event) => {
-            if (event.metaKey || event.ctrlKey) return;
-            event.preventDefault();
-            navigate('/');
-          }}
-        >
-          stepcast
-        </a>
-
-        {MENU.map((item) => (
-          <a
-            key={item.page}
-            className={item.pages.includes(route.page) ? 'nav-item active' : 'nav-item'}
-            href={item.href}
-            aria-current={item.pages.includes(route.page) ? 'page' : undefined}
-            onClick={(event) => {
-              // Cmd/Ctrl-клик должен открывать вкладку: перехватывается только обычный переход.
-              if (event.metaKey || event.ctrlKey) return;
-              event.preventDefault();
-              navigate(item.href);
-            }}
-          >
-            {item.title}
-          </a>
-        ))}
-
-        <div className={state === 'live' ? 'live on' : 'live off'}>{liveLabel}</div>
-      </nav>
-
-      <main className="content">
-        {route.page === 'runs' ? <Runs overview={overview} navigate={navigate} /> : null}
-        {route.page === 'pipelines' ? <Pipelines overview={overview} navigate={navigate} /> : null}
-        {route.page === 'steps' ? <Steps /> : null}
-        {route.page === 'widgets' ? <Widgets overview={overview} widgets={widgets} /> : null}
-        {route.page === 'backlog' ? <Backlog backlog={backlog} /> : null}
-        {route.page === 'usage' ? (
-          <Usage overview={overview} {...(route.days === undefined ? {} : { days: route.days })} navigate={navigate} />
-        ) : null}
-        {route.page === 'cleanup' ? <Cleanup overview={overview} /> : null}
-        {route.page === 'agents' ? <Agents /> : null}
-        {route.page === 'settings' ? <Settings /> : null}
-        {route.page === 'run' ? (
-          <RunDetail
-            key={`${route.projectKey}/${route.runId}`}
-            projectKey={route.projectKey}
-            runId={route.runId}
-            snapshot={snapshot}
-            navigate={navigate}
-          />
-        ) : null}
-      </main>
-    </div>
-  );
-}
+export {};
