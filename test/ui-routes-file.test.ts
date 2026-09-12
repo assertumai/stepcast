@@ -239,6 +239,50 @@ describe('ui-routes-file: сборка таблицы трёх слоёв', () =
     );
   });
 
+  it('маршрут с целью-дашбордом собирается тем же вкладом, что и цель-экран/цель-виджет', () => {
+    const { home, projectRoot } = layerDirs();
+    writeProjectRoutes(
+      projectRoot,
+      'routes:\n  - id: my-dashboard\n    path: /release/:period\n    target: { dashboard: release }\n    params: { window: "${params.period}" }\n',
+    );
+
+    const result = buildRouteTable({ home, projectRoot });
+    const entry = result.entries.find((candidate) => candidate.id === 'my-dashboard');
+    assert.deepEqual(entry?.definition.target, { kind: 'dashboard', id: 'release' });
+    assert.deepEqual(entry?.definition.params, { window: '${params.period}' });
+  });
+
+  it('поле цели-дашборда сливается по слоям тем же правилом, что и прочие поля строки', () => {
+    const { home, projectRoot } = layerDirs();
+    writeHomeRoutes(home, 'routes:\n  - id: my-dashboard\n    path: /release\n    target: { dashboard: release }\n');
+    writeProjectRoutes(projectRoot, 'routes:\n  - id: my-dashboard\n    nav:\n      title: Релиз\n');
+
+    const result = buildRouteTable({ home, projectRoot });
+    const entry = result.entries.find((candidate) => candidate.id === 'my-dashboard');
+    assert.deepEqual(entry?.definition.target, { kind: 'dashboard', id: 'release' });
+    assert.equal(entry?.sources.target.layer, 'home');
+    assert.equal(entry?.definition.nav?.title, 'Релиз');
+    assert.equal(entry?.sources.navTitle?.layer, 'project');
+  });
+
+  it('подстановка параметра цели-дашборда на имя вне шаблона пути — названный отказ', () => {
+    const { home, projectRoot } = layerDirs();
+    writeProjectRoutes(
+      projectRoot,
+      'routes:\n  - id: my-dashboard\n    path: /release\n    target: { dashboard: release }\n    params: { window: "${params.nope}" }\n',
+    );
+
+    assert.throws(
+      () => buildRouteTable({ home, projectRoot }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /my-dashboard/);
+        assert.match(error.message, /nope/);
+        return true;
+      },
+    );
+  });
+
   it('неизвестный ключ строки маршрута — отказ с указанием файла', () => {
     const { home, projectRoot } = layerDirs();
     writeProjectRoutes(
@@ -275,6 +319,30 @@ describe('ui-routes-file: запись строки в слой через Docum
     const result = buildRouteTable({ home });
     const entry = result.entries.find((candidate) => candidate.id === 'my-route');
     assert.equal(entry?.definition.path, '/mine');
+  });
+
+  it('файл с повтором ключа не переписывается — отказ называет место разбора', () => {
+    const { home } = layerDirs();
+    const path = homeRoutesPath(home);
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    // Повтор ключа `routes:` YAML не разбирает, но разбор «как получится» даёт
+    // схемно верный объект: без проверки `doc.errors` запись прошла бы поверх
+    // файла, который чтение слоя считает сломанным, и унесла бы первый блок.
+    const broken =
+      'routes:\n  - id: mine\n    path: /mine\n    target: { screen: screen-runs }\nroutes:\n  - id: other\n    path: /other\n    target: { screen: screen-runs }\n';
+    writeFileSync(path, broken);
+
+    assert.throws(
+      () => writeRouteRow('home', { id: 'my-route', path: '/new', target: { screen: 'screen-runs' } }, { home }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.file, path);
+        assert.match(error.message, /не разбирается как YAML/);
+        assert.match(String(error.at), /строка 5/);
+        return true;
+      },
+    );
+    assert.equal(readFileSync(path, 'utf8'), broken);
   });
 
   it('правка существующей строки заменяет её на месте, не дублируя', () => {

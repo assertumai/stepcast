@@ -9,6 +9,7 @@ import type { Kernel } from '../../core/plugins/kernel.js';
 import type { KernelCache } from '../pipelines.js';
 import type { PluginsOverview } from '../plugins.js';
 import type { Watcher } from '../watcher.js';
+import type { LaunchRunFn } from '../runLaunch.js';
 import type { ScreenDeclaration } from './declaration.js';
 
 export type { ScreenDeclaration, ScreenListing } from './declaration.js';
@@ -74,6 +75,13 @@ export interface RequestEnv {
    * маршрута знать о кеше ядер незачем (design.md, Решение 5).
    */
   readonly activePlugins: () => Promise<PluginsOverview>;
+  /**
+   * Пуск прогона отсоединённым дочерним процессом (`ui-daemon`, design.md
+   * Решение 13) — поле окружения, а не прямой вызов `src/ui/runLaunch.ts`, тем
+   * же приёмом, каким запись маршрутов и дашбордов проходит через `env`:
+   * подстановка в проверках не трогает механизм диспетчера.
+   */
+  readonly launchRun: LaunchRunFn;
 }
 
 export type ApiHandler = (req: IncomingMessage, res: ServerResponse, env: RequestEnv) => void | Promise<void>;

@@ -40,6 +40,7 @@ const RouteNavSchema = z
 const RouteTargetSchema = z.union([
   z.object({ screen: z.string().min(1) }).strict(),
   z.object({ widget: z.string().min(1) }).strict(),
+  z.object({ dashboard: z.string().min(1) }).strict(),
 ]);
 
 export const RouteRowSchema = z
@@ -184,7 +185,8 @@ function mergeRows(layers: readonly LayerFile[]): readonly MergedRow[] {
 
 function toRouteTarget(raw: NonNullable<RouteRowDocument['target']>): RouteTarget {
   if ('screen' in raw) return { kind: 'screen', id: raw.screen };
-  return { kind: 'widget', id: raw.widget };
+  if ('widget' in raw) return { kind: 'widget', id: raw.widget };
+  return { kind: 'dashboard', id: raw.dashboard };
 }
 
 /** Маршрут действующей таблицы вместе с источником каждого поля — для перечня в витрине. */
@@ -417,13 +419,23 @@ export function writeRouteRow(layer: WritableRouteLayer, row: RouteRowDocument, 
         cause: error,
       });
     }
-    try {
-      doc = parseDocument(text);
-    } catch (error) {
-      throw new StepcastError(`Файл маршрутов ${path} не разбирается как YAML — запись отменена`, {
-        file: path,
-        cause: error,
-      });
+    doc = parseDocument(text);
+    // `parseDocument` на синтаксической ошибке не бросает — она едет списком
+    // `doc.errors`, и без этой проверки сохранение переписывало бы файл,
+    // который чтение слоя (`parse`, выше) считает сломанным, по своему
+    // «как получится» разбору (`ui-routes`, «Файл, который не разбирается, не
+    // переписывается»).
+    const parseFailure = doc.errors[0];
+    if (parseFailure !== undefined) {
+      const pos = parseFailure.linePos?.[0];
+      throw new StepcastError(
+        `Файл маршрутов ${path} не разбирается как YAML — запись отменена: ${parseFailure.message}`,
+        {
+          file: path,
+          ...(pos === undefined ? {} : { at: `строка ${pos.line}, колонка ${pos.col}` }),
+          hint: 'Почините файл вручную, прежде чем сохранять маршрут из витрины',
+        },
+      );
     }
     const existing = RouteDocumentSchema.safeParse(doc.toJS());
     if (!existing.success) {

@@ -17,6 +17,7 @@ import {
 import type { ActiveScreen, RequestEnv } from './screens/registry.js';
 import { isApiPath, isPluginPath, isSafeSegment, isSharedPath, isWidgetPath } from './routes.js';
 import { createWatcher, type Watcher } from './watcher.js';
+import { launchRun as defaultLaunchRun, type LaunchRunFn } from './runLaunch.js';
 import {
   createWidgetCompiler,
   errorModuleText,
@@ -80,6 +81,12 @@ export interface UiServerOptions {
   readonly dashboardFile?: string;
   /** Куда наблюдатель печатает отказ разбора файла журнала. См. `WatcherOptions.log`. */
   readonly log?: (line: string) => void;
+  /**
+   * Пуск прогона по `POST /api/run`. По умолчанию — настоящий отсоединённый
+   * процесс (`src/ui/runLaunch.ts`); подмена нужна проверкам, которым нельзя
+   * порождать процесс на каждый вызов (`ui-daemon`, Решение 13).
+   */
+  readonly launchRun?: LaunchRunFn;
 }
 
 export interface UiServer {
@@ -436,6 +443,7 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
       projectRoot: options.projectRoot,
       activePlugins,
       activeScreens,
+      launchRun: options.launchRun ?? defaultLaunchRun,
     };
     await handler(req, res, env);
   }

@@ -5,6 +5,7 @@ import { PluginsPatchDocumentSchema, RawConfigSchema } from '../src/core/config/
 import { PluginManifestSchema } from '../src/core/plugins/manifest.js';
 import { BacklogItemSchema, BacklogSlotsResponseSchema } from '../src/core/backlog/schema.js';
 import { RouteDocumentSchema } from '../src/ui/routesFile.js';
+import { DashboardDocumentSchema } from '../src/ui/dashboardsFile.js';
 
 /**
  * Перечень целей генерации JSON Schema — общий для скрипта печати
@@ -78,6 +79,12 @@ export const SCHEMA_TARGETS: readonly SchemaTarget[] = [
     file: 'schema/routes.schema.json',
     schema: RouteDocumentSchema,
     title: 'stepcast routes',
+    io: 'input',
+  },
+  {
+    file: 'schema/dashboard.schema.json',
+    schema: DashboardDocumentSchema,
+    title: 'stepcast dashboard',
     io: 'input',
   },
 ];

@@ -10,6 +10,7 @@ import { projectKey } from '../src/core/journal/paths.js';
 import { removeUsageRecords } from '../src/core/journal/usageStore.js';
 import { widgetsDirPath } from '../src/ui/widgets.js';
 import { homeRoutesPath, projectRoutesPath } from '../src/ui/routesFile.js';
+import { homeDashboardsDirPath, projectDashboardsDirPath } from '../src/ui/dashboardsFile.js';
 import type { BacklogOverview } from '../src/ui/backlog.js';
 import type { Overview } from '../src/ui/overview.js';
 import type { WidgetsOverview } from '../src/ui/widgets.js';
@@ -636,6 +637,122 @@ describe('ui-routes: часть отпечатка наблюдателя', () =
 
     assert.equal(watcher.currentRoutes(), before, 'отказ сборки не должен подменять действующую таблицу');
     assert.match(watcher.currentRoutesError() ?? '', /bogus/);
+    watcher.dispose();
+  });
+});
+
+describe('ui-dashboards: часть отпечатка наблюдателя', () => {
+  function writeHomeDashboard(home: string, id: string, content: string): void {
+    const dir = homeDashboardsDirPath(home);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${id}.yml`), content);
+  }
+
+  function writeProjectDashboard(projectRoot: string, id: string, content: string): void {
+    const dir = projectDashboardsDirPath(projectRoot);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `${id}.yml`), content);
+  }
+
+  const CELL_YAML = 'cells:\n  - id: a\n    widget: runs\n    at: { column: 0, row: 0, width: 4, height: 2 }\n';
+
+  it('правка файла дашборда будит подписчика и доводит новый состав, не трогая маршруты, виджеты и обзор', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const home = tempDir('dash-watcher-home-');
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+
+    const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
+    const beforeOverview = watcher.current();
+    const beforeWidgets = watcher.currentWidgets();
+    const beforeRoutes = watcher.currentRoutes();
+    let calls = 0;
+    watcher.subscribe(() => (calls += 1));
+
+    writeHomeDashboard(home, 'release', CELL_YAML);
+    watcher.poll();
+
+    assert.equal(calls, 1, 'правка каталога дашбордов обязана разбудить подписчика');
+    assert.equal(watcher.currentDashboards().dashboards.find((d) => d.id === 'release')?.document.cells[0]?.id, 'a');
+    assert.equal(watcher.current(), beforeOverview, 'правка дашборда не должна перечитывать прогоны');
+    assert.equal(watcher.currentWidgets(), beforeWidgets, 'правка дашборда не должна пересобирать состав виджетов');
+    assert.equal(watcher.currentRoutes(), beforeRoutes, 'правка дашборда не должна пересобирать таблицу маршрутов');
+    watcher.dispose();
+  });
+
+  it('правка файла маршрутов или очереди не пересобирает состав дашбордов', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const home = tempDir('dash-watcher-home-');
+    writeHomeDashboard(home, 'release', CELL_YAML);
+
+    const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
+    const before = watcher.currentDashboards();
+
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+    watcher.poll();
+
+    assert.equal(watcher.currentDashboards(), before, 'правка очереди не должна пересобирать состав дашбордов');
+    watcher.dispose();
+  });
+
+  it('такт, где сдвинулся только прогон, оставляет тот же объект состава дашбордов', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const home = tempDir('dash-watcher-home-');
+    writeHomeDashboard(home, 'release', CELL_YAML);
+
+    const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
+    const before = watcher.currentDashboards();
+
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    watcher.poll();
+
+    assert.equal(watcher.currentDashboards(), before, 'состав дашбордов не должен пересобираться без сдвига своей части отпечатка');
+    watcher.dispose();
+  });
+
+  it('проектный дашборд перекрывает домашний тем же наблюдателем, что и слои маршрутов', () => {
+    const { runsRoot } = makeJournalBed();
+    const home = tempDir('dash-watcher-home-');
+    const projectRoot = tempDir('dash-watcher-project-');
+    writeHomeDashboard(home, 'release', CELL_YAML);
+
+    const watcher = createWatcher({ runsRoot, home, projectRoot, intervalMs: 10_000 });
+    writeProjectDashboard(projectRoot, 'release', 'cells: []\n');
+    watcher.poll();
+
+    const entry = watcher.currentDashboards().dashboards.find((d) => d.id === 'release');
+    assert.equal(entry?.layer, 'project');
+    assert.deepEqual(entry?.document.cells, []);
+    watcher.dispose();
+  });
+
+  it('сломанный файл дашборда едет причиной рядом с исправными, не гася витрину', () => {
+    const { runsRoot } = makeJournalBed();
+    const home = tempDir('dash-watcher-home-');
+    writeHomeDashboard(home, 'release', CELL_YAML);
+
+    const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
+    writeHomeDashboard(home, 'broken', 'bogus: 1\ncells: []\n');
+    watcher.poll();
+
+    const result = watcher.currentDashboards();
+    assert.equal(result.dashboards.some((d) => d.id === 'release'), true);
+    const failure = result.failures.find((f) => f.id === 'broken');
+    assert.match(failure?.reason ?? '', /bogus/);
+    watcher.dispose();
+  });
+
+  it('удаление файла дашборда убирает его из действующего состава', () => {
+    const { runsRoot } = makeJournalBed();
+    const home = tempDir('dash-watcher-home-');
+    writeHomeDashboard(home, 'release', CELL_YAML);
+
+    const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
+    assert.equal(watcher.currentDashboards().dashboards.length, 1);
+
+    unlinkSync(join(homeDashboardsDirPath(home), 'release.yml'));
+    watcher.poll();
+
+    assert.deepEqual(watcher.currentDashboards().dashboards, []);
     watcher.dispose();
   });
 });

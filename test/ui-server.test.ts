@@ -10,6 +10,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
@@ -27,6 +28,7 @@ import {
   type KernelCache,
 } from '../src/ui/pipelines.js';
 import { hrefFor, type RouteTable } from '../src/ui/routes.js';
+import { launchRun } from '../src/ui/runLaunch.js';
 import { declaration as runDeclaration } from '../src/ui/screens/run/declaration.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
@@ -512,7 +514,7 @@ describe('ui-dashboard: HTTP-витрина', () => {
     // состав плагинов и состав экранов — тем же потоком, той же подпиской.
     assert.deepEqual(
       stream.events.map((event) => event.event),
-      ['overview', 'backlog', 'widgets', 'routes', 'plugins', 'screens'],
+      ['overview', 'backlog', 'widgets', 'routes', 'dashboards', 'plugins', 'screens'],
     );
     assert.deepEqual(pick(stream.events[0]?.data, 'projects'), []);
 
@@ -542,9 +544,9 @@ describe('ui-dashboard: HTTP-витрина', () => {
     // пропажа события не осталась незамеченной.
     assert.deepEqual(
       stream.events.map((item) => item.event),
-      ['overview', 'backlog', 'widgets', 'routes', 'run', 'plugins', 'screens'],
+      ['overview', 'backlog', 'widgets', 'routes', 'dashboards', 'run', 'plugins', 'screens'],
     );
-    assert.equal(pick(stream.events[4]?.data, 'runId'), 'a');
+    assert.equal(pick(stream.events[5]?.data, 'runId'), 'a');
   });
 
   // Сценарий: «Закрытая вкладка не роняет демон»
@@ -622,7 +624,7 @@ describe('ui-dashboard: маршрут и поток очереди', () => {
 
     assert.deepEqual(
       stream.events.map((event) => event.event),
-      ['overview', 'backlog', 'widgets', 'routes', 'plugins', 'screens'],
+      ['overview', 'backlog', 'widgets', 'routes', 'dashboards', 'plugins', 'screens'],
     );
     assert.deepEqual(pick(stream.events[1]?.data, 'projects'), []);
 
@@ -3666,7 +3668,7 @@ describe('ui-dashboard: событие widgets в потоке /api/events', () 
     await settle();
     assert.deepEqual(
       stream.events.map((event) => event.event),
-      ['overview', 'backlog', 'widgets', 'routes', 'plugins', 'screens'],
+      ['overview', 'backlog', 'widgets', 'routes', 'dashboards', 'plugins', 'screens'],
     );
     assert.deepEqual(pick(stream.events[2]?.data, 'projects'), [{ projectKey: projectKey(projectRoot), widgets: [] }]);
 
@@ -4090,5 +4092,422 @@ describe('ui-routes: экран «Маршруты»', () => {
     assert.match(text, /# правил вручную/);
     assert.match(text, /enabled: false/);
     assert.match(text, /my-route/);
+  });
+});
+
+describe('ui-dashboards: GET/POST /api/dashboards', () => {
+  const DOCUMENT = {
+    title: 'Релиз',
+    grid: { columns: 12 },
+    cells: [{ id: 'a', widget: 'runs', at: { column: 0, row: 0, width: 4, height: 2 } }],
+  };
+
+  it('GET /api/dashboards отдаёт оба слоя с их источником', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    mkdirSync(join(home, '.stepcast', 'dashboards'), { recursive: true });
+    writeFileSync(join(home, '.stepcast', 'dashboards', 'release.yml'), 'cells: []\n');
+    const server = await startServer(t, { runsRoot, home });
+
+    const { code, json } = await fetchJson(server, '/api/dashboards');
+    assert.equal(code, 200);
+    const dashboards = json.dashboards as Array<{ id: string; layer: string; file: string }>;
+    const release = dashboards.find((d) => d.id === 'release');
+    assert.equal(release?.layer, 'home');
+    assert.equal(release?.file, join(home, '.stepcast', 'dashboards', 'release.yml'));
+  });
+
+  it('POST /api/dashboards создаёт файл дашборда в домашнем слое', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/dashboards',
+      body: JSON.stringify({ layer: 'home', id: 'release', document: DOCUMENT }),
+    });
+    assert.equal(written.code, 200);
+
+    const after = await fetchJson(server, '/api/dashboards');
+    const dashboards = after.json.dashboards as Array<{ id: string; document: { title: string } }>;
+    assert.equal(dashboards.find((d) => d.id === 'release')?.document.title, 'Релиз');
+  });
+
+  it('POST /api/dashboards правит существующий файл, отпечаток сверяется', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+
+    await sendJson(server, {
+      method: 'POST',
+      path: '/api/dashboards',
+      body: JSON.stringify({ layer: 'home', id: 'release', document: DOCUMENT }),
+    });
+
+    const fingerprintPath = join(home, '.stepcast', 'dashboards', 'release.yml');
+    const stat = statSync(fingerprintPath);
+
+    const changed = { ...DOCUMENT, title: 'Другое название' };
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/dashboards',
+      body: JSON.stringify({
+        layer: 'home',
+        id: 'release',
+        document: changed,
+        baseFingerprint: { mtimeMs: stat.mtimeMs, size: stat.size },
+      }),
+    });
+    assert.equal(written.code, 200);
+
+    const after = await fetchJson(server, '/api/dashboards');
+    const dashboards = after.json.dashboards as Array<{ id: string; document: { title: string } }>;
+    assert.equal(dashboards.find((d) => d.id === 'release')?.document.title, 'Другое название');
+  });
+
+  it('POST /api/dashboards с неизвестным слоем отклонён', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/dashboards',
+      body: JSON.stringify({ layer: 'bogus', id: 'release', document: DOCUMENT }),
+    });
+    assert.equal(written.code, 400);
+  });
+
+  it('POST /api/dashboards в неразбираемый файл отклонён названным местом разбора, файл не изменён', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    mkdirSync(join(home, '.stepcast', 'dashboards'), { recursive: true });
+    const path = join(home, '.stepcast', 'dashboards', 'release.yml');
+    // Повтор ключа `cells:`: YAML такой файл не разбирает, а разбор «как
+    // получится» даёт схемно верный объект — именно на нём сохранение и
+    // переписало бы чужой блок молча.
+    const broken =
+      'grid:\n  columns: 12\ncells:\n  - id: a\n    widget: runs\n    at: { column: 0, row: 0, width: 4, height: 2 }\ncells:\n  - id: b\n    widget: usage\n    at: { column: 0, row: 0, width: 4, height: 2 }\n';
+    writeFileSync(path, broken);
+    const server = await startServer(t, { runsRoot, home });
+    // Отпечаток передан настоящий: отказ обязан прийти от разбора файла, а не
+    // от сверки отпечатка, которая иначе перехватила бы запрос раньше.
+    const stat = statSync(path);
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/dashboards',
+      body: JSON.stringify({
+        layer: 'home',
+        id: 'release',
+        document: DOCUMENT,
+        baseFingerprint: { mtimeMs: stat.mtimeMs, size: stat.size },
+      }),
+    });
+    assert.equal(written.code, 400);
+    assert.match(String(written.json.error), /не разбирается как YAML/);
+    assert.match(String(written.json.error), /line 7|строка 7/);
+    assert.equal(readFileSync(path, 'utf8'), broken);
+  });
+
+  it('POST /api/dashboards с наложением ячеек отклонён, а не отвечает удачей на пропавший дашборд', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+
+    const overlapping = {
+      grid: { columns: 12 },
+      cells: [
+        { id: 'a', widget: 'runs', at: { column: 0, row: 0, width: 4, height: 2 } },
+        { id: 'b', widget: 'usage', at: { column: 2, row: 1, width: 4, height: 2 } },
+      ],
+    };
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/dashboards',
+      body: JSON.stringify({ layer: 'home', id: 'release', document: overlapping }),
+    });
+    assert.equal(written.code, 400);
+    assert.match(String(written.json.error), /накладываются/);
+
+    const after = await fetchJson(server, '/api/dashboards');
+    assert.deepEqual(after.json.dashboards, []);
+    assert.deepEqual(after.json.failures, []);
+  });
+
+  it('POST /api/dashboards с разошедшимся отпечатком отклонён названной причиной', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+    await sendJson(server, {
+      method: 'POST',
+      path: '/api/dashboards',
+      body: JSON.stringify({ layer: 'home', id: 'release', document: DOCUMENT }),
+    });
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/dashboards',
+      body: JSON.stringify({
+        layer: 'home',
+        id: 'release',
+        document: DOCUMENT,
+        baseFingerprint: { mtimeMs: 0, size: 0 },
+      }),
+    });
+    assert.equal(written.code, 400);
+    assert.match(String(written.json.error), /изменился с момента открытия/);
+  });
+
+  it('правка файла дашборда приходит потоком, не пересылая routes, screens и widgets', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    mkdirSync(join(home, '.stepcast', 'dashboards'), { recursive: true });
+    const path = join(home, '.stepcast', 'dashboards', 'release.yml');
+    writeFileSync(path, 'title: Релиз\ncells: []\n');
+    const watcher = startWatcher(t, runsRoot, 10_000, home);
+    const server = await startServer(t, { runsRoot, home, watcher });
+
+    const stream = openStream(t, server, '/api/events');
+    await settle();
+    const count = (name: string): number => stream.events.filter((event) => event.event === name).length;
+    const before = { routes: count('routes'), screens: count('screens'), widgets: count('widgets') };
+    assert.equal(count('dashboards'), 1, 'состав дашбордов приходит первым же обменом');
+
+    writeFileSync(path, 'title: Другое\ncells: []\n');
+    const bumped = new Date(Date.now() + 5_000);
+    utimesSync(path, bumped, bumped);
+    watcher.poll();
+    await settle();
+
+    const dashboards = stream.events.filter((event) => event.event === 'dashboards');
+    assert.equal(dashboards.length, 2, 'правка файла обязана прислать новое содержимое');
+    assert.equal(pick(dashboards.at(-1)?.data, 'dashboards', 0, 'document', 'title'), 'Другое');
+    assert.deepEqual(
+      { routes: count('routes'), screens: count('screens'), widgets: count('widgets') },
+      before,
+      'правка дашборда не пересылает ни таблицу маршрутов, ни состав экранов, ни виджеты',
+    );
+  });
+
+  it('такт без правки каталогов дашбордов событие не отправляет', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, { runId: 'a', status: 'running' });
+    mkdirSync(join(home, '.stepcast', 'dashboards'), { recursive: true });
+    writeFileSync(join(home, '.stepcast', 'dashboards', 'release.yml'), 'title: Релиз\ncells: []\n');
+    const watcher = startWatcher(t, runsRoot, 10_000, home);
+    const server = await startServer(t, { runsRoot, home, watcher });
+
+    const stream = openStream(t, server, '/api/events');
+    await settle();
+    const before = stream.events.filter((event) => event.event === 'dashboards').length;
+
+    journal.writeStatus({
+      run_id: journal.paths.runId,
+      pipeline: 'demo',
+      lock_hash: 'abc',
+      status: 'success',
+      workspace: { mode: 'cwd' },
+      inputs: {},
+      jobs: [],
+      budget: { tokens_used: 0, wallclock_ms: 0 },
+      updated_at: '2026-08-01T01:00:00.000Z',
+    });
+    watcher.poll();
+    await settle();
+
+    const after = stream.events.filter((event) => event.event === 'dashboards').length;
+    assert.equal(after, before, 'смена только обзора не должна прислать dashboards повторно');
+  });
+
+  it('сломанный файл приходит потоком причиной рядом с исправными дашбордами', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    mkdirSync(join(home, '.stepcast', 'dashboards'), { recursive: true });
+    writeFileSync(join(home, '.stepcast', 'dashboards', 'release.yml'), 'title: Релиз\ncells: []\n');
+    writeFileSync(join(home, '.stepcast', 'dashboards', 'broken.yml'), 'cells: []\nbogus: 1\n');
+    const server = await startServer(t, { runsRoot, home });
+
+    const stream = openStream(t, server, '/api/events');
+    await settle();
+    const last = stream.events.filter((event) => event.event === 'dashboards').at(-1)?.data;
+    assert.equal(pick(last, 'dashboards', 0, 'id'), 'release');
+    assert.equal(pick(last, 'failures', 0, 'id'), 'broken');
+    assert.match(String(pick(last, 'failures', 0, 'reason')), /bogus/);
+  });
+
+  it('отключение строки ui-dashboards патчем убирает GET /api/dashboards, оставляя прочие маршруты', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    writeFileSync(
+      join(home, '.stepcast', 'plugins.patch.yml'),
+      'version: 1\nkind: plugins-patch\nplugins:\n  - id: ui-dashboards\n    use: stepcast:ui-dashboards\n    enabled: false\n',
+    );
+    const server = await startServer(t, { runsRoot, home });
+
+    const dashboards = await fetchJson(server, '/api/dashboards');
+    assert.equal(dashboards.code, 404);
+
+    const routes = await fetchJson(server, '/api/routes');
+    assert.equal(routes.code, 200);
+    const overview = await fetchJson(server, '/api/overview');
+    assert.equal(overview.code, 200);
+
+    // Отключение строки правки не гасит показ: событие потока `dashboards`
+    // заводит строка каркаса `ui-shell`, а не `ui-dashboards` (`ui-dashboards`,
+    // Решение 11 — конструктор отдельно от показа).
+    const stream = openStream(t, server, '/api/events');
+    await settle();
+    assert.ok(stream.events.some((event) => event.event === 'dashboards'), 'показ дашбордов не должен гаснуть');
+  });
+});
+
+const MINIMAL_PIPELINE_YAML = 'version: 1\nkind: pipeline\nname: minimal\njobs:\n  build:\n    steps:\n      - id: compile\n        run: [echo, ok]\n        expect: [{ exit_code: 0 }]\n';
+
+describe('ui-daemon: POST /api/run', () => {
+  interface Launched {
+    readonly cwd: string;
+    readonly pipeline: string;
+  }
+
+  function stubLaunch(): { launchRun: (options: Launched) => void; calls: Launched[] } {
+    const calls: Launched[] = [];
+    return { launchRun: (options) => calls.push(options), calls };
+  }
+
+  it('запускает известный пайплайн подставным пуском с ожидаемым cwd и файлом', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'seed' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), MINIMAL_PIPELINE_YAML);
+    const key = projectKey(projectRoot);
+    const { launchRun, calls } = stubLaunch();
+    const server = await createUiServer({ runsRoot, port: 0, launchRun });
+    t.after(() => server.close());
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/run',
+      body: JSON.stringify({ project: key, pipeline: 'stepcast.yml' }),
+    });
+    assert.equal(written.code, 202);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.cwd, projectRoot);
+    assert.equal(calls[0]?.pipeline, 'stepcast.yml');
+  });
+
+  it('неизвестный проект отклонён без единого пуска', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { launchRun, calls } = stubLaunch();
+    const server = await createUiServer({ runsRoot, port: 0, launchRun });
+    t.after(() => server.close());
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/run',
+      body: JSON.stringify({ project: 'нет-такого', pipeline: 'stepcast.yml' }),
+    });
+    assert.equal(written.code, 400);
+    assert.equal(calls.length, 0);
+  });
+
+  it('неизвестный файл пайплайна отклонён без единого пуска', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'seed' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), MINIMAL_PIPELINE_YAML);
+    const key = projectKey(projectRoot);
+    const { launchRun, calls } = stubLaunch();
+    const server = await createUiServer({ runsRoot, port: 0, launchRun });
+    t.after(() => server.close());
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/run',
+      body: JSON.stringify({ project: key, pipeline: 'нет-такого.yml' }),
+    });
+    assert.equal(written.code, 400);
+    assert.equal(calls.length, 0);
+  });
+
+  it('лишние поля тела отклонены', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'seed' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), MINIMAL_PIPELINE_YAML);
+    const key = projectKey(projectRoot);
+    const { launchRun, calls } = stubLaunch();
+    const server = await createUiServer({ runsRoot, port: 0, launchRun });
+    t.after(() => server.close());
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/run',
+      body: JSON.stringify({ project: key, pipeline: 'stepcast.yml', bogus: 1 }),
+    });
+    assert.equal(written.code, 400);
+    assert.equal(calls.length, 0);
+  });
+
+  it('живой прогон того же пайплайна не отменяет новый запуск', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'running', status: 'running' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), MINIMAL_PIPELINE_YAML);
+    const key = projectKey(projectRoot);
+    const { launchRun, calls } = stubLaunch();
+    const server = await createUiServer({ runsRoot, port: 0, launchRun });
+    t.after(() => server.close());
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/run',
+      body: JSON.stringify({ project: key, pipeline: 'stepcast.yml' }),
+    });
+    assert.equal(written.code, 202);
+    assert.equal(calls.length, 1);
+  });
+
+  it('настоящий пуск: отказ порождения процесса назван, а не роняет демон', async () => {
+    const { projectRoot } = makeJournalBed();
+    const errors: Error[] = [];
+    // Отказ `spawn` приходит событием после возврата — то есть после 202. Без
+    // слушателя 'error' это необработанное исключение процесса демона, и оно
+    // погасило бы витрину; проверка падала бы вместе с ним, а не ассертом.
+    launchRun({
+      cwd: projectRoot,
+      pipeline: 'stepcast.yml',
+      execPath: join(projectRoot, 'нет-такого-узла'),
+      onError: (error) => errors.push(error),
+    });
+    await settle();
+
+    assert.equal(errors.length, 1);
+    assert.match(errors[0]?.message ?? '', /ENOENT/);
+  });
+
+  it('отключение строки ui-run-launch патчем убирает только POST /api/run', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    writeFileSync(
+      join(home, '.stepcast', 'plugins.patch.yml'),
+      'version: 1\nkind: plugins-patch\nplugins:\n  - id: ui-run-launch\n    use: stepcast:ui-run-launch\n    enabled: false\n',
+    );
+    const server = await createUiServer({ runsRoot, home, port: 0 });
+    t.after(() => server.close());
+
+    // `/api/run` несёт три вклада разных строк по методу (`GET` — снимок
+    // прогона у `screen-run`, `DELETE` — снятие у `screen-runs`, `POST` — пуск
+    // у `ui-run-launch`): отключение одного метода оставляет путь известным
+    // другим, и диспетчер отвечает 405, а не 404 (`ui-screens`, «Сервер
+    // витрины знает механизм регистрации маршрутов, а не имена экранов»).
+    const run = await sendJson(server, { method: 'POST', path: '/api/run', body: '{}' });
+    assert.equal(run.code, 405);
+
+    const overview = await fetchJson(server, '/api/overview');
+    assert.equal(overview.code, 200);
+    const dashboards = await fetchJson(server, '/api/dashboards');
+    assert.equal(dashboards.code, 200);
   });
 });

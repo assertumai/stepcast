@@ -539,9 +539,9 @@ describe('ui-plugins: событие plugins потока /api/events', () => {
 
     assert.deepEqual(
       stream.events.map((event) => event.event),
-      ['overview', 'backlog', 'widgets', 'routes', 'plugins', 'screens'],
+      ['overview', 'backlog', 'widgets', 'routes', 'dashboards', 'plugins', 'screens'],
     );
-    assert.equal(pick(stream.events[4]?.data, 'plugins', 0, 'id'), 'demo');
+    assert.equal(pick(stream.events[5]?.data, 'plugins', 0, 'id'), 'demo');
   });
 
   it('правка файла внутри каталога плагина шлёт его заново с новой версией', async (t) => {

@@ -9,6 +9,13 @@ import { buildOverview, type Overview, type RunOverview } from './overview.js';
 import { buildProjectWidgets, buildWidgets, type WidgetsOverview } from './widgets.js';
 import { buildHomePlugins, type PluginsOverview } from './plugins.js';
 import { buildRouteTable, builtinRoutesPath, homeRoutesPath, projectRoutesPath, type RouteBuildResult } from './routesFile.js';
+import {
+  buildDashboards,
+  dashboardsDirFingerprint,
+  homeDashboardsDirPath,
+  projectDashboardsDirPath,
+  type DashboardsBuildResult,
+} from './dashboardsFile.js';
 import { StepcastError } from '../core/errors.js';
 import type { JournalProblem } from '../core/journal/reader.js';
 
@@ -95,6 +102,15 @@ export interface Watcher {
   currentRoutes(): RouteBuildResult;
   /** Причина последнего отказа сборки таблицы маршрутов — действующей остаётся прежняя (`ui-routes`, «Отказ таблицы не гасит витрину»). */
   currentRoutesError(): string | undefined;
+  /**
+   * Действующий состав дашбордов обоих слоёв, без ожидания следующего опроса
+   * (`ui-dashboards`, Решение 10). Пересобирается только по сдвигу своей части
+   * отпечатка — правка каталогов дашбордов не заставляет перечитывать очередь,
+   * виджеты, маршруты или прогоны, и наоборот. Отказ одного дашборда едет
+   * причиной внутри `failures`, не отменяя прочие (`ui-daemon`, «Сломанный
+   * файл не отменяет остальные»).
+   */
+  currentDashboards(): DashboardsBuildResult;
   /** Подписаться на обновления. Возвращает функцию отписки. */
   subscribe(listener: (overview: Overview, backlog: BacklogOverview) => void): () => void;
   /** Проверить корень прогонов немедленно, не дожидаясь таймера. */
@@ -115,6 +131,7 @@ interface Fingerprint {
   readonly widgets: string;
   readonly plugins: string;
   readonly routes: string;
+  readonly dashboards: string;
 }
 
 /**
@@ -159,6 +176,13 @@ interface Fingerprint {
  * `routes.yml` не должна перечитывать каталог плагинов домашнего слоя, и
  * наоборот. Отсутствие файла слоя — законное состояние, тем же приёмом, что и
  * `backlog`.
+ *
+ * Часть `dashboards` — оба каталога слоёв дашбордов, имя и `mtime`+размер
+ * каждого файла (`ui-dashboards`, Решение 10): отдельная часть, потому что
+ * правка дашборда не должна перечитывать таблицу маршрутов, очередь или
+ * виджеты, и наоборот. Каталог перечисляется целиком (не список фиксированных
+ * путей, как у `routes`), потому что дашбордов может быть сколько угодно и
+ * какой файл появится — заранее не известно.
  */
 function statPart(path: string): string {
   try {
@@ -175,6 +199,12 @@ function routesFingerprint(builtinPath: string, home: string, projectRoot: strin
   return paths.map(statPart).join('|');
 }
 
+function dashboardsFingerprint(home: string, projectRoot: string | undefined): string {
+  const homePart = dashboardsDirFingerprint(homeDashboardsDirPath(home));
+  const projectPart = projectRoot === undefined ? '-' : dashboardsDirFingerprint(projectDashboardsDirPath(projectRoot));
+  return `${homePart}|${projectPart}`;
+}
+
 function fingerprint(
   runsRoot: string,
   home: string,
@@ -188,6 +218,7 @@ function fingerprint(
     .plugins.map((plugin) => `${plugin.id}:${plugin.version}`)
     .join(',');
   const routes = routesFingerprint(builtinPath, home, projectRoot);
+  const dashboards = dashboardsFingerprint(home, projectRoot);
 
   try {
     const store = statSync(usageStorePath(runsRoot));
@@ -247,6 +278,7 @@ function fingerprint(
     widgets: widgetParts.join('|'),
     plugins: pluginParts,
     routes,
+    dashboards,
   };
 }
 
@@ -325,6 +357,7 @@ export function createWatcher(options: WatcherOptions): Watcher {
     if (error instanceof StepcastError && error.file === builtinPath) throw error;
     routesError = reasonOf(error);
   }
+  let dashboards: DashboardsBuildResult = buildDashboards(routeOptions);
   reportProblems(overview);
 
   const poll = (): void => {
@@ -334,7 +367,8 @@ export function createWatcher(options: WatcherOptions): Watcher {
       next.backlog === mark.backlog &&
       next.widgets === mark.widgets &&
       next.plugins === mark.plugins &&
-      next.routes === mark.routes
+      next.routes === mark.routes &&
+      next.dashboards === mark.dashboards
     ) {
       return;
     }
@@ -342,6 +376,7 @@ export function createWatcher(options: WatcherOptions): Watcher {
     const widgetsChanged = next.widgets !== mark.widgets;
     const pluginsChanged = next.plugins !== mark.plugins;
     const routesChanged = next.routes !== mark.routes;
+    const dashboardsChanged = next.dashboards !== mark.dashboards;
     const runsChanged = next.runs !== mark.runs;
     mark = next;
     // Обзор пересобирается только по своей части отпечатка, тем же правилом,
@@ -384,6 +419,13 @@ export function createWatcher(options: WatcherOptions): Watcher {
         routesError = reasonOf(error);
       }
     }
+    // Тем же приёмом — состав дашбордов пересобирается только по своей части
+    // отпечатка (`ui-dashboards`, Решение 10). Отказ одного дашборда едет
+    // причиной внутри `failures` — `buildDashboards` не бросает исключение из-за
+    // него, действующим остаётся состав со всеми прочими дашбордами.
+    if (dashboardsChanged) {
+      dashboards = buildDashboards(routeOptions);
+    }
     reportProblems(overview);
     for (const listener of listeners) listener(overview, backlog);
   };
@@ -399,6 +441,7 @@ export function createWatcher(options: WatcherOptions): Watcher {
     currentPlugins: () => plugins,
     currentRoutes: () => routes,
     currentRoutesError: () => routesError,
+    currentDashboards: () => dashboards,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

@@ -43,6 +43,19 @@
                   "widget"
                 ],
                 "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "dashboard": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "dashboard"
+                ],
+                "additionalProperties": false
               }
             ]
           },

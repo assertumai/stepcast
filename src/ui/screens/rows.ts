@@ -18,6 +18,8 @@ import { row as settingsRow } from './settings/server.js';
 import { row as stepsRow } from './steps/server.js';
 import { row as usageRow } from './usage/server.js';
 import { row as widgetsRow } from './widgets/server.js';
+import { row as dashboardsRow } from '../dashboards/row.js';
+import { row as runLaunchRow } from '../runLaunch/row.js';
 import { routesPayload } from '../routesFile.js';
 import type { ActiveScreen } from './registry.js';
 
@@ -65,6 +67,11 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, env: RequestEnv
   // тогда, когда содержимое совпало с прежним посланным (например, файл
   // тронут без смысловой правки).
   let sentRoutesKey: string | undefined;
+  // Состав дашбордов — тем же приёмом, что и `routes`: пересобирается
+  // наблюдателем только по сдвигу своей части отпечатка (`src/ui/watcher.ts`),
+  // а сравнение потока — по содержимому, не по ссылке (`ui-daemon`, «Поток
+  // событий несёт действующие дашборды»).
+  let sentDashboardsKey: string | undefined;
   // Состав экранов — тем же приёмом, что и `plugins`: пересобирается на
   // каждый такт заново (`activeScreens`, `src/ui/server.ts`).
   let sentScreensKey: string | undefined;
@@ -136,6 +143,15 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, env: RequestEnv
     if (routesKey !== sentRoutesKey) {
       sentRoutesKey = routesKey;
       send('routes', { routes: routesPayloadValue, ...(routesBuildError === undefined ? {} : { buildError: routesBuildError }) });
+    }
+    // Состав дашбордов — синхронно из наблюдателя, тем же приёмом, что и
+    // `routes`: отказ одного дашборда едет причиной внутри `failures`, не
+    // отменяя прочие (`ui-daemon`, «Сломанный файл не отменяет остальные»).
+    const dashboardsValue = env.watcher.currentDashboards();
+    const dashboardsKey = JSON.stringify(dashboardsValue);
+    if (dashboardsKey !== sentDashboardsKey) {
+      sentDashboardsKey = dashboardsKey;
+      send('dashboards', dashboardsValue);
     }
     // Действующий состав браузерных строк и состав экранов — первым же
     // обменом при подключении и дальше по правилу «только при отличии от
@@ -222,5 +238,13 @@ export const SCREEN_ROWS: readonly BuiltinRow[] = [
   routesRow,
 ];
 
-/** Строки поставки витрины целиком: каркас, затем экраны. */
-export const UI_ROWS: readonly BuiltinRow[] = [UI_SHELL_ROW, ...SCREEN_ROWS];
+/**
+ * Строки состава без экрана — только маршруты `api` (`ui-dashboards`, design.md
+ * Решение 11). Показ и правка дашборда живут во вкладе браузерной строки в
+ * `route.target`, а не на отдельном экране, поэтому у `ui-dashboards` нет
+ * объявления в `ScreensService`.
+ */
+export const API_ROWS: readonly BuiltinRow[] = [dashboardsRow, runLaunchRow];
+
+/** Строки поставки витрины целиком: каркас, затем экраны, затем строки без экрана. */
+export const UI_ROWS: readonly BuiltinRow[] = [UI_SHELL_ROW, ...SCREEN_ROWS, ...API_ROWS];
