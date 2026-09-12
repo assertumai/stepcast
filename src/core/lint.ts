@@ -8,7 +8,7 @@ import { parseExpression, references } from './expr/parse.js';
 import { buildGraph } from './graph.js';
 import { isStepcastError } from './errors.js';
 import { describeScriptUnresolved } from './pipeline/expand.js';
-import { buildPublishedSchemas, pluginPredicateEntries } from './pipeline/published-schema.js';
+import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from './pipeline/published-schema.js';
 import { builtinRegistry } from './plugins/builtin.js';
 import { isBuiltinStepKind } from './plugins/contract.js';
 import { availableNames, type Registry } from './plugins/registry.js';
@@ -449,7 +449,7 @@ function checkPublishedSchema(base: string, registry: Registry, push: (diagnosti
 
   // Тот же перечень, каким печатает команда `stepcast schema`: сверка со
   // «свежим» выводом верна лишь пока сборка перечня у них одна.
-  const current = buildPublishedSchemas(pluginPredicateEntries(registry));
+  const current = buildPublishedSchemas(pluginPredicateEntries(registry), pluginStepKindEntries(registry));
 
   for (const target of targets) {
     if (!existsSync(target.path)) continue;
@@ -528,6 +528,48 @@ function lintPluginStepKind(
       file,
       at: site.at,
       ...(diagnostic.hint === undefined ? {} : { hint: diagnostic.hint }),
+    });
+  }
+}
+
+/**
+ * Ожидающий вид объявляет `waits` (design.md изменения `user-decision-steps`,
+ * решение 6): движок не гонит его исполнителя против `step.timeoutMs`, и
+ * объявленный на таком шаге таймаут не применяется — предупреждение, а не
+ * молчание, потому что объявленное, но не применяемое хуже, чем не
+ * названное. Вторая попытка на ожидающем шаге означала бы, что человека
+ * переспрашивают, не сказав ему, почему, — отказ, а не предупреждение.
+ *
+ * Проверка идёт по признаку `waits` вклада, а не по имени `decision`: вид,
+ * который заведёт плагин, подчиняется тому же правилу.
+ */
+function checkWaitingStepKind(
+  job: Job,
+  step: Extract<Step, { kind: 'plugin' }>,
+  at: string,
+  options: ResolvedLintOptions,
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  const contribution = options.registry.steps.get(step.name);
+  if (contribution === undefined || isBuiltinStepKind(contribution) || contribution.waits !== true) return;
+
+  if (step.timeoutMs !== options.config.defaults.stepTimeoutMs) {
+    push({
+      severity: 'warning',
+      message: `Шаг ${job.id}/${step.id} вида ${step.name} объявляет timeout, но он не применяется`,
+      file: job.source,
+      at: `${at}.timeout`,
+      hint: 'Вид шага сам распоряжается сроком (waits: true) — движок не гонит его исполнителя против timeout',
+    });
+  }
+
+  if (step.attempts.max > 1) {
+    push({
+      severity: 'error',
+      message: `Шаг ${job.id}/${step.id} вида ${step.name} объявляет attempts.max > 1`,
+      file: job.source,
+      at: `${at}.attempts`,
+      hint: 'Вторая попытка означала бы повторный вопрос человеку, не сказав ему, почему — уберите attempts',
     });
   }
 }
@@ -1407,7 +1449,10 @@ function checkStep(
 
   if (step.kind === 'script') checkScriptStep(job, step, at, substitutions, push);
 
-  if (step.kind === 'plugin') lintPluginStepKind(step, at, job.source, base, options, push);
+  if (step.kind === 'plugin') {
+    lintPluginStepKind(step, at, job.source, base, options, push);
+    checkWaitingStepKind(job, step, at, options, push);
+  }
 
   checkContext(step.context, base, job.source, `${at}.context`, substitutions, push, knowledgeDeclared);
 

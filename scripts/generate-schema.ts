@@ -4,7 +4,8 @@ import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 
 import { SCHEMA_TARGETS } from './schema-targets.js';
-import { buildPublishedSchemas } from '../src/core/pipeline/published-schema.js';
+import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../src/core/pipeline/published-schema.js';
+import { builtinRegistry } from '../src/core/plugins/builtin.js';
 
 /**
  * JSON Schema для автодополнения в редакторах.
@@ -12,12 +13,16 @@ import { buildPublishedSchemas } from '../src/core/pipeline/published-schema.js'
  * Генерируется из тех же zod-схем, которыми проверяются документы: иначе
  * подсказка в редакторе и валидация разъезжаются, и первая начинает врать.
  *
- * Цели `pipeline` и `job` печатаются `buildPublishedSchemas()` с пустым
- * перечнем плагинных предикатов — тем же кодом, каким `stepcast schema`
- * печатает схему проекта (design.md, решение 4): две реализации одного
- * преобразования разошлись бы.
+ * Цели `pipeline` и `job` печатаются `buildPublishedSchemas()` тем же кодом,
+ * каким `stepcast schema` печатает схему проекта (design.md, решение 4): две
+ * реализации одного преобразования разошлись бы. Перечень предикатов
+ * встроенного реестра пуст (встроенные предикаты — резерв имени, а не
+ * настоящий вклад, `plugins/builtin.ts`), а перечень видов шага несёт
+ * `decision` (`user-decision-steps`) — первый плагинный вид, идущий в
+ * поставке строкой дерева: без него схема пакета не знала бы о нём вовсе.
  */
-const published = buildPublishedSchemas();
+const registry = builtinRegistry();
+const published = buildPublishedSchemas(pluginPredicateEntries(registry), pluginStepKindEntries(registry));
 const publishedByKind = { pipeline: published.pipeline, job: published.job };
 
 for (const target of SCHEMA_TARGETS) {

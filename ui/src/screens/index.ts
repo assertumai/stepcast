@@ -3,6 +3,7 @@ import type { Context } from 'cordis';
 import agents from './agents';
 import backlog from './backlog';
 import cleanup from './cleanup';
+import decisions from './decisions';
 import pipelines from './pipelines';
 import routes from './routes';
 import run from './run';
@@ -26,6 +27,7 @@ export const BUILTIN_SCREENS: Readonly<Record<string, ScreenPlugin>> = {
   'screen-run': run,
   'screen-pipelines': pipelines,
   'screen-steps': steps,
+  'screen-decisions': decisions,
   'screen-widgets': widgets,
   'screen-backlog': backlog,
   'screen-usage': usage,

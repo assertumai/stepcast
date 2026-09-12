@@ -64,6 +64,36 @@ export interface JournalProblem {
   readonly readerFormat: number;
 }
 
+/** Эффект решения — закрытый набор движка (`user-decision-steps`). */
+export type DecisionEffect = 'continue' | 'reject' | 'restart';
+
+/** Один допустимый исход объявленного ожидания: эффект и подпись для кнопки. */
+export interface AwaitingOutcome {
+  readonly effect: DecisionEffect;
+  readonly label?: string;
+}
+
+/** Ожидание решения человека, идущее прямо сейчас. */
+export interface AwaitingDecision {
+  readonly wait_id: string;
+  readonly job: string;
+  readonly step: string;
+  readonly outcomes: Readonly<Record<string, AwaitingOutcome>>;
+  readonly prompt?: string;
+  readonly since: string;
+  readonly deadline?: string;
+  readonly on_expire?: string;
+}
+
+/** Решение, применённое к ожиданию, — на карточке шага прогона. */
+export interface DecisionRecord {
+  readonly outcome: string;
+  readonly effect: DecisionEffect;
+  readonly by: 'user' | 'deadline';
+  readonly reason?: string;
+  readonly restart_from?: string;
+}
+
 export interface RunOverview {
   readonly runId: string;
   readonly shortId: string;
@@ -81,6 +111,8 @@ export interface RunOverview {
   readonly startedAt?: string;
   readonly finishedAt?: string;
   readonly wakeAt?: string;
+  /** Ожидания решения человека, идущие прямо сейчас — тем же полем, что и `wakeAt`. */
+  readonly awaiting?: readonly AwaitingDecision[];
   readonly swept: boolean;
   /** У прогона нет каталога вовсе — виден по записи хранилища расхода. Отличимо от `swept`. */
   readonly filesGone: boolean;
@@ -192,6 +224,10 @@ export interface StepSnapshot {
   readonly pluginFields?: unknown;
   /** Чем показанные поля являются и откуда взяты — вместо подписей из схемы вклада. */
   readonly pluginNote?: string;
+  /** Ожидание решения на этом шаге, если оно идёт прямо сейчас. */
+  readonly awaiting?: AwaitingDecision;
+  /** Решение, применённое к ожиданию этого шага, если оно уже принято. */
+  readonly decision?: DecisionRecord;
   readonly context: readonly string[];
   readonly contextBreakdown?: ContextBreakdown;
   readonly files: readonly JournalFileRef[];
@@ -688,6 +724,29 @@ export async function fetchOverview(): Promise<Overview> {
 
 export async function fetchRun(address: string): Promise<RunSnapshot> {
   return json<RunSnapshot>(await fetch(`/api/run?run=${encodeURIComponent(address)}`));
+}
+
+/**
+ * Приём решения (`user-decision-steps`, design.md решение 5, 11): демон не
+ * пишет ничего сам — проверяет запрос по состоянию прогона и порождает
+ * `stepcast decide`. `202` здесь — подтверждение приёма, а не применения:
+ * отклонение маршрута (400) значит, что запрос сам по себе негоден, а не что
+ * решение не применилось (та проверка — уже в `stepcast decide`).
+ */
+export async function decideRun(payload: {
+  readonly run: string;
+  readonly outcome: string;
+  readonly step?: string;
+  readonly reason?: string;
+  readonly from?: string;
+}): Promise<{ readonly ok: true }> {
+  return json(
+    await fetch('/api/run/decision', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  );
 }
 
 /**

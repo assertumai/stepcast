@@ -54,6 +54,13 @@ export interface RunPaths {
   /** Служебные файлы якоря: индекс git, тела манифестов. Вне рабочего дерева. */
   readonly anchors: string;
   /**
+   * Записи решений (`user-decision-steps`, design.md решение 5): по одному
+   * файлу `<wait_id>.json` на ожидание, пишет только `stepcast decide`.
+   * Каталог заводится лениво, при первой записи, — большинство прогонов
+   * решения не ждут вовсе.
+   */
+  readonly decisions: string;
+  /**
    * Снимок движка, снятый из правимого дерева (`run/engine.ts`). Существует,
    * только когда движок был правимым, — но путь называется всегда, единым
    * местом для того, кто снимает снимок, и для уборки прогона, которая стирает
@@ -80,7 +87,13 @@ export function runPaths(runsRoot: string, key: string, runId: string): RunPaths
     workspace: join(dir, 'workspace'),
     anchors: join(dir, 'anchors'),
     engine: join(dir, 'engine'),
+    decisions: join(dir, 'decisions'),
   };
+}
+
+/** Путь файла записи решения по идентификатору ожидания. */
+export function decisionRecordPath(paths: RunPaths, waitId: string): string {
+  return join(paths.decisions, `${waitId}.json`);
 }
 
 /**

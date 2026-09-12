@@ -10,7 +10,14 @@ import {
   type readStatus,
 } from '../core/journal/reader.js';
 import type { RunPaths } from '../core/journal/paths.js';
-import { ContextReportSchema, type StatusValue, type UsageRecord, type UsageReport } from '../core/journal/schema.js';
+import {
+  ContextReportSchema,
+  type AwaitingDecision,
+  type DecisionRecord,
+  type StatusValue,
+  type UsageRecord,
+  type UsageReport,
+} from '../core/journal/schema.js';
 import { renderDisplay, type DisplayData } from '../core/pipeline/display.js';
 import { readLockJobs, type LockJob, type LockStep } from '../core/pipeline/lockRead.js';
 import { layoutJobs, type JobGraph } from './graph.js';
@@ -113,6 +120,14 @@ export interface StepSnapshot {
    * пустой карточки и слова «неизвестно» (design.md, решение 11).
    */
   readonly pluginNote?: string;
+  /**
+   * Ожидание решения на этом шаге, если оно идёт прямо сейчас
+   * (`user-decision-steps`, design.md решение 11) — тем же полем состояния,
+   * что и обзор, найденное по адресу работа/шаг.
+   */
+  readonly awaiting?: AwaitingDecision;
+  /** Решение, применённое к ожиданию этого шага, если оно уже принято. */
+  readonly decision?: DecisionRecord;
   readonly context: readonly string[];
   /** Разрез контекста: есть только у исполнившегося агентского шага. */
   readonly contextBreakdown?: ContextBreakdown;
@@ -292,17 +307,21 @@ function buildStep(
   definition: LockStep | undefined,
   record: ReturnType<typeof readStatus>['jobs'][number]['steps'][number] | undefined,
   summary: UsageReport | undefined,
+  awaiting: readonly AwaitingDecision[] | undefined,
 ): StepSnapshot {
   const id = definition?.id ?? record?.id ?? '';
   const dir = findStepDir(paths, jobId, id);
   const kind = definition?.kind ?? record?.kind ?? 'run';
   const breakdown = kind === 'agent' ? contextBreakdown(dir) : undefined;
+  const ownAwaiting = awaiting?.find((item) => item.job === jobId && item.step === id);
 
   return {
     id,
     kind,
     ...(record?.status === undefined ? {} : { status: record.status }),
     ...(record?.reason === undefined ? {} : { reason: record.reason }),
+    ...(ownAwaiting === undefined ? {} : { awaiting: ownAwaiting }),
+    ...(record?.decision === undefined ? {} : { decision: record.decision }),
     attempts: record?.attempts.length ?? 0,
     ...(record?.attempts[0]?.started_at === undefined
       ? {}
@@ -340,6 +359,7 @@ function buildJob(
   publishedJobs: ReadonlySet<string>,
   summary: UsageReport | undefined,
   data: DisplayData,
+  awaiting: readonly AwaitingDecision[] | undefined,
 ): JobSnapshot {
   const id = definition?.id ?? record?.id ?? '';
   const needs = definition?.needs ?? [];
@@ -392,6 +412,7 @@ function buildJob(
         definition?.steps.find((step) => step.id === stepId),
         record?.steps.find((step) => step.id === stepId),
         summary,
+        awaiting,
       ),
     ),
     usage: jobUsage(summary, id),
@@ -452,6 +473,7 @@ export function buildSnapshot(paths: RunPaths, projectKeyValue: string): RunSnap
       published,
       summary,
       data,
+      status?.awaiting,
     ),
   );
 

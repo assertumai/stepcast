@@ -141,6 +141,81 @@ export interface CommandContribution {
 }
 
 /**
+ * Эффект решения — закрытый набор движка (design.md изменения
+ * `user-decision-steps`, решение 1): судьбу прогона решает движок, а не
+ * вклад. `continue` — шаг успешен, прогон идёт дальше; `reject` — прогон
+ * останавливается с названной причиной; `restart` — прогон продолжается
+ * возобновлением с выбранного человеком шага. Закрытость набора — типом:
+ * вклад не в силах придумать четвёртый эффект, даже если попытается.
+ */
+export type DecisionEffect = 'continue' | 'reject' | 'restart';
+
+/** Один допустимый исход ожидания: эффект из закрытого набора и подпись для витрины. */
+export interface DecisionOutcome {
+  readonly effect: DecisionEffect;
+  readonly label?: string;
+}
+
+/**
+ * Запрос на ожидание решения человека — параметр `StepKindDecisions.request`.
+ * Вклад решения — вида шага `decision` — собирает его из своих полей
+ * (`prompt`, `outcomes`, `deadline`, `on_expire`) и не знает ничего сверх.
+ */
+export interface StepKindDecisionRequest {
+  /** Допустимые исходы по имени — тот же перечень, что уйдёт в журнал и в витрину. */
+  readonly outcomes: Readonly<Record<string, DecisionOutcome>>;
+  /** Вопрос, показываемый человеку. */
+  readonly prompt?: string;
+  /**
+   * Срок ожидания в миллисекундах, считается от начала ожидания (design.md,
+   * решение 7) — не от объявления пайплайна. Без срока ожидание бессрочно.
+   */
+  readonly deadlineMs?: number;
+  /** Исход по истечении срока — имя из `outcomes`, обязателен вместе с `deadlineMs`. */
+  readonly onExpire?: string;
+}
+
+/** Результат применённого решения — то, что вернёт `request()` для эффекта `continue`. */
+export interface StepKindDecisionResult {
+  readonly outcome: string;
+  readonly effect: DecisionEffect;
+  /** Кто применил исход: человек либо истёкший срок (design.md, решение 7). */
+  readonly by: 'user' | 'deadline';
+  readonly reason?: string;
+  /** Адрес шага перезапуска — только у эффекта `restart`. */
+  readonly restartFrom?: string;
+}
+
+/**
+ * Способность ожидания решения — во входе исполнителя вида шага с
+ * `waits: true` (design.md изменения `user-decision-steps`, решение 1, решение
+ * 5). `request` разрешается результатом только для эффекта `continue`: исходы
+ * `reject` и `restart` отдаются отказом обещания движка (`DecisionHalt` ниже),
+ * который движок узнаёт по типу раньше, чем управление вернётся исполнителю, —
+ * защёлку эффекта вклад отменить не в силах, даже поймав и проглотив отказ.
+ */
+export interface StepKindDecisions {
+  request(request: StepKindDecisionRequest): Promise<StepKindDecisionResult>;
+}
+
+/**
+ * Отказ обещания `decision.request()` для исходов `reject` и `restart` —
+ * узнаваемый по типу (`instanceof`), а не по тексту сообщения (design.md
+ * изменения `user-decision-steps`, решение 5). Заводится и ловится только
+ * внутри движка: автору вида шага конструировать или ловить его не за чем —
+ * вклад решения лишь дожидается `request()` и отдаёт её исход как есть.
+ */
+export class DecisionHalt extends Error {
+  readonly result: StepKindDecisionResult;
+
+  constructor(result: StepKindDecisionResult) {
+    super(`decision: ${result.effect} (${result.outcome})`);
+    this.name = 'DecisionHalt';
+    this.result = result;
+  }
+}
+
+/**
  * Вход исполнителя вида шага (design.md, решение 6): то, чем исполняется
  * попытка, — не модель шага, работы или прогона целиком. Публикация модели
  * движка в контракт сделала бы любую её правку ломающей для плагинов; вклад
@@ -171,6 +246,13 @@ export interface StepKindInput {
    * решение 6): им исполнитель достаёт сервис, заведённый своим же плагином.
    */
   readonly ctx: Context;
+  /**
+   * Способность объявить ожидание решения и дождаться его — только у вида,
+   * объявившего `waits: true` (design.md изменения `user-decision-steps`,
+   * решение 1). У прочих видов поле отсутствует: движок не даёт способности
+   * ожидания тому, кто сам распоряжается своим таймаутом.
+   */
+  readonly decision?: StepKindDecisions;
 }
 
 /** Записать в журнал попытки — событие либо файл рядом с `stdout.log`. */
@@ -209,6 +291,15 @@ export interface StepKindContribution {
   readonly fields: Readonly<Record<string, unknown>>;
   /** JSON Schema структурированного выхода — движок проверяет ей `outcome.structured`. */
   readonly output?: Readonly<Record<string, unknown>>;
+  /**
+   * «Сроком распоряжаюсь сам» (design.md изменения `user-decision-steps`,
+   * решение 6): движок не гонит исполнителя этого вида против
+   * `step.timeoutMs` — иначе тридцатиминутное умолчание таймаута шага убивало
+   * бы ожидание решения человека. `step.timeoutMs` при этом остаётся во входе
+   * исполнителя справочным значением. Только вклад с этим полем получает во
+   * входе способность `StepKindInput.decision`.
+   */
+  readonly waits?: true;
   /** Статическая проверка полей — то, что видно до первого токена. */
   lint?(fields: unknown, site: LintSite): readonly PluginDiagnostic[];
   /** Исполнить попытку. Исключение — непройденная попытка, а не крушение шага. */
@@ -369,6 +460,12 @@ const StepKindContributionSchema = z
     title: z.string(),
     fields: z.record(z.string(), z.unknown()),
     output: z.record(z.string(), z.unknown()).optional(),
+    // Способность ожидания даётся ровно по этому полю, и объявляется оно
+    // только значением `true`: `waits: false` — не «как раньше», а попытка
+    // объявить несуществующую третью возможность, и отказ обязан назвать её.
+    waits: z
+      .literal(true, 'вид либо распоряжается сроком сам (waits: true), либо не объявляет waits вовсе')
+      .optional(),
     lint: z
       .custom<NonNullable<StepKindContribution['lint']>>((value) => typeof value === 'function', {
         message: 'должна быть функцией',

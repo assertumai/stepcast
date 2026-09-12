@@ -795,4 +795,49 @@ jobs:
     assert.equal(think?.model, undefined);
     assert.deepEqual(think?.attemptModels, [{ attempt: 1, model: 'opus' }]);
   });
+
+  // Сценарий user-decision-steps: «Экран прогона показывает ожидание на карточке шага»
+  it('показывает ожидание решения и принятое решение на карточке шага', () => {
+    const bed = makeJournalBed();
+    const journal = seedRun(bed.runsRoot, bed.projectRoot, {
+      runId: 'run-decision',
+      status: 'running',
+      jobs: [
+        {
+          id: 'apply',
+          status: 'running',
+          steps: [
+            {
+              id: 'gate',
+              index: 1,
+              kind: 'plugin',
+              key: 'k',
+              status: 'success',
+              plugin_step: { name: 'decision', plugin: 'встроенный' },
+              decision: { outcome: 'approve', effect: 'continue', by: 'user' },
+              attempts: [
+                { attempt: 1, status: 'success', started_at: '2026-08-01T00:00:00.000Z', finished_at: '2026-08-01T00:00:01.000Z' },
+              ],
+            },
+          ],
+        },
+      ],
+      awaiting: [
+        {
+          wait_id: 'w1',
+          job: 'apply',
+          step: 'gate',
+          outcomes: { approve: { effect: 'continue' } },
+          prompt: 'продолжить?',
+          since: '2026-08-01T00:00:02.000Z',
+        },
+      ],
+    });
+
+    const snapshot = buildSnapshot(journal.paths, projectKey(bed.projectRoot));
+    const gate = snapshot.jobs.find((job) => job.id === 'apply')?.steps.find((step) => step.id === 'gate');
+    assert.deepEqual(gate?.decision, { outcome: 'approve', effect: 'continue', by: 'user' });
+    assert.equal(gate?.awaiting?.wait_id, 'w1');
+    assert.equal(gate?.awaiting?.prompt, 'продолжить?');
+  });
 });

@@ -66,6 +66,80 @@ export const UsageSchema = z
 
 export type Usage = z.infer<typeof UsageSchema>;
 
+/**
+ * Эффект решения — закрытый набор движка (`user-decision-steps`, design.md,
+ * решение 1). Держится строкой в схеме, как и `HaltCauseSchema`: описывает
+ * формат файла, который читают посторонние инструменты.
+ */
+export const DecisionEffectSchema = z.enum(['continue', 'reject', 'restart']);
+
+export type DecisionEffect = z.infer<typeof DecisionEffectSchema>;
+
+/** Один допустимый исход объявленного ожидания: эффект и подпись для витрины. */
+export const AwaitingOutcomeSchema = z
+  .object({
+    effect: DecisionEffectSchema,
+    label: z.string().optional(),
+  })
+  .strict();
+
+/**
+ * Запись ожидания решения в состоянии прогона (`RunStatusSchema.awaiting`,
+ * design.md решение 2): ожиданий может быть несколько одновременно — работы
+ * идут параллельно, — и перечень, а не одно поле, отличает их так же, как
+ * `wake_at`/`WaitState` отличают несколько уснувших работ.
+ */
+export const AwaitingDecisionSchema = z
+  .object({
+    wait_id: z.string(),
+    job: z.string(),
+    step: z.string(),
+    outcomes: z.record(z.string(), AwaitingOutcomeSchema),
+    prompt: z.string().optional(),
+    /** Момент начала ожидания — от него считается срок (design.md, решение 7). */
+    since: z.string(),
+    /** Момент истечения срока, если он объявлен. */
+    deadline: z.string().optional(),
+    /** Исход по истечении срока — из outcomes, не bывает restart (design.md, решение 7). */
+    on_expire: z.string().optional(),
+  })
+  .strict();
+
+export type AwaitingDecision = z.infer<typeof AwaitingDecisionSchema>;
+
+/** Решение, принятое по ожиданию, — записывается в запись шага, его применившего. */
+export const DecisionRecordSchema = z
+  .object({
+    outcome: z.string(),
+    effect: DecisionEffectSchema,
+    /** Кто применил исход: человек либо истёкший срок. */
+    by: z.enum(['user', 'deadline']),
+    reason: z.string().optional(),
+    /** Адрес шага перезапуска — только у эффекта restart. */
+    restart_from: z.string().optional(),
+  })
+  .strict();
+
+export type DecisionRecord = z.infer<typeof DecisionRecordSchema>;
+
+/**
+ * Форма файла `decisions/<wait_id>.json`, которым `stepcast decide` пишет
+ * решение (design.md, решение 5): исход, причина отклонения, шаг перезапуска.
+ * Автор — всегда человек; поле `by` в записи шага пишет читающая сторона, не
+ * файл. Не входит в отпечаток формата журнала (`journal/format.ts`): каталог
+ * `decisions/` — не файл прогона, который читают посторонние инструменты
+ * версией движка, а канал ровно между `stepcast decide` и ждущим процессом.
+ */
+export const DecisionRequestFileSchema = z
+  .object({
+    outcome: z.string(),
+    reason: z.string().optional(),
+    restart_from: z.string().optional(),
+  })
+  .strict();
+
+export type DecisionRequestFile = z.infer<typeof DecisionRequestFileSchema>;
+
 export const PredicateResultSchema = z
   .object({
     predicate: z.string(),
@@ -242,6 +316,13 @@ export const StepRecordSchema = z
       })
       .strict()
       .optional(),
+    /**
+     * Решение, применённое к ожиданию этого шага (`user-decision-steps`,
+     * design.md решение 5): исход, эффект, автор и, если ожидание отклонено
+     * или перезапущено, причина и адрес перезапуска. Есть только у шага
+     * ожидающего вида, дождавшегося решения.
+     */
+    decision: DecisionRecordSchema.optional(),
   })
   .strict();
 
@@ -434,6 +515,20 @@ export const RunStatusSchema = z
      * пробуждения — это отличает спящий прогон от зависшего.
      */
     wake_at: z.string().optional(),
+    /**
+     * Ожидания решения, идущие в прогоне прямо сейчас (`user-decision-steps`,
+     * design.md решение 2): статус остаётся `running`, «ждёт решения» читатель
+     * выводит из непустого перечня — тем же приёмом, каким «спит» выводится
+     * из `wake_at`. Снимается по применению решения этого ожидания и при
+     * снятии области прогона.
+     */
+    awaiting: z.array(AwaitingDecisionSchema).optional(),
+    /**
+     * Точка, с которой продолжится возобновление, — записана исходом `restart`
+     * (design.md, решение 4). Той же формы, что `--from job[/step]`. Есть
+     * только у прогона, законченного этим исходом.
+     */
+    restart_from: z.string().optional(),
     updated_at: z.string(),
   })
   .strict();
@@ -714,6 +809,73 @@ export const EventSchema = z.discriminatedUnion('kind', [
     step: z.string(),
     attempt: z.number().int().positive(),
     message: z.string(),
+  }).strict(),
+  // Пять событий ожидания решения (`user-decision-steps`, design.md решение
+  // 5): объявление ожидания, применённое решение, истечение срока,
+  // отвергнутая негодная запись и решение, перенесённое возобновлением из
+  // прогона, чей процесс его не применил, — читатель журнала не обязан
+  // выводить их из одной пары полей записи шага.
+  z.object({
+    ...eventBase,
+    kind: z.literal('decision.awaiting'),
+    wait_id: z.string(),
+    job: z.string(),
+    step: z.string(),
+    outcomes: z.record(z.string(), AwaitingOutcomeSchema),
+    prompt: z.string().optional(),
+    deadline: z.string().optional(),
+    on_expire: z.string().optional(),
+  }).strict(),
+  z.object({
+    ...eventBase,
+    kind: z.literal('decision.applied'),
+    wait_id: z.string(),
+    job: z.string(),
+    step: z.string(),
+    outcome: z.string(),
+    effect: DecisionEffectSchema,
+    by: z.enum(['user', 'deadline']),
+    reason: z.string().optional(),
+    restart_from: z.string().optional(),
+  }).strict(),
+  // Срок истёк — сообщается отдельно от применения (`decision.applied` с
+  // `by: 'deadline'` следует сразу за ним): читатель, разбирающий, почему
+  // прогон продолжился без человека, не обязан выводить это из поля `by`.
+  z.object({
+    ...eventBase,
+    kind: z.literal('decision.expired'),
+    wait_id: z.string(),
+    job: z.string(),
+    step: z.string(),
+    outcome: z.string(),
+  }).strict(),
+  // Запись в decisions/, не прошедшая проверку по объявленному ожиданию:
+  // ожидание продолжается, а не применяет её молча.
+  z.object({
+    ...eventBase,
+    kind: z.literal('decision.refused'),
+    wait_id: z.string(),
+    job: z.string(),
+    step: z.string(),
+    detail: z.string(),
+  }).strict(),
+  // Решение, записанное прогону, чей процесс его не применил: возобновление
+  // переносит его в новый прогон и применяет первым же тактом ожидания того
+  // же шага (дельта `run-resume`). Событие — и след переноса, и источник, из
+  // которого перенос читается ещё раз, если и новый прогон не успеет его
+  // применить.
+  z.object({
+    ...eventBase,
+    kind: z.literal('decision.carried'),
+    /** Ожидание исходного прогона, которому решение было адресовано. */
+    wait_id: z.string(),
+    job: z.string(),
+    step: z.string(),
+    /** Прогон, в котором решение записано. */
+    source: z.string(),
+    outcome: z.string(),
+    reason: z.string().optional(),
+    restart_from: z.string().optional(),
   }).strict(),
 ]);
 

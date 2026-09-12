@@ -60,15 +60,16 @@ describe('plugin-tree: stepcast plugins печатает дерево со сл�
 
     assert.equal(outcome.code, ExitCode.ok);
     const lines = outcome.stdout.split('\n');
-    assert.equal(lines.length, 3);
+    assert.equal(lines.length, 4);
     assert.match(lines[0] ?? '', /^1\s+backend-claude\s+встроенный\s+stepcast:backend-claude\s+действует$/);
-    assert.match(
-      lines[1] ?? '',
-      new RegExp(`^2\\s+home-extra\\s+${escapeRegExp(join(project.home, '.stepcast', 'plugins.patch.yml'))}\\s+\\./home-extra\\.mjs\\s+действует$`),
-    );
+    assert.match(lines[1] ?? '', /^2\s+step-decision\s+встроенный\s+stepcast:step-decision\s+действует$/);
     assert.match(
       lines[2] ?? '',
-      new RegExp(`^3\\s+project-extra\\s+${escapeRegExp(join(project.root, '.stepcast', 'plugins.patch.yml'))}\\s+\\./project-extra\\.mjs\\s+действует$`),
+      new RegExp(`^3\\s+home-extra\\s+${escapeRegExp(join(project.home, '.stepcast', 'plugins.patch.yml'))}\\s+\\./home-extra\\.mjs\\s+действует$`),
+    );
+    assert.match(
+      lines[3] ?? '',
+      new RegExp(`^4\\s+project-extra\\s+${escapeRegExp(join(project.root, '.stepcast', 'plugins.patch.yml'))}\\s+\\./project-extra\\.mjs\\s+действует$`),
     );
   });
 
@@ -103,11 +104,12 @@ describe('plugin-tree: отказ загрузки не заслоняет де�
 
     assert.equal(outcome.code, ExitCode.configError);
     const lines = outcome.stdout.split('\n');
-    assert.equal(lines.length, 3);
+    assert.equal(lines.length, 4);
     assert.match(lines[0] ?? '', /действует/); // встроенная строка загрузилась раньше отказавшей
-    assert.match(lines[1] ?? '', /отказ:/);
-    assert.match(lines[1] ?? '', /не загружается/);
-    assert.match(lines[2] ?? '', /не загружалась/);
+    assert.match(lines[1] ?? '', /действует/); // step-decision — тоже встроенная, тоже раньше отказавшей
+    assert.match(lines[2] ?? '', /отказ:/);
+    assert.match(lines[2] ?? '', /не загружается/);
+    assert.match(lines[3] ?? '', /не загружалась/);
   });
 
   it('отказ о незакрытом внедрении тоже назван: строка-виновница несёт причину, а не числится действующей', async () => {

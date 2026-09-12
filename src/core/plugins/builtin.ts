@@ -5,6 +5,7 @@ import { claudeModelDiscovery, createClaudeAdapter } from '../backend/claude.js'
 // верхнем уровне модуля, и загрузчик ES-модулей разводит их без ошибки (см.
 // комментарий у `registerBuiltinStepKinds`).
 import { registerBuiltinStepKinds } from '../pipeline/expand.js';
+import { stepDecisionContribution } from '../../steps/decision/index.js';
 import type { CommandContribution } from './contract.js';
 import { createKernel, type Kernel } from './kernel.js';
 import { registryFromKernel, type Registry } from './registry.js';
@@ -78,6 +79,15 @@ export const BUILTIN_ROWS: readonly BuiltinRow[] = [
         create: (config) => createClaudeAdapter(config),
         models: claudeModelDiscovery,
       });
+    },
+  },
+  {
+    // Первый плагинный вид шага в поставке (`user-decision-steps`, design.md):
+    // остановка прогона на решении человека. Строка, а не вид ядра, — её
+    // отключение патчем снимает вид `decision`, освобождая имя.
+    id: 'step-decision',
+    apply(kernel) {
+      kernel.ctx.steps.register('decision', stepDecisionContribution);
     },
   },
 ];

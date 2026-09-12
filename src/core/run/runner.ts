@@ -50,11 +50,15 @@ import { locateEngine, isEditableEngine, pinEngine, type EngineInfo, type Engine
 import { HaltCause, type HaltCauseValue } from './halt.js';
 import { resolveInheritSource, type CompletedJob } from './inherit.js';
 import { builtinRegistry } from '../plugins/builtin.js';
-import { isBuiltinStepKind } from '../plugins/contract.js';
+import { DecisionHalt, isBuiltinStepKind, type StepKindDecisionRequest, type StepKindDecisionResult } from '../plugins/contract.js';
 import { contributionOwner, formerStepKindOwner, stepKindNames, type Registry } from '../plugins/registry.js';
 import { preflight } from './preflight.js';
 import { createScope, type ResourceScope } from './scope.js';
 import { buildInterruptedNote, buildPreviousFailure } from './previousFailure.js';
+import { createAwaitingState } from './awaitingState.js';
+import { computeWaitId, pipelineStepAddresses, toDecisionRecord } from './decision.js';
+import { carriedKey, collectPendingDecisions, type CarriedDecision } from './decisionCarry.js';
+import { waitForDecision } from './decisionWait.js';
 import type { ResumePlan, SourceRun, StepPlan } from './resumePlan.js';
 import { computeStepKey, upstreamForKey } from './stepKey.js';
 import { prepareWorkspace, type PreparedWorkspace } from './workspace.js';
@@ -76,7 +80,9 @@ import type {
   Step,
 } from '../pipeline/model.js';
 import type {
+  AwaitingDecision,
   BudgetExceededState,
+  DecisionRecord,
   Event,
   JobRecord,
   PredicateResult,
@@ -87,6 +93,23 @@ import type {
   Usage,
 } from '../journal/schema.js';
 import { schedule, type JobOutcome } from './scheduler.js';
+
+/** Адрес запущенного в решении шага — с идентичностью попытки и итерации цикла. */
+export interface DecisionIdentity {
+  readonly job: string;
+  readonly step: string;
+  readonly attempt: number;
+  /** Итерация цикла until, если работа его объявляет. */
+  readonly iteration?: number;
+}
+
+/** Запись состоявшегося отказа обещания решения — «кто и чем» для защёлки прогона. */
+export interface DecisionLatchValue {
+  readonly job: string;
+  readonly step: string;
+  readonly record: DecisionRecord;
+}
+
 
 export interface RunOptions {
   readonly expanded: ExpandedPipeline;
@@ -131,6 +154,13 @@ export interface RunOptions {
    * создан, — со снимком `ZERO_USAGE_SNAPSHOT`, а не падением.
    */
   readonly onEvent?: (event: Event, usage: UsageSnapshot) => void;
+  /**
+   * Интервал опроса каталога решений — константа `DEFAULT_DECISION_POLL_MS`,
+   * подменяемая изнутри ради проверок (design.md изменения
+   * `user-decision-steps`, решение 9), тем же приёмом, каким проверки демона
+   * подменяют порождение процесса.
+   */
+  readonly decisionPollIntervalMs?: number;
 }
 
 export interface ResumeContext {
@@ -147,6 +177,13 @@ export interface RunResult {
    * цены: потолок фактически не применялся. Код возврата от этого не меняется.
    */
   readonly costLimitUnapplied: boolean;
+  /**
+   * Просьба о перезапуске — эффект `restart` решения человека (design.md
+   * изменения `user-decision-steps`, решение 4). Цепочку ведёт вызывающая
+   * команда (`stepcast run`/`stepcast resume`), а не сам `runPipeline`: она
+   * планирует возобновление с этого места и исполняет его тем же процессом.
+   */
+  readonly restart?: { readonly from: string };
 }
 
 const EXIT_BY_STATUS: Record<string, ExitCodeValue> = {
@@ -293,6 +330,29 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   // продолжения — состояние спящего прогона доступно снаружи, пока он спит.
   const waitState = createWaitState();
 
+  // Ожидания решения человека, идущие прямо сейчас (user-decision-steps,
+  // design.md решение 2) — тем же приёмом, что и `waitState` у `wake_at`.
+  const awaitingDecisions = createAwaitingState();
+  // Решения, записанные исходному прогону и не применённые им: возобновление
+  // переносит их сюда и применяет ожиданию того же шага (дельта `run-resume`).
+  // Наполняется ниже, вместе с прочим переносом из исходного прогона; ключ —
+  // `работа/шаг`, потому что попытка и итерация у нового прогона свои.
+  const carriedDecisions = new Map<string, CarriedDecision>();
+  // Защёлка эффекта решения (design.md, решение 5): первый отказ обещания
+  // `reject`/`restart` останавливает прогон, и второй такой же не переписывает
+  // его — так же, как `budgetExceededLatch` держит первое превышение.
+  const decisionLatch: { value: DecisionLatchValue | undefined } = { value: undefined };
+  // Внутренний контроллер отмены: внешний сигнал (Ctrl-C) взводит его, и
+  // отказ решения — тоже, так что оба повода останавливают прогон одним и тем
+  // же `context.signal`, не заводя второго пути отмены.
+  const runController = new AbortController();
+  const onExternalAbort = (): void => runController.abort();
+  if (options.signal !== undefined) {
+    if (options.signal.aborted) runController.abort();
+    else options.signal.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  const knownStepAddresses = pipelineStepAddresses(pipeline);
+
   // Общий на прогон счёт мест по имени бэкенда: один агентский шаг и вызов
   // судьи того же бэкенда делят предел, а не удваивают его.
   const backendSlots = createBackendSlots((name) => config.backends[name]?.concurrency ?? 1);
@@ -321,9 +381,13 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     completedWorkspaces,
     failureNote: { pending: options.resume === undefined ? undefined : previousFailureText(options.resume) },
     budgetExceededLatch: { value: undefined },
+    decisionLatch,
     ...(options.resume === undefined
       ? {}
       : { observedInputs: options.resume.plan.observedInputs }),
+    // Сигнал прогона — внутренний контроллер, а не сигнал вызывающего
+    // напрямую: отказ решения взводит его так же, как Ctrl-C.
+    signal: runController.signal,
     beginWait: (wakeAt) => {
       const release = waitState.begin(wakeAt);
       writeStatus('running', true);
@@ -331,6 +395,135 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
         release();
         writeStatus('running', true);
       };
+    },
+    awaitDecision: async (identity, request) => {
+      const since = new Date().toISOString();
+      const waitId = computeWaitId({
+        job: identity.job,
+        step: identity.step,
+        attempt: identity.attempt,
+        ...(identity.iteration === undefined ? {} : { iteration: identity.iteration }),
+        since,
+      });
+      const outcomes = Object.fromEntries(
+        Object.entries(request.outcomes).map(([name, spec]) => [
+          name,
+          { effect: spec.effect, ...(spec.label === undefined ? {} : { label: spec.label }) },
+        ]),
+      );
+      const deadline =
+        request.deadlineMs === undefined ? undefined : new Date(Date.now() + request.deadlineMs).toISOString();
+      const awaitingEntry: AwaitingDecision = {
+        wait_id: waitId,
+        job: identity.job,
+        step: identity.step,
+        outcomes,
+        ...(request.prompt === undefined ? {} : { prompt: request.prompt }),
+        since,
+        ...(deadline === undefined ? {} : { deadline }),
+        ...(request.onExpire === undefined ? {} : { on_expire: request.onExpire }),
+      };
+
+      const endWait = awaitingDecisions.begin(awaitingEntry);
+      // На диск до блокировки — тем же приёмом, что `beginWait`: ожидание
+      // видно снаружи с первого такта, а не после того, как оно завершится.
+      writeStatus('running', true);
+      journal.event({
+        kind: 'decision.awaiting',
+        wait_id: waitId,
+        job: identity.job,
+        step: identity.step,
+        outcomes,
+        ...(request.prompt === undefined ? {} : { prompt: request.prompt }),
+        ...(deadline === undefined ? {} : { deadline }),
+        ...(request.onExpire === undefined ? {} : { on_expire: request.onExpire }),
+      });
+
+      // Решение, перенесённое возобновлением: адресовано ожиданию прошлого
+      // прогона, и потому передаётся ожиданию отдельно от каталога. Снимается
+      // первым же применением — следующая итерация цикла `until` спрашивает
+      // человека заново (дельта `run-decisions`).
+      const key = carriedKey(identity.job, identity.step);
+      const carried = carriedDecisions.get(key);
+
+      const outcome = await waitForDecision({
+        paths: journal.paths,
+        waitId,
+        awaiting: awaitingEntry,
+        knownSteps: knownStepAddresses,
+        signal: runController.signal,
+        onRefused: (detail) => {
+          journal.event({ kind: 'decision.refused', wait_id: waitId, job: identity.job, step: identity.step, detail });
+        },
+        ...(carried === undefined
+          ? {}
+          : {
+              carried: {
+                record: carried.record,
+                source: shortRunId(carried.source),
+                onApplied: () => carriedDecisions.delete(key),
+              },
+            }),
+        ...(options.decisionPollIntervalMs === undefined ? {} : { pollIntervalMs: options.decisionPollIntervalMs }),
+      });
+
+      endWait();
+      writeStatus('running', true);
+      // Интервал ожидания не тратит бюджет прогона (design.md, решение 8):
+      // записывается тем же вызовом, что и сон до сброса окна лимита, и потому
+      // вычитается из `elapsedMs()`. Повод при этом называется отдельно:
+      // против предела ожидания окна лимита подписки (`max_wait`) решение не
+      // проверяется и его не исчерпывает — у него свой срок, объявленный на
+      // шаге, а `max_wait` мерит собственные ожидания движка.
+      usage.recordWait(Date.parse(since), Date.now(), 'decision');
+
+      if (outcome.kind === 'canceled') {
+        // Отмена прогона (Ctrl-C или отказ решения, объявленного другим
+        // шагом) — не отказ этого решения: попытка завершится обычным путём
+        // отмены, `context.signal.aborted` уже true к этому моменту.
+        throw new Error('прогон отменён');
+      }
+
+      const { decision, by } = outcome;
+      journal.event({
+        kind: 'decision.applied',
+        wait_id: waitId,
+        job: identity.job,
+        step: identity.step,
+        outcome: decision.outcome,
+        effect: decision.effect,
+        by,
+        ...(decision.reason === undefined ? {} : { reason: decision.reason }),
+        ...(decision.restartFrom === undefined ? {} : { restart_from: decision.restartFrom }),
+      });
+      if (by === 'deadline') {
+        journal.event({
+          kind: 'decision.expired',
+          wait_id: waitId,
+          job: identity.job,
+          step: identity.step,
+          outcome: decision.outcome,
+        });
+      }
+
+      const result: StepKindDecisionResult = {
+        outcome: decision.outcome,
+        effect: decision.effect,
+        by,
+        ...(decision.reason === undefined ? {} : { reason: decision.reason }),
+        ...(decision.restartFrom === undefined ? {} : { restartFrom: decision.restartFrom }),
+      };
+
+      if (decision.effect === 'continue') return result;
+
+      // Защёлка эффекта — до возврата управления исполнителю (design.md,
+      // решение 5): вклад, поймавший и проглотивший отказ ниже, судьбу прогона
+      // уже не меняет.
+      if (decisionLatch.value === undefined) {
+        decisionLatch.value = { job: identity.job, step: identity.step, record: toDecisionRecord(result) };
+        runController.abort();
+      }
+      throw new DecisionHalt(result);
     },
     // Состояние переписывается после каждого шага: это единственный файл, по
     // изменению которого витрина узнаёт о ходе прогона, и данные, записанные
@@ -397,7 +590,14 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
           : { exceeded: context.budgetExceededLatch.value }),
       },
       ...(blocked === undefined
-        ? {}
+        ? decisionLatch.value?.record.effect === 'restart' &&
+          decisionLatch.value.record.restart_from !== undefined
+          ? {
+              resume: {
+                command: `stepcast resume ${shortRunId(journal.paths.runId)} --from ${decisionLatch.value.record.restart_from}`,
+              },
+            }
+          : {}
         : {
             resume: {
               command: `stepcast resume ${shortRunId(journal.paths.runId)} --from ${blocked.id}`,
@@ -405,6 +605,10 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
             },
           }),
       ...(waitState.earliest() === undefined ? {} : { wake_at: waitState.earliest() as string }),
+      ...(awaitingDecisions.list().length === 0 ? {} : { awaiting: [...awaitingDecisions.list()] }),
+      ...(decisionLatch.value?.record.effect === 'restart' && decisionLatch.value.record.restart_from !== undefined
+        ? { restart_from: decisionLatch.value.record.restart_from }
+        : {}),
       updated_at: new Date().toISOString(),
     };
     journal.writeStatus(runStatus);
@@ -435,6 +639,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   if (options.resume !== undefined) {
     restoreForResume(options.resume, journal, options.cwd, anchorKind, config.project.nestedRepos);
     carryOverRunDir(options.resume, journal);
+    carryOverDecisions(options.resume, journal, carriedDecisions);
   }
 
   writeStatus('running', true);
@@ -448,6 +653,16 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   runResources.defer('снятие состояния ожидания прогона', () => {
     waitState.clear();
   });
+  runResources.defer('снятие незакрытых ожиданий решения', () => {
+    awaitingDecisions.clear();
+  });
+  // Слушатель внешнего сигнала на внутренний контроллер — `{ once: true }`
+  // снимает его сам, но только если сигнал успел взвестись; прогон, дошедший
+  // до конца без отмены, обязан снять его сам же, а не оставлять висеть на
+  // сигнале вызывающего до конца процесса.
+  runResources.defer('снятие слушателя внешнего сигнала отмены', () => {
+    options.signal?.removeEventListener('abort', onExternalAbort);
+  });
 
   let result: Awaited<ReturnType<typeof schedule>>;
   try {
@@ -457,7 +672,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
       // Потолок конфигурации применяет сам прогон: линт отклоняет превышение,
       // но прогон не обязан полагаться на то, что линт был.
       concurrency: Math.min(pipeline.concurrency, config.limits.concurrency),
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      signal: runController.signal,
       scopeExtras: { run: { id: journal.paths.runId, dir: journal.paths.dir }, env: {} },
       // Данные берутся из записи работы, а не читаются с диска заново: движок
       // складывает их туда после каждого шага, и второй путь к тому же
@@ -523,7 +738,12 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
 
   const costLimitUnapplied = anyCostBudgetDeclared(pipeline) && usage.runCostNeverReported();
 
-  return { journal, status: finalStatus, exitCode, costLimitUnapplied };
+  const restart =
+    decisionLatch.value?.record.effect === 'restart' && decisionLatch.value.record.restart_from !== undefined
+      ? { from: decisionLatch.value.record.restart_from }
+      : undefined;
+
+  return { journal, status: finalStatus, exitCode, costLimitUnapplied, ...(restart === undefined ? {} : { restart }) };
 }
 
 // Экспортирован для `exec/pluginStep.ts`: исполнитель вида шага собирается тем
@@ -610,6 +830,12 @@ export interface RunContext extends RunOptions {
    * (design.md, решение 3).
    */
   readonly budgetExceededLatch: { value: BudgetExceededState | undefined };
+  /**
+   * Защёлка эффекта решения (design.md изменения `user-decision-steps`,
+   * решение 5): первый отказ обещания `reject`/`restart`, остановивший
+   * прогон, — заполняется один раз, рядом с `budgetExceededLatch`.
+   */
+  readonly decisionLatch: { value: DecisionLatchValue | undefined };
   /** Результаты непрошедшего `check` предыдущей итерации текущей работы. */
   readonly iterationCheck?: readonly PredicateResult[];
   /**
@@ -619,6 +845,17 @@ export interface RunContext extends RunOptions {
    * быть несколько.
    */
   readonly beginWait: (wakeAt: string) => () => void;
+  /**
+   * Объявить ожидание решения и дождаться его (design.md изменения
+   * `user-decision-steps`, решение 1, решение 5) — рядом с `beginWait`, тем же
+   * приёмом записи `awaiting` на диск до блокировки. Разрешается результатом
+   * только для эффекта `continue`; `reject` и `restart` отдаются отказом
+   * `DecisionHalt`, взводя `decisionLatch` до возврата управления исполнителю.
+   */
+  readonly awaitDecision: (
+    identity: DecisionIdentity,
+    request: StepKindDecisionRequest,
+  ) => Promise<StepKindDecisionResult>;
   /**
    * Переписать `status.json` по текущим записям работ. Файлом владеет движок и
    * только он: подпроцесс `stepcast data` пишет свой `data.json`, а состояние
@@ -1683,7 +1920,7 @@ async function runJobSteps(
               changedPaths,
             )
           : step.kind === 'plugin'
-            ? await runPluginStepDispatch(step, job, context, stepDirPath, budgetScopes, changedPaths)
+            ? await runPluginStepDispatch(step, job, context, stepDirPath, budgetScopes, changedPaths, iteration)
             : await runAgentStep(
                 step,
                 job,
@@ -1823,6 +2060,7 @@ async function runJobSteps(
             },
           }
         : {}),
+      ...(outcome.decision === undefined ? {} : { decision: outcome.decision }),
     };
     steps.push(stepRecord);
     journal.writeStepJson(stepDirPath, 'step.json', stepRecord);
@@ -1929,6 +2167,12 @@ export interface StepOutcome {
    * `causeOf` по одному статусу и результатам предикатов.
    */
   readonly cause?: HaltCauseValue;
+  /**
+   * Решение, применённое к ожиданию этого шага (design.md изменения
+   * `user-decision-steps`, решение 5) — есть только у шага ожидающего вида,
+   * дождавшегося ответа.
+   */
+  readonly decision?: DecisionRecord;
 }
 
 /**
@@ -2157,6 +2401,7 @@ async function runPluginStepDispatch(
   stepDirPath: string,
   budgetScopes: () => BudgetScope[],
   changedPaths: () => readonly string[] | undefined,
+  iteration?: number,
 ): Promise<StepOutcome> {
   const contribution = context.registry.steps.get(step.name);
   if (contribution === undefined || isBuiltinStepKind(contribution)) {
@@ -2173,7 +2418,7 @@ async function runPluginStepDispatch(
       results: [[{ predicate: 'step_kind', passed: false, hard: true, detail: reason }]],
     };
   }
-  return runPluginStep(step, job, context, stepDirPath, contribution, budgetScopes, changedPaths);
+  return runPluginStep(step, job, context, stepDirPath, contribution, budgetScopes, changedPaths, iteration);
 }
 
 async function runCommandStep(
@@ -3132,6 +3377,10 @@ function carryOverRunDir(resume: ResumeContext, journal: RunJournal): void {
       // поверх, вернул бы исполнение к коду другого прогона — при том что
       // манифест называет путь своего снимка (run-engine-snapshot).
       paths.engine,
+      // Записи решений адресованы ожиданиям исходного прогона и этому прогону
+      // не годятся: неприменённое решение переносится отдельно и осознанно —
+      // `carryOverDecisions` ниже.
+      paths.decisions,
     ].map((path) => basename(path)),
   );
 
@@ -3148,6 +3397,51 @@ function carryOverRunDir(resume: ResumeContext, journal: RunJournal): void {
       kind: 'bookkeeping.failed',
       operation: 'перенос состояния каталога прогона',
       detail: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * Перенести решения, записанные исходному прогону и не применённые им (дельта
+ * `run-resume`): человек ответил прогону, чей процесс уже не жил, и команда
+ * сказала ему, что решение применится при возобновлении. Переисполняемый шаг
+ * получит его первым же тактом своего ожидания, вместо второго вопроса тому же
+ * человеку.
+ *
+ * Событие переноса пишется по каждому решению: оно и след для читателя
+ * журнала, и источник, из которого перенос читается ещё раз, если и этот
+ * прогон не успеет применить решение.
+ */
+function carryOverDecisions(
+  resume: ResumeContext,
+  journal: RunJournal,
+  into: Map<string, CarriedDecision>,
+): void {
+  let pending: readonly CarriedDecision[];
+  try {
+    pending = collectPendingDecisions(resume.source.paths, resume.source.manifest.run_id);
+  } catch (error) {
+    // Не отказ, как и у переноса каталога: без переноса прогон спросит
+    // человека заново — хуже, но не неверно.
+    journal.event({
+      kind: 'bookkeeping.failed',
+      operation: 'перенос неприменённых решений',
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  for (const entry of pending) {
+    into.set(carriedKey(entry.job, entry.step), entry);
+    journal.event({
+      kind: 'decision.carried',
+      wait_id: entry.waitId,
+      job: entry.job,
+      step: entry.step,
+      source: entry.source,
+      outcome: entry.record.outcome,
+      ...(entry.record.reason === undefined ? {} : { reason: entry.record.reason }),
+      ...(entry.record.restart_from === undefined ? {} : { restart_from: entry.record.restart_from }),
     });
   }
 }

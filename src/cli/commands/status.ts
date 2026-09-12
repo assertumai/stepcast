@@ -56,6 +56,15 @@ export function runStatusCommand(
   }
   if (sleeping) write(`проснётся: ${status.wake_at}`);
 
+  // Ожидание решения — тем же местом, где печатается пробуждение спящего
+  // прогона: и то и другое читается из непустого поля состояния, а не из
+  // нового значения статуса (design.md изменения `user-decision-steps`,
+  // решение 2).
+  for (const entry of status.awaiting ?? []) {
+    const outcomes = Object.keys(entry.outcomes).join(', ');
+    write(`ждёт решения: ${entry.job}/${entry.step} — исходы: ${outcomes}${entry.deadline === undefined ? '' : `, срок: ${entry.deadline}`}`);
+  }
+
   const rows: string[][] = [];
   for (const job of status.jobs) {
     const detail = job.status === 'failed' ? failureDetail(job) : (job.reason ?? '');

@@ -153,6 +153,8 @@ export interface SeedRunOptions {
   readonly skipUsage?: boolean;
   /** Переопределение `status.budget` — по умолчанию только токены и время. */
   readonly budget?: RunStatus['budget'];
+  /** Ожидания решения (`user-decision-steps`) — по умолчанию прогон ничего не ждёт. */
+  readonly awaiting?: RunStatus['awaiting'];
 }
 
 /**
@@ -197,6 +199,7 @@ export function seedRun(
     jobs: options.jobs ?? [],
     budget: options.budget ?? { tokens_used: 0, wallclock_ms: 0 },
     ...(options.wakeAt === undefined ? {} : { wake_at: options.wakeAt }),
+    ...(options.awaiting === undefined ? {} : { awaiting: options.awaiting }),
     updated_at: '2026-08-01T00:05:00.000Z',
   });
 

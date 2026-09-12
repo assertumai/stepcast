@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { StepcastError } from '../errors.js';
 import { JOURNAL_FORMAT } from './format.js';
 import {
+  decisionRecordPath,
   jobDir,
   jobScratchDir,
   judgeCallDir,
@@ -25,6 +26,7 @@ import {
 } from './paths.js';
 import type {
   ContextReport,
+  DecisionRequestFile,
   Event,
   EventInput,
   ExpectReport,
@@ -246,6 +248,17 @@ export class RunJournal {
     atomicWrite(path, `${JSON.stringify(value, null, 2)}\n`);
     return path;
   }
+}
+
+/**
+ * Записать решение по ожиданию (`user-decision-steps`, design.md решение 5):
+ * единственный писатель — `stepcast decide`, атомарной заменой, тем же
+ * приёмом, что и прочие файлы журнала. Файл не удаляется прочтением — он
+ * след, а не почтовый ящик: ждущий процесс лишь опрашивает каталог.
+ */
+export function writeDecisionRecord(paths: RunPaths, waitId: string, record: DecisionRequestFile): void {
+  mkdirSync(paths.decisions, { recursive: true, mode: DIR_MODE });
+  atomicWrite(decisionRecordPath(paths, waitId), `${JSON.stringify(record, null, 2)}\n`);
 }
 
 /** Замена файла целиком: сначала временный, затем переименование. */

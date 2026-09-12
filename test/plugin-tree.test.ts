@@ -95,13 +95,14 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
       config.pluginTree.map((row) => [row.id, row.use, row.enabled]),
       [
         ['backend-claude', 'stepcast:backend-claude', true],
+        ['step-decision', 'stepcast:step-decision', true],
         ['home-extra', './home-extra.mjs', true],
         ['project-extra', './project-extra.mjs', true],
       ],
     );
     assert.deepEqual(config.pluginTree[0]?.source, { kind: 'builtin' });
-    assert.deepEqual(config.pluginTree[1]?.source, { kind: 'file', path: place.homePatchPath });
-    assert.deepEqual(config.pluginTree[2]?.source, { kind: 'file', path: place.projectPatchPath });
+    assert.deepEqual(config.pluginTree[2]?.source, { kind: 'file', path: place.homePatchPath });
+    assert.deepEqual(config.pluginTree[3]?.source, { kind: 'file', path: place.projectPatchPath });
   });
 
   it('конфигурация без единого plugins.patch.yml сворачивается в прежний состав и порядок', () => {
@@ -113,7 +114,7 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
       project: 'plugins: ["./p.mjs"]\n',
     });
 
-    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', './g.mjs', './p.mjs']);
+    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', 'step-decision', './g.mjs', './p.mjs']);
     // `Config.plugins` — модули, и только они: `stepcast:backend-claude`
     // модулем не является и `resolveModulePath` не разрешается, поэтому в
     // публичную форму поля не попадает (`config/resolve.ts`).
@@ -128,7 +129,7 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
 
     const config = resolveConfig({ cwd: place.root, home: place.home, projectPath: null });
 
-    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', 'home-only']);
+    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', 'step-decision', 'home-only']);
   });
 });
 
@@ -146,6 +147,7 @@ describe('plugin-tree: строки поставки вызывающего', ()
 
     assert.deepEqual(config.pluginTree.map((row) => [row.id, row.use, row.enabled]), [
       ['backend-claude', 'stepcast:backend-claude', true],
+      ['step-decision', 'stepcast:step-decision', true],
       ['ui-shell', 'stepcast:ui-shell', true],
       ['screen-usage', './my-usage.mjs', true],
       ['screen-steps', 'irrelevant', false],
@@ -158,7 +160,7 @@ describe('plugin-tree: строки поставки вызывающего', ()
     const config = resolved(place);
 
     assert.deepEqual(config.pluginTree, withoutRows.pluginTree);
-    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude']);
+    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', 'step-decision']);
   });
 });
 
@@ -180,7 +182,7 @@ describe('plugin-tree: замена строки патчем', () => {
     });
 
     // Порядок остался прежним — b стоит на своём месте, между a и c.
-    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', 'a', 'b', 'c']);
+    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', 'step-decision', 'a', 'b', 'c']);
     const b = config.pluginTree.find((row) => row.id === 'b');
     assert.equal(b?.use, './b2.mjs');
     assert.equal(b?.enabled, true);
@@ -217,7 +219,7 @@ describe('plugin-tree: вставка строки по позиции', () => {
       projectPatch:
         'version: 1\nkind: plugins-patch\nplugins:\n  - id: a\n    use: ./a.mjs\n    after: backend-claude\n',
     });
-    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', 'a']);
+    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', 'a', 'step-decision']);
   });
 
   it('before ставит строку сразу перед названной, в том числе перед встроенной', () => {
@@ -226,7 +228,7 @@ describe('plugin-tree: вставка строки по позиции', () => {
       projectPatch:
         'version: 1\nkind: plugins-patch\nplugins:\n  - id: my-backends\n    use: ./my-backends.mjs\n    before: backend-claude\n',
     });
-    assert.deepEqual(config.pluginTree.map((row) => row.id), ['my-backends', 'backend-claude']);
+    assert.deepEqual(config.pluginTree.map((row) => row.id), ['my-backends', 'backend-claude', 'step-decision']);
   });
 
   it('без before и after строка становится последней', () => {
@@ -502,8 +504,8 @@ describe('plugin-tree: ключ plugins как сокращённая форма
       project: 'plugins: ["./shared.mjs"]\n',
     });
 
-    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', './shared.mjs']);
-    assert.deepEqual(config.pluginTree[1]?.source, { kind: 'file', path: place.globalPath });
+    assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', 'step-decision', './shared.mjs']);
+    assert.deepEqual(config.pluginTree[2]?.source, { kind: 'file', path: place.globalPath });
 
     const { registry } = await loadPlugins(config, { projectRoot: place.root });
     assert.equal(registry.plugins.length, 1);

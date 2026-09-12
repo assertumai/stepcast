@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 
-import { buildPublishedSchemas, pluginPredicateEntries } from '../../core/pipeline/published-schema.js';
+import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../../core/pipeline/published-schema.js';
 import type { Registry } from '../../core/plugins/registry.js';
 import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
 import type { ParsedArgs } from '../args.js';
@@ -24,8 +24,9 @@ export function runSchemaCommand(
 
   // Тот же перечень, с каким сверяет записанный файл `stepcast lint`.
   const predicates = pluginPredicateEntries(registry);
+  const stepKinds = pluginStepKindEntries(registry);
 
-  const { pipeline, job, notes } = buildPublishedSchemas(predicates);
+  const { pipeline, job, notes } = buildPublishedSchemas(predicates, stepKinds);
 
   mkdirSync(outDir, { recursive: true });
   const pipelinePath = join(outDir, 'pipeline.schema.json');
@@ -36,14 +37,17 @@ export function runSchemaCommand(
   write(`записано: ${pipelinePath}`);
   write(`записано: ${jobPath}`);
 
-  if (predicates.length === 0) {
-    write('плагинных предикатов нет: схема совпадает с поставляемой пакетом');
+  // Виды шага встроенных строк дерева (`decision`) в этот счёт не входят: они
+  // есть и в поставляемой пакетом схеме, и проект, ничего своего не
+  // добавивший, получает файл, совпадающий с ней, — сообщать обратное значило
+  // бы звать пользователя искать отличие, которого нет.
+  if (predicates.length === 0 && stepKinds.every((entry) => entry.builtin === true)) {
+    write('плагинных предикатов и видов шага нет: схема совпадает с поставляемой пакетом');
   }
 
   for (const note of notes) {
-    write(
-      `предупреждение: схема значения предиката ${note.predicate} (плагин ${note.plugin}) не вложена в схему — ${note.reason}`,
-    );
+    const kind = note.kind === 'predicate' ? 'предиката' : 'полей вида шага';
+    write(`предупреждение: схема значения ${kind} ${note.name} (плагин ${note.plugin}) не вложена в схему — ${note.reason}`);
   }
 
   return ExitCode.ok;

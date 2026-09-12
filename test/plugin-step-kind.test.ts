@@ -18,12 +18,14 @@ import { registryFromKernel, stepKindNames, type Registry } from '../src/core/pl
 import type { StepKindContribution, StepKindInput } from '../src/core/plugins/contract.js';
 import { lintPipeline } from '../src/core/lint.js';
 import { resolveConfig } from '../src/core/config/resolve.js';
-import { projectKey } from '../src/core/journal/paths.js';
+import { projectKey, runPaths } from '../src/core/journal/paths.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { buildPipelines } from '../src/ui/pipelines.js';
 import { buildSnapshot } from '../src/ui/snapshot.js';
 import { makeJournalBed, makeProject, seedRun, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
+import { writeDecisionRecord } from '../src/core/journal/writer.js';
+import type { RunPaths } from '../src/core/journal/paths.js';
 
 /**
  * Вид шага `http_probe`: поле `url` (строка), необязательное поле
@@ -102,8 +104,11 @@ describe('step-kinds-registry: реестр видов шага', () => {
 
   it('встроенные виды значатся в реестре, владельцем — встроенный', () => {
     const registry = builtinRegistry();
-    assert.deepEqual(stepKindNames(registry), ['agent', 'run', 'script', 'uses']);
+    // Не полный список: `decision` (`user-decision-steps`) тоже встроенный вид,
+    // но внесён строкой дерева, а не внутренней формой document, — эти четыре
+    // остаются ядром, проверяемым здесь, а не единственным содержимым реестра.
     for (const name of ['agent', 'run', 'script', 'uses']) {
+      assert.ok(stepKindNames(registry).includes(name));
       assert.equal(registry.owners.get(`steps:${name}`), 'встроенный');
     }
   });
@@ -251,7 +256,7 @@ describe('step-kinds-registry: разбор документа', () => {
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /http_prob/);
-        assert.match(error.hint ?? '', /agent, http_probe, run, script, uses/);
+        assert.match(error.hint ?? '', /agent, decision, http_probe, run, script, uses/);
         assert.equal(error.at, 'jobs.build.steps.0');
         return true;
       },
@@ -913,5 +918,113 @@ jobs:
     const stepUsage = summary?.jobs.build?.steps.probe;
     assert.ok(stepUsage !== undefined);
     assert.ok((stepUsage.billable_tokens ?? 0) > 0);
+  });
+});
+
+describe('step-kinds-registry: waits и способность ожидания (user-decision-steps)', () => {
+  it('вклад с waits не отказывает по таймауту шага, дольше которого он работает', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWith(`        http_probe:
+          url: https://example.org
+        timeout: 0.05s
+        attempts: { max: 1 }`),
+    });
+    const registry = await stepKindRegistry({
+      waits: true,
+      execute: () => new Promise((resolve) => setTimeout(() => resolve({ exitCode: 0 }), 300)),
+    });
+
+    const result = await run(project, registry);
+
+    assert.equal(result.status, 'success');
+  });
+
+  it('вклад без waits по-прежнему отказывает по таймауту тем же текстом, что и раньше', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWith(`        http_probe:
+          url: https://example.org
+        timeout: 0.05s
+        attempts: { max: 1 }`),
+    });
+    const registry = await stepKindRegistry({
+      execute: () => new Promise((resolve) => setTimeout(() => resolve({ exitCode: 0 }), 300)),
+    });
+
+    const result = await run(project, registry);
+
+    assert.equal(result.status, 'failed');
+    const step = readStatus(result.journal.paths).jobs[0]?.steps[0];
+    assert.equal(step?.cause, 'timeout');
+    assert.match(step?.reason ?? '', /Шаг не завершился за 50 мс/);
+  });
+
+  it('вид без waits не получает способности ожидания во входе исполнителя', async () => {
+    let sawDecision: boolean | undefined;
+    const project = makeProject({
+      'stepcast.yml': pipelineWith(`        http_probe:
+          url: https://example.org`),
+    });
+    const registry = await stepKindRegistry({
+      execute: (input) => {
+        sawDecision = input.decision !== undefined;
+        return { exitCode: 0 };
+      },
+    });
+
+    const result = await run(project, registry);
+
+    assert.equal(result.status, 'success');
+    assert.equal(sawDecision, false);
+  });
+
+  it('исполнитель, проглотивший отказ обещания decision.request, не меняет судьбы прогона', async () => {
+    const runsRoot = tempDir('runs-');
+    const project = makeProject({
+      'stepcast.yml': pipelineWith(`        http_probe:
+          url: https://example.org`),
+    });
+    const registry = await stepKindRegistry({
+      waits: true,
+      execute: async (input) => {
+        try {
+          await input.decision?.request({ outcomes: { deny: { effect: 'reject' } }, prompt: 'q' });
+        } catch {
+          // Вклад ловит и глотает отказ обещания — судьба прогона уже решена
+          // защёлкой движка, и притворяться успехом здесь бессмысленно.
+        }
+        return { exitCode: 0, text: 'вклад считает себя успешным' };
+      },
+    });
+
+    let paths: RunPaths | undefined;
+    const promise = runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      registry,
+      decisionPollIntervalMs: 20,
+      onEvent: (event) => {
+        if (event.kind !== 'run.started') return;
+        paths = runPaths(runsRoot, projectKey(project.root), event.run_id);
+      },
+    });
+
+    const started = Date.now();
+    while (paths === undefined) {
+      if (Date.now() - started > 5000) throw new Error('прогон не начался вовремя');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    while (readStatus(paths).awaiting === undefined || (readStatus(paths).awaiting?.length ?? 0) === 0) {
+      if (Date.now() - started > 5000) throw new Error('ожидание не объявлено вовремя');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const waitId = readStatus(paths).awaiting?.[0]?.wait_id as string;
+    writeDecisionRecord(paths, waitId, { outcome: 'deny', reason: 'отказано' });
+
+    const result = await promise;
+    // Вклад вернул успех, но защёлка эффекта решения останавливает прогон
+    // раньше, чем управление дошло до этого возврата (design.md, решение 5).
+    assert.equal(result.status, 'canceled');
   });
 });

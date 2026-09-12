@@ -10,7 +10,7 @@ import type { BackendConfig } from '../src/core/config/resolve.js';
 import { createBuiltinKernel } from '../src/core/plugins/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
-import { buildPublishedSchemas } from '../src/core/pipeline/published-schema.js';
+import { buildPublishedSchemas, pluginStepKindEntries } from '../src/core/pipeline/published-schema.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../src/core/lint.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
 import { gitCommit, gitInit, makeProject, withHome, type Project } from './helpers.js';
@@ -2851,7 +2851,13 @@ jobs:
   it('файл, совпадающий с действующим реестром, предупреждения не даёт', async () => {
     const project = makeProject({ 'stepcast.yml': PIPELINE });
     const registry = await registryWithPredicate();
-    const fresh = buildPublishedSchemas([{ name: 'text_has', schema: { type: 'string', minLength: 1 }, owner: 'example' }]);
+    // Реестр несёт и предикат example, и встроенный вид шага decision
+    // (`user-decision-steps`) — свежая схема обязана знать оба, иначе линт
+    // счёл бы её устаревшей из-за отсутствующей ветви decision.
+    const fresh = buildPublishedSchemas(
+      [{ name: 'text_has', schema: { type: 'string', minLength: 1 }, owner: 'example' }],
+      pluginStepKindEntries(registry),
+    );
     project.write(join('.stepcast', 'schema', 'pipeline.schema.json'), `${JSON.stringify(fresh.pipeline, null, 2)}\n`);
     project.write(join('.stepcast', 'schema', 'job.schema.json'), `${JSON.stringify(fresh.job, null, 2)}\n`);
 

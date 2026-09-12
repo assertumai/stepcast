@@ -10,6 +10,7 @@ import { runBacklogCommand } from './commands/backlog.js';
 import { runKnowledgeCommand } from './commands/knowledge.js';
 import { runConfigCommand } from './commands/config.js';
 import { runDataCommand } from './commands/data.js';
+import { runDecideCommand } from './commands/decide.js';
 import { runContextCommand } from './commands/context.js';
 import { runDiffCommand } from './commands/diff.js';
 import { runDownCommand } from './commands/down.js';
@@ -73,6 +74,15 @@ export const COMMANDS: Record<string, CommandSpec> = {
   diff: {
     description: 'сравнить два прогона по ключам шагов, промптам, контексту и деревьям',
     positional: ['run-a', 'run-b'],
+  },
+  decide: {
+    description: 'принять решение по ожиданию прогона: stepcast decide <run> <исход>',
+    positional: ['run', 'outcome'],
+    flags: {
+      step: { kind: 'string', description: 'адрес ожидающего шага (job или job/step) — обязателен при нескольких ожиданиях' },
+      reason: { kind: 'string', description: 'причина отклонения — обязательна для исхода с эффектом reject' },
+      from: { kind: 'string', description: 'точка перезапуска job[/step] — обязательна для исхода с эффектом restart' },
+    },
   },
   apply: {
     description: 'наложить результат изолированного прогона на текущее дерево',
@@ -283,6 +293,15 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
     name: 'diff',
     spec: COMMANDS['diff'] as CommandSpec,
     run: (args, io, env) => runDiffCommand(args, io.out, env.cwd),
+  },
+  {
+    // Встроенная, а не вклад строки (design.md изменения `user-decision-steps`,
+    // решение 10): команда читает состояние прогона и пишет в его каталог, а
+    // читатель журнала и его раскладка плагинам не опубликованы — публиковать
+    // их ради одной команды значило бы обещать плагинам формат журнала.
+    name: 'decide',
+    spec: COMMANDS['decide'] as CommandSpec,
+    run: (args, io, env) => runDecideCommand(args, io.out, env.cwd, env.registry, env.config),
   },
   {
     name: 'apply',

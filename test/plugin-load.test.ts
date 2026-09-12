@@ -113,7 +113,7 @@ describe('plugin-contributions: загрузка плагинов', () => {
     // Решение 4).
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', './plugins/местный', './plugins/local.mjs'],
+      ['backend-claude', 'step-decision', './plugins/местный', './plugins/local.mjs'],
     );
     // `Config.plugins` — модули: псевдоспецификатора встроенной строки в нём нет.
     assert.deepEqual(config.config.plugins, ['./plugins/местный', './plugins/local.mjs']);
@@ -249,6 +249,30 @@ describe('plugin-contributions: загрузка плагинов', () => {
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /steps\.0\.document/);
+        return true;
+      },
+    );
+  });
+
+  it('waits не значением true отказывает при загрузке с названной причиной', async () => {
+    // Дельта `step-kinds`: «вклад получает отказ с названной причиной».
+    // Способность ожидания даётся ровно по этому полю, поэтому `waits: false`
+    // — не «как раньше», а попытка объявить несуществующую третью
+    // возможность; проглотить её молча значило бы оставить автора вклада в
+    // уверенности, что он сроком распорядился.
+    const place = bed();
+    writeModule(
+      join(place.root, '.stepcast', 'plugins', 'мнимое-ожидание.mjs'),
+      'export default { name: "steps-waits", steps: [{ name: "http", title: "HTTP", fields: { type: "object" }, waits: false, execute: () => ({}) }] };\n',
+    );
+    const config = resolved(place, { project: 'plugins: ["./plugins/мнимое-ожидание.mjs"]\n' });
+
+    await assert.rejects(
+      () => loadPlugins(config, { projectRoot: place.root }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /steps\.0\.waits/);
+        assert.match(error.message, /waits: true/);
         return true;
       },
     );

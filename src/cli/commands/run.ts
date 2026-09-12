@@ -12,6 +12,7 @@ import { runPipeline } from '../../core/run/runner.js';
 import type { UsageSnapshot } from '../../core/budget/accumulator.js';
 import { renderProgressLine } from '../progress.js';
 import { formatDiagnostic } from './lint.js';
+import { continueRestartChain } from './resume.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -91,6 +92,20 @@ export async function runRunCommand(
       write(`наложить результат на текущее дерево: stepcast apply ${runId}`);
     }
 
+    if (result.restart !== undefined) {
+      // Сигнал отмены идёт в цепочку: обработчики SIGINT/SIGTERM стоят до
+      // конца команды, и звено цепочки обязано слушать тот же контроллер —
+      // иначе Ctrl-C на ожидающем звене не отменял бы ничего.
+      return continueRestartChain(
+        result.restart.from,
+        result.journal.paths,
+        config,
+        cwd,
+        write,
+        registry,
+        controller.signal,
+      );
+    }
     return result.exitCode;
   } catch (error) {
     if (!isStepcastError(error)) throw error;

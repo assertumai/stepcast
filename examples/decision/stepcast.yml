@@ -1,0 +1,49 @@
+# Шаг decision между проверкой и применением (user-decision-steps) — точка,
+# на которой прогон останавливается и ждёт решения человека. Экран «Решения»
+# витрины (`/decisions`, docs/decisions.md) виден на этом пайплайне вживую.
+#
+#   stepcast lint examples/decision/stepcast.yml
+#   stepcast run  examples/decision/stepcast.yml
+#
+# Прогон доходит до работы gate и останавливается. Дальше решает человек:
+#
+#   stepcast decide <run> approve                    # продолжить к apply
+#   stepcast decide <run> deny --reason "рано"        # отклонить, прогон отменён
+#   stepcast decide <run> redo --from check/inspect   # начать заново с проверки
+
+version: 1
+kind: pipeline
+name: decision-gate
+
+workspace:
+  mode: cwd
+
+jobs:
+  check:
+    description: Подготовить план применения
+    steps:
+      - id: inspect
+        run: [sh, -c, 'echo "план применения готов"']
+        expect: [{ exit_code: 0 }]
+
+  gate:
+    description: Согласовать план с человеком, прежде чем применять
+    needs: [check]
+    steps:
+      - id: approve
+        decision:
+          prompt: Применить план из check к рабочему дереву?
+          outcomes:
+            approve: continue
+            deny: { effect: reject, label: Отклонить }
+            redo: { effect: restart, label: "Проверить заново" }
+          deadline: 1h
+          on_expire: deny
+
+  apply:
+    description: Применить согласованный план
+    needs: [gate]
+    steps:
+      - id: run-apply
+        run: [sh, -c, 'echo "применено"']
+        expect: [{ exit_code: 0 }]

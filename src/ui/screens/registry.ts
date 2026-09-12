@@ -9,7 +9,7 @@ import type { Kernel } from '../../core/plugins/kernel.js';
 import type { KernelCache } from '../pipelines.js';
 import type { PluginsOverview } from '../plugins.js';
 import type { Watcher } from '../watcher.js';
-import type { LaunchRunFn } from '../runLaunch.js';
+import type { LaunchDecideFn, LaunchRunFn } from '../runLaunch.js';
 import type { ScreenDeclaration } from './declaration.js';
 
 export type { ScreenDeclaration, ScreenListing } from './declaration.js';
@@ -82,6 +82,13 @@ export interface RequestEnv {
    * подстановка в проверках не трогает механизм диспетчера.
    */
   readonly launchRun: LaunchRunFn;
+  /**
+   * Приём решения (`user-decision-steps`, design.md решение 5) — отсоединённое
+   * порождение `stepcast decide`, тем же приёмом, что `launchRun`. Маршрут
+   * проверяет запрос по состоянию прогона сам и зовёт это поле уже с
+   * проверенными значениями; демон в файлы прогонов по-прежнему не пишет.
+   */
+  readonly launchDecide: LaunchDecideFn;
 }
 
 export type ApiHandler = (req: IncomingMessage, res: ServerResponse, env: RequestEnv) => void | Promise<void>;

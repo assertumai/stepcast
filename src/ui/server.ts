@@ -17,7 +17,7 @@ import {
 import type { ActiveScreen, RequestEnv } from './screens/registry.js';
 import { isApiPath, isPluginPath, isSafeSegment, isSharedPath, isWidgetPath } from './routes.js';
 import { createWatcher, type Watcher } from './watcher.js';
-import { launchRun as defaultLaunchRun, type LaunchRunFn } from './runLaunch.js';
+import { launchDecide as defaultLaunchDecide, launchRun as defaultLaunchRun, type LaunchDecideFn, type LaunchRunFn } from './runLaunch.js';
 import {
   createWidgetCompiler,
   errorModuleText,
@@ -87,6 +87,12 @@ export interface UiServerOptions {
    * порождать процесс на каждый вызов (`ui-daemon`, Решение 13).
    */
   readonly launchRun?: LaunchRunFn;
+  /**
+   * Приём решения по `POST /api/run/decision`. По умолчанию — настоящий
+   * отсоединённый процесс `stepcast decide` (`src/ui/runLaunch.ts`); подмена
+   * нужна проверкам по той же причине, что и у `launchRun`.
+   */
+  readonly launchDecide?: LaunchDecideFn;
 }
 
 export interface UiServer {
@@ -444,6 +450,7 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
       activePlugins,
       activeScreens,
       launchRun: options.launchRun ?? defaultLaunchRun,
+      launchDecide: options.launchDecide ?? defaultLaunchDecide,
     };
     await handler(req, res, env);
   }

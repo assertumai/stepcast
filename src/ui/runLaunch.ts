@@ -47,3 +47,43 @@ export const launchRun: LaunchRunFn = (options) => {
   });
   child.unref();
 };
+
+export interface LaunchDecideOptions {
+  /** Корень проекта — рабочий каталог дочернего процесса. */
+  readonly cwd: string;
+  readonly run: string;
+  readonly outcome: string;
+  readonly step?: string;
+  readonly reason?: string;
+  readonly from?: string;
+  readonly execPath?: string;
+  readonly onError?: (error: Error) => void;
+}
+
+export type LaunchDecideFn = (options: LaunchDecideOptions) => void;
+
+/**
+ * Породить `stepcast decide <run> <outcome>` отсоединённым процессом — тем же
+ * приёмом, что `launchRun` (design.md изменения `user-decision-steps`,
+ * решение 5): демон в файлы прогонов не пишет, единственный писатель решения
+ * — бинарь. Проверка запроса — до порождения, в маршруте демона; здесь
+ * порождается уже проверенная команда.
+ */
+export const launchDecide: LaunchDecideFn = (options) => {
+  const argv = [binPath(), 'decide', options.run, options.outcome];
+  if (options.step !== undefined) argv.push('--step', options.step);
+  if (options.reason !== undefined) argv.push('--reason', options.reason);
+  if (options.from !== undefined) argv.push('--from', options.from);
+
+  const child = spawn(options.execPath ?? process.execPath, argv, {
+    cwd: options.cwd,
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.on('error', (error) => {
+    const report =
+      options.onError ?? ((cause: Error) => process.stderr.write(`stepcast decide не запустился: ${cause.message}\n`));
+    report(error);
+  });
+  child.unref();
+};

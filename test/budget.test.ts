@@ -828,6 +828,30 @@ describe('budget-wait-on-exceed: аккумулятор', () => {
     );
   });
 
+  // Дельта `step-execution` изменения `user-decision-steps`: «Ожидание решения
+  // MUST NOT проверяться против предела ожидания окна лимита».
+  it('ожидание решения не исчерпывает предел ожидания окна лимита', () => {
+    const usage = new UsageAccumulator(() => 1);
+    usage.recordWait(0, 8 * 60 * 60 * 1000, 'decision');
+    assert.equal(usage.totalWaitMs(), 0, 'терпение человека не считается ожиданием окна лимита');
+    assert.equal(
+      usage.wouldExceedMaxWait(60_000, 6 * 60 * 60 * 1000),
+      false,
+      'восьмичасовое ожидание решения не должно отказывать ближайшему сну до сброса окна',
+    );
+  });
+
+  it('ожидание решения всё же вычитается из времени прогона', () => {
+    const usage = new UsageAccumulator(() => 1);
+    const startedAt = Date.now() - 1_000;
+    usage.recordWait(startedAt, startedAt + 900, 'decision');
+
+    const found = usage.check([
+      { kind: 'job', name: 'работа', jobId: 'j', startedAt, budget: { wallclockMs: 500, onExceed: 'stop' } },
+    ]);
+    assert.equal(found, undefined, 'потолок времени мерит работу движка, а не терпение человека');
+  });
+
   it('предел max_wait исчерпывается объединением, а не суммой', () => {
     const usage = new UsageAccumulator(() => 1);
     usage.recordWait(0, 600_000);

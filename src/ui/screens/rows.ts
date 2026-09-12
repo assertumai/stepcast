@@ -10,6 +10,7 @@ import { ApiService, ScreensService, screenRow, type ApiHandler, type RequestEnv
 import { row as agentsRow } from './agents/server.js';
 import { row as backlogRow } from './backlog/server.js';
 import { row as cleanupRow } from './cleanup/server.js';
+import { row as decisionsRow } from './decisions/server.js';
 import { row as pipelinesRow } from './pipelines/server.js';
 import { row as routesRow } from './routes/server.js';
 import { row as runRow } from './run/server.js';
@@ -229,6 +230,7 @@ export const SCREEN_ROWS: readonly BuiltinRow[] = [
   runRow,
   pipelinesRow,
   stepsRow,
+  decisionsRow,
   widgetsRow,
   backlogRow,
   usageRow,

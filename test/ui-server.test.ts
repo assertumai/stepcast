@@ -28,7 +28,7 @@ import {
   type KernelCache,
 } from '../src/ui/pipelines.js';
 import { hrefFor, type RouteTable } from '../src/ui/routes.js';
-import { launchRun } from '../src/ui/runLaunch.js';
+import { launchDecide, launchRun } from '../src/ui/runLaunch.js';
 import { declaration as runDeclaration } from '../src/ui/screens/run/declaration.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
@@ -4509,5 +4509,147 @@ describe('ui-daemon: POST /api/run', () => {
     assert.equal(overview.code, 200);
     const dashboards = await fetchJson(server, '/api/dashboards');
     assert.equal(dashboards.code, 200);
+  });
+});
+
+describe('ui-daemon: POST /api/run/decision', () => {
+  interface Decided {
+    readonly cwd: string;
+    readonly run: string;
+    readonly outcome: string;
+    readonly step?: string;
+    readonly reason?: string;
+    readonly from?: string;
+  }
+
+  function stubDecide(): { launchDecide: (options: Decided) => void; calls: Decided[] } {
+    const calls: Decided[] = [];
+    return { launchDecide: (options) => calls.push(options), calls };
+  }
+
+  const AWAITING = [
+    {
+      wait_id: 'w1',
+      job: 'apply',
+      step: 'gate',
+      outcomes: { approve: { effect: 'continue' as const }, deny: { effect: 'reject' as const }, redo: { effect: 'restart' as const } },
+      since: '2026-08-01T00:00:00.000Z',
+    },
+  ];
+
+  it('запрос по проверенному прогону порождает stepcast decide и ничего не пишет в его каталог', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    const journal = seedRun(runsRoot, projectRoot, { runId: 'seed', status: 'running', awaiting: AWAITING });
+    const key = projectKey(projectRoot);
+    const { launchDecide, calls } = stubDecide();
+    const server = await createUiServer({ runsRoot, port: 0, launchDecide });
+    t.after(() => server.close());
+
+    const before = readFileSync(journal.paths.status, 'utf8');
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/run/decision',
+      body: JSON.stringify({ run: `${key}/seed`, outcome: 'approve' }),
+    });
+
+    assert.equal(written.code, 202);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.cwd, projectRoot);
+    assert.equal(calls[0]?.run, 'seed');
+    assert.equal(calls[0]?.outcome, 'approve');
+    // Демон в файлы прогонов не пишет (design.md, решение 5) — состояние
+    // осталось байт в байт тем же, что и до запроса.
+    assert.equal(readFileSync(journal.paths.status, 'utf8'), before);
+  });
+
+  it('неизвестный проект отклонён без единого пуска', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { launchDecide, calls } = stubDecide();
+    const server = await createUiServer({ runsRoot, port: 0, launchDecide });
+    t.after(() => server.close());
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/run/decision',
+      body: JSON.stringify({ run: 'нет-такого/seed', outcome: 'approve' }),
+    });
+    assert.equal(written.code, 400);
+    assert.equal(calls.length, 0);
+  });
+
+  it('прогон без ожиданий отклонён без единого пуска', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'seed', status: 'success' });
+    const key = projectKey(projectRoot);
+    const { launchDecide, calls } = stubDecide();
+    const server = await createUiServer({ runsRoot, port: 0, launchDecide });
+    t.after(() => server.close());
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/run/decision',
+      body: JSON.stringify({ run: `${key}/seed`, outcome: 'approve' }),
+    });
+    assert.equal(written.code, 400);
+    assert.equal(calls.length, 0);
+  });
+
+  it('исход вне перечня ожидания отклонён без единого пуска', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'seed', status: 'running', awaiting: AWAITING });
+    const key = projectKey(projectRoot);
+    const { launchDecide, calls } = stubDecide();
+    const server = await createUiServer({ runsRoot, port: 0, launchDecide });
+    t.after(() => server.close());
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/run/decision',
+      body: JSON.stringify({ run: `${key}/seed`, outcome: 'nonsense' }),
+    });
+    assert.equal(written.code, 400);
+    assert.equal(calls.length, 0);
+  });
+
+  it('отказ порождения не роняет демон', async () => {
+    const { projectRoot } = makeJournalBed();
+    const errors: Error[] = [];
+    launchDecide({
+      cwd: projectRoot,
+      run: 'seed',
+      outcome: 'approve',
+      execPath: join(projectRoot, 'нет-такого-узла'),
+      onError: (error) => errors.push(error),
+    });
+    await settle();
+    assert.equal(errors.length, 1);
+    assert.match(errors[0]?.message ?? '', /ENOENT/);
+  });
+
+  it('отключение строки screen-decisions патчем убирает маршрут и экран', async (t) => {
+    const { runsRoot } = makeJournalBed();
+    const { home } = makeJournalBed();
+    mkdirSync(join(home, '.stepcast'), { recursive: true });
+    writeFileSync(
+      join(home, '.stepcast', 'plugins.patch.yml'),
+      'version: 1\nkind: plugins-patch\nplugins:\n  - id: screen-decisions\n    use: stepcast:screen-decisions\n    enabled: false\n',
+    );
+    const server = await createUiServer({ runsRoot, home, port: 0 });
+    t.after(() => server.close());
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/run/decision',
+      body: '{}',
+    });
+    assert.equal(written.code, 404);
+
+    const screens = await fetchJson(server, '/api/screens');
+    assert.equal(screens.code, 200);
+    const ids = (screens.json as { screens: { id: string }[] }).screens.map((entry) => entry.id);
+    assert.ok(!ids.includes('screen-decisions'));
+
+    const overview = await fetchJson(server, '/api/overview');
+    assert.equal(overview.code, 200);
   });
 });

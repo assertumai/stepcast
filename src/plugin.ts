@@ -13,16 +13,29 @@ export type {
   ContextPlugin,
   ContextPluginFunction,
   ContextPluginObject,
+  DecisionEffect,
+  DecisionOutcome,
   LintSite,
   LoadedPlugin,
   PluginDiagnostic,
   PredicateContribution,
   StepcastPlugin,
   StepKindContribution,
+  StepKindDecisionRequest,
+  StepKindDecisionResult,
+  StepKindDecisions,
   StepKindInput,
   StepKindLog,
   StepKindOutcome,
 } from './core/plugins/contract.js';
+
+/**
+ * Разбор длительностей — единственный диалог для полей полей длительности в
+ * документе, будь то поле конфигурации или поле вклада (design.md изменения
+ * `user-decision-steps`, решение 7): второй диалект длительностей был бы
+ * худшим из возможных расширений.
+ */
+export { parseDuration } from './core/units.js';
 
 /** Строка дерева плагинов: то, что команда получает в `CommandEnv.pluginTree`. */
 export type { TreeRow, TreeRowSource } from './core/plugins/tree.js';

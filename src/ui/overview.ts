@@ -11,7 +11,7 @@ import {
   type JournalProblem,
 } from '../core/journal/reader.js';
 import { runPaths } from '../core/journal/paths.js';
-import type { StatusValue, UsageRecord } from '../core/journal/schema.js';
+import type { AwaitingDecision, StatusValue, UsageRecord } from '../core/journal/schema.js';
 import { readUsageStore } from '../core/journal/usageStore.js';
 
 /**
@@ -45,6 +45,12 @@ export interface RunOverview {
   readonly finishedAt?: string;
   /** Прогон спит до сброса окна лимита: отличает сон от зависания. */
   readonly wakeAt?: string;
+  /**
+   * Ожидания решения человека, идущие прямо сейчас (`user-decision-steps`,
+   * design.md решение 2, решение 11): тем же полем, что и `wake_at`, читается
+   * из состояния без нового маршрута — экран «Решения» берёт этот же обзор.
+   */
+  readonly awaiting?: readonly AwaitingDecision[];
   /** Прогон после уборки: подробностей на диске уже нет, но каталог остался. */
   readonly swept: boolean;
   /**
@@ -166,6 +172,7 @@ function readRun(
   let finishedAt: string | undefined;
   let status: StatusValue | undefined;
   let wakeAt: string | undefined;
+  let awaiting: readonly AwaitingDecision[] | undefined;
   let usage: RunUsageOverview | undefined;
   let usageProblem: JournalProblem | undefined;
 
@@ -184,6 +191,7 @@ function readRun(
   if (state !== undefined) {
     status = state.status;
     wakeAt = state.wake_at;
+    awaiting = state.awaiting;
     if (pipeline === '') pipeline = state.pipeline;
 
     // Расход читается тем же проходом: сводка, если уже записана и проходит
@@ -242,6 +250,7 @@ function readRun(
     ...(startedAt === undefined ? {} : { startedAt }),
     ...(finishedAt === undefined ? {} : { finishedAt }),
     ...(wakeAt === undefined ? {} : { wakeAt }),
+    ...(awaiting === undefined || awaiting.length === 0 ? {} : { awaiting }),
     ...(durationMs === undefined ? {} : { durationMs }),
     // Каталог работ исчезает только после уборки: движок создаёт его всегда.
     swept: !existsSync(paths.jobs),

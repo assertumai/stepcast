@@ -4,7 +4,15 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
-import { buildPublishedSchemas, type PluginPredicateEntry } from '../src/core/pipeline/published-schema.js';
+import {
+  buildPublishedSchemas,
+  pluginPredicateEntries,
+  pluginStepKindEntries,
+  type PluginPredicateEntry,
+} from '../src/core/pipeline/published-schema.js';
+import { builtinRegistry, createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
+import { registryFromKernel } from '../src/core/plugins/registry.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -67,9 +75,16 @@ function expectBoth(
   }
 }
 
-describe('published-schema: печать при пустом перечне плагинных предикатов', () => {
+describe('published-schema: печать встроенного дерева', () => {
   it('совпадает с schema/pipeline.schema.json и schema/job.schema.json побайтово', () => {
-    const { pipeline, job, notes } = buildPublishedSchemas();
+    // Пустой перечень предикатов, но не видов шага: `decision`
+    // (`user-decision-steps`) — первый плагинный вид, идущий в поставке
+    // строкой дерева, и схема пакета обязана знать его ветвь.
+    const registry = builtinRegistry();
+    const { pipeline, job, notes } = buildPublishedSchemas(
+      pluginPredicateEntries(registry),
+      pluginStepKindEntries(registry),
+    );
 
     assert.deepEqual(notes, []);
 
@@ -83,6 +98,20 @@ describe('published-schema: печать при пустом перечне пл
     // каким `generate-schema.ts` пишет файл.
     assert.equal(`${JSON.stringify(pipeline, null, 2)}\n`, expectedPipelineText);
     assert.equal(`${JSON.stringify(job, null, 2)}\n`, expectedJobText);
+  });
+
+  it('не называет отличием от себя вид шага встроенной строки', () => {
+    const registry = builtinRegistry();
+    const { pipeline, job } = buildPublishedSchemas(
+      pluginPredicateEntries(registry),
+      pluginStepKindEntries(registry),
+    );
+
+    // Строка «Проект дополнительно знает …» называет отличие схемы проекта ОТ
+    // поставляемой: в самой поставляемой ей стоять негде — `decision` есть и в
+    // ней (`user-decision-steps`, находка ревью).
+    assert.equal(pipeline['description'], undefined);
+    assert.equal(job['description'], undefined);
   });
 });
 
@@ -134,7 +163,7 @@ describe('published-schema: непригодная схема значения �
     const schemas = buildPublishedSchemas([good, withRef]);
 
     assert.equal(schemas.notes.length, 1);
-    assert.equal(schemas.notes[0]?.predicate, 'http_ok');
+    assert.equal(schemas.notes[0]?.name, 'http_ok');
     assert.equal(schemas.notes[0]?.plugin, 'http-checks');
     assert.match(schemas.notes[0]?.reason ?? '', /\$ref/);
 
@@ -181,7 +210,7 @@ describe('published-schema: непригодная схема значения �
     const schemas = buildPublishedSchemas([good, broken]);
 
     assert.equal(schemas.notes.length, 1);
-    assert.equal(schemas.notes[0]?.predicate, 'http_ok');
+    assert.equal(schemas.notes[0]?.name, 'http_ok');
     assert.equal(schemas.notes[0]?.plugin, 'http-checks');
 
     expectBoth(schemas, { text_has: 'ok' }, true);
@@ -203,7 +232,7 @@ describe('published-schema: непригодная схема значения �
       const schemas = buildPublishedSchemas([good, withKey]);
 
       assert.equal(schemas.notes.length, 1);
-      assert.equal(schemas.notes[0]?.predicate, 'http_ok');
+      assert.equal(schemas.notes[0]?.name, 'http_ok');
       assert.match(schemas.notes[0]?.reason ?? '', new RegExp(`\\${key}`));
 
       expectBoth(schemas, { http_ok: 'что угодно' }, true);
@@ -228,6 +257,81 @@ describe('published-schema: непригодная схема значения �
       expectBoth(schemas, { [name]: 'что угодно' }, true);
     }
     expectBoth(schemas, { text_has: 42 }, false);
+  });
+});
+
+// Сценарий user-decision-steps: «Ветвь вида шага в печати схемы пайплайна»
+describe('published-schema: ветвь вида шага', () => {
+  it('ветвь decision в поставляемой схеме проверяет форму своих полей', () => {
+    const registry = builtinRegistry();
+    const { pipeline, job } = buildPublishedSchemas(
+      pluginPredicateEntries(registry),
+      pluginStepKindEntries(registry),
+    );
+    const validateJob = compileAny(job);
+    const validatePipeline = compileAny(pipeline);
+
+    const good = { id: 'gate', decision: { prompt: 'продолжить?', outcomes: { approve: 'continue' } } };
+    assert.equal(validateJob({ version: 1, kind: 'job', steps: [good] }), true);
+    assert.equal(
+      validatePipeline({ version: 1, kind: 'pipeline', name: 'проверка', jobs: { build: { steps: [good] } } }),
+      true,
+    );
+
+    // Форма полей проверяется: outcomes обязателен.
+    const bad = { id: 'gate', decision: { prompt: 'продолжить?' } };
+    assert.equal(validateJob({ version: 1, kind: 'job', steps: [bad] }), false);
+  });
+
+  it('невложимая схема полей вида шага не отменяет печати ключа, а называет причину', () => {
+    const stepKinds = [{ name: 'http_probe', fields: { $ref: '#/$defs/чужое' }, owner: 'http-checks' }];
+
+    const schemas = buildPublishedSchemas([], stepKinds);
+
+    assert.equal(schemas.notes.length, 1);
+    assert.equal(schemas.notes[0]?.kind, 'step_kind');
+    assert.equal(schemas.notes[0]?.name, 'http_probe');
+    assert.match(schemas.notes[0]?.reason ?? '', /\$ref/);
+
+    // Ключ признан — поля не ограничены.
+    const validateJob = compileAny(schemas.job);
+    assert.equal(
+      validateJob({ version: 1, kind: 'job', steps: [{ id: 's', http_probe: { что: 'угодно' } }] }),
+      true,
+    );
+  });
+
+  it('схема проекта знает плагинный вид шага действующего реестра', async () => {
+    const kernel = createBuiltinKernel();
+    const registry = registryFromKernel(kernel);
+    await applyDeclarativePlugin(
+      kernel,
+      {
+        name: 'example-steps',
+        steps: [
+          {
+            name: 'http_probe',
+            title: 'Проба HTTP',
+            fields: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+            execute: () => ({ exitCode: 0 }),
+          },
+        ],
+      },
+      '<synthetic>',
+    );
+
+    const { job, pipeline } = buildPublishedSchemas(pluginPredicateEntries(registry), pluginStepKindEntries(registry));
+    const validateJob = compileAny(job);
+
+    assert.equal(
+      validateJob({ version: 1, kind: 'job', steps: [{ id: 's', http_probe: { url: 'https://example.org' } }] }),
+      true,
+    );
+
+    // Отличие от поставляемой схемы названо — и названо только плагинным
+    // видом: встроенный `decision` есть и в ней.
+    assert.match(String(pipeline['description']), /http_probe/);
+    assert.ok(!String(pipeline['description']).includes('decision'), String(pipeline['description']));
   });
 });
 

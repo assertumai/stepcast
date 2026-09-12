@@ -3,15 +3,21 @@ import { z } from 'zod';
 // (`expand.ts`): «пригодна» здесь значит именно «примет ajv при разборе».
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
-import { buildDocumentSchemas } from './schema.js';
+import { buildDocumentSchemas, STEP_COMMON_KEYS } from './schema.js';
+import { isBuiltinStepKind, type StepKindContribution } from '../plugins/contract.js';
+import { BUILTIN_OWNER } from '../plugins/kernel.js';
 import { contributionOwner, type Registry } from '../plugins/registry.js';
 
 /**
  * Печать JSON Schema документов пайплайна и работы — общий код для схемы
  * пакета (пустой перечень, `scripts/generate-schema.ts`) и схемы проекта
- * (перечень предикатов действующего реестра, `stepcast schema`). Схема
- * значения печатается вложением в уже напечатанный JSON, а не построением: у
- * `z.toJSONSchema` о JSON Schema плагина знания нет (design.md, решение 2).
+ * (перечень предикатов и видов шага действующего реестра, `stepcast schema`).
+ * Схема значения печатается вложением в уже напечатанный JSON, а не
+ * построением: у `z.toJSONSchema` о JSON Schema плагина знания нет
+ * (design.md, решение 2). Ветвь вида шага (`user-decision-steps`, design.md
+ * решение 12) вкладывается тем же приёмом узла-метки, каким вкладывается
+ * схема значения предиката, — отличие только в форме узла: у предиката это
+ * единственное свойство, у шага — своё имя рядом с общей частью шага.
  */
 
 /** Плагинный предикат для печати: имя, схема значения и внёсший его плагин. */
@@ -21,9 +27,25 @@ export interface PluginPredicateEntry {
   readonly owner: string;
 }
 
+/** Плагинный вид шага для печати: имя, JSON Schema полей и внёсший его плагин. */
+export interface PluginStepKindEntry {
+  readonly name: string;
+  readonly fields: Readonly<Record<string, unknown>>;
+  readonly owner: string;
+  /**
+   * Вид, внесённый встроенной строкой дерева (`decision`): печатается он так
+   * же, как плагинный, но отличием проекта от поставляемой схемы не является —
+   * поставляемая схема его уже знает. Иначе строка «Проект дополнительно
+   * знает…» стояла бы в самой поставляемой схеме, называя её отличием от себя.
+   */
+  readonly builtin?: boolean;
+}
+
 /** Схема значения, которую нельзя вложить в документ, — с причиной. */
 export interface PublishedSchemaNote {
-  readonly predicate: string;
+  /** Различает предикат и вид шага — оба вкладываются одним и тем же приёмом узла-метки. */
+  readonly kind: 'predicate' | 'step_kind';
+  readonly name: string;
   readonly plugin: string;
   readonly reason: string;
 }
@@ -100,7 +122,7 @@ function unusableReason(schema: Readonly<Record<string, unknown>>): string | und
  * случайно этому узлу не с чем: пустая схема значения печатается только в
  * этой ветви (`z.unknown()` в моделях документа больше нигде не стоит).
  */
-function labelName(node: unknown, names: ReadonlySet<string>): string | undefined {
+function predicateLabelName(node: unknown, names: ReadonlySet<string>): string | undefined {
   if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined;
   const obj = node as Record<string, unknown>;
   if (obj['type'] !== 'object' || obj['additionalProperties'] !== false) return undefined;
@@ -121,32 +143,93 @@ function labelName(node: unknown, names: ReadonlySet<string>): string | undefine
   return name;
 }
 
-/** Заменить узлы-метки схемами значений — рекурсивно, во всех точках сразу. */
-function inlineValues(node: unknown, names: ReadonlySet<string>, values: ReadonlyMap<string, unknown>): void {
+/**
+ * Узел-метка плагинного вида шага (`user-decision-steps`, design.md решение
+ * 12): в отличие от предиката, вид шага делит объект с общей частью шага
+ * (`id`, `expect`, `timeout`, …) — узел опознаётся не единственным свойством,
+ * а ровно одним свойством *сверх* общей части, чьё имя — из перечня видов
+ * шага и чья схема пуста.
+ */
+function stepKindLabelName(node: unknown, names: ReadonlySet<string>): string | undefined {
+  if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined;
+  const obj = node as Record<string, unknown>;
+  if (obj['type'] !== 'object' || obj['additionalProperties'] !== false) return undefined;
+
+  const properties = obj['properties'];
+  if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) return undefined;
+  const commonKeys = new Set<string>(STEP_COMMON_KEYS);
+  const extra = Object.keys(properties as Record<string, unknown>).filter((key) => !commonKeys.has(key));
+  const name = extra.length === 1 ? extra[0] : undefined;
+  if (name === undefined || !names.has(name)) return undefined;
+
+  const value = (properties as Record<string, unknown>)[name];
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  if (Object.keys(value).length !== 0) return undefined;
+
+  return name;
+}
+
+/** Заменить узлы-метки схемами значений и полей — рекурсивно, во всех точках сразу. */
+function inlineValues(
+  node: unknown,
+  predicateNames: ReadonlySet<string>,
+  predicateValues: ReadonlyMap<string, unknown>,
+  stepKindNames: ReadonlySet<string>,
+  stepKindValues: ReadonlyMap<string, unknown>,
+): void {
   if (Array.isArray(node)) {
-    for (const item of node) inlineValues(item, names, values);
+    for (const item of node) inlineValues(item, predicateNames, predicateValues, stepKindNames, stepKindValues);
     return;
   }
   if (node === null || typeof node !== 'object') return;
 
-  const name = labelName(node, names);
-  if (name !== undefined) {
+  const predicateName = predicateLabelName(node, predicateNames);
+  if (predicateName !== undefined) {
     // Имени нет в карте — значение остаётся неограниченным: так печатается и
     // предикат с непригодной схемой значения (design.md, решение 3).
     const obj = node as { properties: Record<string, unknown> };
-    obj.properties = { ...obj.properties, [name]: values.get(name) ?? {} };
+    obj.properties = { ...obj.properties, [predicateName]: predicateValues.get(predicateName) ?? {} };
     return;
   }
 
-  for (const value of Object.values(node as Record<string, unknown>)) inlineValues(value, names, values);
+  const stepName = stepKindLabelName(node, stepKindNames);
+  if (stepName !== undefined) {
+    const obj = node as { properties: Record<string, unknown> };
+    obj.properties = { ...obj.properties, [stepName]: stepKindValues.get(stepName) ?? {} };
+    return;
+  }
+
+  for (const value of Object.values(node as Record<string, unknown>)) {
+    inlineValues(value, predicateNames, predicateValues, stepKindNames, stepKindValues);
+  }
 }
 
-/** Строка в description корня, называющая отличие от поставляемой схемы. */
-function describeExtension(predicates: readonly PluginPredicateEntry[]): string {
-  const parts = [...predicates]
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((entry) => `${entry.name} (${entry.owner})`);
-  return `Проект дополнительно знает предикаты плагинов: ${parts.join(', ')}.`;
+/**
+ * Строка в description корня, называющая отличие от поставляемой схемы, либо
+ * ничего, если отличия нет. Виды шага встроенных строк дерева отличием не
+ * считаются: они есть и в поставляемой схеме, и назвать их значило бы написать
+ * в поставляемой схеме, чем она отличается от себя самой.
+ */
+function describeExtension(
+  predicates: readonly PluginPredicateEntry[],
+  stepKinds: readonly PluginStepKindEntry[],
+): string | undefined {
+  const parts: string[] = [];
+  if (predicates.length > 0) {
+    const list = [...predicates]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((entry) => `${entry.name} (${entry.owner})`);
+    parts.push(`предикаты плагинов: ${list.join(', ')}`);
+  }
+  const fromPlugins = stepKinds.filter((entry) => entry.builtin !== true);
+  if (fromPlugins.length > 0) {
+    const list = [...fromPlugins]
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((entry) => `${entry.name} (${entry.owner})`);
+    parts.push(`виды шага плагинов: ${list.join(', ')}`);
+  }
+  if (parts.length === 0) return undefined;
+  return `Проект дополнительно знает ${parts.join('; ')}.`;
 }
 
 function printDocument(schema: z.ZodType, title: string): Record<string, unknown> {
@@ -161,15 +244,21 @@ interface Documents {
   readonly job: Record<string, unknown>;
 }
 
-/** Напечатать оба документа и вложить в них названные схемы значений. */
-function assemble(names: readonly string[], values: ReadonlyMap<string, unknown>): Documents {
-  const { PipelineDocumentSchema, JobDocumentSchema } = buildDocumentSchemas(names);
+/** Напечатать оба документа и вложить в них названные схемы значений и полей. */
+function assemble(
+  predicateNames: readonly string[],
+  predicateValues: ReadonlyMap<string, unknown>,
+  stepKindNames: readonly string[],
+  stepKindValues: ReadonlyMap<string, unknown>,
+): Documents {
+  const { PipelineDocumentSchema, JobDocumentSchema } = buildDocumentSchemas(predicateNames, stepKindNames);
   const pipeline = printDocument(PipelineDocumentSchema, 'stepcast pipeline');
   const job = printDocument(JobDocumentSchema, 'stepcast job');
-  if (names.length > 0) {
-    const nameSet = new Set(names);
-    inlineValues(pipeline, nameSet, values);
-    inlineValues(job, nameSet, values);
+  if (predicateNames.length > 0 || stepKindNames.length > 0) {
+    const predicateNameSet = new Set(predicateNames);
+    const stepKindNameSet = new Set(stepKindNames);
+    inlineValues(pipeline, predicateNameSet, predicateValues, stepKindNameSet, stepKindValues);
+    inlineValues(job, predicateNameSet, predicateValues, stepKindNameSet, stepKindValues);
   }
   return { pipeline, job };
 }
@@ -212,65 +301,137 @@ export function pluginPredicateEntries(registry: Registry): PluginPredicateEntry
 }
 
 /**
+ * Перечень плагинных (не встроенных) видов шага действующего реестра — общий
+ * для команды `stepcast schema` и для сверки линта, тем же образцом, что и
+ * `pluginPredicateEntries`. Встроенные виды (`agent`, `run`, `script`,
+ * `uses`, `decision`) уже описаны публикуемой схемой напрямую и сюда не
+ * попадают — `isBuiltinStepKind` отличает форму `document` от настоящего
+ * вклада, но не отличает встроенную СТРОКУ от плагинной: `decision` формой
+ * `document` не обладает и потому виден здесь как обычный плагинный вид.
+ * Печать это не портит — вложенная схема его полей ровно то, что нужно
+ * поставляемой схеме пакета (design.md, решение 12).
+ */
+export function pluginStepKindEntries(registry: Registry): PluginStepKindEntry[] {
+  return [...registry.steps.entries()]
+    .filter((entry): entry is [string, StepKindContribution] => !isBuiltinStepKind(entry[1]))
+    .map(([name, contribution]) => {
+      const owner = contributionOwner(registry, 'steps', name) ?? name;
+      return {
+        name,
+        fields: contribution.fields,
+        owner,
+        // Вклад встроенной строки дерева внесён на корневой области ядра и
+        // потому числится за «встроенным» владельцем (`kernel.ts`): печатается
+        // он наравне с плагинным, но отличием проекта от поставляемой схемы не
+        // считается — та его уже знает.
+        ...(owner === BUILTIN_OWNER ? { builtin: true } : {}),
+      };
+    });
+}
+
+/**
  * Печатает JSON Schema документов пайплайна и работы по перечню плагинных
- * предикатов. Пустой перечень даёт в точности то, что поставляет пакет
- * (design.md, решение 4): фабрика `buildDocumentSchemas` при пустом перечне
- * возвращает встроенный набор без объединения, и подставлять нечего —
+ * предикатов и видов шага. Оба перечня пустые дают в точности то, что
+ * поставляет пакет (design.md, решение 4): фабрика `buildDocumentSchemas` без
+ * имён возвращает встроенный набор без объединения, и подставлять нечего —
  * `description` при этом не заводится вовсе.
  */
-export function buildPublishedSchemas(predicates: readonly PluginPredicateEntry[] = []): PublishedSchemas {
-  const names = predicates.map((entry) => entry.name);
+export function buildPublishedSchemas(
+  predicates: readonly PluginPredicateEntry[] = [],
+  stepKinds: readonly PluginStepKindEntry[] = [],
+): PublishedSchemas {
+  const predicateNames = predicates.map((entry) => entry.name);
+  const stepKindNames = stepKinds.map((entry) => entry.name);
 
-  if (predicates.length === 0) {
-    const { pipeline, job } = assemble(names, new Map());
+  if (predicates.length === 0 && stepKinds.length === 0) {
+    const { pipeline, job } = assemble([], new Map(), [], new Map());
     return { pipeline, job, notes: [] };
   }
 
   // Вложена только пригодная схема; имени в карте нет — значение остаётся
   // неограниченным. Невложимая схема не отменяет генерации: ключ предиката
-  // всё равно признан (design.md, решение 3).
-  const values = new Map<string, unknown>();
+  // или вида шага всё равно признан (design.md, решение 3).
+  const predicateValues = new Map<string, unknown>();
+  const stepKindValues = new Map<string, unknown>();
   const notes: PublishedSchemaNote[] = [];
-  const owner = (name: string): string =>
-    predicates.find((entry) => entry.name === name)?.owner ?? name;
+  const predicateOwner = (name: string): string => predicates.find((entry) => entry.name === name)?.owner ?? name;
+  const stepKindOwner = (name: string): string => stepKinds.find((entry) => entry.name === name)?.owner ?? name;
 
   for (const entry of predicates) {
     const reason = unusableReason(entry.schema);
-    if (reason === undefined) values.set(entry.name, entry.schema);
-    else notes.push({ predicate: entry.name, plugin: entry.owner, reason });
+    if (reason === undefined) predicateValues.set(entry.name, entry.schema);
+    else notes.push({ kind: 'predicate', name: entry.name, plugin: entry.owner, reason });
+  }
+  for (const entry of stepKinds) {
+    const reason = unusableReason(entry.fields);
+    if (reason === undefined) stepKindValues.set(entry.name, entry.fields);
+    else notes.push({ kind: 'step_kind', name: entry.name, plugin: entry.owner, reason });
   }
 
-  let documents = assemble(names, values);
+  const assembleWith = (predicateSet: ReadonlyMap<string, unknown>, stepKindSet: ReadonlyMap<string, unknown>): Documents =>
+    assemble(predicateNames, predicateSet, stepKindNames, stepKindSet);
+
+  let documents = assembleWith(predicateValues, stepKindValues);
   if (documentReason(documents) !== undefined) {
     // Виновника ищем поимённо: одна схема, ломающая сборку, не должна лишать
-    // проверки значения все остальные предикаты.
-    for (const name of [...values.keys()]) {
-      const alone = new Map([[name, values.get(name)]]);
-      const reason = documentReason(assemble(names, alone));
+    // проверки значения все остальные предикаты и виды шага.
+    for (const name of [...predicateValues.keys()]) {
+      const alone = new Map([[name, predicateValues.get(name)]]);
+      const reason = documentReason(assembleWith(alone, new Map()));
       if (reason === undefined) continue;
-      values.delete(name);
-      notes.push({ predicate: name, plugin: owner(name), reason: `собранная схема документа не компилируется: ${reason}` });
+      predicateValues.delete(name);
+      notes.push({
+        kind: 'predicate',
+        name,
+        plugin: predicateOwner(name),
+        reason: `собранная схема документа не компилируется: ${reason}`,
+      });
     }
-    documents = assemble(names, values);
+    for (const name of [...stepKindValues.keys()]) {
+      const alone = new Map([[name, stepKindValues.get(name)]]);
+      const reason = documentReason(assembleWith(new Map(), alone));
+      if (reason === undefined) continue;
+      stepKindValues.delete(name);
+      notes.push({
+        kind: 'step_kind',
+        name,
+        plugin: stepKindOwner(name),
+        reason: `собранная схема документа не компилируется: ${reason}`,
+      });
+    }
+
+    documents = assembleWith(predicateValues, stepKindValues);
     const together = documentReason(documents);
     if (together !== undefined) {
       // Порознь каждая вкладывается, вместе — нет: печатаем ключи без формы
-      // значения, но печатаем.
-      for (const name of [...values.keys()]) {
-        values.delete(name);
+      // значения/полей, но печатаем.
+      for (const name of [...predicateValues.keys()]) {
+        predicateValues.delete(name);
         notes.push({
-          predicate: name,
-          plugin: owner(name),
-          reason: `собранная схема документа не компилируется, пока вложены схемы значений нескольких предикатов сразу: ${together}`,
+          kind: 'predicate',
+          name,
+          plugin: predicateOwner(name),
+          reason: `собранная схема документа не компилируется, пока вложены схемы значений нескольких предикатов и видов шага сразу: ${together}`,
         });
       }
-      documents = assemble(names, values);
+      for (const name of [...stepKindValues.keys()]) {
+        stepKindValues.delete(name);
+        notes.push({
+          kind: 'step_kind',
+          name,
+          plugin: stepKindOwner(name),
+          reason: `собранная схема документа не компилируется, пока вложены схемы значений нескольких предикатов и видов шага сразу: ${together}`,
+        });
+      }
+      documents = assembleWith(predicateValues, stepKindValues);
     }
   }
 
-  const description = describeExtension(predicates);
-  documents.pipeline['description'] = description;
-  documents.job['description'] = description;
+  const description = describeExtension(predicates, stepKinds);
+  if (description !== undefined) {
+    documents.pipeline['description'] = description;
+    documents.job['description'] = description;
+  }
 
   return { pipeline: documents.pipeline, job: documents.job, notes };
 }

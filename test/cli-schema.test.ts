@@ -83,21 +83,23 @@ describe('stepcast schema: без плагинов', () => {
     const jobPath = project.path(join('.stepcast', 'schema', 'job.schema.json'));
     assert.match(outcome.stdout, pathPattern(pipelinePath));
     assert.match(outcome.stdout, pathPattern(jobPath));
-    assert.match(outcome.stdout, /плагинных предикатов нет/);
+    // Встроенный вид шага decision (`user-decision-steps`) всегда в дереве, но
+    // отличием от поставляемой схемы он не является: она его знает, файлы
+    // побайтово равны — и команда говорит именно это.
+    assert.match(outcome.stdout, /нет: схема совпадает с поставляемой пакетом/);
 
     assert.equal(readFileSync(pipelinePath, 'utf8'), readFileSync(`${ROOT}schema/pipeline.schema.json`, 'utf8'));
     assert.equal(readFileSync(jobPath, 'utf8'), readFileSync(`${ROOT}schema/job.schema.json`, 'utf8'));
   });
 
   // Сценарий: «Плагин без предикатов». Побайтовое равенство держится не на
-  // отсутствии плагинов, а на отсутствии плагинных предикатов.
+  // отсутствии плагинов, а на отсутствии плагинных предикатов (и видов шага).
   it('загруженный плагин без предикатов даёт файлы, побайтово равные поставляемым пакетом', async () => {
     const project = withPlugin(BACKEND_PLUGIN);
 
     const outcome = await cli(project, ['schema']);
 
     assert.equal(outcome.code, ExitCode.ok, outcome.stderr);
-    assert.match(outcome.stdout, /плагинных предикатов нет/);
 
     const pipelinePath = project.path(join('.stepcast', 'schema', 'pipeline.schema.json'));
     const jobPath = project.path(join('.stepcast', 'schema', 'job.schema.json'));

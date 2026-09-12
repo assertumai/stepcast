@@ -1,10 +1,12 @@
 import { useEffect, useState, type JSX } from 'react';
 
 import { fetchRun, type JobSnapshot, type JournalProblem, type RunSnapshot, type StepSnapshot } from '../api';
-import { fmtDuration, fmtMoney, fmtSpan, fmtTokens } from '../format';
+import { fmtDuration, fmtMoney, fmtSpan, fmtTime, fmtTokens } from '../format';
 import { FileView } from '../components/FileView';
 import { JobGraph } from '../components/JobGraph';
 import { StepOutput } from '../components/StepOutput';
+import { TargetLink } from '../routeLink';
+import { DECISIONS_TARGET } from '../screens/decisions';
 
 /**
  * Страница прогона: граф связей в шапке, под ним — выбранная работа.
@@ -59,10 +61,12 @@ function Step({
   address,
   jobId,
   step,
+  navigate,
 }: {
   readonly address: string;
   readonly jobId: string;
   readonly step: StepSnapshot;
+  readonly navigate: (href: string) => void;
 }): JSX.Element {
   return (
     <div className="step">
@@ -108,6 +112,29 @@ function Step({
       </div>
 
       {step.reason === undefined ? null : <div className="desc">{step.reason}</div>}
+      {/*
+        Ожидание и принятое решение (`user-decision-steps`, design.md решение
+        11): здесь только состояние и ссылка на экран «Решения» — кнопки
+        исходов живут там же, где и таблица прочих ожидающих прогонов
+        (open question design.md: два места с одним диалогом лишние).
+      */}
+      {step.awaiting === undefined ? null : (
+        <div className="ctx">
+          ждёт решения: {step.awaiting.prompt ?? Object.keys(step.awaiting.outcomes).join(', ')}
+          {step.awaiting.deadline === undefined ? '' : ` · срок: ${fmtTime(step.awaiting.deadline)}`}
+          {' — '}
+          <TargetLink target={DECISIONS_TARGET} navigate={navigate}>
+            решить
+          </TargetLink>
+        </div>
+      )}
+      {step.decision === undefined ? null : (
+        <div className="ctx dim">
+          решение: {step.decision.outcome} ({step.decision.effect}
+          {step.decision.by === 'deadline' ? ', по истечении срока' : ''})
+          {step.decision.reason === undefined ? '' : ` — ${step.decision.reason}`}
+        </div>
+      )}
       {step.command === undefined ? null : <div className="ctx">$ {step.command}</div>}
       {step.scriptPath === undefined ? null : <div className="ctx">script: {step.scriptPath}</div>}
       {step.usesParams === undefined ? null : (
@@ -212,7 +239,15 @@ function ProblemNotice({ problem }: { readonly problem: JournalProblem }): JSX.E
   );
 }
 
-function Job({ address, job }: { readonly address: string; readonly job: JobSnapshot }): JSX.Element {
+function Job({
+  address,
+  job,
+  navigate,
+}: {
+  readonly address: string;
+  readonly job: JobSnapshot;
+  readonly navigate: (href: string) => void;
+}): JSX.Element {
   return (
     <div className="job">
       <div className="job-head">
@@ -268,7 +303,7 @@ function Job({ address, job }: { readonly address: string; readonly job: JobSnap
       {job.data === undefined ? null : <Pairs label="данные" pairs={job.data} />}
 
       {job.steps.map((step) => (
-        <Step key={step.id} address={address} jobId={job.id} step={step} />
+        <Step key={step.id} address={address} jobId={job.id} step={step} navigate={navigate} />
       ))}
     </div>
   );
@@ -419,7 +454,7 @@ export function RunDetail({
         <p className="note dim">Работ в этом прогоне не записано.</p>
       ) : (
         <div className="card">
-          <Job address={address} job={job} />
+          <Job address={address} job={job} navigate={navigate} />
         </div>
       )}
     </>

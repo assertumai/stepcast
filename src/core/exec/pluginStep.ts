@@ -1,11 +1,19 @@
 import { evaluatePredicates, validateAgainstSchema } from '../expect/evaluate.js';
 import { StepcastError } from '../errors.js';
-import type { PredicateResult, StepRecord, Usage } from '../journal/schema.js';
+import type { DecisionRecord, PredicateResult, StepRecord, Usage } from '../journal/schema.js';
 import type { Job, PluginStep } from '../pipeline/model.js';
 import { validateStepKindFields } from '../pipeline/expand.js';
 import { pluginContext } from '../plugins/kernel.js';
 import { kernelFromRegistry } from '../plugins/registry.js';
-import type { StepKindContribution, StepKindInput, StepKindLog, StepKindOutcome } from '../plugins/contract.js';
+import { DecisionHalt } from '../plugins/contract.js';
+import type {
+  StepKindContribution,
+  StepKindDecisions,
+  StepKindInput,
+  StepKindLog,
+  StepKindOutcome,
+} from '../plugins/contract.js';
+import { toDecisionRecord } from '../run/decision.js';
 import { sumUsage } from '../backend/types.js';
 import { describeExceeded, type BudgetScope, type Exceeded } from '../budget/accumulator.js';
 import { runAttempts, type AttemptPlan } from './attempts.js';
@@ -84,6 +92,8 @@ export async function runPluginStep(
   contribution: StepKindContribution,
   budgetScopes: () => BudgetScope[],
   changedPaths: () => readonly string[] | undefined,
+  /** Итерация цикла until, если работа его объявляет — часть идентичности ожидания. */
+  iteration?: number,
 ): Promise<StepOutcome> {
   const { journal, config } = context;
   const results: (readonly PredicateResult[])[] = [];
@@ -96,6 +106,12 @@ export async function runPluginStep(
   let structuredOutput: unknown;
   /** Первое превышение, замеченное за шаг, — им взводится защёлка прогона. */
   let exceeded: Exceeded | undefined;
+  /**
+   * Решение, применённое к ожиданию этого шага (design.md изменения
+   * `user-decision-steps`, решение 5) — записывается в `StepRecord.decision`
+   * независимо от эффекта: `continue` тоже решение, а не молчаливый обход.
+   */
+  let decisionRecord: DecisionRecord | undefined;
   // Отдельные сквозные ряды подкаталогов шага — те же, что у командного:
   // `judge-<n>` у судей, `script-<n>` у предиката-скрипта.
   let judgeCallCount = 0;
@@ -157,6 +173,28 @@ export async function runPluginStep(
 
       const startedAt = new Date().toISOString();
       const env = stepEnv(step, job, plan.attempt, context, stepDirPath);
+      // Способность ожидания — только виду, распоряжающемуся своим сроком
+      // (design.md, решение 1, решение 6): движок не даёт decision.request
+      // виду, который не объявил waits, и потому не может забыть дождаться
+      // его ответственно.
+      const decision: StepKindDecisions | undefined =
+        contribution.waits === true
+          ? {
+              async request(request) {
+                const result = await context.awaitDecision(
+                  {
+                    job: job.id,
+                    step: step.id,
+                    attempt: plan.attempt,
+                    ...(iteration === undefined ? {} : { iteration }),
+                  },
+                  request,
+                );
+                decisionRecord = toDecisionRecord(result);
+                return result;
+              },
+            }
+          : undefined;
       const input: StepKindInput = {
         fields: step.fields,
         step: { id: step.id, index: step.index, timeoutMs: step.timeoutMs },
@@ -168,15 +206,29 @@ export async function runPluginStep(
         signal: controller.signal,
         log: makeLog(context, job, step, plan.attempt, stepDirPath),
         ctx: pluginContext(kernelFromRegistry(context.registry).ctx),
+        ...(decision === undefined ? {} : { decision }),
       };
 
       let raced: Awaited<ReturnType<typeof raceWithTimeout>>;
       try {
-        raced = await raceWithTimeout(
-          Promise.resolve().then(() => contribution.execute(input)),
-          step.timeoutMs,
-          controller,
-        );
+        raced =
+          // Гонка с таймаутом — только для вида без waits (design.md, решение
+          // 6): вид, распоряжающийся своим сроком, `step.timeoutMs` не гонит —
+          // поле остаётся во входе исполнителя справочным значением.
+          contribution.waits === true
+            ? await (async () => {
+                try {
+                  const value = await contribution.execute(input);
+                  return { timedOut: false as const, outcome: value };
+                } catch (error) {
+                  return { timedOut: false as const, error };
+                }
+              })()
+            : await raceWithTimeout(
+                Promise.resolve().then(() => contribution.execute(input)),
+                step.timeoutMs,
+                controller,
+              );
       } finally {
         context.signal?.removeEventListener('abort', onRunAbort);
       }
@@ -201,6 +253,32 @@ export async function runPluginStep(
             attempt: plan.attempt,
             status: 'failed',
             reason: timedOut.detail as string,
+            started_at: startedAt,
+            finished_at: finishedAt,
+          },
+        };
+      }
+
+      if (raced.error instanceof DecisionHalt) {
+        // Отклонение и перезапуск заканчивают прогон как отмену (design.md
+        // изменения `user-decision-steps`, решение 3): что именно произошло,
+        // читатель узнаёт из записи `decision`, а не из перечня причин
+        // остановки — причина остаётся `canceled` с текстом, называющим волю
+        // пользователя.
+        decisionRecord = toDecisionRecord(raced.error.result);
+        const { result } = raced.error;
+        const reasonText =
+          result.effect === 'reject'
+            ? `решение пользователя: отклонено — ${result.reason ?? ''}`
+            : `решение пользователя: перезапуск с ${result.restartFrom ?? ''}`;
+        results.push([]);
+        return {
+          passed: false,
+          terminal: true,
+          value: {
+            attempt: plan.attempt,
+            status: 'canceled',
+            reason: reasonText,
             started_at: startedAt,
             finished_at: finishedAt,
           },
@@ -378,5 +456,9 @@ export async function runPluginStep(
     // защёлка прогона взводится потолком прогона так же, как и остановленным
     // шагом (`runJobSteps`, design.md решение 3 изменения о бюджете).
     ...(exceeded === undefined ? {} : { exceeded }),
+    // Решение по ожиданию этого шага — независимо от эффекта: `continue`
+    // тоже решение и тоже записывается (design.md изменения
+    // `user-decision-steps`, решение 5).
+    ...(decisionRecord === undefined ? {} : { decision: decisionRecord }),
   };
 }

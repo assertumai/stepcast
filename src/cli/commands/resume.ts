@@ -1,12 +1,70 @@
 import { resolveConfig, type Config } from '../../core/config/resolve.js';
 import type { Registry } from '../../core/plugins/registry.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
-import { findProjectRoot, shortRunId } from '../../core/journal/paths.js';
+import { findProjectRoot, shortRunId, type RunPaths } from '../../core/journal/paths.js';
 import { resolveRun } from '../../core/journal/reader.js';
 import { describePlan, planResume, readSourceRun } from '../../core/run/resumePlan.js';
 import { runPipeline } from '../../core/run/runner.js';
 import { formatDiagnostic } from './lint.js';
 import type { ParsedArgs } from '../args.js';
+
+/**
+ * Продолжить цепочку по просьбе о перезапуске (design.md изменения
+ * `user-decision-steps`, решение 4): прогон, законченный исходом `restart`,
+ * возобновляется с названного места в том же процессе — цепочку ведёт
+ * команда, а не `runPipeline`, поэтому прогон, запущенный кнопкой витрины
+ * отсоединённым процессом, продолжает себя сам, без участия демона.
+ *
+ * Предела цепочке нет намеренно: каждое звено стоит собственного решения
+ * человека, а единственный путь к самозацикливанию без него — `restart`
+ * исходом по истечении срока — закрыт линтом вклада `decision` (design.md,
+ * решение 7).
+ */
+export async function continueRestartChain(
+  from: string,
+  sourcePaths: RunPaths,
+  config: Config,
+  cwd: string,
+  write: (line: string) => void,
+  registry?: Registry,
+  /**
+   * Сигнал отмены команды — тот же, что получил первый прогон цепочки. Без
+   * него звено цепочки Ctrl-C не отменял бы вовсе: обработчик команды взводит
+   * контроллер, а слушать его в звене было бы некому — особенно заметно на
+   * звене, стоящем на шаге решения, которое ждёт бессрочно.
+   */
+  signal?: AbortSignal,
+): Promise<ExitCodeValue> {
+  const projectRoot = findProjectRoot(cwd);
+  const source = readSourceRun(sourcePaths);
+
+  const { expanded, plan } = planResume({
+    cwd,
+    config,
+    source,
+    from,
+    ...(registry === undefined ? {} : { registry }),
+  });
+  for (const line of describePlan(plan)) write(line);
+
+  const result = await runPipeline({
+    expanded,
+    config,
+    projectRoot,
+    cwd,
+    ...(registry === undefined ? {} : { registry }),
+    ...(signal === undefined ? {} : { signal }),
+    resume: { plan, source },
+  });
+
+  write(`прогон ${shortRunId(result.journal.paths.runId)}: ${result.status}`);
+  write(`журнал: ${result.journal.paths.dir}`);
+
+  if (result.restart !== undefined) {
+    return continueRestartChain(result.restart.from, result.journal.paths, config, cwd, write, registry, signal);
+  }
+  return result.exitCode;
+}
 
 /** Конфигурация — из окружения команды, см. комментарий у `runRunCommand`. */
 export async function runResumeCommand(
@@ -44,18 +102,44 @@ export async function runResumeCommand(
       return ExitCode.ok;
     }
 
-    const result = await runPipeline({
-      expanded,
-      config,
-      projectRoot,
-      cwd,
-      ...(registry === undefined ? {} : { registry }),
-      resume: { plan, source },
-    });
+    // Отмена — тем же приёмом, что у `stepcast run`: возобновлённый прогон
+    // останавливается на шаге решения так же, как первый, и выйти из него
+    // Ctrl-C обязан так же.
+    const controller = new AbortController();
+    const onSignal = (): void => controller.abort();
+    process.once('SIGINT', onSignal);
+    process.once('SIGTERM', onSignal);
 
-    write(`прогон ${shortRunId(result.journal.paths.runId)}: ${result.status}`);
-    write(`журнал: ${result.journal.paths.dir}`);
-    return result.exitCode;
+    try {
+      const result = await runPipeline({
+        expanded,
+        config,
+        projectRoot,
+        cwd,
+        ...(registry === undefined ? {} : { registry }),
+        signal: controller.signal,
+        resume: { plan, source },
+      });
+
+      write(`прогон ${shortRunId(result.journal.paths.runId)}: ${result.status}`);
+      write(`журнал: ${result.journal.paths.dir}`);
+
+      if (result.restart !== undefined) {
+        return continueRestartChain(
+          result.restart.from,
+          result.journal.paths,
+          config,
+          cwd,
+          write,
+          registry,
+          controller.signal,
+        );
+      }
+      return result.exitCode;
+    } finally {
+      process.removeListener('SIGINT', onSignal);
+      process.removeListener('SIGTERM', onSignal);
+    }
   } catch (error) {
     if (!isStepcastError(error)) throw error;
     for (const line of formatDiagnostic({

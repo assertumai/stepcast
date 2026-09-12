@@ -5,22 +5,25 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
 /**
- * Граница плагинов пакета (design.md первого настоящего плагина, решение 2)
- * закреплена дважды: правилом линта (`eslint.config.js`) и здесь. Линт решает
- * построчно и не разворачивает `**`-паттерн заранее — этот тест перечисляет
- * модули на диске, так что новый файл `src/backends/**` проверяется без
- * отдельной правки теста, а не только когда кто-то напишет нарушающий импорт.
+ * Граница плагинов пакета (design.md первого настоящего плагина, решение 2;
+ * design.md `user-decision-steps`, решение 12) закреплена дважды: правилом
+ * линта (`eslint.config.js`) и здесь. Линт решает построчно и не разворачивает
+ * `**`-паттерн заранее — этот тест перечисляет модули на диске, так что новый
+ * файл `src/backends/**` или `src/steps/**` проверяется без отдельной правки
+ * теста, а не только когда кто-то напишет нарушающий импорт.
  *
  * Разрешено ровно два направления: публичная поверхность `../../plugin.js` и
- * соседний модуль того же каталога плагинов — плагин из нескольких файлов
- * (манифест отдельно от адаптера) остаётся законной раскладкой, а путь наружу,
- * в ядро, отсюда не ведёт никуда.
+ * соседний модуль того же каталога — плагин из нескольких файлов (манифест
+ * отдельно от адаптера, поля отдельно от исполнителя) остаётся законной
+ * раскладкой, а путь наружу, в ядро, отсюда не ведёт никуда. Оба каталога —
+ * `src/backends` и `src/steps` — обходятся одним перечислением: граница у них
+ * одна и та же, а не две её копии.
  *
- * На пустом каталоге `src/backends` тест проходит вырожденно: перечислять и
- * проверять нечего, пока в пакете нет ни одного плагина.
+ * На пустом каталоге тест проходит вырожденно: перечислять и проверять нечего,
+ * пока в пакете нет ни одного плагина этого вида.
  */
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
-const backendsRoot = join(repoRoot, 'src/backends');
+const surfaceRoots = [join(repoRoot, 'src/backends'), join(repoRoot, 'src/steps')];
 const pluginModule = resolve(repoRoot, 'src/plugin.ts');
 
 function listTsFiles(dir: string): string[] {
@@ -83,42 +86,44 @@ function parseImports(source: string): ModuleImports {
   return { specifiers, computed };
 }
 
-/** Модуль соседнего плагина того же пакета — законное направление наравне с поверхностью. */
-function insideBackends(path: string): boolean {
-  return path.startsWith(backendsRoot + sep);
+/** Модуль соседнего плагина того же каталога — законное направление наравне с поверхностью. */
+function insideRoot(root: string, path: string): boolean {
+  return path.startsWith(root + sep);
 }
 
 function surfaceViolations(): string[] {
   const violations: string[] = [];
 
-  for (const file of listTsFiles(backendsRoot)) {
-    const where = relative(repoRoot, file);
-    const { specifiers, computed } = parseImports(readFileSync(file, 'utf8'));
+  for (const root of surfaceRoots) {
+    for (const file of listTsFiles(root)) {
+      const where = relative(repoRoot, file);
+      const { specifiers, computed } = parseImports(readFileSync(file, 'utf8'));
 
-    for (const form of computed) {
-      violations.push(`${where}: ${form} — специфик не литерал, границу на нём не проверить`);
-    }
-
-    for (const specifier of specifiers) {
-      if (specifier.startsWith('node:')) continue;
-      if (!specifier.startsWith('.')) {
-        violations.push(
-          `${where}: '${specifier}' — не встроенный модуль Node и не относительный импорт`,
-        );
-        continue;
+      for (const form of computed) {
+        violations.push(`${where}: ${form} — специфик не литерал, границу на нём не проверить`);
       }
-      // `.js` в исходнике — расширение скомпилированного модуля; на диске
-      // рядом лежит `.ts`, и сверяться нужно с ним.
-      const resolved = resolve(dirname(file), specifier).replace(/\.js$/, '.ts');
-      if (resolved === pluginModule || insideBackends(resolved)) continue;
-      violations.push(`${where}: '${specifier}' — ведёт мимо ../../plugin.js и мимо src/backends`);
+
+      for (const specifier of specifiers) {
+        if (specifier.startsWith('node:')) continue;
+        if (!specifier.startsWith('.')) {
+          violations.push(
+            `${where}: '${specifier}' — не встроенный модуль Node и не относительный импорт`,
+          );
+          continue;
+        }
+        // `.js` в исходнике — расширение скомпилированного модуля; на диске
+        // рядом лежит `.ts`, и сверяться нужно с ним.
+        const resolved = resolve(dirname(file), specifier).replace(/\.js$/, '.ts');
+        if (resolved === pluginModule || insideRoot(root, resolved)) continue;
+        violations.push(`${where}: '${specifier}' — ведёт мимо ../../plugin.js и мимо ${relative(repoRoot, root)}`);
+      }
     }
   }
 
   return violations;
 }
 
-describe('backends: публичная поверхность', () => {
+describe('backends и steps: публичная поверхность', () => {
   it('каждый импорт ведёт во встроенный модуль Node, в ../../plugin.js либо в соседний модуль плагина', () => {
     assert.deepEqual(surfaceViolations(), []);
   });

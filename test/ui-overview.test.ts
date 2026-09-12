@@ -162,6 +162,40 @@ describe('ui-dashboard: обзор всех проектов и прогонов
     assert.equal(run?.wakeAt, '2026-08-23T22:00:00.000Z');
   });
 
+  // Сценарий user-decision-steps: «Ожидающие прогоны видны втрое» (обзор)
+  it('показывает ожидание решения тем же полем, что и момент пробуждения', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, {
+      runId: 'awaiting-run',
+      status: 'running',
+      jobs: [{ id: 'apply', status: 'running', steps: [] }],
+      awaiting: [
+        {
+          wait_id: 'w1',
+          job: 'apply',
+          step: 'gate',
+          outcomes: { approve: { effect: 'continue' } },
+          prompt: 'продолжить?',
+          since: '2026-08-23T22:00:00.000Z',
+        },
+      ],
+    });
+
+    const run = buildOverview(runsRoot).projects[0]?.runs[0];
+    assert.equal(run?.running, true);
+    assert.equal(run?.awaiting?.length, 1);
+    assert.equal(run?.awaiting?.[0]?.job, 'apply');
+    assert.equal(run?.awaiting?.[0]?.step, 'gate');
+  });
+
+  it('прогон без ожиданий не несёт поля awaiting', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'plain', status: 'running' });
+
+    const run = buildOverview(runsRoot).projects[0]?.runs[0];
+    assert.equal(run?.awaiting, undefined);
+  });
+
   it('на пустом корне прогонов отдаёт пустой обзор', () => {
     const { runsRoot } = makeJournalBed();
     assert.deepEqual(buildOverview(runsRoot).projects, []);

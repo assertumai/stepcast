@@ -60,3 +60,8 @@ routes:
     path: /routes
     target: { screen: screen-routes }
     nav: { order: 9 }
+
+  - id: screen-decisions
+    path: /decisions
+    target: { screen: screen-decisions }
+    nav: { order: 10 }

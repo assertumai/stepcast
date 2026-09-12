@@ -139,7 +139,8 @@ describe('ui-routes-file: сборка таблицы трёх слоёв', () =
     );
 
     const result = buildRouteTable({ home, projectRoot });
-    assert.equal(result.entries.length, 12);
+    // 12 встроенных маршрутов (включая screen-decisions, user-decision-steps) плюс этот новый.
+    assert.equal(result.entries.length, 13);
     const entry = result.entries.find((candidate) => candidate.id === 'my-dashboard');
     assert.deepEqual(entry?.definition.target, { kind: 'widget', id: 'proj/team' });
     const runs = result.entries.find((candidate) => candidate.id === 'screen-runs');

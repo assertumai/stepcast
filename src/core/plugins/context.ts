@@ -47,6 +47,10 @@ export interface ContributionRegistrar<T> {
  * `document` (`kernel.ts`), а плагину эта форма недоступна вовсе — узкий
  * интерфейс с одним `register` избегает необходимости объяснять компилятору,
  * что читать `contributions`/`owner` для `steps` плагину незачем.
+ *
+ * `contribution.waits` (design.md изменения `user-decision-steps`, решение 6)
+ * типизирован здесь тем же полем контракта: вклад, объявивший его, — и
+ * только он — получает во входе исполнителя способность `decision`.
  */
 export interface StepKindRegistrar {
   /** Внести вид шага. Отказывает на занятом имени; возвращает disposer. */

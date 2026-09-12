@@ -64,10 +64,20 @@ export interface Exceeded {
   readonly waitDegeneration?: string;
 }
 
+/**
+ * Повод ожидания. Оба вычитаются из времени прогона, но предел ожидания окна
+ * лимита подписки (`max_wait`) мерит только собственные ожидания движка
+ * (`window`): ожидание решения человека (`decision`) — терпение пользователя,
+ * и у него свой срок, объявленный на шаге (`user-decision-steps`, дельта
+ * `step-execution`).
+ */
+type WaitKind = 'window' | 'decision';
+
 /** Интервал сна: нужен, чтобы вычесть из области только ту его часть, что пришлась на её жизнь. */
 interface WaitInterval {
   readonly start: number;
   readonly end: number;
+  readonly kind: WaitKind;
 }
 
 interface Counters {
@@ -282,14 +292,24 @@ export class UsageAccumulator {
     };
   }
 
-  /** Записать интервал сна: вычитается из `elapsedMs()` и из длительности застигнутых им областей. */
-  recordWait(start: number, end: number): void {
-    this.waits.push({ start, end });
+  /**
+   * Записать интервал сна: вычитается из `elapsedMs()` и из длительности
+   * застигнутых им областей. Повод по умолчанию — сон до сброса окна лимита
+   * подписки; ожидание решения человека записывается поводом `decision` и в
+   * предел ожидания окна (`max_wait`) не входит.
+   */
+  recordWait(start: number, end: number, kind: WaitKind = 'window'): void {
+    this.waits.push({ start, end, kind });
   }
 
-  /** Время, проведённое прогоном в ожидании: объединение интервалов, не сумма. */
+  /**
+   * Время, проведённое прогоном в ожидании сброса окна лимита: объединение
+   * интервалов, не сумма. Ожидание решения человека сюда не входит — иначе
+   * терпение человека исчерпывало бы `max_wait`, и ближайший сон до сброса
+   * окна отказал бы прогону по чужому поводу.
+   */
   totalWaitMs(): number {
-    return this.sleptMs();
+    return this.sleptMs(undefined, 'window');
   }
 
   /** Уложится ли ожидание длиной `durationMs` в объявленный предел с учётом уже проспанного. */
@@ -338,8 +358,9 @@ export class UsageAccumulator {
    * исчерпывала бы `max_wait` вдвое быстрее и вычитала бы из `wallclock`
    * больше, чем прогон действительно проспал.
    */
-  private sleptMs(sinceMs?: number): number {
+  private sleptMs(sinceMs?: number, kind?: WaitKind): number {
     const clipped = this.waits
+      .filter((wait) => kind === undefined || wait.kind === kind)
       .map((wait) => ({ start: sinceMs === undefined ? wait.start : Math.max(wait.start, sinceMs), end: wait.end }))
       .filter((wait) => wait.end > wait.start)
       .sort((left, right) => left.start - right.start);

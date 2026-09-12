@@ -260,6 +260,86 @@ describe('run-journal: раскладка и состояние', () => {
     assert.equal(RunStatusSchema.safeParse(read).success, true);
   });
 
+  it('состояние с непустым awaiting проходит схему при status: running', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeStatus(
+      sampleStatus(journal.paths.runId, {
+        status: 'running',
+        awaiting: [
+          {
+            wait_id: 'w1',
+            job: 'build',
+            step: 'gate',
+            outcomes: { approve: { effect: 'continue' }, deny: { effect: 'reject', label: 'Отклонить' } },
+            prompt: 'слить в main?',
+            since: '2026-08-23T22:00:00.000Z',
+            deadline: '2026-08-24T22:00:00.000Z',
+            on_expire: 'approve',
+          },
+        ],
+      }),
+    );
+
+    const status = readStatus(journal.paths);
+    assert.equal(status.awaiting?.length, 1);
+    assert.equal(RunStatusSchema.safeParse(status).success, true);
+  });
+
+  it('состояние прежней формы, без awaiting и restart_from, читается как прежде', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeStatus(sampleStatus(journal.paths.runId));
+
+    const status = readStatus(journal.paths);
+    assert.equal(status.awaiting, undefined);
+    assert.equal(status.restart_from, undefined);
+    assert.equal(RunStatusSchema.safeParse(status).success, true);
+  });
+
+  it('запись шага с решением decision читается при отключённой строке вклада', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    const status = sampleStatus(journal.paths.runId, {
+      status: 'canceled',
+      restart_from: 'build/gate',
+      jobs: [
+        {
+          id: 'build',
+          status: 'canceled',
+          steps: [
+            {
+              id: 'gate',
+              index: 1,
+              kind: 'plugin',
+              key: 'k',
+              status: 'canceled',
+              cause: 'canceled',
+              reason: 'решение пользователя: перезапуск с build/gate',
+              plugin_step: { name: 'decision', plugin: 'встроенный' },
+              decision: { outcome: 'redo', effect: 'restart', by: 'user', restart_from: 'build/gate' },
+              attempts: [],
+            },
+          ],
+        },
+      ],
+    });
+    journal.writeStatus(status);
+
+    // Чтение — данные, а не исполнение: строка вклада, снявшая вид decision,
+    // не мешает разобрать уже записанный журнал (тот же приём, что у прочих
+    // видов плагинного шага, читаемых без загруженного плагина).
+    const read = readStatus(journal.paths);
+    assert.deepEqual(read.jobs[0]?.steps[0]?.decision, {
+      outcome: 'redo',
+      effect: 'restart',
+      by: 'user',
+      restart_from: 'build/gate',
+    });
+    assert.equal(read.restart_from, 'build/gate');
+    assert.equal(RunStatusSchema.safeParse(read).success, true);
+  });
+
   it('состояние с моментом пробуждения читается во время ожидания', () => {
     const { runsRoot, projectRoot } = bed();
     const journal = RunJournal.create({ runsRoot, projectRoot });
