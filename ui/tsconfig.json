@@ -40,7 +40,9 @@
     "../src/ui/sharedModules.ts",
     "../src/ui/screens/declaration.ts",
     "../src/ui/screens/*/declaration.ts",
+    "../src/ui/screens/*/report.ts",
     "../src/core/plugins/fibers.ts",
+    "../src/core/plugins/services.ts",
     "../vite.config.ts"
   ]
 }

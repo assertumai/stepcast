@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 
 import { resolveConfig } from '../src/core/config/resolve.js';
 import { StepcastError } from '../src/core/errors.js';
-import { loadPlugins } from '../src/core/plugins/load.js';
+import { loadPlugins, toContextPlugin } from '../src/core/plugins/load.js';
 import { availableNames } from '../src/core/plugins/registry.js';
 import { tempDir } from './tmp.js';
 
@@ -113,6 +113,11 @@ describe('plugins-load: мягкий отказ каталожной строк�
     const waiting = outcomes.find((outcome) => outcome.row.id === 'waiting');
     assert.equal(waiting?.status, 'failed');
     assert.match(waiting?.error?.message ?? '', /нет-такого-сервиса/);
+    // Снятая область имён уже не назовёт — поэтому загрузчик снимает их до
+    // `dispose()` и оставляет в итоге: осмотр (`plugin-introspection`,
+    // «Запрошенное и не разрешённое») обязан показать неразрешённое имя моделью,
+    // а не одним текстом причины.
+    assert.deepEqual(waiting?.requestedServices, [{ name: 'нет-такого-сервиса', resolved: false }]);
     assert.deepEqual(registry.plugins.map((plugin) => plugin.name), ['good']);
     assert.deepEqual(availableNames(registry, 'predicates'), ['good_one']);
   });
@@ -153,5 +158,33 @@ describe('plugins-load: мягкий отказ каталожной строк�
     assert.deepEqual(registry.plugins.map((plugin) => plugin.name), ['good']);
     assert.equal(outcomes.filter((outcome) => outcome.status === 'failed').length, 2);
     assert.deepEqual(availableNames(registry, 'predicates'), []);
+  });
+});
+
+describe('plugins-load: адаптер декларативной формы объявляет inject по вкладам', () => {
+  /**
+   * Состав `inject` виден наружу печатью осмотра (`plugin-introspection`,
+   * Решение 5: «сервисы запрошены»), поэтому он закреплён здесь, а не оставлен
+   * на совести адаптера: плагин без предикатов не должен казаться «ждущим»
+   * сервис предикатов, а плагин с бэкендом обязан называть его зависимостью.
+   */
+  it('называет ровно те служебные сервисы, в которые плагин вносит вклад', () => {
+    assert.deepEqual(toContextPlugin({ name: 'пустой' }).inject, []);
+    assert.deepEqual(
+      toContextPlugin({ name: 'бэкендный', backends: { own: { create: () => ({}) as never } } }).inject,
+      ['backends'],
+    );
+    assert.deepEqual(
+      toContextPlugin({
+        name: 'оба',
+        backends: { own: { create: () => ({}) as never } },
+        steps: [{ name: 'own', title: 'Свой', fields: {}, execute: () => ({}) as never }],
+      }).inject,
+      ['backends', 'steps'],
+    );
+  });
+
+  it('пустой перечень вкладов зависимостью не считается', () => {
+    assert.deepEqual(toContextPlugin({ name: 'пустые перечни', backends: {}, predicates: [], commands: [], steps: [] }).inject, []);
   });
 });

@@ -7,7 +7,7 @@ import { claudeModelDiscovery, createClaudeAdapter } from '../backend/claude.js'
 import { registerBuiltinStepKinds } from '../pipeline/expand.js';
 import { stepDecisionContribution } from '../../steps/decision/index.js';
 import type { CommandContribution } from './contract.js';
-import { createKernel, type Kernel } from './kernel.js';
+import { createKernel, type Fiber, type Kernel } from './kernel.js';
 import { registryFromKernel, type Registry } from './registry.js';
 
 /**
@@ -61,14 +61,18 @@ export const BUILTIN_PREDICATE_NAMES: readonly string[] = [
 /**
  * Встроенная строка дерева: id и фабрика, вносящая вклады.
  *
- * Строка движка вносит их прямо на корневой области ядра, синхронно; строка
- * поставки витрины (`src/ui/screens/registry.ts`, `screenRow()`) заводит для
- * себя область плагина внутри `apply` и потому асинхронна — отсюда
- * `void | Promise<void>`, а не голый `void`.
+ * Строка движка вносит их прямо на корневой области ядра, синхронно, и не
+ * возвращает область — её вклады приписываются осмотром (`introspect.ts`) по
+ * окну применения (design.md, Решение 2, второе правило), а не по фиберу.
+ * Строка поставки витрины (`src/ui/screens/registry.ts`, `screenRow()`)
+ * заводит для себя область плагина внутри `apply` и возвращает её: без этого
+ * осмотр приписывал бы её вклады тоже окну, а не собственной строке (`row-fiber`,
+ * design.md, Решение 2, первое правило) — отсюда `Fiber | void`, а не голый
+ * `void`.
  */
 export interface BuiltinRow {
   readonly id: string;
-  apply(kernel: Kernel): void | Promise<void>;
+  apply(kernel: Kernel): Fiber | void | Promise<Fiber | void>;
 }
 
 export const BUILTIN_ROWS: readonly BuiltinRow[] = [

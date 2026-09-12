@@ -642,4 +642,33 @@ describe('plugin-kernel: поверхность плагина не требуе
     assert.equal(typeof fiber.await, 'function');
     assert.ok(typeof (ctx.registry as Record<string, unknown>).values === 'function');
   });
+
+  it('reflect.store существует, и его значения несут name и fiber (design.md, Решение 4)', async () => {
+    const kernel = createKernel();
+    await applyContextPlugin(
+      kernel,
+      {
+        name: 'provider',
+        apply(ctx) {
+          ctx.provide('probed-service');
+          ctx.set('probed-service', {});
+        },
+      },
+      '<synthetic>',
+    );
+
+    const ctx = kernel.ctx as unknown as { reflect: { store: Record<symbol, unknown> } };
+    assert.ok(ctx.reflect !== undefined, 'ctx.reflect не определён в установленной версии cordis');
+    assert.ok(ctx.reflect.store !== undefined, 'ctx.reflect.store не определён в установленной версии cordis');
+
+    // `store` — символьные ключи (см. комментарий у `ReflectService` в
+    // `cordis.d.ts`): обычный `Object.values` их не видит.
+    const impls = Object.getOwnPropertySymbols(ctx.reflect.store).map((key) => ctx.reflect.store[key]);
+    const probed = impls.find((impl) => (impl as Record<string, unknown>).name === 'probed-service') as
+      | Record<string, unknown>
+      | undefined;
+    assert.ok(probed !== undefined, 'сервис probed-service не найден в ctx.reflect.store');
+    assert.equal(typeof probed.name, 'string');
+    assert.equal((probed.fiber as Record<string, unknown> | undefined)?.name, 'provider');
+  });
 });

@@ -2,6 +2,7 @@ import { resolveConfig } from '../core/config/resolve.js';
 import { ExitCode, isStepcastError, StepcastError, type ExitCodeValue } from '../core/errors.js';
 import { parseArgs, type CliIo, type CommandSpec } from './args.js';
 import type { CommandContribution, CommandEnv } from '../core/plugins/contract.js';
+import { kernelFromRegistry } from '../core/plugins/registry.js';
 import { resolveWithPlugins } from '../core/plugins/resolve.js';
 import { reportError } from './output.js';
 import { runApplyCommand } from './commands/apply.js';
@@ -19,7 +20,12 @@ import { runInitCommand } from './commands/init.js';
 import { runLintCommand } from './commands/lint.js';
 import { runLogsCommand } from './commands/logs.js';
 import { runMergeLanesCommand } from './commands/merge-lanes.js';
-import { outcomeWithoutLoad, runPluginsCommand, runPluginsCommandAfterLoadFailure } from './commands/plugins.js';
+import {
+  CACHED_REGISTRY_ATTRIBUTION,
+  outcomeWithoutLoad,
+  runPluginsCommand,
+  runPluginsCommandAfterLoadFailure,
+} from './commands/plugins.js';
 import { runProjectCommand } from './commands/project.js';
 import { runResumeCommand } from './commands/resume.js';
 import { runRunCommand } from './commands/run.js';
@@ -111,11 +117,15 @@ export const COMMANDS: Record<string, CommandSpec> = {
     },
   },
   plugins: {
-    description: 'печатать итоговое дерево плагинов: место, id, слой, модуль, состояние',
+    description: 'печатать осмотр дерева плагинов: место, id, слой, модуль, состояние, сервисы и вклады',
     flags: {
       dump: {
         kind: 'boolean',
         description: 'то же самое — флаг ради совместимости, поведение команды от него не зависит',
+      },
+      json: {
+        kind: 'boolean',
+        description: 'печатать ту же модель осмотра машинным JSON, без единой строки сверх',
       },
     },
   },
@@ -338,13 +348,21 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
     spec: COMMANDS['plugins'] as CommandSpec,
     run: (args, io, env) =>
       runPluginsCommand(
-        io.out,
+        args,
+        io,
         // Точка входа всегда загружает плагины заново для этой команды — итоги
         // определены. `undefined` остаётся на случай вызова с кешированным
         // реестром (`resolveWithPlugins`, вариант `registry`): тогда состояние
         // строки выводится из неё самой — заведомый отказ (`TreeRow.failure`)
         // со своей причиной, иначе `enabled`, как и до появления каталогов.
         env.pluginOutcomes ?? env.pluginTree.map((row) => outcomeWithoutLoad(row)),
+        kernelFromRegistry(env.registry),
+        // Выведенный из строк итог областей не несёт, и вклады с сервисами по
+        // строкам не раскладываются. Это названная причина, а не пустые
+        // перечни: ядро живо, а приписывать его вклады строкам по совпадению
+        // имён осмотр не вправе (`plugin-introspection`, «Неизвестное осмотру
+        // называется причиной, а не пустотой»).
+        env.pluginOutcomes === undefined ? CACHED_REGISTRY_ATTRIBUTION : { available: true },
       ),
   },
   {
@@ -478,8 +496,8 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
       // отказ разбора (а не загрузки), и команда обязана прекратиться как
       // прежде — исключение не перехватывается здесь второй раз.
       const resolved = resolveConfig({ cwd: io.cwd });
-      parseArgs(argv, { plugins: COMMANDS['plugins'] as CommandSpec }); // тот же разбор флагов, что и на обычном пути — неизвестный флаг отказывает так же.
-      return await runPluginsCommandAfterLoadFailure(io.out, resolved, {
+      const failureArgs = parseArgs(argv, { plugins: COMMANDS['plugins'] as CommandSpec }); // тот же разбор флагов, что и на обычном пути — неизвестный флаг отказывает так же.
+      return await runPluginsCommandAfterLoadFailure(failureArgs, io, resolved, {
         projectRoot: io.cwd,
         builtinCommands: BUILTIN_COMMANDS,
       });

@@ -277,6 +277,11 @@ export function screenRow(id: string, inject: readonly string[], apply: (ctx: Co
         await fiber.dispose().catch(() => undefined);
         throw error;
       }
+      // Область строки — не окно применения (`BuiltinRow.apply`, design.md
+      // `plugin-introspection`, Решение 2, первое правило): осмотр приписывает
+      // её вклады этой строке напрямую, по фиберу, а не по тому, что появилось
+      // на корне за время вызова.
+      return fiber;
     },
   };
 }

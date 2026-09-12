@@ -68,6 +68,28 @@ declare module 'cordis' {
     constructor(ctx: Context, name: string);
   }
 
+  /**
+   * Одна реализация сервиса в `ReflectService.store` (design.md, Решение 4):
+   * ровно то, чем пользуется обход объявленных сервисов (`services.ts`) —
+   * имя и область, зарегистрировавшая его. Настоящий `Impl` несёт ещё `value`
+   * и `check`, но обход в них не заглядывает — не объявлены и здесь.
+   */
+  export interface Impl {
+    readonly name: string;
+    readonly fiber: Fiber;
+  }
+
+  /**
+   * `store` хранит реализации по символьным ключам (по одному на имя сервиса
+   * в изоляте) — обычные `Object.keys`/`Object.values` их не видят, обход
+   * обязан идти `Object.getOwnPropertySymbols` (проверено рантаймом,
+   * `test/plugin-kernel.test.ts`). Прочая поверхность `ReflectService`
+   * (`props`, `get`, `provide`, …) обходу не нужна и здесь не объявлена.
+   */
+  export class ReflectService {
+    readonly store: Record<symbol, Impl>;
+  }
+
   // `interface Context` + `class Context` ниже — то же слияние, каким
   // объявлен реальный `Context` в собственных `.d.ts` cordis (он мутирует
   // прототип класса методами сервисов): здесь оно воспроизведено намеренно,
@@ -76,6 +98,7 @@ declare module 'cordis' {
   export interface Context {
     readonly fiber: Fiber;
     readonly registry: RegistryService;
+    readonly reflect: ReflectService;
     effect: Fiber['effect'];
 
     plugin<P extends Plugin>(plugin: P, config?: unknown): Fiber & PromiseLike<Fiber>;

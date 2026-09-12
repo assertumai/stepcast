@@ -19,6 +19,8 @@ import {
 import { translateReservedNameConflict, unresolvedFibers, type Fiber, type Kernel } from './kernel.js';
 import { readPluginManifest, type PluginManifest } from './manifest.js';
 import { registryFromKernel, type Registry } from './registry.js';
+import { introspect, type Introspection } from './introspect.js';
+import { declaredServices, requestedServices, type RequestedService } from './services.js';
 import { BUILTIN_USE_PREFIX, isBuiltinUse, type TreeRow } from './tree.js';
 
 /**
@@ -209,10 +211,25 @@ function toPlugin(module: unknown, row: TreeRow, path: string): Recognized {
  * же области — области этого плагина.
  */
 export function toContextPlugin(plugin: StepcastPlugin): ContextPluginObject {
+  // Инъекция называет только те служебные сервисы, которыми плагин
+  // действительно пользуется, — все четыре готовы на корне синхронно
+  // (`createKernel`), так что список не меняет момента применения, а
+  // становится честным именно там, где на него смотрит осмотр
+  // (`introspect.ts`, `services.ts`): плагин без предикатов не должен
+  // казаться «ждущим» сервис предикатов (design.md `plugin-introspection`,
+  // Решение 5, второй абзац). Состав закреплён тестом
+  // (`test/plugins-load.test.ts`, «адаптер объявляет inject по вкладам»):
+  // иначе он менялся бы молча вместе с печатью осмотра.
+  const inject: string[] = [];
+  if (plugin.backends !== undefined && Object.keys(plugin.backends).length > 0) inject.push('backends');
+  if (plugin.predicates !== undefined && plugin.predicates.length > 0) inject.push('predicates');
+  if (plugin.commands !== undefined && plugin.commands.length > 0) inject.push('commands');
+  if (plugin.steps !== undefined && plugin.steps.length > 0) inject.push('steps');
+
   return {
     name: plugin.name,
     ...(plugin.version === undefined ? {} : { version: plugin.version }),
-    inject: ['backends', 'predicates', 'commands', 'steps'] as string[],
+    inject,
     apply(ctx) {
       for (const [name, contribution] of Object.entries(plugin.backends ?? {})) {
         ctx.backends.register(name, contribution);
@@ -391,6 +408,61 @@ async function applyDirectoryTreeRow(
   return fiber;
 }
 
+/** Виды вклада, которые обходит окно корневых регистраций (`snapshotRoot`/`diffRoot` ниже). */
+type ContribKind = 'backends' | 'predicates' | 'commands' | 'steps';
+const CONTRIB_KINDS: readonly ContribKind[] = ['backends', 'predicates', 'commands', 'steps'];
+
+/**
+ * Вклады и сервисы, появившиеся на корневой области за время применения
+ * встроенной строки движка без собственной области (design.md, Решение 2,
+ * второе правило): диагностируется разницей снимков «до» и «после», а не
+ * перехватом регистрации — перехватить `ctx.provide`/`register` плагина нечем.
+ */
+export interface RootWindow {
+  readonly contributions: readonly { readonly kind: ContribKind; readonly name: string }[];
+  readonly services: readonly string[];
+}
+
+interface RootSnapshot {
+  readonly contributions: Readonly<Record<ContribKind, ReadonlySet<string>>>;
+  readonly services: ReadonlySet<string>;
+}
+
+function snapshotRoot(kernel: Kernel): RootSnapshot {
+  const root = kernel.ctx.fiber;
+  const contributions = {} as Record<ContribKind, ReadonlySet<string>>;
+  for (const kind of CONTRIB_KINDS) {
+    contributions[kind] = new Set(
+      kernel.ctx[kind]
+        .entriesWithFiber()
+        .filter((entry) => entry.ownerFiber === root)
+        .map((entry) => entry.name),
+    );
+  }
+  const services = new Set(
+    declaredServices(kernel.ctx)
+      .filter((service) => service.fiber === root)
+      .map((service) => service.name),
+  );
+  return { contributions, services };
+}
+
+function diffRoot(before: RootSnapshot, after: RootSnapshot): RootWindow {
+  const contributions: { kind: ContribKind; name: string }[] = [];
+  for (const kind of CONTRIB_KINDS) {
+    for (const name of after.contributions[kind]) {
+      if (!before.contributions[kind].has(name)) contributions.push({ kind, name });
+    }
+  }
+  return { contributions, services: [...after.services].filter((name) => !before.services.has(name)) };
+}
+
+/** Итог применения строки: её область, если она есть, либо окно корневых регистраций, если её нет (design.md, Решение 2). */
+interface RowApplication {
+  readonly fiber: Fiber | undefined;
+  readonly rootWindow: RootWindow | undefined;
+}
+
 /**
  * Применить одну строку дерева: встроенная — фабрика из таблицы `builtin.ts`
  * по форме `use: stepcast:<имя>`, каталог с манифестом — каталожный плагин
@@ -403,15 +475,18 @@ async function applyDirectoryTreeRow(
  * её больше нет — на её месте новая строка со своим `use`.
  *
  * Возвращает область плагина, если она была заведена, — её `loadPlugins`
- * использует для отказа о незакрытом внедрении. Встроенная строка и
- * каталожный плагин без серверной половины область не заводят.
+ * использует для отказа о незакрытом внедрении, а осмотр (`introspect.ts`) —
+ * для приписывания вкладов и сервисов строке (design.md `plugin-introspection`,
+ * Решение 2). Встроенная строка движка область не заводит вовсе — вместо неё
+ * возвращается окно её регистраций на корне; каталожный плагин без серверной
+ * половины не заводит ни того, ни другого.
  */
 async function applyTreeRow(
   kernel: Kernel,
   row: TreeRow,
   options: LoadOptions,
   load: (url: string) => Promise<unknown>,
-): Promise<Fiber | undefined> {
+): Promise<RowApplication> {
   // Строка отказала ещё при сборке дерева (каталог назван идентификатором
   // встроенной строки, `user-plugins`, Решение 5). Отказ отдаётся отсюда, а не
   // особой веткой у каждого вызывающего: дальше с ним поступают по общему
@@ -424,8 +499,10 @@ async function applyTreeRow(
     const name = row.use.slice(BUILTIN_USE_PREFIX.length);
     const builtinRow = findBuiltinRow(name) ?? options.builtinRows?.find((candidate) => candidate.id === name);
     if (builtinRow === undefined) throw unknownBuiltinRow(row, name, options.builtinRows ?? []);
+    const before = snapshotRoot(kernel);
+    let ownFiber: Fiber | undefined;
     try {
-      await builtinRow.apply(kernel);
+      ownFiber = (await builtinRow.apply(kernel)) ?? undefined;
     } catch (error) {
       // Конфликт имени вклада, случившийся на встроенной фабрике (две строки
       // дерева назвали одну и ту же), обязан прийти тем же составом полей,
@@ -433,7 +510,11 @@ async function applyTreeRow(
       // (`plugin-contributions`).
       withRowLocation(translateReservedNameConflict(error), row);
     }
-    return undefined;
+    // Строка со своей областью (`screenRow`) приписывается ей напрямую — окно
+    // в этом случае не нужно и было бы неверно: оно бы решило, что строка
+    // ничего не внесла, — вклады ушли в её собственный фибер, а не на корень.
+    if (ownFiber !== undefined) return { fiber: ownFiber, rootWindow: undefined };
+    return { fiber: undefined, rootWindow: diffRoot(before, snapshotRoot(kernel)) };
   }
 
   const path = resolveModulePath(row, options);
@@ -447,7 +528,8 @@ async function applyTreeRow(
 
   if (isDirectory) {
     try {
-      return await applyDirectoryTreeRow(kernel, row, path, options, load);
+      const fiber = await applyDirectoryTreeRow(kernel, row, path, options, load);
+      return { fiber, rootWindow: undefined };
     } catch (error) {
       withRowLocation(error, row);
     }
@@ -470,7 +552,8 @@ async function applyTreeRow(
 
   const recognized = toPlugin(module, row, path);
   try {
-    return await applyPlugin(kernel, recognized, path);
+    const fiber = await applyPlugin(kernel, recognized, path);
+    return { fiber, rootWindow: undefined };
   } catch (error) {
     withRowLocation(error, row);
   }
@@ -518,10 +601,21 @@ function unresolvedInjectFailure(
   };
 }
 
-/** Заменить итог строки на отказ, оставив её на своём месте в перечне. */
-function markRowFailed(outcomes: RowOutcome[], row: TreeRow, error: StepcastError): void {
+/**
+ * Заменить итог строки на отказ, оставив её на своём месте в перечне. Область
+ * такой строки уже снята (см. `settleRows`), поэтому фибер в итоге не
+ * остаётся — вместо него остаётся снимок запрошенных ею имён: осмотр обязан
+ * назвать неразрешённое имя моделью, а после снятия области спросить его уже не
+ * у кого (`plugin-introspection`, «Запрошенное и не разрешённое»).
+ */
+function markRowFailed(
+  outcomes: RowOutcome[],
+  row: TreeRow,
+  error: StepcastError,
+  requested: readonly RequestedService[],
+): void {
   const index = outcomes.findIndex((outcome) => outcome.row === row);
-  if (index !== -1) outcomes[index] = { row, status: 'failed', error };
+  if (index !== -1) outcomes[index] = { row, status: 'failed', error, requestedServices: requested };
 }
 
 /**
@@ -553,12 +647,15 @@ async function settleRows(
     const fiber = [...declaredBy].find(([, candidate]) => candidate === row)?.[0];
     if (fiber === undefined) return failure;
     declaredBy.delete(fiber);
+    // Запрошенные имена — до снятия области: после него их не у кого спросить,
+    // а осмотр обязан показать, чего строка ждала (см. `markRowFailed`).
+    const requested = requestedServices(fiber);
     await fiber.dispose().catch(() => undefined);
     // Область, так и оставшаяся `PENDING`, снятием эффектов не разматывает:
     // запись в перечне загруженных пережила бы отказ строки (см.
     // `Kernel.forgetPlugin`). Вкладов за ней нет — её тело не исполнялось.
     kernel.forgetPlugin(fiber);
-    markRowFailed(outcomes, row, failure.error);
+    markRowFailed(outcomes, row, failure.error, requested);
   }
   return undefined;
 }
@@ -568,6 +665,28 @@ export interface RowOutcome {
   readonly row: TreeRow;
   readonly status: 'active' | 'disabled' | 'failed' | 'not-attempted';
   readonly error?: StepcastError;
+  /**
+   * Область строки — только у строки, применённой к своей области (плагин,
+   * каталожная строка, строка поставки витрины). Осмотр (`introspect.ts`,
+   * `plugin-introspection`) приписывает ей вклады и сервисы по этому фиберу
+   * (design.md, Решение 2, первое правило).
+   */
+  readonly fiber?: Fiber;
+  /**
+   * Вклады и сервисы, появившиеся на корневой области за время применения
+   * встроенной строки движка без собственной области, — второе правило
+   * приписывания (design.md, Решение 2). Присутствует одновременно с `fiber`
+   * никогда: строка либо имеет область, либо окно её применения.
+   */
+  readonly rootWindow?: RootWindow;
+  /**
+   * Снимок запрошенных областью имён, снятый перед тем, как отказ о незакрытом
+   * внедрении снял саму область (`settleRows`). Только у такой строки: у
+   * действующей имена читаются из её живого фибера, а у отключённой их нет
+   * вовсе. Без снимка незакрытое внедрение было бы видно одним текстом причины
+   * и не попадало бы ни в модель, ни в машинный вывод.
+   */
+  readonly requestedServices?: readonly RequestedService[];
 }
 
 export interface LoadResult {
@@ -610,9 +729,14 @@ export async function loadPlugins(resolved: ResolvedConfig, options: LoadOptions
       continue;
     }
     try {
-      const fiber = await applyTreeRow(kernel, row, options, load);
+      const { fiber, rootWindow } = await applyTreeRow(kernel, row, options, load);
       if (fiber !== undefined) declaredBy.set(fiber, row);
-      outcomes.push({ row, status: 'active' });
+      outcomes.push({
+        row,
+        status: 'active',
+        ...(fiber === undefined ? {} : { fiber }),
+        ...(rootWindow === undefined ? {} : { rootWindow }),
+      });
     } catch (error) {
       if (row.source.kind !== 'directory') throw error;
       outcomes.push({
@@ -644,11 +768,16 @@ export async function loadPlugins(resolved: ResolvedConfig, options: LoadOptions
  * незакрытом внедрении рождается только после него, и без него команда
  * осмотра напечатала бы все строки действующими там, где загрузка отказала, —
  * молча потеряв и виновницу, и причину.
+ *
+ * Осмотр (`introspect.ts`, `plugin-introspection`, Решение 15) собирается
+ * здесь же, до `kernel.dispose()`: после снятия ядра ни сервисов, ни областей
+ * не осталось бы, и путь «после отказа загрузки» — тот, где осмотр нужнее
+ * всего, — печатал бы строки без вкладов и без сервисов.
  */
 export async function inspectPluginTree(
   resolved: ResolvedConfig,
   options: LoadOptions,
-): Promise<readonly RowOutcome[]> {
+): Promise<{ readonly outcomes: readonly RowOutcome[]; readonly introspection: Introspection }> {
   const kernel = createKernelShell(options.builtinCommands ?? []);
   const load = options.importModule ?? ((url: string) => import(url));
   const outcomes: RowOutcome[] = [];
@@ -667,9 +796,14 @@ export async function inspectPluginTree(
       continue;
     }
     try {
-      const fiber = await applyTreeRow(kernel, row, options, load);
+      const { fiber, rootWindow } = await applyTreeRow(kernel, row, options, load);
       if (fiber !== undefined) declaredBy.set(fiber, row);
-      outcomes.push({ row, status: 'active' });
+      outcomes.push({
+        row,
+        status: 'active',
+        ...(fiber === undefined ? {} : { fiber }),
+        ...(rootWindow === undefined ? {} : { rootWindow }),
+      });
     } catch (error) {
       outcomes.push({
         row,
@@ -695,10 +829,15 @@ export async function inspectPluginTree(
       // же была напечатана.
       const at = index === -1 ? outcomes.findIndex((outcome) => outcome.status === 'active') : index;
       const target = outcomes[at];
-      if (target !== undefined) outcomes[at] = { row: target.row, status: 'failed', error: failure.error };
+      // Область виновницы здесь не снята (`settleRows` снимает только область
+      // каталожной строки), поэтому её фибер и окно остаются в итоге: осмотр
+      // обязан показать запрошенное и неразрешённое имя моделью, а не одним
+      // текстом причины (`plugin-introspection`, «Запрошенное и не разрешённое»).
+      if (target !== undefined) outcomes[at] = { ...target, status: 'failed', error: failure.error };
     }
   }
 
+  const introspection = introspect(outcomes, kernel, 'cli');
   await kernel.dispose().catch(() => undefined);
-  return outcomes;
+  return { outcomes, introspection };
 }

@@ -74,7 +74,13 @@ const reserveName = Symbol('kernel.reserve');
  * `Kernel.reservePredicate`, плагину он недоступен.
  */
 export class ContributionService<T> extends Service implements ContributionRegistrar<T> {
-  private readonly entries = new Map<string, { readonly value: T; readonly owner: string }>();
+  /**
+   * `ownerFiber` рядом с `owner` (design.md, Решение 3) — осмотр (`introspect.ts`)
+   * приписывает вклад строке по области, а имя владельца одно на все строки
+   * плагина не различило бы их. `Registry.owners` этим полем не пользуется и
+   * не расширяется: его читает `stepcast config`, которому фибер не нужен.
+   */
+  private readonly entries = new Map<string, { readonly value: T; readonly owner: string; readonly ownerFiber: Fiber }>();
   private readonly reservedNames = new Set<string>();
   private readonly kind: ContributionKind;
   private readonly builtinFiber: Fiber;
@@ -97,6 +103,16 @@ export class ContributionService<T> extends Service implements ContributionRegis
   /** Вклады вида — то, чем сегодня был `registry[kind]`. */
   get contributions(): ReadonlyMap<string, T> {
     return new Map([...this.entries].map(([name, entry]) => [name, entry.value]));
+  }
+
+  /**
+   * Вклады вида с фибером их области — то, чем осмотр (`introspect.ts`)
+   * приписывает вклад строке дерева (design.md, Решение 3). Не заменяет
+   * `contributions`/`owner`: `stepcast config` и текст отказов фибер не
+   * читают, а `Registry.owners` им не расширяется.
+   */
+  entriesWithFiber(): readonly { readonly name: string; readonly value: T; readonly owner: string; readonly ownerFiber: Fiber }[] {
+    return [...this.entries].map(([name, entry]) => ({ name, ...entry }));
   }
 
   /** Кто внёс вклад с этим именем — имя плагина либо `BUILTIN_OWNER`. */
@@ -145,7 +161,7 @@ export class ContributionService<T> extends Service implements ContributionRegis
       );
     }
     return this.ctx.effect(() => {
-      this.entries.set(name, { value: contribution, owner });
+      this.entries.set(name, { value: contribution, owner, ownerFiber: this.ctx.fiber });
       return () => {
         this.entries.delete(name);
         this.formerOwners.set(name, owner);
@@ -220,6 +236,12 @@ export interface Kernel {
    * этой области снимает и запись — тем же приёмом, что и три вида вкладов.
    */
   recordPlugin(ctx: Context, meta: LoadedPlugin): void;
+  /**
+   * Плагин, применённый этой областью, — то, чем осмотр (`introspect.ts`)
+   * называет применённую строку её именем и версией: строка дерева и
+   * `LoadedPlugin` связаны фибером, а не порядком или именем.
+   */
+  pluginOf(fiber: Fiber): LoadedPlugin | undefined;
   /**
    * Забыть запись плагина, чья область так и осталась `PENDING`, — область,
    * которая ждёт сервис и не дождалась. Снятие такой области эффектов не
@@ -300,5 +322,6 @@ export function createKernel(): Kernel {
       const meta = recorded.get(fiber);
       if (meta !== undefined) forget(meta);
     },
+    pluginOf: (fiber) => recorded.get(fiber),
   };
 }
