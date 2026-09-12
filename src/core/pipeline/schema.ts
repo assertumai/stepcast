@@ -173,7 +173,49 @@ export const StepManifestSchema = z
 
 export type StepManifestDocument = z.infer<typeof StepManifestSchema>;
 
-export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
+/**
+ * Ключи, которые вид шага плагина не вправе занять: общая часть шага — своими
+ * ключами документа, встроенные виды — своими собственными (design.md,
+ * решение 3). Список общий с `plugins/kernel.ts` — отказ регистрации читает
+ * его же, второй копии перечня в репозитории нет.
+ */
+export const STEP_COMMON_KEYS: readonly string[] = [
+  'id',
+  'env',
+  'context',
+  'context_inherit',
+  'context_exclude',
+  'context_max_tokens',
+  'timeout',
+  'budget',
+  'expect',
+  'attempts',
+];
+
+/** Ключ встроенного вида шага → вид(ы) шага, которым он принадлежит (design.md, решение 3). */
+export const BUILTIN_STEP_KIND_KEY_OWNERS: Readonly<Record<string, readonly string[]>> = {
+  prompt: ['agent'],
+  agent: ['agent'],
+  model: ['agent'],
+  model_tier: ['agent'],
+  session: ['agent'],
+  permissions: ['agent'],
+  mcp: ['agent'],
+  run: ['run'],
+  on_fail: ['run', 'script', 'uses'],
+  script: ['script', 'uses'],
+  args: ['script', 'uses'],
+  runner: ['script', 'uses'],
+  input: ['script', 'uses'],
+  output_schema: ['agent', 'run', 'script', 'uses'],
+  uses: ['uses'],
+  with: ['uses'],
+};
+
+export function buildDocumentSchemas(
+  pluginPredicates: readonly string[] = [],
+  pluginStepKinds: readonly string[] = [],
+) {
   const PredicateSchema =
     pluginPredicates.length === 0
       ? BuiltinPredicateSchema
@@ -351,7 +393,31 @@ export function buildDocumentSchemas(pluginPredicates: readonly string[] = []) {
     })
     .strict();
 
-  const StepSchema = z.union([AgentStepSchema, RunStepSchema, ScriptStepSchema, UsesStepSchema]);
+  /**
+   * Плагинный вид шага занимает один ключ — своё имя (design.md, решение 3) —
+   * рядом с общей частью шага: `id`, `expect`, `timeout` и прочие ключи
+   * `StepCommonShape` остаются доступны наравне со встроенными видами, а
+   * форму значения под ключом вида проверяет JSON Schema вклада при
+   * раскрытии (`expand.ts`), а не эта схема — как и у плагинного предиката.
+   */
+  const PluginStepSchema = (name: string) =>
+    z
+      .object({
+        ...StepCommonShape,
+        [name]: z.unknown(),
+      })
+      .strict();
+
+  const StepSchema =
+    pluginStepKinds.length === 0
+      ? z.union([AgentStepSchema, RunStepSchema, ScriptStepSchema, UsesStepSchema])
+      : z.union([
+          AgentStepSchema,
+          RunStepSchema,
+          ScriptStepSchema,
+          UsesStepSchema,
+          ...pluginStepKinds.map((name) => PluginStepSchema(name)),
+        ]);
 
   const ParamSchema = z
     .object({

@@ -133,7 +133,12 @@ export function StepOutput({
   readonly address: string;
   readonly jobId: string;
   readonly stepId: string;
-  readonly kind: 'agent' | 'run' | 'script';
+  /**
+   * Вид шага: разбор ленты агента против сырого текста. Шаг плагинного вида
+   * читается как командный — исполнитель вклада пишет `stdout.log` попытки
+   * тем же именем, что и процесс командного шага.
+   */
+  readonly kind: 'agent' | 'run' | 'script' | 'plugin';
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [loaded, setLoaded] = useState(false);

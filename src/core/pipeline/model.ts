@@ -322,7 +322,22 @@ export interface ScriptStep extends StepCommon {
   readonly uses?: UsesOrigin;
 }
 
-export type Step = AgentStep | RunStep | ScriptStep;
+/**
+ * Шаг зарегистрированного плагином вида (`docs/plugins.md`). Движок видит его
+ * как данные: имя вида из реестра и поля, уже проверенные схемой вклада при
+ * разборе, — тот же довод, что у варианта `plugin` предиката. Ключ шага
+ * (`computeStepKey`), файл фиксации и журнал несут `fields` как есть: что они
+ * значат, знает только сам вклад.
+ */
+export interface PluginStep extends StepCommon {
+  readonly kind: 'plugin';
+  /** Имя вида из реестра — оно же ключ шага в документе. */
+  readonly name: string;
+  /** Значение под ключом, уже проверенное схемой вклада при раскрытии. */
+  readonly fields: unknown;
+}
+
+export type Step = AgentStep | RunStep | ScriptStep | PluginStep;
 
 export interface JobOutput {
   readonly from?: string;

@@ -1,4 +1,4 @@
-import type { BackendContribution, CommandContribution, PredicateContribution } from './contract.js';
+import type { BackendContribution, CommandContribution, PredicateContribution, StepKindContribution } from './contract.js';
 
 /**
  * Контекст глазами плагина — публикуемая поверхность подпути `stepcast/plugin`.
@@ -40,11 +40,25 @@ export interface ContributionRegistrar<T> {
   register(name: string, contribution: T): () => void;
 }
 
+/**
+ * Регистратор видов шага — то немногое из `ContributionRegistrar`, что видит
+ * автор плагина. Не переиспользует сам `ContributionRegistrar<T>`: реестр
+ * ядра хранит виды шага одним общим типом, включающим встроенную форму
+ * `document` (`kernel.ts`), а плагину эта форма недоступна вовсе — узкий
+ * интерфейс с одним `register` избегает необходимости объяснять компилятору,
+ * что читать `contributions`/`owner` для `steps` плагину незачем.
+ */
+export interface StepKindRegistrar {
+  /** Внести вид шага. Отказывает на занятом имени; возвращает disposer. */
+  register(name: string, contribution: StepKindContribution): () => void;
+}
+
 /** Контекст ядра: то, чем располагает плагин контекста и команда плагина. */
 export interface Context {
   readonly backends: ContributionRegistrar<BackendContribution>;
   readonly predicates: ContributionRegistrar<PredicateContribution>;
   readonly commands: ContributionRegistrar<CommandContribution>;
+  readonly steps: StepKindRegistrar;
   /**
    * Обратимое действие области: тело исполняется сразу, возвращённая им функция
    * вызывается при снятии области. Этим же оформлена каждая регистрация вклада.

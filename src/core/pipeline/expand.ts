@@ -14,7 +14,16 @@ import { assertDataKey } from '../journal/data.js';
 import { findProjectRoot } from '../journal/paths.js';
 import { findPackageRoot, packagedSchemaPath, packagedWrapperPath } from '../package-schema.js';
 import { builtinRegistry } from '../plugins/builtin.js';
-import { predicateNames, type Registry } from '../plugins/registry.js';
+import { isBuiltinStepKind, type BuiltinStepKindDocument, type StepKind, type StepKindContribution } from '../plugins/contract.js';
+import type { Kernel } from '../plugins/kernel.js';
+import {
+  contributionOwner,
+  formerStepKindOwner,
+  predicateNames,
+  pluginStepKindNames,
+  stepKindNames,
+  type Registry,
+} from '../plugins/registry.js';
 import { parseCount, parseDuration, parseExitCode, parseMoney, parsePercent, parseTokens } from '../units.js';
 import { interpolateTree, interpolateTypedTree, placeholderNamespaces, type Scope } from './interpolate.js';
 import { readYamlDocument, rejectWiringKeys, validateDocument } from './load.js';
@@ -24,6 +33,7 @@ import {
   buildDocumentSchemas,
   JobDocumentSchema,
   PipelineDocumentSchema,
+  STEP_COMMON_KEYS,
   type JobEntry,
   type PipelineDocument,
   type RawBudget,
@@ -50,6 +60,7 @@ import type {
   ScriptLayer,
   ScriptUnresolved,
   Step,
+  StepCommon,
   Permissions,
   Substitution,
   SubstitutionMap,
@@ -673,34 +684,44 @@ function recordPromptSubstitutions(
 }
 
 /**
- * Снять `input`/`with` с каждого шага перед общим `interpolateTree` тела
- * работы: подстановка внутри них разрешается типизированным проходом в
- * `toStep`, а не общим, который вернул бы всё строкой (design.md, решение 4).
- * `with` шага `uses` — тот же случай, что и `input` шага `script`: главный
- * смысл контракта — объект из выхода работы выше по графу, а не строка. Тот
- * же приём, каким из общего обхода уже вынесен `display` работы.
+ * Ключи шага, снимаемые с него перед общим `interpolateTree` тела работы:
+ * `input`, `with` и ключ каждого плагинного вида шага. Подстановка внутри них
+ * разрешается типизированным проходом в `toStep`, а не общим, который вернул
+ * бы всё строкой (design.md, решение 4). `with` шага `uses` — тот же случай,
+ * что и `input` шага `script`: главный смысл контракта — объект из выхода
+ * работы выше по графу, а не строка; поля плагинного вида — он же
+ * (`toPluginStep` раскрывает их `interpolateTypedTree`), и без изъятия число,
+ * объект и список доезжали бы до схемы вклада строками. Тот же приём, каким из
+ * общего обхода уже вынесен `display` работы.
  */
-function omitStepInputs(rawSteps: unknown): unknown {
+function typedStepKeys(registry: Registry): readonly string[] {
+  return ['input', 'with', ...pluginStepKindNames(registry)];
+}
+
+function omitStepInputs(rawSteps: unknown, registry: Registry): unknown {
   if (!Array.isArray(rawSteps)) return rawSteps;
+  const typed = typedStepKeys(registry);
   return rawSteps.map((step) => {
     if (step === null || typeof step !== 'object') return step;
-    const { input: _input, with: _with, ...rest } = step as Record<string, unknown>;
+    const rest = { ...(step as Record<string, unknown>) };
+    for (const key of typed) delete rest[key];
     return rest;
   });
 }
 
-/** Вернуть на место `input`/`with`, снятые `omitStepInputs`, — нераскрытыми, для `toStep`. */
-function restoreStepInputs(interpolatedSteps: unknown, rawSteps: unknown): unknown {
+/** Вернуть на место ключи, снятые `omitStepInputs`, — нераскрытыми, для `toStep`. */
+function restoreStepInputs(interpolatedSteps: unknown, rawSteps: unknown, registry: Registry): unknown {
   if (!Array.isArray(interpolatedSteps) || !Array.isArray(rawSteps)) return interpolatedSteps;
+  const typed = typedStepKeys(registry);
   return interpolatedSteps.map((step, index) => {
     const original = rawSteps[index];
     if (original === null || typeof original !== 'object') return step;
     const originalRecord = original as Record<string, unknown>;
-    return {
-      ...(step as Record<string, unknown>),
-      ...('input' in originalRecord ? { input: originalRecord.input } : {}),
-      ...('with' in originalRecord ? { with: originalRecord.with } : {}),
-    };
+    const restored = { ...(step as Record<string, unknown>) };
+    for (const key of typed) {
+      if (key in originalRecord) restored[key] = originalRecord[key];
+    }
+    return restored;
   });
 }
 
@@ -971,20 +992,40 @@ interface StepDefaults {
   readonly mcp: McpServers | undefined;
 }
 
-function toStep(
+/**
+ * Всё, чем располагает типизированный разбор встроенного вида шага
+ * (design.md, решение 2) — те же параметры, что раньше принимал `toStep`
+ * целиком, плюс уже посчитанная общая часть. Один и тот же набор для всех
+ * четырёх встроенных видов, даже когда конкретному не нужна часть полей:
+ * бесплатнее общего типа, чем четыре разных сигнатуры.
+ */
+interface BuiltinStepParseContext {
+  readonly common: StepCommon;
+  readonly declaringFile: string;
+  readonly scope: Scope;
+  readonly defaults: StepDefaults;
+  readonly config: Config;
+  readonly substitutions: Map<string, readonly Substitution[]>;
+  readonly at: string;
+  readonly registry: Registry;
+  readonly scriptRoots: ScriptRoots;
+  readonly stepRoots: ScriptRoots;
+}
+
+type StepParseResult = { readonly step: Step; readonly modelOrigin?: ModelOrigin };
+
+function buildStepCommon(
   raw: RawStep,
   index: number,
   declaringFile: string,
-  scope: Scope,
   defaults: StepDefaults,
   config: Config,
   substitutions: Map<string, readonly Substitution[]>,
   at: string,
   registry: Registry,
   scriptRoots: ScriptRoots,
-  stepRoots: ScriptRoots,
-): { readonly step: Step; readonly modelOrigin?: ModelOrigin } {
-  const common = {
+): StepCommon {
+  return {
     id: raw.id,
     index: index + 1,
     env: raw.env ?? {},
@@ -1004,125 +1045,151 @@ function toStep(
     ),
     attempts: toAttempts(raw.attempts, config.limits, substitutions, at),
   };
+}
 
-  if ('run' in raw) {
-    let onFail: { readonly analyze: string; readonly prompt: string } | undefined;
-    if (raw.on_fail !== undefined) {
-      const onFailKey = `${at}.on_fail.prompt`;
-      const onFailPrompt = readPrompt(raw.on_fail.prompt, declaringFile, scope, onFailKey);
-      recordPromptSubstitutions(substitutions, onFailKey, onFailPrompt.substitutions);
-      onFail = { analyze: raw.on_fail.analyze, prompt: onFailPrompt.text };
-    }
-    return {
-      step: {
-        ...common,
-        kind: 'run',
-        command: raw.run,
-        ...(onFail === undefined ? {} : { onFail }),
-        ...(raw.output_schema === undefined
-          ? {}
-          : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
-      },
-    };
+/** Узнать шаг `run` среди уже провалидированных документом — замена дискриминанта (`toStep`). */
+function isRunStepRaw(raw: Record<string, unknown>): boolean {
+  return 'run' in raw;
+}
+
+function parseRunStep(raw: RawStep, ctx: BuiltinStepParseContext): StepParseResult {
+  if (!('run' in raw)) throw new Error('parseRunStep: раскрытие вызвано на шаге без ключа run');
+  const { common, declaringFile, scope, substitutions, at } = ctx;
+  let onFail: { readonly analyze: string; readonly prompt: string } | undefined;
+  if (raw.on_fail !== undefined) {
+    const onFailKey = `${at}.on_fail.prompt`;
+    const onFailPrompt = readPrompt(raw.on_fail.prompt, declaringFile, scope, onFailKey);
+    recordPromptSubstitutions(substitutions, onFailKey, onFailPrompt.substitutions);
+    onFail = { analyze: raw.on_fail.analyze, prompt: onFailPrompt.text };
   }
+  return {
+    step: {
+      ...common,
+      kind: 'run',
+      command: raw.run,
+      ...(onFail === undefined ? {} : { onFail }),
+      ...(raw.output_schema === undefined
+        ? {}
+        : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
+    },
+  };
+}
 
-  // Шаг `uses` разбирается до шага `script`: ключи, объявляемые манифестом,
-  // названы в его схеме (`declaredByManifest`) необязательными — и по
-  // присутствию ключа `script` два вида шага уже не различаются. Различает их
-  // сам `uses`, которого у шага `script` нет вовсе.
-  if ('uses' in raw) {
-    let onFail: { readonly analyze: string; readonly prompt: string } | undefined;
-    if (raw.on_fail !== undefined) {
-      const onFailKey = `${at}.on_fail.prompt`;
-      const onFailPrompt = readPrompt(raw.on_fail.prompt, declaringFile, scope, onFailKey);
-      recordPromptSubstitutions(substitutions, onFailKey, onFailPrompt.substitutions);
-      onFail = { analyze: raw.on_fail.analyze, prompt: onFailPrompt.text };
-    }
-    // `raw.with` дошёл сюда нераскрытым, тем же приёмом, что и `raw.input`
-    // шага `script` (`omitStepInputs`/`restoreStepInputs`): типизированный
-    // проход разрешает `${params.*}`/`${inputs.*}` здесь, а `${jobs.*}`,
-    // `${run.*}` и `${env.*}` остаются текстом до `late.ts`.
-    const withResult = interpolateTypedTree(raw.with ?? {}, scope, `${at}.with`);
-    for (const [path, list] of withResult.substitutions) substitutions.set(path, list);
+/** Узнать шаг `uses` среди уже провалидированных документом (`toStep`). */
+function isUsesStepRaw(raw: Record<string, unknown>): boolean {
+  return 'uses' in raw;
+}
 
-    const build = resolveUsesStep(
-      raw.uses,
-      withResult.value,
-      stepRoots,
-      scriptRoots,
-      config,
-    );
-    const usesResolved = 'resolved' in build ? build.resolved : undefined;
-
-    return {
-      step: {
-        ...common,
-        kind: 'script',
-        // Абсолютный путь, если файл разрешился; иначе — имя, которым шаг
-        // назван на месте вызова: `path` шага `script` тоже несёт то, чем
-        // читатель мог бы опознать шаг до разрешения.
-        path: usesResolved?.absolutePath ?? raw.uses,
-        args: [],
-        ...(onFail === undefined ? {} : { onFail }),
-        // Сведённые параметры — с применёнными умолчаниями, если состав
-        // прошёл проверку, иначе то, что передало место вызова: шаг всё
-        // равно не исполнится (design.md, решение 6).
-        input: build.uses.params ?? withResult.value,
-        ...(build.outputSchemaPath === undefined ? {} : { outputSchemaPath: build.outputSchemaPath }),
-        ...('resolved' in build ? { resolved: build.resolved } : { unresolved: build.unresolved }),
-        uses: {
-          ...build.uses,
-          ...(build.paramsSchema === undefined ? {} : { paramsSchema: build.paramsSchema }),
-        },
-      },
-    };
+// Шаг `uses` разбирается до шага `script`: ключи, объявляемые манифестом,
+// названы в его схеме (`declaredByManifest`) необязательными — и по
+// присутствию ключа `script` два вида шага уже не различаются. Различает их
+// сам `uses`, которого у шага `script` нет вовсе. Порядок обхода видов в
+// `toStep` — порядок регистрации в `createKernelShell` (`plugins/builtin.ts`):
+// `uses` зарегистрирован раньше `script` ровно поэтому.
+function parseUsesStep(raw: RawStep, ctx: BuiltinStepParseContext): StepParseResult {
+  if (!('uses' in raw)) throw new Error('parseUsesStep: раскрытие вызвано на шаге без ключа uses');
+  const { common, scope, substitutions, at, stepRoots, scriptRoots, config } = ctx;
+  let onFail: { readonly analyze: string; readonly prompt: string } | undefined;
+  if (raw.on_fail !== undefined) {
+    const onFailKey = `${at}.on_fail.prompt`;
+    const onFailPrompt = readPrompt(raw.on_fail.prompt, ctx.declaringFile, scope, onFailKey);
+    recordPromptSubstitutions(substitutions, onFailKey, onFailPrompt.substitutions);
+    onFail = { analyze: raw.on_fail.analyze, prompt: onFailPrompt.text };
   }
+  // `raw.with` дошёл сюда нераскрытым, тем же приёмом, что и `raw.input`
+  // шага `script` (`omitStepInputs`/`restoreStepInputs`): типизированный
+  // проход разрешает `${params.*}`/`${inputs.*}` здесь, а `${jobs.*}`,
+  // `${run.*}` и `${env.*}` остаются текстом до `late.ts`.
+  const withResult = interpolateTypedTree(raw.with ?? {}, scope, `${at}.with`);
+  for (const [path, list] of withResult.substitutions) substitutions.set(path, list);
 
-  if ('script' in raw) {
-    let onFail: { readonly analyze: string; readonly prompt: string } | undefined;
-    if (raw.on_fail !== undefined) {
-      const onFailKey = `${at}.on_fail.prompt`;
-      const onFailPrompt = readPrompt(raw.on_fail.prompt, declaringFile, scope, onFailKey);
-      recordPromptSubstitutions(substitutions, onFailKey, onFailPrompt.substitutions);
-      onFail = { analyze: raw.on_fail.analyze, prompt: onFailPrompt.text };
-    }
-    const args = raw.args ?? [];
-    const outcome = resolveScript(
-      raw.script,
+  const build = resolveUsesStep(raw.uses, withResult.value, stepRoots, scriptRoots, config);
+  const usesResolved = 'resolved' in build ? build.resolved : undefined;
+
+  return {
+    step: {
+      ...common,
+      kind: 'script',
+      // Абсолютный путь, если файл разрешился; иначе — имя, которым шаг
+      // назван на месте вызова: `path` шага `script` тоже несёт то, чем
+      // читатель мог бы опознать шаг до разрешения.
+      path: usesResolved?.absolutePath ?? raw.uses,
+      args: [],
+      ...(onFail === undefined ? {} : { onFail }),
+      // Сведённые параметры — с применёнными умолчаниями, если состав
+      // прошёл проверку, иначе то, что передало место вызова: шаг всё
+      // равно не исполнится (design.md, решение 6).
+      input: build.uses.params ?? withResult.value,
+      ...(build.outputSchemaPath === undefined ? {} : { outputSchemaPath: build.outputSchemaPath }),
+      ...('resolved' in build ? { resolved: build.resolved } : { unresolved: build.unresolved }),
+      uses: {
+        ...build.uses,
+        ...(build.paramsSchema === undefined ? {} : { paramsSchema: build.paramsSchema }),
+      },
+    },
+  };
+}
+
+/** Узнать шаг `script` среди уже провалидированных документом (`toStep`). */
+function isScriptStepRaw(raw: Record<string, unknown>): boolean {
+  return 'script' in raw;
+}
+
+function parseScriptStep(raw: RawStep, ctx: BuiltinStepParseContext): StepParseResult {
+  // Второе условие — не защитная копия: `UsesStepSchema` тоже несёт ключ
+  // `script` в своём типе (`declaredByManifest`, всегда `undefined`), и без
+  // него `raw.script` остался бы `string | undefined` для компилятора, хотя
+  // на этом пути (после `uses`, см. порядок обхода `toStep`) шаг `uses`
+  // сюда никогда не доходит.
+  if (!('script' in raw) || 'uses' in raw) throw new Error('parseScriptStep: раскрытие вызвано на шаге без ключа script');
+  const { common, scope, substitutions, at, declaringFile, config, scriptRoots } = ctx;
+  let onFail: { readonly analyze: string; readonly prompt: string } | undefined;
+  if (raw.on_fail !== undefined) {
+    const onFailKey = `${at}.on_fail.prompt`;
+    const onFailPrompt = readPrompt(raw.on_fail.prompt, declaringFile, scope, onFailKey);
+    recordPromptSubstitutions(substitutions, onFailKey, onFailPrompt.substitutions);
+    onFail = { analyze: raw.on_fail.analyze, prompt: onFailPrompt.text };
+  }
+  const args = raw.args ?? [];
+  const outcome = resolveScript(raw.script, args, raw.runner, declaringFile, config, scriptRoots, `${at}.script`);
+  // `raw.input` дошёл сюда нераскрытым (`omitStepInputs`/`restoreStepInputs`):
+  // общий обход тела работы его не тронул, чтобы `${params.retries}` не
+  // превратился в строку "3" раньше типизированного прохода.
+  const inputResult = raw.input === undefined ? undefined : interpolateTypedTree(raw.input, scope, `${at}.input`);
+  if (inputResult !== undefined) {
+    for (const [path, list] of inputResult.substitutions) substitutions.set(path, list);
+  }
+  return {
+    step: {
+      ...common,
+      kind: 'script',
+      path: raw.script,
       args,
-      raw.runner,
-      declaringFile,
-      config,
-      scriptRoots,
-      `${at}.script`,
-    );
-    // `raw.input` дошёл сюда нераскрытым (`omitStepInputs`/`restoreStepInputs`):
-    // общий обход тела работы его не тронул, чтобы `${params.retries}` не
-    // превратился в строку "3" раньше типизированного прохода.
-    const inputResult =
-      raw.input === undefined
-        ? undefined
-        : interpolateTypedTree(raw.input, scope, `${at}.input`);
-    if (inputResult !== undefined) {
-      for (const [path, list] of inputResult.substitutions) substitutions.set(path, list);
-    }
-    return {
-      step: {
-        ...common,
-        kind: 'script',
-        path: raw.script,
-        args,
-        ...(raw.runner === undefined ? {} : { runner: raw.runner }),
-        ...(onFail === undefined ? {} : { onFail }),
-        ...(inputResult === undefined ? {} : { input: inputResult.value }),
-        ...(raw.output_schema === undefined
-          ? {}
-          : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
-        ...('resolved' in outcome ? { resolved: outcome.resolved } : { unresolved: outcome.unresolved }),
-      },
-    };
-  }
+      ...(raw.runner === undefined ? {} : { runner: raw.runner }),
+      ...(onFail === undefined ? {} : { onFail }),
+      ...(inputResult === undefined ? {} : { input: inputResult.value }),
+      ...(raw.output_schema === undefined
+        ? {}
+        : { outputSchemaPath: resolveSchemaPath(raw.output_schema, declaringFile, `${at}.output_schema`) }),
+      ...('resolved' in outcome ? { resolved: outcome.resolved } : { unresolved: outcome.unresolved }),
+    },
+  };
+}
 
+/**
+ * Узнать шаг `agent` среди уже провалидированных документом (`toStep`).
+ * `prompt` — единственный обязательный ключ агентского шага, которого нет ни
+ * у одного другого вида (встроенного или плагинного: имя плагинного вида не
+ * вправе совпасть с ключом встроенного, design.md решение 3) — дискриминант
+ * настоящий, а не позиция «последнего» в списке видов.
+ */
+function isAgentStepRaw(raw: Record<string, unknown>): boolean {
+  return 'prompt' in raw;
+}
+
+function parseAgentStep(raw: RawStep, ctx: BuiltinStepParseContext): StepParseResult {
+  if (!('prompt' in raw)) throw new Error('parseAgentStep: раскрытие вызвано на шаге без ключа prompt');
+  const { common, scope, substitutions, at, declaringFile, config, defaults } = ctx;
   const promptKey = `${at}.prompt`;
   const prompt = readPrompt(raw.prompt, declaringFile, scope, promptKey);
   recordPromptSubstitutions(substitutions, promptKey, prompt.substitutions);
@@ -1183,6 +1250,201 @@ function toStep(
 }
 
 /**
+ * Проверить значение под ключом плагинного вида шага схемой вклада — тем же
+ * `ajv` и той же формой отказа, что и у плагинного предиката
+ * (`toPluginPredicate` выше): путь поля, причина и имя плагина, объявившего
+ * схему. Отдельная функция: её же зовёт `runner.ts` перед исполнением, по
+ * окончательным значениям (design.md, решение 5).
+ */
+export function validateStepKindFields(kind: StepKindContribution, value: unknown, at: string, registry: Registry): void {
+  const validate = ajv.compile(kind.fields as object);
+  if (!validate(value)) {
+    const detail = (validate.errors ?? [])
+      .map((error) => `${error.instancePath === '' ? 'значение' : error.instancePath} ${error.message ?? ''}`.trim())
+      .join('; ');
+    const owner = contributionOwner(registry, 'steps', kind.name) ?? 'неизвестный';
+    throw new StepcastError(`Поля вида шага ${kind.name} не соответствуют его схеме: ${detail}`, {
+      at,
+      hint: `Схему объявляет плагин ${owner}, внёсший вид шага ${kind.name}`,
+    });
+  }
+}
+
+/**
+ * Шаг плагинного вида: один ключ — имя вклада, — все поля под ним
+ * (design.md, решение 3). Поля раскрываются типизированным проходом, тем же,
+ * каким раскрывается `input` шага `script` (design.md, решение 5): подстановка
+ * на объект или список не должна превращаться в строку.
+ */
+function toPluginStep(
+  rawRecord: Record<string, unknown>,
+  kind: StepKindContribution,
+  ctx: BuiltinStepParseContext,
+): Step {
+  const at = `${ctx.at}.${kind.name}`;
+  const result = interpolateTypedTree(rawRecord[kind.name], ctx.scope, at);
+  for (const [path, list] of result.substitutions) ctx.substitutions.set(path, list);
+
+  // Схема проверяется по тому, что известно статически: поле, несущее
+  // отложенную подстановку (`${jobs.*}`), ещё не раскрыто и почти наверняка не
+  // пройдёт схему как строка-плейсхолдер. Вторая проверка — перед исполнением,
+  // по окончательным значениям (`runner.ts`, тот же образец, что у
+  // `uses.paramsSchema`).
+  const hasDeferred = [...result.substitutions.values()].some((list) => list.some((sub) => sub.deferred));
+  if (!hasDeferred) {
+    validateStepKindFields(kind, result.value, at, ctx.registry);
+  }
+
+  return {
+    ...ctx.common,
+    kind: 'plugin',
+    name: kind.name,
+    fields: result.value,
+  };
+}
+
+/**
+ * Вид шага, узнавший себя в сыром шаге, — обход реестра вместо перечисления
+ * (design.md, решение 1, решение 2): встроенные узнают себя формой
+ * `document.test`, плагинные — присутствием своего имени-ключа. Порядок обхода
+ * — порядок регистрации в `createKernelShell` (`plugins/builtin.ts`): `run`,
+ * `uses`, `script`, `agent`, затем плагинные в порядке их загрузки.
+ *
+ * Отдельной функцией, потому что вопрос «какого вида этот шаг» задаётся
+ * дважды: при разборе (`toStep`) и раньше него — проверкой документа
+ * (`rejectUnknownStepKinds`), которой нужен тот же ответ, чтобы отказ называл
+ * вид шага, а не разваливался дампом объединения схем.
+ */
+function matchStepKind(rawRecord: Record<string, unknown>, registry: Registry): StepKind | undefined {
+  for (const [name, kind] of registry.steps) {
+    if (isBuiltinStepKind(kind) ? kind.document.test(rawRecord) : name in rawRecord) return kind;
+  }
+  return undefined;
+}
+
+/**
+ * Отказать шагу, вид которого не знает ни один вклад действующего реестра, —
+ * до проверки схемой документа и её же словами (`rejectWiringKeys` рядом в
+ * `load.ts` — тот же приём): объединение ветвей шага отклонило бы такой
+ * документ дампом всех своих веток, где не звучит ни имя вида, ни перечень
+ * доступных, ни плагин, вместе с которым вид снят.
+ *
+ * Шаг, вид которого распознан, сюда не попадает: лишний ключ рядом с ключом
+ * вида — забота строгого объекта ветви, и он называет его точнее.
+ */
+function rejectUnknownStepKinds(document: unknown, file: string, registry: Registry): void {
+  if (typeof document !== 'object' || document === null) return;
+  const record = document as Record<string, unknown>;
+
+  // Файл работы несёт шаги прямо в документе, пайплайн — в теле каждой работы,
+  // объявленной на месте. Работа, подключённая ключом `uses`, проверяется
+  // своим файлом, когда до него дойдёт чтение.
+  checkRawSteps(record.steps, file, 'steps', registry);
+  const jobs = record.jobs;
+  if (typeof jobs !== 'object' || jobs === null) return;
+  for (const [id, entry] of Object.entries(jobs as Record<string, unknown>)) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    checkRawSteps((entry as Record<string, unknown>).steps, file, `jobs.${id}.steps`, registry);
+  }
+}
+
+function checkRawSteps(rawSteps: unknown, file: string, at: string, registry: Registry): void {
+  if (!Array.isArray(rawSteps)) return;
+  for (const [index, raw] of rawSteps.entries()) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
+    const record = raw as Record<string, unknown>;
+    if (matchStepKind(record, registry) !== undefined) continue;
+
+    const site = { file, at: `${at}.${index}`, hint: `Доступны: ${stepKindNames(registry).join(', ')}` };
+    const candidates = Object.keys(record).filter((key) => !STEP_COMMON_KEYS.includes(key));
+
+    // Вид, снятый вместе с плагином, называется по имени — пока живо ядро,
+    // помнящее прежнего владельца (design.md, решение 8). Тот же ответ, что
+    // даёт исполнение шага, чей вид снят посреди прогона (`runner.ts`).
+    for (const key of candidates) {
+      const former = formerStepKindOwner(registry, key);
+      if (former === undefined) continue;
+      throw new StepcastError(`Вид шага ${key} снят вместе с плагином ${former}`, site);
+    }
+
+    throw new StepcastError(
+      candidates.length === 0
+        ? 'Шаг не называет ни один известный вид шага'
+        : `Вид шага ${candidates.join(', ')} неизвестен: такого вклада в реестре нет`,
+      site,
+    );
+  }
+}
+
+/**
+ * Разобрать шаг раскрытием ветви вида — обход реестра (`matchStepKind`):
+ * каждый вид шага сам знает, узнаёт ли он себя в `raw`, и как себя разобрать.
+ */
+function toStep(
+  raw: RawStep,
+  index: number,
+  declaringFile: string,
+  scope: Scope,
+  defaults: StepDefaults,
+  config: Config,
+  substitutions: Map<string, readonly Substitution[]>,
+  at: string,
+  registry: Registry,
+  scriptRoots: ScriptRoots,
+  stepRoots: ScriptRoots,
+): StepParseResult {
+  const common = buildStepCommon(raw, index, declaringFile, defaults, config, substitutions, at, registry, scriptRoots);
+  const ctx: BuiltinStepParseContext = {
+    common,
+    declaringFile,
+    scope,
+    defaults,
+    config,
+    substitutions,
+    at,
+    registry,
+    scriptRoots,
+    stepRoots,
+  };
+  const rawRecord = raw as unknown as Record<string, unknown>;
+
+  const matched = matchStepKind(rawRecord, registry);
+  if (matched !== undefined) {
+    return isBuiltinStepKind(matched)
+      ? (matched.document.parse(raw, ctx) as StepParseResult)
+      : { step: toPluginStep(rawRecord, matched, ctx) };
+  }
+
+  // Недостижимо на пути от `validateDocument`: схема документа уже отклонила
+  // бы ключ, которого не знает ни один вид (та же гарантия, что и у
+  // плагинного предиката, `toPluginPredicate`). Оставлено как страховка на
+  // случай, если схема и реестр разошлись между двумя вызовами.
+  throw new StepcastError('Шаг не называет ни один известный вид', {
+    at,
+    hint: `Доступны: ${stepKindNames(registry).join(', ')}`,
+  });
+}
+
+/**
+ * Зарегистрировать четыре встроенных вида шага в сервисе `steps` ядра —
+ * вкладом внутренней формы `document` (design.md, решение 2), тем же вызовом,
+ * каким регистрируется плагинный. Вызывается `createKernelShell`
+ * (`plugins/builtin.ts`), а не отсюда: ядро — модуль `plugins`, а разбор —
+ * модуль `pipeline`, и порядок регистрации здесь же фиксирует порядок обхода
+ * `toStep` — `run`, `uses`, `script` раньше `agent` (см. комментарий у
+ * `parseUsesStep`).
+ */
+export function registerBuiltinStepKinds(kernel: Kernel): void {
+  const entries: readonly { readonly name: string; readonly title: string; readonly document: BuiltinStepKindDocument }[] = [
+    { name: 'run', title: 'Команда', document: { test: isRunStepRaw, parse: parseRunStep } },
+    { name: 'uses', title: 'Переиспользуемый шаг', document: { test: isUsesStepRaw, parse: parseUsesStep } },
+    { name: 'script', title: 'Скрипт', document: { test: isScriptStepRaw, parse: parseScriptStep } },
+    { name: 'agent', title: 'Агент', document: { test: isAgentStepRaw, parse: parseAgentStep } },
+  ];
+  for (const entry of entries) kernel.ctx.steps.register(entry.name, entry);
+}
+
+/**
  * Раскрыть пайплайн: подставить значения, втянуть подключённые работы,
  * применить умолчания. Результат самодостаточен — исходные документы больше
  * не нужны.
@@ -1204,17 +1466,20 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     home: scriptRoots.home,
     builtin: join(findPackageRoot(fileURLToPath(new URL('.', import.meta.url))), 'src', 'builtin', 'steps'),
   };
-  // Схемы документа зависят от загруженных плагинов: ключ предиката —
-  // закрытое объединение, и без плагинных ветвей их предикат отклонялся бы
-  // как опечатка.
+  // Схемы документа зависят от загруженных плагинов: ключ предиката и ключ
+  // плагинного вида шага — закрытые объединения, и без их ветвей предикат или
+  // шаг отклонялись бы как опечатка.
+  const pluginKinds = pluginStepKindNames(registry);
   const schemas =
-    registry.predicates.size === 0
+    registry.predicates.size === 0 && pluginKinds.length === 0
       ? { PipelineDocumentSchema, JobDocumentSchema }
-      : buildDocumentSchemas([...registry.predicates.keys()]);
+      : buildDocumentSchemas([...registry.predicates.keys()], pluginKinds);
 
+  const rawPipeline = readYamlDocument(pipelinePath);
+  rejectUnknownStepKinds(rawPipeline, pipelinePath, registry);
   const document = validateDocument(
     schemas.PipelineDocumentSchema,
-    readYamlDocument(pipelinePath),
+    rawPipeline,
     pipelinePath,
   ) as PipelineDocument;
 
@@ -1320,6 +1585,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       );
       const rawDocument = readYamlDocument(usesPath);
       rejectWiringKeys(rawDocument, usesPath);
+      rejectUnknownStepKinds(rawDocument, usesPath, registry);
       const jobDocument = validateDocument(schemas.JobDocumentSchema, rawDocument, usesPath);
 
       const withValues = interpolateTree(entry.with ?? {}, pipelineScope, `${at}.with`);
@@ -1349,14 +1615,14 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       const { params: _params, kind: _kind, version: _version, ...rest } = jobDocument;
       const restSteps = (rest as Record<string, unknown>).steps;
       const interpolated = interpolateTree(
-        { ...(rest as Record<string, unknown>), steps: omitStepInputs(restSteps) },
+        { ...(rest as Record<string, unknown>), steps: omitStepInputs(restSteps, registry) },
         bodyScope,
         at,
       );
       collect(interpolated.substitutions);
       body = {
         ...interpolated.value,
-        steps: restoreStepInputs((interpolated.value as Record<string, unknown>).steps, restSteps),
+        steps: restoreStepInputs((interpolated.value as Record<string, unknown>).steps, restSteps, registry),
       };
 
       // Переопределения с места подключения накладываются поверх файла работы
@@ -1405,14 +1671,14 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       } = entry;
       const restSteps = (rest as Record<string, unknown>).steps;
       const interpolated = interpolateTree(
-        { ...(rest as Record<string, unknown>), steps: omitStepInputs(restSteps) },
+        { ...(rest as Record<string, unknown>), steps: omitStepInputs(restSteps, registry) },
         bodyScope,
         at,
       );
       collect(interpolated.substitutions);
       body = {
         ...interpolated.value,
-        steps: restoreStepInputs((interpolated.value as Record<string, unknown>).steps, restSteps),
+        steps: restoreStepInputs((interpolated.value as Record<string, unknown>).steps, restSteps, registry),
       };
     }
 

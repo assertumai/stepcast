@@ -5,7 +5,7 @@ import type { BackendAdapter, ModelDiscovery } from '../backend/types.js';
 import type { BackendConfig, Config } from '../config/resolve.js';
 import type { RawBackend } from '../config/schema.js';
 import type { EvaluationInput } from '../expect/evaluate.js';
-import type { PredicateResult } from '../journal/schema.js';
+import type { PredicateResult, Usage } from '../journal/schema.js';
 import type { CliIo, CommandSpec, ParsedArgs } from './cli-types.js';
 // Ссылки на реестр и контекст — только типом: в рантайме импорт стирается, и
 // круга между контрактом, реестром и контекстом не возникает. Контекст берётся
@@ -140,6 +140,127 @@ export interface CommandContribution {
   run(args: ParsedArgs, io: CliIo, env: CommandEnv): Promise<ExitCodeValue> | ExitCodeValue;
 }
 
+/**
+ * Вход исполнителя вида шага (design.md, решение 6): то, чем исполняется
+ * попытка, — не модель шага, работы или прогона целиком. Публикация модели
+ * движка в контракт сделала бы любую её правку ломающей для плагинов; вклад
+ * получает ровно то же по объёму, что получает `BackendAdapter` — описание
+ * вызова, а не шаг.
+ */
+export interface StepKindInput {
+  /** Поля шага под ключом вида — уже проверенные схемой вклада, после позднего раскрытия. */
+  readonly fields: unknown;
+  readonly step: { readonly id: string; readonly index: number; readonly timeoutMs: number };
+  readonly job: { readonly id: string };
+  /** Номер попытки — тот же цикл `runAttempts`, что и у командного шага. */
+  readonly attempt: number;
+  readonly env: Readonly<Record<string, string>>;
+  readonly cwd: string;
+  /** Каталог шага в журнале: файлы попытки исполнитель пишет только сюда. */
+  readonly stepDir: string;
+  /**
+   * Взводится движком по истечении `step.timeoutMs` либо при отмене прогона.
+   * Исполнитель, не уважающий сигнал, движок не останавливает: внутри своего
+   * процесса убивать нечего (design.md, риски).
+   */
+  readonly signal: AbortSignal;
+  /** Журнал попытки: событие и файл рядом со `stdout.log` попытки. */
+  readonly log: StepKindLog;
+  /**
+   * Контекст ядра процесса, исполняющего прогон, — не демона (design.md,
+   * решение 6): им исполнитель достаёт сервис, заведённый своим же плагином.
+   */
+  readonly ctx: Context;
+}
+
+/** Записать в журнал попытки — событие либо файл рядом с `stdout.log`. */
+export interface StepKindLog {
+  /** Свободное сообщение в журнал прогона — событие рядом с прочими. */
+  note(message: string): void;
+  /** Записать файл в каталог попытки, вернув его путь. */
+  file(name: string, content: string): string;
+}
+
+/** Результат попытки, отданный исполнителем вида шага (design.md, решение 6). */
+export interface StepKindOutcome {
+  /** Умолчание `0`. Предикат `exit_code` читает его же. */
+  readonly exitCode?: number;
+  /** Текст результата: пишется в `stdout.log` попытки, питает `matches` и судью. */
+  readonly text?: string;
+  /** Структурированный выход: проверяется схемой `output` вклада, доступен `${jobs.*.output}`. */
+  readonly structured?: unknown;
+  /** Расход, если вид шага его несёт, — копится тем же счётчиком, что расход судьи. */
+  readonly usage?: Usage;
+}
+
+/**
+ * Вклад вида шага — публикуемая форма (design.md, решение 1, решение 2).
+ * Единственная, которую видит автор плагина: `stepcast/plugin` экспортирует
+ * ровно этот тип. Форма полей — JSON Schema, той же причиной, что и у формы
+ * значения предиката: у плагина своя версия zod, и модель чужой версии в
+ * объединении схем документа даёт неотлаживаемые отказы.
+ */
+export interface StepKindContribution {
+  /** Имя вида — оно же единственный ключ шага в документе (design.md, решение 3). */
+  readonly name: string;
+  /** Название для витрины и диагностики. */
+  readonly title: string;
+  /** JSON Schema значения под ключом вида. */
+  readonly fields: Readonly<Record<string, unknown>>;
+  /** JSON Schema структурированного выхода — движок проверяет ей `outcome.structured`. */
+  readonly output?: Readonly<Record<string, unknown>>;
+  /** Статическая проверка полей — то, что видно до первого токена. */
+  lint?(fields: unknown, site: LintSite): readonly PluginDiagnostic[];
+  /** Исполнить попытку. Исключение — непройденная попытка, а не крушение шага. */
+  execute(input: StepKindInput): Promise<StepKindOutcome> | StepKindOutcome;
+}
+
+/**
+ * Внутренняя форма вклада вида шага — только для встроенных `agent`, `run`,
+ * `script` и `uses` (design.md, решение 2). В публикуемой поверхности плагина
+ * её нет: у встроенных видов есть типизированная модель и типизированный
+ * разбор, а `fields`/`execute` заставили бы их пройти через JSON Schema и
+ * общий исполнитель ради симметрии, которой никто не пользуется, — вид,
+ * которого автор плагина никогда не напишет своими руками.
+ */
+export interface BuiltinStepKindDocument {
+  /**
+   * Узнать шаг этого вида среди уже провалидированных документом: замена
+   * дискриминанта размеченного объединения, которого у `RawStep` нет
+   * (`pipeline/expand.ts`, `toStep`).
+   */
+  test(raw: Record<string, unknown>): boolean;
+  /** Типизированный разбор — тело прежней ветви `toStep`, перенесённое без изменений в содержании. */
+  parse(raw: unknown, ctx: unknown): unknown;
+}
+
+/** Встроенный вид шага в реестре: имя, название и внутренняя форма разбора. */
+export interface BuiltinStepKind {
+  readonly name: string;
+  readonly title: string;
+  readonly document: BuiltinStepKindDocument;
+}
+
+/**
+ * Вид шага в реестре — плагинный либо встроенный (design.md, решение 2). Тип
+ * внутренний: `stepcast/plugin` публикует только `StepKindContribution` —
+ * автор плагина форму `document` не видит и завести её не может.
+ */
+export type StepKind = StepKindContribution | BuiltinStepKind;
+
+/**
+ * Встроенный вид (форма `document`) отличается от плагинного наличием этого
+ * поля. Проверяется само содержание поля, а не одно его имя: вклад, случайно
+ * назвавший поле `document`, иначе был бы принят за встроенный, и разбор звал
+ * бы `document.test` на объекте без такого метода. Декларативному вкладу это
+ * имя запрещено схемой (`StepKindContributionSchema`), плагину контекста —
+ * ничем: он зовёт `ctx.steps.register` напрямую.
+ */
+export function isBuiltinStepKind(kind: StepKind): kind is BuiltinStepKind {
+  const document = (kind as BuiltinStepKind).document as BuiltinStepKindDocument | undefined;
+  return typeof document?.test === 'function' && typeof document.parse === 'function';
+}
+
 export interface StepcastPlugin {
   /** Имя плагина: слаг в kebab-case, уникальный среди загруженных. */
   readonly name: string;
@@ -147,6 +268,7 @@ export interface StepcastPlugin {
   readonly backends?: Readonly<Record<string, BackendContribution>>;
   readonly predicates?: readonly PredicateContribution[];
   readonly commands?: readonly CommandContribution[];
+  readonly steps?: readonly StepKindContribution[];
 }
 
 /** Загруженный плагин: то, что движок пишет в манифест прогона и в отчёт. */
@@ -241,6 +363,34 @@ const CommandContributionSchema = z
   })
   .loose();
 
+const StepKindContributionSchema = z
+  .object({
+    name: z.string().regex(SLUG, 'имя вида шага — слаг в kebab-case или snake_case'),
+    title: z.string(),
+    fields: z.record(z.string(), z.unknown()),
+    output: z.record(z.string(), z.unknown()).optional(),
+    lint: z
+      .custom<NonNullable<StepKindContribution['lint']>>((value) => typeof value === 'function', {
+        message: 'должна быть функцией',
+      })
+      .optional(),
+    execute: z.custom<StepKindContribution['execute']>((value) => typeof value === 'function', {
+      message: 'должна быть функцией',
+    }),
+    /**
+     * Поле внутренней формы встроенного вида (`BuiltinStepKindDocument`): по
+     * его наличию `isBuiltinStepKind` отличает встроенный вид от плагинного.
+     * Плагинный вклад, случайно несущий это имя, был бы принят за встроенный,
+     * и разбор позвал бы `document.test` на объекте без него. Объект здесь
+     * `.loose()` — остальные лишние поля вклада безобидны, — поэтому запрет
+     * именной: он один и нужен.
+     */
+    document: z
+      .undefined('поле document принадлежит внутренней форме встроенного вида шага и вкладу недоступно')
+      .optional(),
+  })
+  .loose();
+
 /**
  * Форма объекта, экспортируемого модулем плагина по умолчанию. Проверяется
  * при загрузке: неверная форма обязана назвать поле, а не проявиться
@@ -253,5 +403,6 @@ export const StepcastPluginSchema = z
     backends: z.record(z.string(), BackendContributionSchema).optional(),
     predicates: z.array(PredicateContributionSchema).optional(),
     commands: z.array(CommandContributionSchema).optional(),
+    steps: z.array(StepKindContributionSchema).optional(),
   })
   .loose();

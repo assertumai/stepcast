@@ -18,6 +18,10 @@ export type {
   PluginDiagnostic,
   PredicateContribution,
   StepcastPlugin,
+  StepKindContribution,
+  StepKindInput,
+  StepKindLog,
+  StepKindOutcome,
 } from './core/plugins/contract.js';
 
 /** Строка дерева плагинов: то, что команда получает в `CommandEnv.pluginTree`. */
@@ -32,7 +36,7 @@ export type { TreeRow, TreeRowSource } from './core/plugins/tree.js';
  * не следует — два экземпляра означают два разных хранилища сервисов, не
  * видящих друг друга (docs/plugins.md, граница единственного экземпляра).
  */
-export type { Context, ContributionRegistrar, Inject } from './core/plugins/context.js';
+export type { Context, ContributionRegistrar, Inject, StepKindRegistrar } from './core/plugins/context.js';
 
 export type { CliIo, CommandSpec, FlagKind, FlagSpec, ParsedArgs } from './core/plugins/cli-types.js';
 

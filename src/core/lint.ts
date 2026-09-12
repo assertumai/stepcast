@@ -10,6 +10,7 @@ import { isStepcastError } from './errors.js';
 import { describeScriptUnresolved } from './pipeline/expand.js';
 import { buildPublishedSchemas, pluginPredicateEntries } from './pipeline/published-schema.js';
 import { builtinRegistry } from './plugins/builtin.js';
+import { isBuiltinStepKind } from './plugins/contract.js';
 import { availableNames, type Registry } from './plugins/registry.js';
 import { isGitWorktree } from './anchor/git.js';
 import { workspaceInheritanceDiagnostics } from './run/inherit.js';
@@ -493,6 +494,34 @@ function lintPluginPredicate(
   const site = { file, at: `${at}.${predicate.name}`, cwd };
 
   for (const diagnostic of contribution?.lint?.(predicate.value, site) ?? []) {
+    push({
+      severity: diagnostic.severity,
+      message: diagnostic.message,
+      file,
+      at: site.at,
+      ...(diagnostic.hint === undefined ? {} : { hint: diagnostic.hint }),
+    });
+  }
+}
+
+/**
+ * Статическая проверка шага плагинного вида — тот же путь, что у плагинного
+ * предиката (`lintPluginPredicate` выше): хук вклада зовётся с полями и
+ * адресом, диагностики печатаются с файлом и путём поля наравне со своими.
+ */
+function lintPluginStepKind(
+  step: Extract<Step, { kind: 'plugin' }>,
+  at: string,
+  file: string,
+  cwd: string,
+  options: ResolvedLintOptions,
+  push: (diagnostic: Diagnostic) => void,
+): void {
+  const contribution = options.registry.steps.get(step.name);
+  const site = { file, at: `${at}.${step.name}`, cwd };
+  if (contribution === undefined || isBuiltinStepKind(contribution)) return;
+
+  for (const diagnostic of contribution.lint?.(step.fields, site) ?? []) {
     push({
       severity: diagnostic.severity,
       message: diagnostic.message,
@@ -1377,6 +1406,8 @@ function checkStep(
   }
 
   if (step.kind === 'script') checkScriptStep(job, step, at, substitutions, push);
+
+  if (step.kind === 'plugin') lintPluginStepKind(step, at, job.source, base, options, push);
 
   checkContext(step.context, base, job.source, `${at}.context`, substitutions, push, knowledgeDeclared);
 

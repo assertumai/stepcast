@@ -162,7 +162,7 @@ export const StepRecordSchema = z
   .object({
     id: z.string(),
     index: z.number().int().positive(),
-    kind: z.enum(['agent', 'run', 'script']),
+    kind: z.enum(['agent', 'run', 'script', 'plugin']),
     key: z.string(),
     status: StatusValueSchema,
     reason: z.string().optional(),
@@ -225,6 +225,20 @@ export const StepRecordSchema = z
         name: z.string(),
         layer: z.enum(['project', 'home', 'builtin']).optional(),
         manifest_path: z.string().optional(),
+      })
+      .strict()
+      .optional(),
+    /**
+     * Вид и плагин шага плагинного вида (`step-kinds-registry`): имя из
+     * реестра и имя плагина, его внёсшего, — «встроенный» здесь не бывает,
+     * `kind: plugin` у встроенных видов не встречается. Есть только у
+     * `kind: plugin`; читатель без этого плагина показывает запись этими же
+     * полями, не отказывая чтением (design.md, риски).
+     */
+    plugin_step: z
+      .object({
+        name: z.string(),
+        plugin: z.string(),
       })
       .strict()
       .optional(),
@@ -690,6 +704,17 @@ export const EventSchema = z.discriminatedUnion('kind', [
   // или `on`. Молчать нельзя: возобновление выглядело бы как разбор отказа,
   // которого агент не видел.
   z.object({ ...eventBase, kind: z.literal('resume.note_undelivered'), job: z.string().optional(), detail: z.string() }).strict(),
+  // Свободное сообщение исполнителя вида шага (`StepKindLog.note`,
+  // design.md, решение 6) — событие рядом с прочими, а не строка в
+  // `stdout.log`: вклад волен писать и то и другое.
+  z.object({
+    ...eventBase,
+    kind: z.literal('step_kind.logged'),
+    job: z.string(),
+    step: z.string(),
+    attempt: z.number().int().positive(),
+    message: z.string(),
+  }).strict(),
 ]);
 
 export type Event = z.infer<typeof EventSchema>;

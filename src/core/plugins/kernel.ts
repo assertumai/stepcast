@@ -1,8 +1,15 @@
 import { Context, Service, type Fiber } from 'cordis';
 
 import { StepcastError } from '../errors.js';
+import { BUILTIN_STEP_KIND_KEY_OWNERS, STEP_COMMON_KEYS } from '../pipeline/schema.js';
 import type { Context as PluginContext, ContributionRegistrar } from './context.js';
-import type { BackendContribution, CommandContribution, LoadedPlugin, PredicateContribution } from './contract.js';
+import type {
+  BackendContribution,
+  CommandContribution,
+  LoadedPlugin,
+  PredicateContribution,
+  StepKind,
+} from './contract.js';
 import { settle, topLevelFibers, unresolvedFibers, type UnresolvedFiber } from './fibers.js';
 
 export { unresolvedFibers, type UnresolvedFiber };
@@ -32,7 +39,7 @@ export { unresolvedFibers, type UnresolvedFiber };
  */
 
 /** Имена служебных сервисов ядра. Плагину заводить сервис с этим именем нельзя. */
-export const KERNEL_RESERVED_NAMES: readonly string[] = ['backends', 'predicates', 'commands'];
+export const KERNEL_RESERVED_NAMES: readonly string[] = ['backends', 'predicates', 'commands', 'steps'];
 
 /** Владелец встроенного вклада в тексте отказа — не имя строки, а признак области ядра. */
 export const BUILTIN_OWNER = 'встроенный';
@@ -41,6 +48,7 @@ const KIND_NAMES = {
   backends: 'бэкенда',
   predicates: 'предиката',
   commands: 'команды',
+  steps: 'вида шага',
 } as const;
 
 type ContributionKind = keyof typeof KIND_NAMES;
@@ -70,6 +78,15 @@ export class ContributionService<T> extends Service implements ContributionRegis
   private readonly reservedNames = new Set<string>();
   private readonly kind: ContributionKind;
   private readonly builtinFiber: Fiber;
+  /**
+   * Владелец имени, снятого вместе с областью, — на время жизни этого ядра
+   * (design.md, решение 8). Заведена ровно ради одного сообщения: пайплайн,
+   * раскрывавшийся минуту назад, обязан отказать не «неизвестный вид http», а
+   * «вид шага http снят вместе с плагином http-steps». Новый процесс (плагин
+   * убран из конфигурации между запусками) об этом не помнит вовсе — карта
+   * живёт в памяти этого объекта и не сериализуется никуда.
+   */
+  private readonly formerOwners = new Map<string, string>();
 
   constructor(ctx: Context, kind: ContributionKind, builtinFiber: Fiber) {
     super(ctx, kind);
@@ -87,6 +104,15 @@ export class ContributionService<T> extends Service implements ContributionRegis
     return this.entries.get(name)?.owner ?? (this.reservedNames.has(name) ? BUILTIN_OWNER : undefined);
   }
 
+  /**
+   * Кто в последний раз нёс это имя, если сейчас оно свободно, — только для
+   * текста отказа (см. `formerOwners` выше). Занятое имя не имеет «прежнего»:
+   * возвращается `undefined`, чтобы не путать действующего владельца с ушедшим.
+   */
+  formerOwner(name: string): string | undefined {
+    return this.owner(name) === undefined ? this.formerOwners.get(name) : undefined;
+  }
+
   /** Имена, занятые без вклада (встроенные предикаты). */
   get reserved(): readonly string[] {
     return [...this.reservedNames];
@@ -98,6 +124,15 @@ export class ContributionService<T> extends Service implements ContributionRegis
 
   register(name: string, contribution: T): () => void {
     const owner = this.ctx.fiber === this.builtinFiber ? BUILTIN_OWNER : this.ctx.fiber.name;
+
+    // Запрет на имя вида шага, пересекающееся с ключом документа (design.md,
+    // решение 3), касается только плагина: встроенные виды регистрируют себя
+    // на корневой области ровно под этими же именами (`run`, `script`, …), и
+    // это не конфликт, а определение.
+    if (this.kind === 'steps' && owner !== BUILTIN_OWNER) {
+      assertStepKindNameAvailable(name);
+    }
+
     const existingOwner = this.owner(name);
     if (existingOwner !== undefined) {
       // Тихая подмена `claude` или `exit_code` сделала бы лжецом и `stepcast
@@ -113,8 +148,30 @@ export class ContributionService<T> extends Service implements ContributionRegis
       this.entries.set(name, { value: contribution, owner });
       return () => {
         this.entries.delete(name);
+        this.formerOwners.set(name, owner);
       };
     }, `${this.kind}.register(${name})`);
+  }
+}
+
+/**
+ * Отказ регистрации вида шага плагином на имени, занятом ключом документа
+ * (design.md, решение 3): ключом общей части шага либо ключом встроенного
+ * вида. Проверка — при регистрации, а не при первом разборе документа: имя
+ * `expect` не должно дожить до первого пайплайна, который его использует.
+ */
+function assertStepKindNameAvailable(name: string): void {
+  if (STEP_COMMON_KEYS.includes(name)) {
+    throw new StepcastError(`Имя вида шага ${name} занято ключом общей части шага`, {
+      hint: 'Ключи общей части (id, env, context, timeout, expect, attempts, …) не могут стать именем вида шага',
+    });
+  }
+  const owningKinds = BUILTIN_STEP_KIND_KEY_OWNERS[name];
+  if (owningKinds !== undefined) {
+    throw new StepcastError(
+      `Имя вида шага ${name} занято ключом встроенного вида шага ${owningKinds.join(', ')}`,
+      { hint: 'Выберите другое имя: ключи встроенных видов не могут стать именем плагинного вида шага' },
+    );
   }
 }
 
@@ -123,6 +180,7 @@ declare module 'cordis' {
     backends: ContributionService<BackendContribution>;
     predicates: ContributionService<PredicateContribution>;
     commands: ContributionService<CommandContribution>;
+    steps: ContributionService<StepKind>;
   }
 }
 
@@ -212,6 +270,7 @@ export function createKernel(): Kernel {
   new ContributionService<BackendContribution>(ctx, 'backends', builtinFiber);
   const predicates = new ContributionService<PredicateContribution>(ctx, 'predicates', builtinFiber);
   new ContributionService<CommandContribution>(ctx, 'commands', builtinFiber);
+  new ContributionService<StepKind>(ctx, 'steps', builtinFiber);
 
   const plugins: LoadedPlugin[] = [];
   /** Запись, сделанная областью: нужна `forgetPlugin` — см. её объяснение. */

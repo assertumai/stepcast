@@ -58,7 +58,7 @@ export interface AttemptModel {
 
 export interface StepSnapshot {
   readonly id: string;
-  readonly kind: 'agent' | 'run' | 'script';
+  readonly kind: 'agent' | 'run' | 'script' | 'plugin';
   readonly agent?: string;
   /** Модель, объявленная определением, — из `pipeline.lock.yml`. */
   readonly model?: string;
@@ -100,6 +100,19 @@ export interface StepSnapshot {
   readonly usesManifestPath?: string;
   /** Сведённые параметры вызова, с применёнными умолчаниями. */
   readonly usesParams?: Readonly<Record<string, unknown>>;
+  /** Имя вида шага плагинного вида — из лока, а у прогона без лока из записи шага. */
+  readonly pluginKindName?: string;
+  /** Плагин, внёсший этот вид шага в этом прогоне, — из записи шага. */
+  readonly pluginPlugin?: string;
+  /** Поля шага — из лока, с нераскрытыми отложенными подстановками. */
+  readonly pluginFields?: unknown;
+  /**
+   * Почему поля показаны как записаны, а не подписями из схемы вклада: снимок
+   * строится по журналу прошлого прогона, который вправе пережить плагин, и
+   * действующий реестр здесь не спрашивается вовсе. Названная причина вместо
+   * пустой карточки и слова «неизвестно» (design.md, решение 11).
+   */
+  readonly pluginNote?: string;
   readonly context: readonly string[];
   /** Разрез контекста: есть только у исполнившегося агентского шага. */
   readonly contextBreakdown?: ContextBreakdown;
@@ -246,6 +259,33 @@ function jobUsage(summary: UsageReport | undefined, jobId: string): UsageSnapsho
   };
 }
 
+/**
+ * Шаг плагинного вида на карточке прогона (design.md изменения
+ * `step-kinds-registry`, решение 11): имя вида и поля — из замка, плагин,
+ * внёсший вид, — из записи шага. Действующий реестр здесь не спрашивается:
+ * прогон вправе пережить плагин, которым он снят, и карточка обязана быть
+ * целой и тогда, когда вида в реестре больше нет. Поэтому же вместо подписей
+ * из схемы вклада карточка несёт названную причину — чем показанные поля
+ * являются и откуда взяты.
+ */
+function pluginStepFields(
+  definition: LockStep | undefined,
+  record: ReturnType<typeof readStatus>['jobs'][number]['steps'][number] | undefined,
+): Partial<StepSnapshot> {
+  const name = definition?.pluginKindName ?? record?.plugin_step?.name;
+  if (name === undefined) return {};
+  const plugin = record?.plugin_step?.plugin;
+  return {
+    pluginKindName: name,
+    ...(plugin === undefined ? {} : { pluginPlugin: plugin }),
+    ...(definition?.pluginFields === undefined ? {} : { pluginFields: definition.pluginFields }),
+    pluginNote:
+      plugin === undefined
+        ? `поля показаны из замка прогона: вид шага ${name} внесён плагином, которого журнал не называет`
+        : `поля показаны из замка прогона: вид шага ${name} внёс плагин ${plugin}`,
+  };
+}
+
 function buildStep(
   paths: RunPaths,
   jobId: string,
@@ -285,6 +325,7 @@ function buildStep(
     ...(definition?.usesLayer === undefined ? {} : { usesLayer: definition.usesLayer }),
     ...(definition?.usesManifestPath === undefined ? {} : { usesManifestPath: definition.usesManifestPath }),
     ...(definition?.usesParams === undefined ? {} : { usesParams: definition.usesParams }),
+    ...pluginStepFields(definition, record),
     context: definition?.context ?? [],
     ...(breakdown === undefined ? {} : { contextBreakdown: breakdown }),
     files: stepFiles(paths.dir, dir),

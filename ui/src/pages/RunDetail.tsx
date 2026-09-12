@@ -68,7 +68,12 @@ function Step({
     <div className="step">
       <div className="step-head">
         <span className="job-name">{step.id}</span>
-        <span className="kind">{step.kind}</span>
+        {/* Шаг плагинного вида называется именем своего вида — тем же, каким
+            он объявлен в документе, — а не словом «plugin». */}
+        <span className="kind">{step.pluginKindName ?? step.kind}</span>
+        {step.pluginPlugin === undefined ? null : (
+          <span className="badge">плагин: {step.pluginPlugin}</span>
+        )}
         {step.status === undefined ? null : (
           <span className={`badge ${step.status}`}>{step.status}</span>
         )}
@@ -112,6 +117,10 @@ function Step({
       {step.scriptOutputSchemaPath === undefined ? null : (
         <div className="ctx dim">output_schema: {step.scriptOutputSchemaPath}</div>
       )}
+      {step.pluginFields === undefined ? null : (
+        <div className="ctx">{JSON.stringify(step.pluginFields)}</div>
+      )}
+      {step.pluginNote === undefined ? null : <div className="ctx dim">{step.pluginNote}</div>}
 
       {step.contextBreakdown === undefined ? null : (
         <div className="ctx">

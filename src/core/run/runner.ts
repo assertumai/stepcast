@@ -39,6 +39,7 @@ import { createSessionRegistry, executeAgentStep } from '../exec/agentStep.js';
 import { buildStepEnv, injectedVariables } from '../exec/env.js';
 import { executeRunStep } from '../exec/runStep.js';
 import { runJudgePass } from '../exec/judgePass.js';
+import { runPluginStep } from '../exec/pluginStep.js';
 import { evaluatePredicates, validateAgainstSchema, validateAgainstSchemaFile } from '../expect/evaluate.js';
 import { createKnowledgeSource } from '../knowledge/source.js';
 import type { KnowledgeSource } from '../knowledge/types.js';
@@ -49,7 +50,8 @@ import { locateEngine, isEditableEngine, pinEngine, type EngineInfo, type Engine
 import { HaltCause, type HaltCauseValue } from './halt.js';
 import { resolveInheritSource, type CompletedJob } from './inherit.js';
 import { builtinRegistry } from '../plugins/builtin.js';
-import type { Registry } from '../plugins/registry.js';
+import { isBuiltinStepKind } from '../plugins/contract.js';
+import { contributionOwner, formerStepKindOwner, stepKindNames, type Registry } from '../plugins/registry.js';
 import { preflight } from './preflight.js';
 import { createScope, type ResourceScope } from './scope.js';
 import { buildInterruptedNote, buildPreviousFailure } from './previousFailure.js';
@@ -524,7 +526,13 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   return { journal, status: finalStatus, exitCode, costLimitUnapplied };
 }
 
-interface RunContext extends RunOptions {
+// Экспортирован для `exec/pluginStep.ts`: исполнитель вида шага собирается тем
+// же путём, что и `runCommandStep`, и ему нужна та же форма контекста прогона
+// и тот же исход шага (`StepOutcome` ниже). Импорт в обе стороны безопасен:
+// оба места используют друг друга только внутри тел функций, вызываемых уже
+// после того, как загрузчик модулей ES связал оба файла (см. комментарий у
+// `registerBuiltinStepKinds` в `plugins/builtin.ts` — тот же приём).
+export interface RunContext extends RunOptions {
   /**
    * Реестр вкладов прогона — в отличие от `RunOptions.registry`, здесь он есть
    * всегда: умолчание встроенного ядра раскрыто при заведении контекста (см.
@@ -719,7 +727,12 @@ function requireMcpSupport(context: RunContext): void {
   }
 }
 
-function adapterOf(name: string, context: RunContext): BackendAdapter {
+/**
+ * Экспортируется ради `exec/pluginStep.ts`: судью на шаге плагинного вида
+ * зовёт тот же проход и тем же адаптером, что и на командном (см. там же
+ * `describeStepTask`).
+ */
+export function adapterOf(name: string, context: RunContext): BackendAdapter {
   const existing = context.adapters.get(name);
   if (existing !== undefined) return existing;
   const created = (
@@ -1534,7 +1547,8 @@ async function runJobSteps(
       if (
         (step.kind === 'agent' ||
           (step.kind === 'run' && step.outputSchemaPath !== undefined) ||
-          step.kind === 'script') &&
+          step.kind === 'script' ||
+          step.kind === 'plugin') &&
         planned.decision.record.status === 'success'
       ) {
         // Переиспользованный шаг не исполнялся, структурированного вывода у
@@ -1668,17 +1682,19 @@ async function runJobSteps(
               budgetScopes,
               changedPaths,
             )
-          : await runAgentStep(
-              step,
-              job,
-              context,
-              stepDirPath,
-              context.sessions,
-              sessionKey,
-              jobContextSent,
-              budgetScopes,
-              changedPaths,
-            );
+          : step.kind === 'plugin'
+            ? await runPluginStepDispatch(step, job, context, stepDirPath, budgetScopes, changedPaths)
+            : await runAgentStep(
+                step,
+                job,
+                context,
+                stepDirPath,
+                context.sessions,
+                sessionKey,
+                jobContextSent,
+                budgetScopes,
+                changedPaths,
+              );
 
     for (const [index, results] of outcome.results.entries()) {
       journal.writeExpectReport(stepDirPath, { attempt: index + 1, results: [...results] });
@@ -1795,6 +1811,18 @@ async function runJobSteps(
             },
           }
         : {}),
+      // Вид и плагин шага плагинного вида (design.md, риски): читатель без
+      // этого плагина показывает запись этими же полями, не отказывая
+      // чтением. Владелец не бывает «встроенным» — `kind: plugin` у
+      // встроенных видов не встречается вовсе.
+      ...(step.kind === 'plugin'
+        ? {
+            plugin_step: {
+              name: step.name,
+              plugin: contributionOwner(context.registry, 'steps', step.name) ?? 'неизвестный',
+            },
+          }
+        : {}),
     };
     steps.push(stepRecord);
     journal.writeStepJson(stepDirPath, 'step.json', stepRecord);
@@ -1802,7 +1830,11 @@ async function runJobSteps(
     if (
       (step.kind === 'agent' ||
         (step.kind === 'run' && step.outputSchemaPath !== undefined) ||
-        step.kind === 'script') &&
+        step.kind === 'script' ||
+        // Структурированный выход шага плагинного вида — то, что вернул
+        // исполнитель вклада (`StepKindOutcome.structured`): схема `output`
+        // его проверяет, когда объявлена, но не она решает, есть ли он.
+        step.kind === 'plugin') &&
       outcome.structured !== undefined
     ) {
       lastStructuredOutput = outcome.structured;
@@ -1881,7 +1913,7 @@ async function runJobSteps(
   return { status: 'success' };
 }
 
-interface StepOutcome {
+export interface StepOutcome {
   readonly status: StatusValue;
   readonly reason?: string;
   readonly attempts: readonly StepRecord['attempts'][number][];
@@ -2111,6 +2143,39 @@ function readScriptOutput(
   return { kind: 'value', value: parsed };
 }
 
+/**
+ * Найти вклад шага плагинного вида и передать исполнение `runPluginStep`
+ * (`exec/pluginStep.ts`). Вид, снятый вместе с плагином (или которого действующий
+ * реестр никогда не знал), — отказ, называющий вид, перечень доступных и, пока
+ * живо ядро, помнящее прежнего владельца, — плагин, вместе с которым вид снят
+ * (design.md, решение 8).
+ */
+async function runPluginStepDispatch(
+  step: Extract<Step, { kind: 'plugin' }>,
+  job: Job,
+  context: RunContext,
+  stepDirPath: string,
+  budgetScopes: () => BudgetScope[],
+  changedPaths: () => readonly string[] | undefined,
+): Promise<StepOutcome> {
+  const contribution = context.registry.steps.get(step.name);
+  if (contribution === undefined || isBuiltinStepKind(contribution)) {
+    const former = formerStepKindOwner(context.registry, step.name);
+    const reason =
+      former === undefined
+        ? `Вид шага ${step.name} неизвестен реестру. Доступны: ${stepKindNames(context.registry).join(', ')}`
+        : `Вид шага ${step.name} снят вместе с плагином ${former}`;
+    const now = new Date().toISOString();
+    return {
+      status: 'failed',
+      reason,
+      attempts: [{ attempt: 1, status: 'failed', reason, started_at: now, finished_at: now }],
+      results: [[{ predicate: 'step_kind', passed: false, hard: true, detail: reason }]],
+    };
+  }
+  return runPluginStep(step, job, context, stepDirPath, contribution, budgetScopes, changedPaths);
+}
+
 async function runCommandStep(
   step: Extract<Step, { kind: 'run' | 'script' }>,
   job: Job,
@@ -2272,7 +2337,7 @@ async function runCommandStep(
           const judgeResults = await runJudgePass({
             predicates: target.expect,
             firstPass,
-            task: describeStepTask(target),
+            task: describeStepTask(target, context.registry),
             text: process_.stdout,
             structured: structured ?? process_.stdout,
             cwd: context.cwd,
@@ -2799,10 +2864,15 @@ async function runAgentStep(
   }
 }
 
-/** Задание шага без блока контекста — вход судьи на командном шаге. */
-function describeStepTask(step: Step): string {
+/** Задание шага без блока контекста — вход судьи на командном или плагинном шаге. */
+export function describeStepTask(step: Step, registry: Registry): string {
   if (step.kind === 'agent') return step.prompt;
   if (step.kind === 'script') return (step.resolved?.argv ?? [step.path, ...step.args]).join(' ');
+  if (step.kind === 'plugin') {
+    const contribution = registry.steps.get(step.name);
+    const title = contribution !== undefined && !isBuiltinStepKind(contribution) ? contribution.title : step.name;
+    return `${title}: ${JSON.stringify(step.fields)}`;
+  }
   return typeof step.command === 'string' ? step.command : step.command.join(' ');
 }
 
@@ -2811,7 +2881,7 @@ function failureBlock(previousFailure: string | undefined): string {
   return `## Прошлая попытка не прошла проверку\n\n${previousFailure}\n\nПочини причину, а не симптом.`;
 }
 
-function stepEnv(
+export function stepEnv(
   step: Step,
   job: Job,
   attempt: number,

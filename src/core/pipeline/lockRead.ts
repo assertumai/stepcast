@@ -18,7 +18,7 @@ import { parse as parseYaml } from 'yaml';
 
 export interface LockStep {
   readonly id: string;
-  readonly kind: 'agent' | 'run' | 'script';
+  readonly kind: 'agent' | 'run' | 'script' | 'plugin';
   /** Бэкенд агентского шага. */
   readonly agent?: string;
   /** Модель, если шаг её назвал; иначе действует модель бэкенда. */
@@ -43,6 +43,10 @@ export interface LockStep {
   readonly usesManifestPath?: string;
   /** Сведённые параметры вызова, с применёнными умолчаниями. */
   readonly usesParams?: Readonly<Record<string, unknown>>;
+  /** Имя вида шага плагинного вида — оно же единственный ключ вида в локе (design.md, решение 3). */
+  readonly pluginKindName?: string;
+  /** Поля под ключом вида, как записаны, — с нераскрытыми отложенными подстановками. */
+  readonly pluginFields?: unknown;
   readonly context: readonly string[];
 }
 
@@ -119,6 +123,30 @@ function commandLabel(value: unknown): string | undefined {
   return undefined;
 }
 
+/**
+ * Ключи общей части шага в локе (`stepToPlain`, `pipeline/lock.ts`) — то, чем
+ * плагинный вид отличают от единственного собственного ключа: у плагинного
+ * шага в записи ровно один ключ сверх этих (design.md, решение 3).
+ */
+const LOCK_COMMON_KEYS = new Set([
+  'id',
+  'index',
+  'timeout',
+  'env',
+  'context',
+  'context_inherit',
+  'context_exclude',
+  'context_max_tokens',
+  'budget',
+  'expect',
+  'attempts',
+]);
+
+/** Единственный ключ, оставшийся сверх общей части, — имя вида плагинного шага. */
+function pluginKindKey(record: Record<string, unknown>): string | undefined {
+  return Object.keys(record).find((key) => !LOCK_COMMON_KEYS.has(key));
+}
+
 function toStep(value: unknown): LockStep | undefined {
   const record = asRecord(value);
   if (record === undefined) return undefined;
@@ -138,11 +166,21 @@ function toStep(value: unknown): LockStep | undefined {
   const usesManifestPath = usesRecord === undefined ? undefined : asString(usesRecord.manifest_path);
   const usesParams = usesRecord === undefined ? undefined : asRecord(usesRecord.params);
 
+  // Ни один из трёх встроенных маркеров не найден — оставшийся единственный
+  // ключ сверх общей части и есть имя плагинного вида (design.md, решение 3).
+  const isBuiltin = scriptPath !== undefined || prompt !== undefined || record.run !== undefined;
+  const pluginKindName = isBuiltin ? undefined : pluginKindKey(record);
+
   return {
     id,
-    // Вид шага определяется тем, какое из трёх взаимоисключающих полей есть:
-    // в локе `script`, `agent` и `run` не встречаются вместе.
-    kind: scriptPath !== undefined ? 'script' : prompt !== undefined ? 'agent' : 'run',
+    kind:
+      scriptPath !== undefined
+        ? 'script'
+        : prompt !== undefined
+          ? 'agent'
+          : pluginKindName !== undefined
+            ? 'plugin'
+            : 'run',
     ...(agent === undefined ? {} : { agent }),
     ...(model === undefined ? {} : { model }),
     ...(prompt === undefined ? {} : { prompt }),
@@ -155,6 +193,7 @@ function toStep(value: unknown): LockStep | undefined {
     ...(usesLayer === undefined ? {} : { usesLayer }),
     ...(usesManifestPath === undefined ? {} : { usesManifestPath }),
     ...(usesParams === undefined ? {} : { usesParams }),
+    ...(pluginKindName === undefined ? {} : { pluginKindName, pluginFields: record[pluginKindName] }),
     context: contextLabels(record.context),
   };
 }

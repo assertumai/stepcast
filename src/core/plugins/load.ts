@@ -212,7 +212,7 @@ export function toContextPlugin(plugin: StepcastPlugin): ContextPluginObject {
   return {
     name: plugin.name,
     ...(plugin.version === undefined ? {} : { version: plugin.version }),
-    inject: ['backends', 'predicates', 'commands'] as string[],
+    inject: ['backends', 'predicates', 'commands', 'steps'] as string[],
     apply(ctx) {
       for (const [name, contribution] of Object.entries(plugin.backends ?? {})) {
         ctx.backends.register(name, contribution);
@@ -222,6 +222,9 @@ export function toContextPlugin(plugin: StepcastPlugin): ContextPluginObject {
       }
       for (const contribution of plugin.commands ?? []) {
         ctx.commands.register(contribution.name, contribution);
+      }
+      for (const contribution of plugin.steps ?? []) {
+        ctx.steps.register(contribution.name, contribution);
       }
     },
   };

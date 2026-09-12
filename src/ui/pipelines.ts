@@ -14,7 +14,9 @@ import type { Kernel } from '../core/plugins/kernel.js';
 import { kernelFromRegistry, registryFromKernel, type Registry } from '../core/plugins/registry.js';
 import type { TreeRow } from '../core/plugins/tree.js';
 import type { Job, ModelOrigin, Pipeline } from '../core/pipeline/model.js';
+import { isBuiltinStepKind } from '../core/plugins/contract.js';
 import { layoutJobs, type JobGraph } from './graph.js';
+import { paramViews, type StepParamView } from './steps.js';
 
 /**
  * Пайплайны проектов, известных корню прогонов.
@@ -48,7 +50,7 @@ export type PipelineModelOrigin =
 
 export interface PipelineStepView {
   readonly id: string;
-  readonly kind: 'agent' | 'run' | 'script';
+  readonly kind: 'agent' | 'run' | 'script' | 'plugin';
   /** Агент шага: он и есть ответ на вопрос «чем это будет исполняться». */
   readonly agent?: string;
   /** Модель, которой шаг исполнится. Отсутствует у шага без модели ни на одном слое. */
@@ -74,6 +76,20 @@ export interface PipelineStepView {
   readonly usesLayer?: 'project' | 'home' | 'builtin';
   /** Переданные параметры вызова — со сведёнными умолчаниями. */
   readonly usesParams?: Readonly<Record<string, unknown>>;
+  /** Имя вида шага плагинного вида — оно же ключ шага в документе. */
+  readonly pluginKindName?: string;
+  /** Название вклада для витрины — из реестра, когда вид известен. */
+  readonly pluginKindTitle?: string;
+  /** Поля с подписями из схемы вклада (design.md, решение 11). */
+  readonly pluginFields?: readonly StepParamView[];
+  /** Вклад объявляет схему `output` — структурированный выход у шага есть. */
+  readonly pluginHasOutput?: boolean;
+  /**
+   * Действующий реестр не знает этого вида (плагин снят, прогон читается без
+   * него): поля берутся из замка как есть, а не из схемы, и причина названа —
+   * не пустая карточка и не «неизвестно» (design.md, решение 11).
+   */
+  readonly pluginUnknownReason?: string;
 }
 
 export interface PipelineJobView {
@@ -166,6 +182,7 @@ function toJobView(
   job: Job,
   modelOrigins: ReadonlyMap<string, ModelOrigin>,
   modelConfigFile: string | undefined,
+  registry: Registry,
 ): PipelineJobView {
   return {
     id: job.id,
@@ -202,7 +219,38 @@ function toJobView(
       ...(step.kind === 'script' && step.uses !== undefined ? { usesName: step.uses.name } : {}),
       ...(step.kind === 'script' && step.uses?.layer !== undefined ? { usesLayer: step.uses.layer } : {}),
       ...(step.kind === 'script' && step.uses?.params !== undefined ? { usesParams: step.uses.params } : {}),
+      ...(step.kind === 'plugin' ? pluginStepView(step, registry) : {}),
     })),
+  };
+}
+
+/**
+ * Карточка шага плагинного вида — из действующего реестра (design.md, решение
+ * 11): название вклада, поля с подписями из схемы (`ui/steps.ts:paramViews`,
+ * тот же вывод, каким строятся параметры манифеста переиспользуемого шага),
+ * признак структурированного выхода. Вид, которого реестр не знает (плагин
+ * снят), показывается именем вида и полями из замка — с названной причиной, а
+ * не пустой карточкой.
+ */
+function pluginStepView(
+  step: Extract<Job['steps'][number], { kind: 'plugin' }>,
+  registry: Registry,
+): Pick<
+  PipelineStepView,
+  'pluginKindName' | 'pluginKindTitle' | 'pluginFields' | 'pluginHasOutput' | 'pluginUnknownReason'
+> {
+  const contribution = registry.steps.get(step.name);
+  if (contribution === undefined || isBuiltinStepKind(contribution)) {
+    return {
+      pluginKindName: step.name,
+      pluginUnknownReason: `вид шага ${step.name} действующему реестру неизвестен`,
+    };
+  }
+  return {
+    pluginKindName: step.name,
+    pluginKindTitle: contribution.title,
+    pluginFields: paramViews(contribution.fields as Record<string, unknown>),
+    pluginHasOutput: contribution.output !== undefined,
   };
 }
 
@@ -213,8 +261,9 @@ function toView(
   pipeline: Pipeline,
   modelOrigins: ReadonlyMap<string, ModelOrigin>,
   modelConfigFile: string | undefined,
+  registry: Registry,
 ): PipelineView {
-  const jobs = pipeline.jobs.map((job) => toJobView(job, modelOrigins, modelConfigFile));
+  const jobs = pipeline.jobs.map((job) => toJobView(job, modelOrigins, modelConfigFile, registry));
   return {
     projectKey,
     projectPath,
@@ -295,7 +344,7 @@ function readPipeline(
   const file = relative(projectPath, absolute).replace(/\\/g, '/');
   try {
     const { pipeline, modelOrigins } = expandPipeline({ pipelinePath: absolute, config, registry });
-    return toView(projectKey, projectPath, file, pipeline, modelOrigins, modelConfigFile);
+    return toView(projectKey, projectPath, file, pipeline, modelOrigins, modelConfigFile, registry);
   } catch (error) {
     return errorView(projectKey, projectPath, file, toFailure(error, projectPath));
   }

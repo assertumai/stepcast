@@ -1,4 +1,4 @@
-import type { BackendContribution, CommandContribution, LoadedPlugin, PredicateContribution } from './contract.js';
+import { isBuiltinStepKind, type BackendContribution, type CommandContribution, type LoadedPlugin, type PredicateContribution, type StepKind } from './contract.js';
 import { BUILTIN_OWNER, type Kernel } from './kernel.js';
 
 /**
@@ -20,6 +20,14 @@ export interface Registry {
   readonly predicates: ReadonlyMap<string, PredicateContribution>;
   readonly commands: ReadonlyMap<string, CommandContribution>;
   /**
+   * Виды шага — встроенные (`agent`, `run`, `script`, `uses`) и плагинные
+   * вместе, тем же вкладом в сервис `steps` (design.md, решение 1, решение 2).
+   * В отличие от `builtinPredicates`, встроенные виды — настоящие вклады, а не
+   * резерв без содержания: у них есть форма `document`, которую отличает
+   * `isBuiltinStepKind`.
+   */
+  readonly steps: ReadonlyMap<string, StepKind>;
+  /**
    * Имена встроенных предикатов. Вкладов у них нет (см. `builtin.ts`), но имя
    * занято: предикат плагина под знакомым именем — та же подмена, что и
    * бэкенд `claude` от плагина.
@@ -35,9 +43,9 @@ export interface Registry {
   readonly owners: ReadonlyMap<string, string>;
 }
 
-type ContributionKind = 'backends' | 'predicates' | 'commands';
+type ContributionKind = 'backends' | 'predicates' | 'commands' | 'steps';
 
-const KINDS: readonly ContributionKind[] = ['backends', 'predicates', 'commands'];
+const KINDS: readonly ContributionKind[] = ['backends', 'predicates', 'commands', 'steps'];
 
 /**
  * Ядро, из которого выведен реестр, — на случай, если код вне `Registry`
@@ -59,6 +67,9 @@ export function registryFromKernel(kernel: Kernel): Registry {
     },
     get commands() {
       return ctx.commands.contributions;
+    },
+    get steps() {
+      return ctx.steps.contributions;
     },
     get builtinPredicates() {
       return ctx.predicates.reserved;
@@ -111,4 +122,33 @@ export function availableNames(registry: Registry, kind: ContributionKind): stri
  */
 export function predicateNames(registry: Registry): string[] {
   return [...registry.builtinPredicates, ...registry.predicates.keys()].sort();
+}
+
+/**
+ * Все имена видов шага — встроенных и плагинных вместе, отсортированные.
+ * В отличие от `predicateNames`, второй список (аналог `builtinPredicates`) не
+ * нужен: встроенные виды шага — настоящие вклады сервиса `steps`, уже в
+ * `registry.steps` (design.md, решение 1, решение 2).
+ */
+export function stepKindNames(registry: Registry): string[] {
+  return [...registry.steps.keys()].sort();
+}
+
+/**
+ * Плагин, вместе с которым снято имя вида шага, — пока живо ядро, помнящее
+ * прежнего владельца (`ContributionService.formerOwner`). `undefined`, если
+ * имя занято сейчас, если ядро такого имени не знало вовсе или если реестр
+ * построен не поверх ядра: отказ, называющий вид шага, обязан работать и там,
+ * где памяти нет, — просто без имени плагина.
+ */
+export function formerStepKindOwner(registry: Registry, name: string): string | undefined {
+  return kernels.get(registry)?.ctx.steps.formerOwner(name);
+}
+
+/** Имена плагинных (не встроенных) видов шага — для ветви `fields` схемы документа. */
+export function pluginStepKindNames(registry: Registry): string[] {
+  return [...registry.steps.entries()]
+    .filter(([, kind]) => !isBuiltinStepKind(kind))
+    .map(([name]) => name)
+    .sort();
 }

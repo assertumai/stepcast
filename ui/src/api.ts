@@ -154,7 +154,7 @@ export interface AttemptModel {
 
 export interface StepSnapshot {
   readonly id: string;
-  readonly kind: 'agent' | 'run' | 'script';
+  readonly kind: 'agent' | 'run' | 'script' | 'plugin';
   readonly agent?: string;
   /** Модель, объявленная определением. */
   readonly model?: string;
@@ -184,6 +184,14 @@ export interface StepSnapshot {
   readonly usesManifestPath?: string;
   /** Сведённые параметры вызова, с применёнными умолчаниями. */
   readonly usesParams?: Readonly<Record<string, unknown>>;
+  /** Имя вида шага плагинного вида — из замка прогона. */
+  readonly pluginKindName?: string;
+  /** Плагин, внёсший этот вид шага в этом прогоне. */
+  readonly pluginPlugin?: string;
+  /** Поля шага, как записаны замком. */
+  readonly pluginFields?: unknown;
+  /** Чем показанные поля являются и откуда взяты — вместо подписей из схемы вклада. */
+  readonly pluginNote?: string;
   readonly context: readonly string[];
   readonly contextBreakdown?: ContextBreakdown;
   readonly files: readonly JournalFileRef[];
@@ -247,7 +255,7 @@ export type PipelineModelOrigin =
 
 export interface PipelineStepView {
   readonly id: string;
-  readonly kind: 'agent' | 'run' | 'script';
+  readonly kind: 'agent' | 'run' | 'script' | 'plugin';
   readonly agent?: string;
   /** Модель, которой шаг исполнится. Отсутствует у шага без модели ни на одном слое. */
   readonly model?: string;
@@ -267,6 +275,16 @@ export interface PipelineStepView {
   readonly usesLayer?: 'project' | 'home' | 'builtin';
   /** Переданные параметры вызова — со сведёнными умолчаниями. */
   readonly usesParams?: Readonly<Record<string, unknown>>;
+  /** Имя вида шага плагинного вида — оно же ключ шага в документе. */
+  readonly pluginKindName?: string;
+  /** Название вклада — из реестра, когда вид ему известен. */
+  readonly pluginKindTitle?: string;
+  /** Поля с подписями из схемы вклада — тот же вид, что параметры манифеста. */
+  readonly pluginFields?: readonly StepParamView[];
+  /** Вклад объявляет схему `output` — структурированный выход у шага есть. */
+  readonly pluginHasOutput?: boolean;
+  /** Действующий реестр вида не знает: причина вместо пустой карточки. */
+  readonly pluginUnknownReason?: string;
 }
 
 export interface PipelineJobView {

@@ -118,6 +118,16 @@ function stepToPlain(step: Step): Record<string, unknown> {
     };
   }
 
+  if (step.kind === 'plugin') {
+    // Один ключ — имя вида, — все поля под ним, в объявленном виде: с
+    // нераскрытыми отложенными подстановками, тем же приёмом, что и `input`
+    // шага `script` выше (design.md, решение 3, решение 5).
+    return {
+      ...common,
+      [step.name]: step.fields,
+    };
+  }
+
   return {
     ...common,
     agent: step.agent,

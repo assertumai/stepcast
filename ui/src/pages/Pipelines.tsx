@@ -85,7 +85,15 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
         <div key={step.id} className="step">
           <div className="step-head">
             <span className="job-name">{step.id}</span>
-            <span className="kind">{step.kind}</span>
+            {/* Вид шага плагинного вида называется своим именем, а не словом
+                «plugin»: именно им шаг и объявлен в документе. */}
+            <span className="kind">{step.pluginKindName ?? step.kind}</span>
+            {step.pluginKindTitle === undefined ? null : (
+              <span className="kind">{step.pluginKindTitle}</span>
+            )}
+            {step.pluginHasOutput !== true ? null : (
+              <span className="kind dim">есть output</span>
+            )}
             {step.agent === undefined ? null : (
               <span className="kind">
                 {step.agent}
@@ -113,6 +121,25 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
           {step.hasScriptInput !== true ? null : <div className="ctx dim">input объявлен</div>}
           {step.scriptOutputSchemaPath === undefined ? null : (
             <div className="ctx dim">output_schema: {step.scriptOutputSchemaPath}</div>
+          )}
+          {/* Вид шага, которого действующий реестр не знает, показывается
+              причиной, а не пустой карточкой: имя вида уже названо в шапке. */}
+          {step.pluginUnknownReason === undefined ? null : (
+            <div className="ctx dim">{step.pluginUnknownReason}</div>
+          )}
+          {step.pluginFields === undefined || step.pluginFields.length === 0 ? null : (
+            <ul className="ctx-list">
+              {step.pluginFields.map((field) => (
+                <li key={field.name}>
+                  <span className="job-name">{field.name}</span>
+                  {field.type === undefined ? null : <span className="kind">{field.type}</span>}
+                  {field.required ? <span className="badge">обязательно</span> : null}
+                  {field.description === undefined ? null : (
+                    <div className="dim">{field.description}</div>
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
         </div>
       ))}

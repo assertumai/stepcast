@@ -1,4 +1,10 @@
 import { claudeModelDiscovery, createClaudeAdapter } from '../backend/claude.js';
+// Разбор — модуль `pipeline`, ядро — модуль `plugins`; связь одна и не по
+// кругу, несмотря на то, что `pipeline/expand.ts` тоже читает отсюда
+// `builtinRegistry` — оба обращения происходят внутри вызова функции, не на
+// верхнем уровне модуля, и загрузчик ES-модулей разводит их без ошибки (см.
+// комментарий у `registerBuiltinStepKinds`).
+import { registerBuiltinStepKinds } from '../pipeline/expand.js';
 import type { CommandContribution } from './contract.js';
 import { createKernel, type Kernel } from './kernel.js';
 import { registryFromKernel, type Registry } from './registry.js';
@@ -94,6 +100,11 @@ export function createKernelShell(commands: readonly CommandContribution[] = [])
   const kernel = createKernel();
   for (const name of BUILTIN_PREDICATE_NAMES) kernel.reservePredicate(name);
   for (const command of commands) kernel.ctx.commands.register(command.name, command);
+  // `agent`, `run`, `script`, `uses` — виды шага ядра, не строки дерева: их
+  // нельзя ни отключить, ни заменить патчем, в отличие от `step-http`
+  // (design.md, решение 10). Регистрируются здесь же, а не в `BUILTIN_ROWS`,
+  // ровно как резерв имён предикатов выше.
+  registerBuiltinStepKinds(kernel);
   return kernel;
 }
 

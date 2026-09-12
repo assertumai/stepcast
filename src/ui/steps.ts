@@ -72,7 +72,13 @@ function listStepDirNames(dir: string): readonly string[] {
     .sort();
 }
 
-function paramViews(paramsSchema: Record<string, unknown> | undefined): readonly StepParamView[] {
+/**
+ * Подписи полей из JSON Schema свойств — общий вывод для каталога
+ * переиспользуемых шагов и для карточки шага плагинного вида (`ui/pipelines.ts`,
+ * design.md изменения `step-kinds-registry`, решение 11): второй копии
+ * этого разбора в репозитории нет.
+ */
+export function paramViews(paramsSchema: Record<string, unknown> | undefined): readonly StepParamView[] {
   if (paramsSchema === undefined) return [];
   const properties = (paramsSchema.properties as Record<string, Record<string, unknown>> | undefined) ?? {};
   const required = (paramsSchema.required as readonly string[] | undefined) ?? [];

@@ -94,6 +94,12 @@ function explain(scope: LateScope) {
  * `paramsSchema` нетронутой.
  */
 function omitLateSkipped(step: Step): Step {
+  // `fields` шага плагинного вида — та же забота, что и `input`/`uses` ниже
+  // (design.md, решение 5): типизированный проход раскрывает его отдельно,
+  // ниже в `resolveLate`. `fields` — обязательное поле модели (в отличие от
+  // необязательных `input`/`uses`), поэтому снимается не destructure, а
+  // подменой на нейтральный `null`, который общий обход пропустит нетронутым.
+  if (step.kind === 'plugin') return { ...step, fields: null };
   if (step.kind !== 'script') return step;
   if (step.input === undefined && step.uses === undefined) return step;
   const { input: _input, uses: _uses, ...rest } = step;
@@ -136,7 +142,12 @@ export function resolveLate(job: Job, scope: LateScope): Job {
     ).value;
     const resolvedSteps = resolved.steps.map((step, index) => {
       const original = resolvable.steps[index];
-      if (original === undefined || original.kind !== 'script' || step.kind !== 'script') return step;
+      if (original === undefined) return step;
+      if (original.kind === 'plugin' && step.kind === 'plugin') {
+        const at = `jobs.${job.id}.steps.${index}.${original.name}`;
+        return { ...step, fields: interpolateTypedTree(original.fields, lateScope, at).value };
+      }
+      if (original.kind !== 'script' || step.kind !== 'script') return step;
       if (original.input === undefined && original.uses === undefined) return step;
       // Место объявления в документе: у шага `uses` это `with`, у шага
       // `script` — `input`. Сообщение о непроходимой подстановке должно

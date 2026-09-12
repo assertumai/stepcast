@@ -199,6 +199,61 @@ describe('plugin-contributions: загрузка плагинов', () => {
     );
   });
 
+  it('вид шага без исполнителя отказывает при загрузке, называя плагин и поле', async () => {
+    const place = bed();
+    writeModule(
+      join(place.root, '.stepcast', 'plugins', 'без-исполнителя.mjs'),
+      'export default { name: "steps-broken", steps: [{ name: "http", title: "HTTP", fields: { type: "object" } }] };\n',
+    );
+    const config = resolved(place, { project: 'plugins: ["./plugins/без-исполнителя.mjs"]\n' });
+
+    await assert.rejects(
+      () => loadPlugins(config, { projectRoot: place.root }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /без-исполнителя\.mjs/);
+        assert.match(error.message, /steps\.0\.execute/);
+        return true;
+      },
+    );
+  });
+
+  it('схема полей вида шага, не являющаяся объектом, отказывает при загрузке', async () => {
+    const place = bed();
+    writeModule(
+      join(place.root, '.stepcast', 'plugins', 'кривые-поля.mjs'),
+      'export default { name: "steps-broken", steps: [{ name: "http", title: "HTTP", fields: "объект", execute: () => ({}) }] };\n',
+    );
+    const config = resolved(place, { project: 'plugins: ["./plugins/кривые-поля.mjs"]\n' });
+
+    await assert.rejects(
+      () => loadPlugins(config, { projectRoot: place.root }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /steps\.0\.fields/);
+        return true;
+      },
+    );
+  });
+
+  it('вклад вида шага не вправе нести поле внутренней формы document', async () => {
+    const place = bed();
+    writeModule(
+      join(place.root, '.stepcast', 'plugins', 'самозванец.mjs'),
+      'export default { name: "steps-impostor", steps: [{ name: "http", title: "HTTP", fields: { type: "object" }, execute: () => ({}), document: {} }] };\n',
+    );
+    const config = resolved(place, { project: 'plugins: ["./plugins/самозванец.mjs"]\n' });
+
+    await assert.rejects(
+      () => loadPlugins(config, { projectRoot: place.root }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /steps\.0\.document/);
+        return true;
+      },
+    );
+  });
+
   it('пустой список плагинов отклоняется разбором конфигурации', () => {
     const place = bed();
 
