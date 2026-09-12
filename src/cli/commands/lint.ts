@@ -1,10 +1,9 @@
-import { resolve as resolvePath } from 'node:path';
-
 import { expandPipeline } from '../../core/pipeline/expand.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../../core/lint.js';
 import { resolveConfig, type Config } from '../../core/config/resolve.js';
 import type { Registry } from '../../core/plugins/registry.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
+import { resolvePipelineTarget } from '../../core/package-schema.js';
 import type { ParsedArgs } from '../args.js';
 
 export function formatDiagnostic(diagnostic: Diagnostic): string[] {
@@ -31,14 +30,20 @@ export function runLintCommand(
   resolvedConfig?: Config,
 ): ExitCodeValue {
   const target = args.positional[0] ?? 'stepcast.yml';
-  const pipelinePath = resolvePath(cwd, target);
+  const { pipelinePath, isSupplyPipeline } = resolvePipelineTarget(cwd, target);
   const config = resolvedConfig ?? resolveConfig({ cwd }).config;
 
   const inputs = (args.flags.input as Record<string, string> | undefined) ?? {};
 
   let expanded;
   try {
-    expanded = expandPipeline({ pipelinePath, config, inputs, ...(registry === undefined ? {} : { registry }) });
+    expanded = expandPipeline({
+      pipelinePath,
+      config,
+      inputs,
+      ...(registry === undefined ? {} : { registry }),
+      ...(isSupplyPipeline ? { projectRoot: cwd } : {}),
+    });
   } catch (error) {
     // Без раскрытия проверять нечего, поэтому такая ошибка одна и фатальна.
     if (!isStepcastError(error)) throw error;

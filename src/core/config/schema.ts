@@ -347,6 +347,12 @@ export const RawProjectSchema = z
     // тут по числу репозиториев, и выбрать из них нечем, пока не выбран
     // пункт очереди.
     nested_repos: z.array(z.union([NestedRepoDirSchema, NestedRepoDeclarationSchema])).min(1).optional(),
+    // Режим доставки правки кабинета агентом (`ui-proposals`, `stepcast-
+    // configuration`): `queue` (умолчание) ставит предложение в очередь,
+    // `direct` пишет цель немедленно. Ключ репозитория, не машины: попадает в
+    // `PROJECT_ONLY_KEYS` тем же хвостовым шаблоном `project.**`, отдельной
+    // строки не заводит.
+    proposals: z.enum(['queue', 'direct']).optional(),
   })
   .strict();
 

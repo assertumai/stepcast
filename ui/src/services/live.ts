@@ -2,7 +2,7 @@ import { Service, type Context } from 'cordis';
 
 import type { RouteDefinition } from '../../../src/ui/routes.ts';
 import type { ScreenDeclaration } from '../../../src/ui/screens/declaration.ts';
-import type { BacklogOverview, Overview, PluginRowView, RunSnapshot, WidgetsOverview } from '../api';
+import type { BacklogOverview, Overview, PluginRowView, ProposalsStreamEvent, RunSnapshot, WidgetsOverview } from '../api';
 
 /**
  * Живое состояние страницы — сервис контекста на месте прежнего хука
@@ -59,6 +59,13 @@ export interface LiveSnapshot {
    */
   readonly routes: RoutesEvent | undefined;
   readonly screens: ScreensEvent | undefined;
+  /**
+   * Состав очереди предложений потоком (`ui-proposals`, «Состав очереди идёт
+   * потоком событий») — облегчённый, без текущего содержимого цели: экран
+   * очереди читает его как сигнал перечитать `GET /api/proposals`, а не как
+   * прямой источник данных для дифа.
+   */
+  readonly proposals: ProposalsStreamEvent | undefined;
 }
 
 /** Поверхность `EventSource`, которой пользуется сервис — минимум, достаточный для проверки без браузера. */
@@ -82,6 +89,7 @@ const INITIAL_SNAPSHOT: LiveSnapshot = {
   plugins: EMPTY_PLUGINS,
   routes: undefined,
   screens: undefined,
+  proposals: undefined,
 };
 
 export class LiveService extends Service {
@@ -160,6 +168,9 @@ export class LiveService extends Service {
       });
       source.addEventListener('screens', (event) => {
         this.patch({ state: 'live', screens: JSON.parse(event.data) as ScreensEvent });
+      });
+      source.addEventListener('proposals', (event) => {
+        this.patch({ state: 'live', proposals: JSON.parse(event.data) as ProposalsStreamEvent });
       });
       source.addEventListener('error', () => this.patch({ state: 'offline' }));
 

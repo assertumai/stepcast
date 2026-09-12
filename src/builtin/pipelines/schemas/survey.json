@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "required": ["widgets", "tableVersion"],
+  "properties": {
+    "widgets": { "type": "array" },
+    "tableVersion": { "type": "number" }
+  }
+}

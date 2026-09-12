@@ -2,6 +2,7 @@ import { relative } from 'node:path';
 import { z } from 'zod';
 
 import { listProjects } from '../../core/journal/reader.js';
+import { packagedPipelineNames, STEPCAST_PIPELINE_PREFIX } from '../../core/package-schema.js';
 import { listPipelineFiles } from '../../core/project/pipelines.js';
 import { readBody, sendJson } from '../http.js';
 import { screenRow, type ApiHandler } from '../screens/registry.js';
@@ -12,6 +13,11 @@ import { screenRow, type ApiHandler } from '../screens/registry.js';
  * перечисляет витрина (`listProjects`, `listPipelineFiles`) — маршрут не
  * принимает ничего сверх ключа проекта и имени файла, и запустить
  * произвольную команду через него нельзя.
+ *
+ * `pipeline` формы `stepcast:<имя>` — пайплайн поставки (`ui-daemon`, «Запуск
+ * прогона принимает пайплайн поставки»): проверяется закрытым перечнем
+ * `packagedPipelineNames()`, а не обходом файлов проекта — иначе кнопке
+ * «Мигрировать» (`ui-widgets`) нечего было бы запускать.
  */
 
 const PostBodySchema = z
@@ -50,12 +56,21 @@ const handlePost: ApiHandler = async (req, res, env) => {
     return;
   }
 
-  const files = listPipelineFiles(project.path).map((file) => relative(project.path as string, file).replace(/\\/g, '/'));
-  if (!files.includes(parsed.data.pipeline)) {
-    sendJson(res, 400, {
-      error: `Пайплайн ${parsed.data.pipeline} не найден среди файлов проекта ${parsed.data.project}`,
-    });
-    return;
+  if (parsed.data.pipeline.startsWith(STEPCAST_PIPELINE_PREFIX)) {
+    const name = parsed.data.pipeline.slice(STEPCAST_PIPELINE_PREFIX.length);
+    const known = packagedPipelineNames();
+    if (!known.includes(name)) {
+      sendJson(res, 400, { error: `Пайплайн stepcast:${name} не поставляется пакетом stepcast. Пакет поставляет: ${known.join(', ')}` });
+      return;
+    }
+  } else {
+    const files = listPipelineFiles(project.path).map((file) => relative(project.path as string, file).replace(/\\/g, '/'));
+    if (!files.includes(parsed.data.pipeline)) {
+      sendJson(res, 400, {
+        error: `Пайплайн ${parsed.data.pipeline} не найден среди файлов проекта ${parsed.data.project}`,
+      });
+      return;
+    }
   }
 
   env.launchRun({ cwd: project.path, pipeline: parsed.data.pipeline });

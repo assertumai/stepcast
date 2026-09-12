@@ -69,3 +69,24 @@ export function rejectWiringKeys(document: unknown, file: string): void {
     }
   }
 }
+
+/**
+ * `project.proposals` отклоняется документом пайплайна своим текстом, а не
+ * безымянным «неизвестный ключ» от `.strict()` схемы `ProjectSchema`
+ * (`stepcast-configuration`, «Ключ в пайплайне»): пайплайн — ровно тот, кого
+ * режим доставки ограничивает, и объявить себе `direct` он не вправе
+ * (design.md изменения `agent-edits-widgets`, Решение 7). Проверка идёт до
+ * схемы, тем же приёмом, что `rejectWiringKeys`.
+ */
+export function rejectProposalsKeyInPipeline(document: unknown, file: string): void {
+  if (typeof document !== 'object' || document === null) return;
+  const project = (document as Record<string, unknown>).project;
+  if (typeof project !== 'object' || project === null) return;
+  if ('proposals' in (project as Record<string, unknown>)) {
+    throw new StepcastError('Режим доставки правки кабинета объявляет только конфигурация репозитория', {
+      file,
+      at: 'project.proposals',
+      hint: 'Перенесите значение в .stepcast/config.yml — документ пайплайна его не принимает',
+    });
+  }
+}

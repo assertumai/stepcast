@@ -12,9 +12,11 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import {
+  buildProjectWidgets,
   buildWidgets,
   createWidgetCompiler,
   listProjectWidgetIds,
+  projectWidgetVersions,
   resolveWidgetFile,
   widgetsDirPath,
   type CompileOutcome,
@@ -100,6 +102,94 @@ describe('ui-widgets: перечисление виджетов проекта',
 
     const overview = buildWidgets(runsRoot);
     assert.deepEqual(overview.projects[0]?.widgets, []);
+  });
+});
+
+describe('ui-widgets: устаревание по голым импортам', () => {
+  it('виджет, ссылающийся на ушедшее имя, назван устаревшим по имени', () => {
+    const { projectRoot } = makeJournalBed();
+    writeFileSync(
+      join(widgetsDir(projectRoot), 'clock.tsx'),
+      "import { NotAName } from '@stepcast/ui';\nexport default function Clock() { return null; }\n",
+    );
+
+    const widgets = buildProjectWidgets(projectRoot);
+    assert.equal(widgets[0]?.deprecated?.name, 'NotAName');
+    assert.equal(widgets[0]?.deprecated?.kind, 'name');
+  });
+
+  /**
+   * Уход специфика целиком — самый вероятный вид смены таблицы, и он обязан
+   * давать признак так же, как уход имени у оставшегося специфика
+   * (`widget-migration`, «Виджет, импортирующий имя не из таблицы, считается
+   * устаревшим»).
+   */
+  it('виджет, импортирующий специфик вне таблицы, назван устаревшим по спецификатору', () => {
+    const { projectRoot } = makeJournalBed();
+    writeFileSync(
+      join(widgetsDir(projectRoot), 'gauge.tsx'),
+      "import { Gauge } from 'gone-module';\nexport default function G() { return null; }\n",
+    );
+
+    const widgets = buildProjectWidgets(projectRoot);
+    assert.equal(widgets[0]?.deprecated?.kind, 'specifier');
+    assert.equal(widgets[0]?.deprecated?.name, 'gone-module');
+  });
+
+  it('обычный виджет признака не несёт', () => {
+    const { projectRoot } = makeJournalBed();
+    writeFileSync(join(widgetsDir(projectRoot), 'clock.tsx'), HOOK_WIDGET);
+
+    const widgets = buildProjectWidgets(projectRoot);
+    assert.equal(widgets[0]?.deprecated, undefined);
+  });
+
+  /**
+   * Дешёвая половина состава — та, которую зовёт такт наблюдателя: версия по
+   * `mtime`+размеру и ни одного чтения исходника (план T12, «часть отпечатка
+   * `widgets` остаётся на `mtime`+размере»). Признак устаревания она не
+   * считает вовсе, потому что в отпечаток он не входит.
+   */
+  it('projectWidgetVersions даёт версии и не несёт признака устаревания', () => {
+    const { projectRoot } = makeJournalBed();
+    writeFileSync(
+      join(widgetsDir(projectRoot), 'gauge.tsx'),
+      "import { Gauge } from 'gone-module';\nexport default function G() { return null; }\n",
+    );
+
+    const versions = projectWidgetVersions(projectRoot);
+    assert.deepEqual(
+      versions.map((widget) => widget.id),
+      ['gauge'],
+    );
+    assert.deepEqual(Object.keys(versions[0] as object).sort(), ['id', 'version']);
+    // Те же версии, что и у полного состава: дешёвая половина не расходится с ним.
+    assert.deepEqual(
+      versions.map((widget) => widget.version),
+      buildProjectWidgets(projectRoot).map((widget) => widget.version),
+    );
+  });
+
+  it('правка файла снимает признак следующим вычислением', () => {
+    const { projectRoot } = makeJournalBed();
+    const path = join(widgetsDir(projectRoot), 'clock.tsx');
+    writeFileSync(path, "import { NotAName } from '@stepcast/ui';\nexport default function C() { return null; }\n");
+    assert.notEqual(buildProjectWidgets(projectRoot)[0]?.deprecated, undefined);
+
+    writeFileSync(path, HOOK_WIDGET);
+    assert.equal(buildProjectWidgets(projectRoot)[0]?.deprecated, undefined);
+  });
+
+  it('вычисление признака не создаёт и не меняет ни одного файла проекта', () => {
+    const { projectRoot } = makeJournalBed();
+    writeFileSync(
+      join(widgetsDir(projectRoot), 'clock.tsx'),
+      "import { NotAName } from '@stepcast/ui';\nexport default function Clock() { return null; }\n",
+    );
+    const before = readdirSync(join(projectRoot, '.stepcast'));
+    buildProjectWidgets(projectRoot);
+    const after = readdirSync(join(projectRoot, '.stepcast'));
+    assert.deepEqual(after, before);
   });
 });
 

@@ -1,5 +1,3 @@
-import { resolve as resolvePath } from 'node:path';
-
 import { resolveConfig, type Config } from '../../core/config/resolve.js';
 import type { Registry } from '../../core/plugins/registry.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
@@ -8,6 +6,7 @@ import { readStatus } from '../../core/journal/reader.js';
 import type { Event } from '../../core/journal/schema.js';
 import { hasErrors, lintPipeline } from '../../core/lint.js';
 import { expandPipeline } from '../../core/pipeline/expand.js';
+import { resolvePipelineTarget } from '../../core/package-schema.js';
 import { runPipeline } from '../../core/run/runner.js';
 import type { UsageSnapshot } from '../../core/budget/accumulator.js';
 import { renderProgressLine } from '../progress.js';
@@ -30,11 +29,22 @@ export async function runRunCommand(
   resolvedConfig?: Config,
 ): Promise<ExitCodeValue> {
   const target = args.positional[0] ?? 'stepcast.yml';
-  const pipelinePath = resolvePath(cwd, target);
+  // `stepcast:<имя>` называет пайплайн поставки, а не файл каталога запуска
+  // (`pipeline-definition`, «Ссылка на поставку называет и пайплайн, а не
+  // только схему»): путь разрешается от расположения движка, а не от `cwd`,
+  // и слои `script`/`step` пайплайна ищутся от `cwd`, а не от каталога
+  // поставки внутри пакета (`projectRoot` ниже).
+  const { pipelinePath, isSupplyPipeline } = resolvePipelineTarget(cwd, target);
   const config = resolvedConfig ?? resolveConfig({ cwd }).config;
   const inputs = (args.flags.input as Record<string, string> | undefined) ?? {};
 
-  const expanded = expandPipeline({ pipelinePath, config, inputs, ...(registry === undefined ? {} : { registry }) });
+  const expanded = expandPipeline({
+    pipelinePath,
+    config,
+    inputs,
+    ...(registry === undefined ? {} : { registry }),
+    ...(isSupplyPipeline ? { projectRoot: cwd } : {}),
+  });
 
   // Проверка перед запуском бесплатна по сравнению с прогоном, поэтому она
   // безусловна: ловить структурную ошибку после первого агентского шага

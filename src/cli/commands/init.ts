@@ -38,6 +38,31 @@ steps:
       - exit_code: 0
 `;
 
+/**
+ * Строка `.gitignore` каталога очереди предложений (`ui-proposals`, Решение
+ * 14): первое же предложение кладёт в проект неотслеживаемый файл, а петля
+ * саморазвития отказывается стартовать на грязном дереве. Заведённый раньше
+ * проект называет ту же строку `docs/proposals.md`.
+ */
+const PROPOSALS_GITIGNORE_LINE = '.stepcast/proposals/';
+
+/**
+ * Внести строку каталога очереди в `.gitignore` проекта, не дублируя её при
+ * повторном вызове и не трогая остальное содержимое файла: `.gitignore`
+ * почти всегда уже существует и несёт чужие правила, которые дописывание не
+ * вправе стереть.
+ */
+function ensureProposalsIgnored(cwd: string, write: (line: string) => void): void {
+  const path = join(cwd, '.gitignore');
+  const existing = existsSync(path) ? readFileSync(path, 'utf8') : undefined;
+  if (existing !== undefined && existing.split('\n').some((line) => line.trim() === PROPOSALS_GITIGNORE_LINE)) {
+    return;
+  }
+  const prefix = existing === undefined || existing === '' || existing.endsWith('\n') ? existing ?? '' : `${existing}\n`;
+  writeFileSync(path, `${prefix}${PROPOSALS_GITIGNORE_LINE}\n`);
+  write(`${existing === undefined ? 'создан' : 'дополнен'} ${path}`);
+}
+
 /** Каталог знания и файл правил встроенного источника — умолчания разворачивания. */
 const KNOWLEDGE_DIR = 'knowledge';
 const KNOWLEDGE_RULES = join('.stepcast', 'prompts', 'knowledge-rules.md');
@@ -130,6 +155,7 @@ export function runInitCommand(
 
   write(`создан ${pipelinePath}`);
   write(`создан ${examplePath}`);
+  ensureProposalsIgnored(cwd, write);
   return ExitCode.ok;
 }
 

@@ -6,7 +6,8 @@ import { listProjects, listRunsByKey } from '../core/journal/reader.js';
 import { runPaths, usageStorePath } from '../core/journal/paths.js';
 import { buildBacklog, type BacklogOverview } from './backlog.js';
 import { buildOverview, type Overview, type RunOverview } from './overview.js';
-import { buildProjectWidgets, buildWidgets, type WidgetsOverview } from './widgets.js';
+import { buildWidgets, projectWidgetVersions, type WidgetsOverview } from './widgets.js';
+import { buildProposals, proposalsDirFingerprint, type ProposalsOverview } from './proposals.js';
 import { buildHomePlugins, type PluginsOverview } from './plugins.js';
 import { buildRouteTable, builtinRoutesPath, homeRoutesPath, projectRoutesPath, type RouteBuildResult } from './routesFile.js';
 import {
@@ -111,6 +112,15 @@ export interface Watcher {
    * файл не отменяет остальные»).
    */
   currentDashboards(): DashboardsBuildResult;
+  /**
+   * Действующая очередь предложений всех проектов, без ожидания следующего
+   * опроса (`ui-proposals`, «Состав очереди идёт потоком событий»).
+   * Пересобирается только по сдвигу своей части отпечатка — такт, где
+   * сдвинулись лишь прогон, виджеты или маршруты, оставляет прежний объект.
+   * Наблюдатель каталог очереди не создаёт, не чинит и не убирает — только
+   * читает (`ui-daemon`, «Наблюдение очереди её не изменяет»).
+   */
+  currentProposals(): ProposalsOverview;
   /** Подписаться на обновления. Возвращает функцию отписки. */
   subscribe(listener: (overview: Overview, backlog: BacklogOverview) => void): () => void;
   /** Проверить корень прогонов немедленно, не дожидаясь таймера. */
@@ -132,6 +142,7 @@ interface Fingerprint {
   readonly plugins: string;
   readonly routes: string;
   readonly dashboards: string;
+  readonly proposals: string;
 }
 
 /**
@@ -183,6 +194,14 @@ interface Fingerprint {
  * виджеты, и наоборот. Каталог перечисляется целиком (не список фиксированных
  * путей, как у `routes`), потому что дашбордов может быть сколько угодно и
  * какой файл появится — заранее не известно.
+ *
+ * Часть `proposals` — каталог очереди предложений `.stepcast/proposals/`
+ * каждого проекта с известным путём, имя и `mtime`+размер каждой записи
+ * (`ui-proposals`, «Состав очереди идёт потоком событий»): отдельная часть,
+ * тем же приёмом, что `widgets` и `dashboards` — принятая или отклонённая
+ * запись не должна перечитывать виджеты, маршруты или дашборды, и наоборот.
+ * Отсутствие каталога очереди — законное состояние отпечатка, тем же
+ * приёмом, что и у `backlog`.
  */
 function statPart(path: string): string {
   try {
@@ -214,6 +233,7 @@ function fingerprint(
   const parts: string[] = [];
   const backlogParts: string[] = [];
   const widgetParts: string[] = [];
+  const proposalsParts: string[] = [];
   const pluginParts = buildHomePlugins(home)
     .plugins.map((plugin) => `${plugin.id}:${plugin.version}`)
     .join(',');
@@ -243,6 +263,13 @@ function fingerprint(
       // Версия каждого виджета уже несёт `mtime` и размер (`fingerprintVersion`
       // в `src/ui/widgets.ts`) — отдельно их здесь не считать.
       //
+      // Зовётся `projectWidgetVersions`, а не `buildProjectWidgets`: второй
+      // вдобавок читает исходник каждого виджета ради признака устаревания, а
+      // в отпечаток тот признак не входит вовсе. Такт идёт раз в секунду по
+      // каждому виджету каждого проекта, и чтение там было бы чистой тратой:
+      // признак всё равно пересчитывается на том такте, где эта часть
+      // отпечатка сдвинулась (`widget-migration`, Решение 9).
+      //
       // Запись идёт на каждый проект с известным путём, а не на каждый файл, —
       // тем же приёмом, каким `backlog` пишет `${project.key}:-`: проект без
       // виджетов тоже раздел состава («Проект без виджетов SHALL показываться
@@ -253,11 +280,12 @@ function fingerprint(
       // не берёт вовсе, и появление каталога обязано сдвинуть отпечаток ещё до
       // первого виджета в нём.
       const widgets = existsSync(project.path)
-        ? buildProjectWidgets(project.path)
+        ? projectWidgetVersions(project.path)
             .map((widget) => `${widget.id}:${widget.version}`)
             .join(',') || '-'
         : '?';
       widgetParts.push(`${project.key}:${widgets}`);
+      proposalsParts.push(`${project.key}:${proposalsDirFingerprint(project.path)}`);
     }
 
     for (const runId of listRunsByKey(runsRoot, project.key)) {
@@ -279,6 +307,7 @@ function fingerprint(
     plugins: pluginParts,
     routes,
     dashboards,
+    proposals: proposalsParts.join('|'),
   };
 }
 
@@ -338,6 +367,7 @@ export function createWatcher(options: WatcherOptions): Watcher {
   let projects = projectList(overview);
   let backlog = buildBacklog(overview);
   let widgets = buildWidgets(runsRoot);
+  let proposals = buildProposals(runsRoot);
   let plugins = buildHomePlugins(home);
   // Отказ первой сборки не имеет прежней таблицы, которой можно было бы
   // остаться: пустая таблица с названной причиной — единственный разумный
@@ -368,7 +398,8 @@ export function createWatcher(options: WatcherOptions): Watcher {
       next.widgets === mark.widgets &&
       next.plugins === mark.plugins &&
       next.routes === mark.routes &&
-      next.dashboards === mark.dashboards
+      next.dashboards === mark.dashboards &&
+      next.proposals === mark.proposals
     ) {
       return;
     }
@@ -377,6 +408,7 @@ export function createWatcher(options: WatcherOptions): Watcher {
     const pluginsChanged = next.plugins !== mark.plugins;
     const routesChanged = next.routes !== mark.routes;
     const dashboardsChanged = next.dashboards !== mark.dashboards;
+    const proposalsChanged = next.proposals !== mark.proposals;
     const runsChanged = next.runs !== mark.runs;
     mark = next;
     // Обзор пересобирается только по своей части отпечатка, тем же правилом,
@@ -426,6 +458,13 @@ export function createWatcher(options: WatcherOptions): Watcher {
     if (dashboardsChanged) {
       dashboards = buildDashboards(routeOptions);
     }
+    // Тем же приёмом — очередь предложений пересобирается только по своей
+    // части отпечатка (`ui-proposals`, «Состав очереди идёт потоком событий»):
+    // такт, где сдвинулись лишь виджеты или маршруты, оставляет прежний
+    // объект.
+    if (proposalsChanged) {
+      proposals = buildProposals(runsRoot);
+    }
     reportProblems(overview);
     for (const listener of listeners) listener(overview, backlog);
   };
@@ -442,6 +481,7 @@ export function createWatcher(options: WatcherOptions): Watcher {
     currentRoutes: () => routes,
     currentRoutesError: () => routesError,
     currentDashboards: () => dashboards,
+    currentProposals: () => proposals,
     subscribe(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);

@@ -2321,6 +2321,30 @@ jobs:
     });
     assert.throws(() => expand(project), StepcastError);
   });
+
+  // ui-proposals / stepcast-configuration, сценарий «Ключ в пайплайне»
+  it('отклоняет project.proposals в документе пайплайна своим текстом, а не безымянным «неизвестный ключ»', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+project:
+  proposals: direct
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+    assert.throws(
+      () => expand(project),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /режим доставки/i);
+        assert.match(error.message, /конфигурация репозитория/);
+        assert.equal(error.at, 'project.proposals');
+        return true;
+      },
+    );
+  });
 });
 
 describe('pipeline-definition: группа project.spec документа', () => {

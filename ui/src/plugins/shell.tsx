@@ -196,6 +196,7 @@ function Shell(): JSX.Element {
     backlog: live.backlog,
     widgets: live.widgets,
     snapshot: live.snapshot,
+    proposals: live.proposals,
   };
 
   const navRoutes = [...routesSnapshot.table]

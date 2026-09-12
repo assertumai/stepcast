@@ -26,7 +26,7 @@ import {
 } from '../plugins/registry.js';
 import { parseCount, parseDuration, parseExitCode, parseMoney, parsePercent, parseTokens } from '../units.js';
 import { interpolateTree, interpolateTypedTree, placeholderNamespaces, type Scope } from './interpolate.js';
-import { readYamlDocument, rejectWiringKeys, validateDocument } from './load.js';
+import { readYamlDocument, rejectProposalsKeyInPipeline, rejectWiringKeys, validateDocument } from './load.js';
 import { resolveParams, type ParamValue } from './params.js';
 import { resolveUsesStep } from './steps.js';
 import {
@@ -255,6 +255,16 @@ export interface ExpandOptions {
   readonly registry?: Registry;
   /** Значения `--input`, как их передал пользователь. */
   readonly inputs?: Readonly<Record<string, ParamValue>>;
+  /**
+   * Каталог запуска — семя умолчания `scriptRoots.project`/`stepRoots.project`
+   * вместо `dirname(pipelinePath)` (`pipeline-definition`, «Ссылка на поставку
+   * называет и пайплайн, а не только схему»). Нужен пайплайну поставки: его
+   * файл лежит внутри пакета, и `findProjectRoot` от каталога поставки нашёл
+   * бы (или не нашёл) `.git` не там, где стоит искать раннер/степ-слои
+   * проекта, — искать их нужно от каталога, откуда команда вызвана.
+   * Игнорируется, если `scriptRoots`/`stepRoots` заданы явно.
+   */
+  readonly projectRoot?: string;
   /**
    * Корни слоёв разрешения `script`. Тесты подставляют свои — умолчание
    * (`findProjectRoot(dirname(pipelinePath))`, `homedir()`,
@@ -1454,7 +1464,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   const pipelinePath = resolvePath(options.pipelinePath);
   const registry = options.registry ?? builtinRegistry();
   const scriptRoots: ScriptRoots = options.scriptRoots ?? {
-    project: findProjectRoot(dirname(pipelinePath)),
+    project: findProjectRoot(options.projectRoot ?? dirname(pipelinePath)),
     home: homedir(),
     builtin: join(findPackageRoot(fileURLToPath(new URL('.', import.meta.url))), 'src', 'builtin', 'scripts'),
   };
@@ -1477,6 +1487,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
 
   const rawPipeline = readYamlDocument(pipelinePath);
   rejectUnknownStepKinds(rawPipeline, pipelinePath, registry);
+  rejectProposalsKeyInPipeline(rawPipeline, pipelinePath);
   const document = validateDocument(
     schemas.PipelineDocumentSchema,
     rawPipeline,

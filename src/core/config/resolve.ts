@@ -167,6 +167,13 @@ export interface Config {
      */
     readonly nestedRepos: readonly string[] | undefined;
     /**
+     * Режим доставки правки кабинета агентом (`ui-proposals`, Решение 7):
+     * `queue` ставит предложение в очередь, `direct` пишет цель немедленно.
+     * Умолчание `queue` — тем же приёмом, что и у прочих величин поведения
+     * движка (в отличие от `check`/`tools`, у которых умолчания нет).
+     */
+    readonly proposals: 'queue' | 'direct';
+    /**
      * Объявления вложенных репозиториев объектной формой, по каталогу.
      * Каталог, названный строкой (без объекта), в карте отсутствует —
      * `project/repos.ts` обязан увидеть отсутствующую запись как неполное
@@ -814,6 +821,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
           : undefined,
       nestedRepos: projectNestedRepos?.dirs,
       nestedRepoDeclarations: projectNestedRepos?.declarations,
+      proposals: (values.get('project.proposals') ?? 'queue') as 'queue' | 'direct',
       spec: {
         dir: typeof projectSpecDir === 'string' ? projectSpecDir : undefined,
         rules: typeof projectSpecRules === 'string' ? projectSpecRules : undefined,

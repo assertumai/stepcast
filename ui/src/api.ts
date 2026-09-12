@@ -389,10 +389,19 @@ export interface StepsOverview {
 }
 
 /** Сверено построчно с `WidgetView`/`ProjectWidgetsView`/`WidgetsOverview` (`src/ui/widgets.ts`). */
+/** Сверено с `WidgetDeprecation` (`src/ui/widgets.ts`). */
+export interface WidgetDeprecation {
+  /** `specifier` — таблица не несёт самого голого спецификатора; `name` — специфик остался, а имя из него ушло. */
+  readonly kind: 'specifier' | 'name';
+  readonly name: string;
+  readonly noteText?: string;
+}
+
 export interface WidgetView {
   readonly id: string;
   /** Версия — отпечаток файла (`mtime` и размер); идёт в адрес модуля, чтобы отличить новую редакцию от прежней. */
   readonly version: string;
+  readonly deprecated?: WidgetDeprecation;
 }
 
 export interface ProjectWidgetsView {
@@ -403,6 +412,76 @@ export interface ProjectWidgetsView {
 export interface WidgetsOverview {
   readonly projects: readonly ProjectWidgetsView[];
   readonly generatedAt: string;
+}
+
+/** Сверено построчно с `ProposalOrigin`/`ProposalRecord` (`src/core/proposals/entry.ts`). */
+export interface ProposalOrigin {
+  readonly run?: string;
+  readonly job?: string;
+  readonly step?: string;
+}
+
+export type ProposalAction = 'create' | 'update';
+export type ProposalState = 'pending' | 'accepted' | 'rejected';
+
+export interface ProposalFingerprint {
+  readonly mtimeMs: number;
+  readonly size: number;
+}
+
+export interface ProposalRecord {
+  readonly id: string;
+  readonly target: string;
+  readonly action: ProposalAction;
+  readonly content: string;
+  readonly reason?: string;
+  readonly origin: ProposalOrigin;
+  readonly baseFingerprint: ProposalFingerprint | null;
+  readonly state: ProposalState;
+  readonly createdAt: string;
+  readonly decidedAt?: string;
+}
+
+/** Негодная запись очереди — сверено с `InvalidProposalFile` (`src/core/proposals/store.ts`). */
+export interface ProposalsInvalidFile {
+  readonly file: string;
+  readonly reason: string;
+}
+
+/** Запись, отданная `GET /api/proposals`, — та же запись плюс содержимое цели сейчас (`src/ui/screens/proposals/server.ts`). `null` — цели ещё нет (действие `create`). */
+export interface ProposalApiRecord extends ProposalRecord {
+  readonly currentContent: string | null;
+}
+
+export interface ProjectProposalsPayload {
+  readonly projectKey: string;
+  /** Действующий режим доставки этого проекта — виден на экране (`ui-proposals`, «Действующий режим доставки MUST быть виден на экране»). */
+  readonly mode: 'queue' | 'direct';
+  readonly records: readonly ProposalApiRecord[];
+  readonly invalid: readonly ProposalsInvalidFile[];
+}
+
+export interface ProposalsOverview {
+  readonly projects: readonly ProjectProposalsPayload[];
+}
+
+/**
+ * Состав очереди предложений потоком — облегчённый: без содержимого записи
+ * (до 256 КиБ на запись), без текущего содержимого цели и без режима доставки
+ * (`ui-proposals`, Решение 15: «поток несёт только состав очереди»). Служит
+ * сигналом «перечитай `GET /api/proposals`», а не прямым источником данных для
+ * дифа. Сверено с `ProposalStreamRecord` (`src/ui/proposals.ts`).
+ */
+export type ProposalStreamRecord = Omit<ProposalRecord, 'content'>;
+
+export interface ProjectProposalsStream {
+  readonly projectKey: string;
+  readonly records: readonly ProposalStreamRecord[];
+  readonly invalid: readonly ProposalsInvalidFile[];
+}
+
+export interface ProposalsStreamEvent {
+  readonly projects: readonly ProjectProposalsStream[];
 }
 
 /**
@@ -733,6 +812,25 @@ export async function fetchRun(address: string): Promise<RunSnapshot> {
  * отклонение маршрута (400) значит, что запрос сам по себе негоден, а не что
  * решение не применилось (та проверка — уже в `stepcast decide`).
  */
+/**
+ * Запуск пайплайна проекта либо пайплайна поставки (`stepcast:<имя>`)
+ * (`ui-daemon`, «Запуск прогона принимает пайплайн поставки»): `202` —
+ * подтверждение приёма запроса, а не обещание идентификатора прогона —
+ * появившийся прогон виден обычным тактом обзора.
+ */
+export async function launchRun(payload: {
+  readonly project: string;
+  readonly pipeline: string;
+}): Promise<{ readonly ok: true }> {
+  return json(
+    await fetch('/api/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
 export async function decideRun(payload: {
   readonly run: string;
   readonly outcome: string;
@@ -801,6 +899,34 @@ export async function fetchSteps(): Promise<StepsOverview> {
  */
 export async function fetchBacklog(): Promise<BacklogOverview> {
   return json<BacklogOverview>(await fetch('/api/backlog'));
+}
+
+/**
+ * Прямой запрос очереди предложений: запись несёт содержимое файла, и класть
+ * его в поток обзора незачем (`ui-proposals`, Решение 15) — событие `proposals`
+ * лишь будит экран перечитать этот маршрут.
+ */
+export async function fetchProposals(): Promise<ProposalsOverview> {
+  return json<ProposalsOverview>(await fetch('/api/proposals'));
+}
+
+/**
+ * Решение по одной записи очереди (`ui-proposals`, «Витрина показывает
+ * очередь дифом и решает запись двумя кнопками»): принятие пишет цель сама
+ * демон, отклонение — переводит состояние, не трогая цель.
+ */
+export async function decideProposal(payload: {
+  readonly project: string;
+  readonly id: string;
+  readonly decision: 'accept' | 'reject';
+}): Promise<{ readonly ok: true; readonly record: ProposalRecord }> {
+  return json(
+    await fetch('/api/proposals', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  );
 }
 
 /** Без `days` — весь период наблюдений. */

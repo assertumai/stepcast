@@ -27,6 +27,8 @@ import {
   runPluginsCommandAfterLoadFailure,
 } from './commands/plugins.js';
 import { runProjectCommand } from './commands/project.js';
+import { runProposeCommand } from './commands/propose.js';
+import { runWidgetsCommand } from './commands/widgets.js';
 import { runResumeCommand } from './commands/resume.js';
 import { runRunCommand } from './commands/run.js';
 import { runSchemaCommand } from './commands/schema.js';
@@ -88,6 +90,21 @@ export const COMMANDS: Record<string, CommandSpec> = {
       step: { kind: 'string', description: 'адрес ожидающего шага (job или job/step) — обязателен при нескольких ожиданиях' },
       reason: { kind: 'string', description: 'причина отклонения — обязательна для исхода с эффектом reject' },
       from: { kind: 'string', description: 'точка перезапуска job[/step] — обязательна для исхода с эффектом restart' },
+    },
+  },
+  propose: {
+    description:
+      'предложить правку файла кабинета проекта: stepcast propose <цель> --from <файл> — единственный писатель очереди',
+    positional: ['target'],
+    flags: {
+      from: { kind: 'string', description: 'файл с содержимым предложения — без него читается стандартный ввод' },
+      reason: { kind: 'string', description: 'причина предложения, необязательна' },
+    },
+  },
+  widgets: {
+    description: 'печатать состав виджетов проекта: имя, файл, голые импорты и неразрешимые по действующей таблице',
+    flags: {
+      json: { kind: 'boolean', description: 'печатать тот же состав машинным JSON' },
     },
   },
   apply: {
@@ -312,6 +329,21 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
     name: 'decide',
     spec: COMMANDS['decide'] as CommandSpec,
     run: (args, io, env) => runDecideCommand(args, io.out, env.cwd, env.registry, env.config),
+  },
+  {
+    // Встроенная, тем же приёмом, что `decide` (`ui-proposals`, design.md
+    // изменения `agent-edits-widgets`, Решение 2): единственный писатель
+    // очереди читает `STEPCAST_RUN_DIR`/`STEPCAST_JOB`/`STEPCAST_STEP` из
+    // окружения шага напрямую, публиковать их плагинам ради одной команды
+    // незачем.
+    name: 'propose',
+    spec: COMMANDS['propose'] as CommandSpec,
+    run: (args, io) => runProposeCommand(args, io.out, io.cwd, io.readStdin),
+  },
+  {
+    name: 'widgets',
+    spec: COMMANDS['widgets'] as CommandSpec,
+    run: (args, io, env) => runWidgetsCommand(args, io.out, env.cwd),
   },
   {
     name: 'apply',

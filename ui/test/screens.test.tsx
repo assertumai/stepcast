@@ -335,6 +335,7 @@ describe('screens: вид цели route.target напрямую, вне мар�
               backlog: undefined,
               widgets: undefined,
               snapshot: undefined,
+              proposals: undefined,
             }}
             k="screen"
             default={null}
@@ -374,6 +375,7 @@ describe('screens: вид цели route.target напрямую, вне мар�
               backlog: undefined,
               widgets: undefined,
               snapshot: undefined,
+              proposals: undefined,
             }}
             k="screen"
             default={null}

@@ -1,5 +1,5 @@
 import { existsSync, readdirSync } from 'node:fs';
-import { dirname, join, parse as parsePath } from 'node:path';
+import { dirname, join, parse as parsePath, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { StepcastError } from './errors.js';
@@ -86,6 +86,92 @@ function packagedSchemaNames(schemaDir: string): string[] {
     .filter((entry) => entry.endsWith(SCHEMA_SUFFIX))
     .map((entry) => entry.slice(0, -SCHEMA_SUFFIX.length))
     .sort();
+}
+
+const PIPELINE_SUFFIX = '.yml';
+
+/** Префикс ссылки на пайплайн поставки — `stepcast run stepcast:migrate-widgets` (`pipeline-definition`). */
+export const STEPCAST_PIPELINE_PREFIX = 'stepcast:';
+
+/** Каталог встроенных пайплайнов пакета — четвёртый встроенный слой, рядом со `scripts/`, `steps/` и `routes.yml` (`pipeline-definition`, design.md изменения `agent-edits-widgets`, Решение 11). */
+function packagedPipelinesDir(): string {
+  return join(findPackageRoot(HERE), 'src', 'builtin', 'pipelines');
+}
+
+/** Имена пайплайнов, поставляемых пакетом, — для перечня в отказе. */
+export function packagedPipelineNames(): readonly string[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(packagedPipelinesDir());
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((entry) => entry.endsWith(PIPELINE_SUFFIX))
+    .map((entry) => entry.slice(0, -PIPELINE_SUFFIX.length))
+    .sort();
+}
+
+/**
+ * Путь к файлу пайплайна поставки `stepcast:<имя>` — от расположения этого
+ * модуля, той же схемой, что `packagedSchemaPath` (`pipeline-definition`,
+ * «Ссылка на поставку называет и пайплайн, а не только схему»): работает
+ * одинаково из исходников, из `dist/`, из `node_modules` целевого репозитория
+ * и из глобальной установки, потому что не зависит от каталога запуска.
+ * Имя — слаг в kebab-case, проверенный до обращения к диску: `/`, `.` и `..`
+ * отказывают тем же текстом, что и у схемы, раньше, чем дошло бы до чтения
+ * каталога.
+ */
+export function packagedPipelinePath(name: string, reference?: SchemaReference): string {
+  const at = reference === undefined ? {} : { file: reference.file, at: reference.declaredAt };
+
+  if (!KEBAB_CASE.test(name)) {
+    throw new StepcastError(`Имя пайплайна поставки stepcast:${name} не является слагом в kebab-case`, {
+      ...at,
+      hint: 'Слаг — латиница в нижнем регистре, цифры и дефис; путь, точка и .. в имени недопустимы',
+    });
+  }
+
+  const dir = packagedPipelinesDir();
+  const path = join(dir, `${name}${PIPELINE_SUFFIX}`);
+  if (existsSync(path)) return path;
+
+  const known = packagedPipelineNames();
+  throw new StepcastError(`Пайплайн stepcast:${name} не поставляется пакетом stepcast`, {
+    ...at,
+    hint:
+      known.length > 0
+        ? `Пакет поставляет: ${known.join(', ')}`
+        : `Каталог ${dir} пуст или недоступен — установка пакета stepcast неполна`,
+  });
+}
+
+/** Разобранная цель `stepcast run`/`stepcast lint`: файл каталога запуска либо пайплайн поставки. */
+export interface ResolvedPipelineTarget {
+  readonly pipelinePath: string;
+  /** Цель названа ссылкой `stepcast:<имя>` — слои `script`/`step` ищутся от каталога запуска, а не от каталога поставки. */
+  readonly isSupplyPipeline: boolean;
+}
+
+/**
+ * Цель позиционного аргумента: `stepcast:<имя>` — пайплайн поставки (путь от
+ * расположения движка), всё остальное — **путь** от каталога запуска
+ * (`pipeline-definition`, «Путь остаётся путём»). Правило одно на обе команды
+ * (`stepcast run`, `stepcast lint`): написанное дважды, оно разъехалось бы —
+ * и `run` с `lint` расходились бы в том, какой файл они вообще смотрят.
+ *
+ * Голое имя, совпавшее с именем поставки (`migrate-widgets.yml` в каталоге
+ * запуска), остаётся файлом проекта: позиционный аргумент `stepcast run`
+ * сегодня путь, и поставка его смысла не отнимает.
+ */
+export function resolvePipelineTarget(cwd: string, target: string): ResolvedPipelineTarget {
+  if (!target.startsWith(STEPCAST_PIPELINE_PREFIX)) {
+    return { pipelinePath: resolve(cwd, target), isSupplyPipeline: false };
+  }
+  return {
+    pipelinePath: packagedPipelinePath(target.slice(STEPCAST_PIPELINE_PREFIX.length)),
+    isSupplyPipeline: true,
+  };
 }
 
 /**

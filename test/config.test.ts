@@ -1065,6 +1065,50 @@ describe('stepcast-configuration: запрет глобального слоя �
   });
 });
 
+describe('stepcast-configuration: project.proposals — режим доставки правки кабинета', () => {
+  // Сценарий: «Проект объявил прямую запись»
+  it('принимает project.proposals: direct в проектном конфиге', () => {
+    const box = sandbox({ project: 'project:\n  proposals: direct\n' });
+    const { config } = resolveIn(box);
+    assert.equal(config.project.proposals, 'direct');
+  });
+
+  // Сценарий: «Умолчание»
+  it('умолчание — queue, если ключ не объявлен ни одним слоем', () => {
+    const box = sandbox({});
+    const { config } = resolveIn(box);
+    assert.equal(config.project.proposals, 'queue');
+  });
+
+  // Сценарий: «Ключ в машинном конфиге»
+  it('отклоняет project.proposals в глобальном конфиге тем же правилом, что и project.check', () => {
+    const box = sandbox({ global: 'project:\n  proposals: direct\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /project\.proposals/);
+        assert.equal(error.file, box.globalPath);
+        return true;
+      },
+    );
+  });
+
+  // Сценарий: «Негодное значение»
+  it('отклоняет значение вне queue и direct, перечисляя допустимые', () => {
+    const box = sandbox({ project: 'project:\n  proposals: sometimes\n' });
+    assert.throws(
+      () => resolveIn(box),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /queue/);
+        assert.match(error.message, /direct/);
+        return true;
+      },
+    );
+  });
+});
+
 describe('stepcast-configuration: практика памяти', () => {
   // Задача 1.5 / Сценарий: «Объявлен встроенный источник»
   it('разрешает provider, dir и rules из проектного конфига', () => {

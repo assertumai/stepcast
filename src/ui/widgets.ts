@@ -4,6 +4,7 @@ import { basename, dirname, extname, join, resolve, sep } from 'node:path';
 import { listProjects } from '../core/journal/reader.js';
 import { isSafeSegment } from './routes.js';
 import { SHARED_MODULE_LIST, WIDGET_ERROR_EXPORT, WIDGET_STYLE_EXPORT } from './sharedModules.js';
+import { parseWidgetImports, unresolvedSharedNames, type UnresolvedSharedKind } from './widgetImports.js';
 
 /**
  * Виджет пользователя — файл `<проект>/.stepcast/widgets/<id>.tsx`.
@@ -92,9 +93,23 @@ export function fingerprintVersion(fingerprint: FileFingerprint): string {
   return `${fingerprint.mtimeMs}:${fingerprint.size}`;
 }
 
+/**
+ * Причина устаревания: то, чего действующая таблица больше не несёт, — сам
+ * голый спецификатор (`kind: 'specifier'`) либо имя его клаузы (`kind:
+ * 'name'`), — и, если есть, текст записи о смене (`widget-migration`,
+ * Решение 9).
+ */
+export interface WidgetDeprecation {
+  readonly kind: UnresolvedSharedKind;
+  readonly name: string;
+  readonly noteText?: string;
+}
+
 export interface WidgetView {
   readonly id: string;
   readonly version: string;
+  /** Не отменяет отдачу виджета — устаревший виджет по-прежнему компилируется (`widget-migration`, «Признак не отменяет отдачу виджета»). */
+  readonly deprecated?: WidgetDeprecation;
 }
 
 export interface ProjectWidgetsView {
@@ -107,16 +122,65 @@ export interface WidgetsOverview {
   readonly generatedAt: string;
 }
 
-/** Виджеты одного проекта, с версией каждого. Файл, исчезнувший между перечислением и отпечатком, пропускается — та же гонка, что и у `buildProjectWidgets`. */
-export function buildProjectWidgets(projectPath: string): readonly WidgetView[] {
+/**
+ * Причина устаревания, выведенная из самого файла виджета — без единого
+ * файла состояния в кабинете проекта (`widget-migration`, «Признак не
+ * требует состояния в проекте»). Файл, ставший нечитаемым между
+ * перечислением и этим чтением, — не отказ: виджет просто не назван
+ * устаревшим, той же гонкой, что и у отпечатка.
+ */
+function widgetDeprecation(path: string): WidgetDeprecation | undefined {
+  let source: string;
+  try {
+    source = readFileSync(path, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const first = unresolvedSharedNames(parseWidgetImports(source))[0];
+  if (first === undefined) return undefined;
+  return {
+    kind: first.kind,
+    name: first.name,
+    ...(first.noteText === undefined ? {} : { noteText: first.noteText }),
+  };
+}
+
+/** Виджет с версией, но без признака устаревания — дешёвая часть состава: один `stat` на файл. */
+export interface WidgetVersionView {
+  readonly id: string;
+  readonly version: string;
+}
+
+/**
+ * Виджеты одного проекта с версией каждого и **без** чтения их содержимого —
+ * ровно то, что нужно части отпечатка наблюдателя (`src/ui/watcher.ts`):
+ * версия выводится из `mtime`+размера, а такт опроса идёт раз в секунду по
+ * каждому виджету каждого проекта, и читать там исходники было бы чистой
+ * тратой. Признак устаревания считается не здесь, а в `buildProjectWidgets` —
+ * то есть на такте, где часть отпечатка уже сдвинулась, и состав всё равно
+ * пересобирается.
+ *
+ * Файл, исчезнувший между перечислением и отпечатком, пропускается — обычная
+ * гонка с правкой на диске.
+ */
+export function projectWidgetVersions(projectPath: string): readonly WidgetVersionView[] {
   const dir = widgetsDirPath(projectPath);
-  const widgets: WidgetView[] = [];
+  const widgets: WidgetVersionView[] = [];
   for (const id of listProjectWidgetIds(projectPath)) {
     const fingerprint = widgetFingerprint(join(dir, `${id}${WIDGET_EXTENSION}`));
     if (fingerprint === undefined) continue;
     widgets.push({ id, version: fingerprintVersion(fingerprint) });
   }
   return widgets;
+}
+
+/** Виджеты одного проекта — версия плюс признак устаревания, выведенный из самого файла. */
+export function buildProjectWidgets(projectPath: string): readonly WidgetView[] {
+  const dir = widgetsDirPath(projectPath);
+  return projectWidgetVersions(projectPath).map((widget) => {
+    const deprecated = widgetDeprecation(join(dir, `${widget.id}${WIDGET_EXTENSION}`));
+    return { ...widget, ...(deprecated === undefined ? {} : { deprecated }) };
+  });
 }
 
 /**

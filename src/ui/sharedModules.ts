@@ -204,6 +204,40 @@ export const SHARED_MODULES: Readonly<Record<SharedModuleSpecifier, SharedModule
 };
 
 /**
+ * Версия таблицы (`widget-migration`, Решение 10): растёт на каждую правку
+ * перечня имён — добавление, уход или переименование. Тест
+ * (`test/ui-shared-modules.test.ts`) держит отпечаток перечня, сведённый с
+ * этим числом: правка имён без поднятой версии красит проверку раньше, чем
+ * расхождение уедет виджету пользователя карточкой «неразрешённый импорт».
+ */
+export const SHARED_MODULE_TABLE_VERSION = 1;
+
+export type SharedModuleChangeKind = 'removed' | 'renamed' | 'replaced';
+
+/**
+ * Запись о смене имени — что случилось и чем заменить, текстом, годным для
+ * чтения агентом миграции (`widget-migration`, «Виджет, импортирующий имя не
+ * из таблицы»): демон подставляет этот текст в причину устаревания виджета.
+ */
+export interface SharedModuleChangeNote {
+  readonly name: string;
+  readonly kind: SharedModuleChangeKind;
+  readonly text: string;
+}
+
+/**
+ * Записи о смене — пока пусто: таблица версии 1 несёт ровно те шесть имён,
+ * что и до этого изменения (`shared-module-table`). Первая правка перечня
+ * обязана добавить сюда запись вместе с поднятой версией.
+ */
+export const SHARED_MODULE_CHANGE_NOTES: readonly SharedModuleChangeNote[] = [];
+
+/** Запись о смене по имени — `undefined`, если про имя ничего не записано. */
+export function changeNoteFor(name: string): SharedModuleChangeNote | undefined {
+  return SHARED_MODULE_CHANGE_NOTES.find((note) => note.name === name);
+}
+
+/**
  * Сегмент записи, проверенный на безопасность пути (`isSafeSegment`,
  * `src/ui/routes.ts`) — тем же предикатом, каким сервер проверяет сегменты
  * виджета и плагина. Проверка стоит на выводе всех применений таблицы, а не в

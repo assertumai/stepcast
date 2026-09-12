@@ -551,6 +551,13 @@
               }
             ]
           }
+        },
+        "proposals": {
+          "type": "string",
+          "enum": [
+            "queue",
+            "direct"
+          ]
         }
       },
       "additionalProperties": false

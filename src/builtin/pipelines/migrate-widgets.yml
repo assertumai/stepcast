@@ -1,0 +1,30 @@
+# Пайплайн поставки `stepcast:migrate-widgets` (`widget-migration`, design.md
+# Решение 13): работа обзора снимает состав виджетов проекта командой, работа
+# миграции даёт агенту обзор, исходники затронутых виджетов и заметки о смене
+# таблицы — и кладёт исправленную версию каждого в очередь предложений,
+# минуя прямую запись (Решение 12).
+#
+# Вход `widget` называет виджет для миграции либо `all`; без входа —
+# мигрируются только устаревшие (`widget-migration`, «Миграцию можно
+# направить на названный виджет»).
+version: 1
+kind: pipeline
+name: migrate-widgets
+
+inputs:
+  widget:
+    type: string
+    default: ""
+
+budget:
+  tokens: 400k
+  wallclock: 20m
+
+jobs:
+  survey:
+    uses: ./jobs/survey.yml
+
+  migrate:
+    uses: ./jobs/migrate.yml
+    needs: [survey]
+    with: { widget: "${inputs.widget}" }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
 import { createWatcher } from '../src/ui/watcher.js';
@@ -11,9 +12,11 @@ import { removeUsageRecords } from '../src/core/journal/usageStore.js';
 import { widgetsDirPath } from '../src/ui/widgets.js';
 import { homeRoutesPath, projectRoutesPath } from '../src/ui/routesFile.js';
 import { homeDashboardsDirPath, projectDashboardsDirPath } from '../src/ui/dashboardsFile.js';
+import { proposalsDirPath, proposeEntry, readProposalsDir } from '../src/core/proposals/store.js';
 import type { BacklogOverview } from '../src/ui/backlog.js';
 import type { Overview } from '../src/ui/overview.js';
 import type { WidgetsOverview } from '../src/ui/widgets.js';
+import type { ProposalsOverview } from '../src/ui/proposals.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -483,6 +486,25 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
       watcher.dispose();
     });
 
+    /**
+     * Такт наблюдателя идёт раз в секунду по каждому виджету каждого проекта,
+     * и часть отпечатка `widgets` обязана оставаться на `mtime`+размере (план
+     * T12): признак устаревания в отпечаток не входит, а читать ради него
+     * исходник каждого виджета на каждом опросе — чистая трата. Проверка —
+     * по исходнику наблюдателя, а не по числу чтений: связывание импортов
+     * `node:fs` происходит один раз при загрузке модуля, и подменить
+     * `readFileSync` для уже загруженного модуля нечем.
+     */
+    it('отпечаток считается дешёвой половиной состава, без чтения исходников виджетов', () => {
+      const text = readFileSync(fileURLToPath(new URL('../../src/ui/watcher.ts', import.meta.url)), 'utf8');
+      assert.match(text, /projectWidgetVersions\(/);
+      assert.doesNotMatch(
+        text,
+        /buildProjectWidgets\(/,
+        'отпечаток обязан считаться projectWidgetVersions: buildProjectWidgets вдобавок читает исходник каждого виджета ради признака устаревания',
+      );
+    });
+
     it('правка очереди улучшений не пересобирает состав виджетов', () => {
       const { runsRoot, projectRoot } = makeJournalBed();
       seedRun(runsRoot, projectRoot, { runId: 'a' });
@@ -498,6 +520,108 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
       watcher.poll();
 
       assert.equal(watcher.currentWidgets(), before, 'состав виджетов не должен пересобираться от правки очереди');
+      watcher.dispose();
+    });
+  });
+
+  describe('часть proposals', () => {
+    function recordsOf(overview: ProposalsOverview, projectKeyValue: string): readonly { readonly id: string }[] {
+      return overview.projects.find((project) => project.projectKey === projectKeyValue)?.records ?? [];
+    }
+
+    it('появление записи очереди предложений меняет состав и будит подписчика', () => {
+      const { runsRoot, projectRoot } = makeJournalBed();
+      seedRun(runsRoot, projectRoot, { runId: 'a' });
+      const key = projectKey(projectRoot);
+
+      const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+      assert.deepEqual(recordsOf(watcher.currentProposals(), key), []);
+      let calls = 0;
+      watcher.subscribe(() => (calls += 1));
+
+      proposeEntry(projectRoot, { target: '.stepcast/widgets/clock.tsx', content: 'export default 1;\n' });
+      watcher.poll();
+
+      assert.equal(calls, 1, 'новая запись обязана разбудить подписчика');
+      assert.equal(recordsOf(watcher.currentProposals(), key).length, 1);
+      watcher.dispose();
+    });
+
+    it('такт без изменений в каталоге очереди предложений не порождает события', () => {
+      const { runsRoot, projectRoot } = makeJournalBed();
+      seedRun(runsRoot, projectRoot, { runId: 'a' });
+      proposeEntry(projectRoot, { target: '.stepcast/widgets/clock.tsx', content: 'export default 1;\n' });
+
+      const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+      const before = watcher.currentProposals();
+      let calls = 0;
+      watcher.subscribe(() => (calls += 1));
+
+      watcher.poll();
+
+      assert.equal(calls, 0, 'такт без изменений не должен будить подписчика');
+      assert.equal(watcher.currentProposals(), before);
+      watcher.dispose();
+    });
+
+    it('такт по каталогу очереди не пишет ни одного файла проекта', () => {
+      const { runsRoot, projectRoot } = makeJournalBed();
+      seedRun(runsRoot, projectRoot, { runId: 'a' });
+      proposeEntry(projectRoot, { target: '.stepcast/widgets/clock.tsx', content: 'export default 1;\n' });
+
+      const before = readProposalsDir(projectRoot);
+      const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+      watcher.poll();
+      const after = readProposalsDir(projectRoot);
+
+      assert.deepEqual(after.records, before.records);
+      assert.equal(existsSync(join(projectRoot, '.stepcast', 'widgets', 'clock.tsx')), false);
+      watcher.dispose();
+    });
+
+    it('негодная запись переживает такт наблюдения', () => {
+      const { runsRoot, projectRoot } = makeJournalBed();
+      seedRun(runsRoot, projectRoot, { runId: 'a' });
+      const dir = proposalsDirPath(projectRoot);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'broken.json'), '{not json');
+
+      const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+      watcher.poll();
+
+      const key = projectKey(projectRoot);
+      const invalid = watcher.currentProposals().projects.find((project) => project.projectKey === key)?.invalid ?? [];
+      assert.equal(invalid.length, 1);
+      assert.ok(existsSync(join(dir, 'broken.json')));
+      watcher.dispose();
+    });
+
+    it('такт, на котором сдвинулся только идущий прогон, оставляет тот же объект очереди предложений', () => {
+      const { runsRoot, projectRoot } = makeJournalBed();
+      const journal = seedRun(runsRoot, projectRoot, { runId: 'a', status: 'running' });
+      proposeEntry(projectRoot, { target: '.stepcast/widgets/clock.tsx', content: 'export default 1;\n' });
+
+      const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
+      const before = watcher.currentProposals();
+
+      journal.writeStatus({
+        run_id: journal.paths.runId,
+        pipeline: 'demo',
+        lock_hash: 'abc',
+        status: 'success',
+        workspace: { mode: 'cwd' },
+        inputs: {},
+        jobs: [],
+        budget: { tokens_used: 0, wallclock_ms: 0 },
+        updated_at: '2026-08-01T01:00:00.000Z',
+      });
+      watcher.poll();
+
+      assert.equal(
+        watcher.currentProposals(),
+        before,
+        'очередь предложений не должна пересобираться, когда сдвинулся только прогон',
+      );
       watcher.dispose();
     });
   });

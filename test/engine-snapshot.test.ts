@@ -265,6 +265,21 @@ describe('run-engine-snapshot: встроенный слой переиспол�
       'встроенный образец обязан попасть в снимок вместе с остальным src/builtin',
     );
   });
+
+  // widget-migration, design.md Решение 11: `src/builtin/pipelines/` — четвёртый
+  // встроенный слой рядом со `scripts/`, `steps/` и `routes.yml`, и та же
+  // запись `files` пакета несёт его тем же фактом, без отдельного объявления.
+  it('снимок настоящего пакета несёт src/builtin/pipelines/migrate-widgets.yml', () => {
+    const engine = locateEngine();
+    const snapshotDir = join(tempDir('stepcast-run-'), 'engine');
+
+    pinEngine({ engine, snapshotDir });
+
+    assert.ok(
+      existsSync(join(snapshotDir, 'src', 'builtin', 'pipelines', 'migrate-widgets.yml')),
+      'пайплайн поставки обязан попасть в снимок вместе с остальным src/builtin',
+    );
+  });
 });
 
 /**

@@ -34,6 +34,7 @@ import { createWatcher, type Watcher } from '../src/ui/watcher.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { projectKey, runPaths, shortRunId, stepDir, usageStorePath } from '../src/core/journal/paths.js';
 import { MAX_FILE_BYTES } from '../src/ui/file.js';
+import { proposeEntry } from '../src/core/proposals/store.js';
 import { runGcCommand } from '../src/cli/commands/gc.js';
 import type { ParsedArgs } from '../src/cli/args.js';
 import {
@@ -510,11 +511,12 @@ describe('ui-dashboard: HTTP-витрина', () => {
     const stream = openStream(t, server, '/api/events');
     await settle();
 
-    // Каждый кадр несёт обзор, очередь, состав виджетов, таблицу маршрутов,
-    // состав плагинов и состав экранов — тем же потоком, той же подпиской.
+    // Каждый кадр несёт обзор, очередь улучшений, состав виджетов, очередь
+    // предложений, таблицу маршрутов, состав дашбордов, состав плагинов и
+    // состав экранов — тем же потоком, той же подпиской.
     assert.deepEqual(
       stream.events.map((event) => event.event),
-      ['overview', 'backlog', 'widgets', 'routes', 'dashboards', 'plugins', 'screens'],
+      ['overview', 'backlog', 'widgets', 'proposals', 'routes', 'dashboards', 'plugins', 'screens'],
     );
     assert.deepEqual(pick(stream.events[0]?.data, 'projects'), []);
 
@@ -544,9 +546,32 @@ describe('ui-dashboard: HTTP-витрина', () => {
     // пропажа события не осталась незамеченной.
     assert.deepEqual(
       stream.events.map((item) => item.event),
-      ['overview', 'backlog', 'widgets', 'routes', 'dashboards', 'run', 'plugins', 'screens'],
+      ['overview', 'backlog', 'widgets', 'proposals', 'routes', 'dashboards', 'run', 'plugins', 'screens'],
     );
-    assert.equal(pick(stream.events[5]?.data, 'runId'), 'a');
+    assert.equal(pick(stream.events[6]?.data, 'runId'), 'a');
+  });
+
+  /**
+   * Поток несёт состав очереди и служит сигналом перечитать
+   * `GET /api/proposals` (`ui-proposals`, Решение 15): содержимое записи — до
+   * 256 КиБ на запись — в событие не идёт, иначе каждая вкладка получала бы
+   * его дважды, вторым разом по собственному запросу маршрута.
+   */
+  it('событие proposals несёт состав очереди без содержимого записей', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    proposeEntry(projectRoot, { target: '.stepcast/widgets/clock.tsx', content: 'export default 1;\n' });
+    const server = await startServer(t, { runsRoot });
+
+    const stream = openStream(t, server, '/api/events');
+    await settle();
+
+    const event = stream.events.find((item) => item.event === 'proposals');
+    assert.ok(event !== undefined, 'поток обязан нести состав очереди');
+    const record = pick(event.data, 'projects', 0, 'records', 0) as Json;
+    assert.equal(record.target, '.stepcast/widgets/clock.tsx');
+    assert.equal(record.state, 'pending');
+    assert.ok(!('content' in record), 'содержимое записи в поток не идёт');
   });
 
   // Сценарий: «Закрытая вкладка не роняет демон»
@@ -624,7 +649,7 @@ describe('ui-dashboard: маршрут и поток очереди', () => {
 
     assert.deepEqual(
       stream.events.map((event) => event.event),
-      ['overview', 'backlog', 'widgets', 'routes', 'dashboards', 'plugins', 'screens'],
+      ['overview', 'backlog', 'widgets', 'proposals', 'routes', 'dashboards', 'plugins', 'screens'],
     );
     assert.deepEqual(pick(stream.events[1]?.data, 'projects'), []);
 
@@ -3668,7 +3693,7 @@ describe('ui-dashboard: событие widgets в потоке /api/events', () 
     await settle();
     assert.deepEqual(
       stream.events.map((event) => event.event),
-      ['overview', 'backlog', 'widgets', 'routes', 'dashboards', 'plugins', 'screens'],
+      ['overview', 'backlog', 'widgets', 'proposals', 'routes', 'dashboards', 'plugins', 'screens'],
     );
     assert.deepEqual(pick(stream.events[2]?.data, 'projects'), [{ projectKey: projectKey(projectRoot), widgets: [] }]);
 
@@ -4445,6 +4470,42 @@ describe('ui-daemon: POST /api/run', () => {
       method: 'POST',
       path: '/api/run',
       body: JSON.stringify({ project: key, pipeline: 'stepcast.yml', bogus: 1 }),
+    });
+    assert.equal(written.code, 400);
+    assert.equal(calls.length, 0);
+  });
+
+  it('запускает пайплайн поставки stepcast:migrate-widgets наравне с файлом проекта', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'seed' });
+    const key = projectKey(projectRoot);
+    const { launchRun, calls } = stubLaunch();
+    const server = await createUiServer({ runsRoot, port: 0, launchRun });
+    t.after(() => server.close());
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/run',
+      body: JSON.stringify({ project: key, pipeline: 'stepcast:migrate-widgets' }),
+    });
+    assert.equal(written.code, 202);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]?.cwd, projectRoot);
+    assert.equal(calls[0]?.pipeline, 'stepcast:migrate-widgets');
+  });
+
+  it('неизвестное имя пайплайна поставки отклонено без единого пуска', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'seed' });
+    const key = projectKey(projectRoot);
+    const { launchRun, calls } = stubLaunch();
+    const server = await createUiServer({ runsRoot, port: 0, launchRun });
+    t.after(() => server.close());
+
+    const written = await sendJson(server, {
+      method: 'POST',
+      path: '/api/run',
+      body: JSON.stringify({ project: key, pipeline: 'stepcast:no-such-thing' }),
     });
     assert.equal(written.code, 400);
     assert.equal(calls.length, 0);

@@ -1,0 +1,19 @@
+version: 1
+kind: job
+name: survey
+description: Снять состав виджетов проекта, их голые импорты и версию таблицы общих модулей
+
+output:
+  from: overview
+  schema: ../schemas/survey.json
+
+steps:
+  - id: overview
+    # `node`, а не голый `"$STEPCAST_BIN"`: у снимка/свежей сборки движка
+    # исполняемый бит не гарантирован (npm выставляет его при установке,
+    # а не `tsc`), и тем же приёмом уже вызывает движок себя в
+    # `test/run.test.ts` (`STEPCAST_BIN` — точка входа движка).
+    run: 'node "$STEPCAST_BIN" widgets --json'
+    output_schema: ../schemas/survey.json
+    expect:
+      - exit_code: 0

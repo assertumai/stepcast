@@ -65,3 +65,8 @@ routes:
     path: /decisions
     target: { screen: screen-decisions }
     nav: { order: 10 }
+
+  - id: screen-proposals
+    path: /proposals
+    target: { screen: screen-proposals }
+    nav: { order: 11 }

@@ -1,6 +1,6 @@
 import { createElement, type ComponentType, type ReactElement } from 'react';
 
-import type { BacklogOverview, Overview, RunSnapshot, WidgetsOverview } from './api';
+import type { BacklogOverview, Overview, ProposalsStreamEvent, RunSnapshot, WidgetsOverview } from './api';
 import type { RouteDefinition, RouteTarget } from '../../src/ui/routes.ts';
 // Дополнение типов контекста: `declare module 'cordis'` в `services/screens.ts`,
 // `services/routes.ts` и `services/live.ts` типизирует `ctx.screens`,
@@ -69,6 +69,7 @@ export interface LiveDataProps {
   readonly backlog: BacklogOverview | undefined;
   readonly widgets: WidgetsOverview | undefined;
   readonly snapshot: RunSnapshot | undefined;
+  readonly proposals: ProposalsStreamEvent | undefined;
 }
 
 /**
@@ -89,6 +90,7 @@ export const SCREEN = slot<
     readonly backlog: BacklogOverview | undefined;
     readonly widgets: WidgetsOverview | undefined;
     readonly snapshot: RunSnapshot | undefined;
+    readonly proposals: ProposalsStreamEvent | undefined;
   },
   'keyed'
 >('screen', 'keyed');

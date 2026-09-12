@@ -5,6 +5,7 @@ import { sendJson } from '../http.js';
 import { snapshotOrRecord, parseRunAddress } from '../runAddress.js';
 import type { BacklogOverview } from '../backlog.js';
 import type { WidgetsOverview } from '../widgets.js';
+import { proposalsStreamPayload, type ProposalsOverview } from '../proposals.js';
 import { ApiService, ScreensService, screenRow, type ApiHandler, type RequestEnv } from './registry.js';
 
 import { row as agentsRow } from './agents/server.js';
@@ -12,6 +13,7 @@ import { row as backlogRow } from './backlog/server.js';
 import { row as cleanupRow } from './cleanup/server.js';
 import { row as decisionsRow } from './decisions/server.js';
 import { row as pipelinesRow } from './pipelines/server.js';
+import { row as proposalsRow } from './proposals/server.js';
 import { row as routesRow } from './routes/server.js';
 import { row as runRow } from './run/server.js';
 import { row as runsRow } from './runs/server.js';
@@ -57,6 +59,7 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, env: RequestEnv
   // слать её заново незачем.
   let sent: BacklogOverview | undefined;
   let sentWidgets: WidgetsOverview | undefined;
+  let sentProposals: ProposalsOverview | undefined;
   // Состав плагинов сравнивается не по ссылке, как соседи выше, а по
   // содержимому: он собирается на каждый такт заново (пересечение взгляда
   // наблюдателя с действующим составом демона, `activePlugins` в
@@ -134,6 +137,17 @@ function handleEvents(req: IncomingMessage, res: ServerResponse, env: RequestEnv
     if (widgets !== sentWidgets) {
       sentWidgets = widgets;
       send('widgets', widgets);
+    }
+    // Состав очереди предложений — тем же правилом, что `widgets`: только при
+    // отличии от отправленного прежде (`ui-proposals`, «Состав очереди идёт
+    // потоком событий»).
+    // Содержимое записей в поток не идёт (`ui-proposals`, Решение 15): поток
+    // несёт только состав очереди и служит сигналом перечитать
+    // `GET /api/proposals`, где содержимое и лежит.
+    const proposals = env.watcher.currentProposals();
+    if (proposals !== sentProposals) {
+      sentProposals = proposals;
+      send('proposals', proposalsStreamPayload(proposals));
     }
     // Таблица маршрутов — синхронно из наблюдателя (`ui-routes`, Решение 10):
     // ему не нужно ядро демона, поэтому, в отличие от `screens`/`plugins`,
@@ -238,6 +252,7 @@ export const SCREEN_ROWS: readonly BuiltinRow[] = [
   agentsRow,
   settingsRow,
   routesRow,
+  proposalsRow,
 ];
 
 /**

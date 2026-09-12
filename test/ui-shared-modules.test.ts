@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { get } from 'node:http';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -7,8 +8,10 @@ import { describe, it, type TestContext } from 'node:test';
 
 import {
   SHARED_MODULES,
+  SHARED_MODULE_CHANGE_NOTES,
   SHARED_MODULE_IMPORT_MAP,
   SHARED_MODULE_LIST,
+  SHARED_MODULE_TABLE_VERSION,
   WIDGET_RUNTIME_GLOBAL,
   checkedRouteSegment,
   sharedModuleText,
@@ -266,6 +269,48 @@ describe('ui-shared-modules: перечень внешних имён сборк
     const code = (outcome as { readonly kind: 'ok'; readonly code: string }).code;
     for (const entry of SHARED_MODULE_LIST) {
       assert.match(code, new RegExp(`from "${entry.specifier.replace('/', '\\/')}"`), entry.specifier);
+    }
+  });
+});
+
+function namesFingerprint(): string {
+  return createHash('sha256')
+    .update(
+      SHARED_MODULE_LIST.flatMap((entry) => entry.names.map((name) => `${entry.specifier}:${name}`))
+        .sort()
+        .join(','),
+    )
+    .digest('hex');
+}
+
+describe('ui-shared-modules: версия таблицы сведена с перечнем имён', () => {
+  // Отпечаток — литерал, посчитанный один раз от действующего на момент
+  // введения версии 1 перечня, а не выведенный из живой таблицы (widget-migration,
+  // Решение 10): выведенное значение согласилось бы само с собой при любой
+  // правке и не покрасило бы сборку никогда. Новая версия добавляет сюда
+  // новую запись со свежепосчитанным отпечатком, а не переписывает эту.
+  const EXPECTED_FINGERPRINT_BY_VERSION: Readonly<Record<number, string>> = {
+    1: '8faab4f53188792a8c9e7dd1ad86da3304085aaa655f3e4059beae28367aa42e',
+  };
+
+  it('перечень имён при действующей версии совпадает с зафиксированным отпечатком', () => {
+    const expected = EXPECTED_FINGERPRINT_BY_VERSION[SHARED_MODULE_TABLE_VERSION];
+    assert.ok(
+      expected !== undefined,
+      `версия ${SHARED_MODULE_TABLE_VERSION} не имеет зафиксированного отпечатка в этом тесте — добавьте запись`,
+    );
+    assert.equal(
+      namesFingerprint(),
+      expected,
+      'перечень имён разошёлся с зафиксированным для этой версии: поднимите SHARED_MODULE_TABLE_VERSION, ' +
+        'заведите запись в SHARED_MODULE_CHANGE_NOTES для ушедшего имени и добавьте новый отпечаток в этот тест',
+    );
+  });
+
+  it('каждая запись о смене несёт непустой текст для агента миграции', () => {
+    for (const note of SHARED_MODULE_CHANGE_NOTES) {
+      assert.ok(note.name.length > 0);
+      assert.ok(note.text.length > 0, `запись о смене «${note.name}» без текста`);
     }
   });
 });
