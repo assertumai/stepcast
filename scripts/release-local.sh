@@ -32,6 +32,11 @@ echo "==> Собираю независимый релиз $VERSION"
 mkdir -p "$RELEASE_DIR"
 cp -R dist "$RELEASE_DIR/dist"
 cp -R schema "$RELEASE_DIR/schema"
+# Файлы поставки (routes.yml, встроенные шаги и пайплайны) рантайм ищет
+# по пути <корень пакета>/src/builtin — они не проходят через tsc, поэтому
+# копируются как есть, ровно как их объявляет package.json "files".
+mkdir -p "$RELEASE_DIR/src"
+cp -R src/builtin "$RELEASE_DIR/src/builtin"
 cp package.json "$RELEASE_DIR/package.json"
 cp package-lock.json "$RELEASE_DIR/package-lock.json"
 

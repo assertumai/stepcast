@@ -470,6 +470,46 @@ describe('run-journal: раскладка и состояние', () => {
     assert.equal(findProjectRoot(nested), findProjectRoot(projectRoot));
   });
 
+  it('корень линкованного worktree — основной репозиторий, а не сам worktree', () => {
+    const { projectRoot } = bed();
+    writeFileSync(join(projectRoot, 'README.md'), 'проект\n');
+    gitInit({ root: projectRoot } as Project);
+
+    const worktreePath = join(projectRoot, '..', 'lane-a');
+    execFileSync('git', ['-C', projectRoot, 'worktree', 'add', worktreePath, '-b', 'lane-a'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    assert.equal(findProjectRoot(worktreePath), findProjectRoot(projectRoot));
+  });
+
+  it('явный маркер `.stepcast/config.yml` не перебивает разбор `.git` внутри worktree', () => {
+    const { projectRoot } = bed();
+    mkdirSync(join(projectRoot, '.stepcast'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'config.yml'), 'version: 1\nkind: config\n');
+    gitInit({ root: projectRoot } as Project);
+
+    const worktreePath = join(projectRoot, '..', 'lane-b');
+    execFileSync('git', ['-C', projectRoot, 'worktree', 'add', worktreePath, '-b', 'lane-b'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    // Файл маркера отслежен и потому вычитан в worktree тоже — но это не
+    // должно завести отдельный проект: разбор `.git`-файла обязан сработать
+    // раньше проверки маркера.
+    assert.equal(findProjectRoot(worktreePath), findProjectRoot(projectRoot));
+  });
+
+  it('явный маркер `.stepcast/config.yml` заводит корень проекта без git', () => {
+    const { projectRoot } = bed();
+    const nested = join(projectRoot, 'src', 'deep');
+    mkdirSync(nested, { recursive: true });
+    mkdirSync(join(projectRoot, '.stepcast'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'config.yml'), 'version: 1\nkind: config\n');
+
+    assert.equal(findProjectRoot(nested), findProjectRoot(projectRoot));
+  });
+
   // Сценарий: «Минимум переживает уборку»
   it('уборка сохраняет run.json, status.json и usage.json', () => {
     const { runsRoot, projectRoot } = bed();

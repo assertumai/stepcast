@@ -93,8 +93,11 @@ export interface WidgetsProps {
 export function Widgets({ overview, widgets }: WidgetsProps): JSX.Element {
   if (widgets === undefined) return <p className="empty">Загрузка…</p>;
 
-  const total = widgets.projects.reduce((sum, project) => sum + project.widgets.length, 0);
-  if (total === 0) {
+  // Проект без единого виджета — законное состояние (`docs/widgets.md`,
+  // «Файл и каталог»), а не пустая секция на экране: перечисляются проекты,
+  // которым есть что показать, и заголовок без содержимого не занимает место.
+  const projects = widgets.projects.filter((project) => project.widgets.length > 0);
+  if (projects.length === 0) {
     return (
       <>
         <h1>Виджеты</h1>
@@ -109,28 +112,24 @@ export function Widgets({ overview, widgets }: WidgetsProps): JSX.Element {
   return (
     <>
       <h1>Виджеты</h1>
-      {widgets.projects.map((project) => (
+      {projects.map((project) => (
         <section className="card" key={project.projectKey}>
           <div className="card-head">
             <h2 className="card-title">{projectLabel(overview, project.projectKey)}</h2>
           </div>
-          {project.widgets.length === 0 ? (
-            <p className="empty">Виджетов нет</p>
-          ) : (
-            project.widgets.map((widget) => (
-              <div className="widget-frame" key={widget.id}>
-                <div className="dim mono widget-frame-title">{widget.id}</div>
-                {widget.deprecated === undefined ? null : (
-                  <p className="notice widget-deprecated">
-                    устарел: {widget.deprecated.kind === 'specifier' ? 'спецификатор' : 'имя'} «
-                    {widget.deprecated.name}» действующая таблица общих модулей больше не несёт
-                    {widget.deprecated.noteText === undefined ? '' : ` — ${widget.deprecated.noteText}`}
-                  </p>
-                )}
-                <WidgetHost projectKey={project.projectKey} id={widget.id} version={widget.version} />
-              </div>
-            ))
-          )}
+          {project.widgets.map((widget) => (
+            <div className="widget-frame" key={widget.id}>
+              <div className="dim mono widget-frame-title">{widget.id}</div>
+              {widget.deprecated === undefined ? null : (
+                <p className="notice widget-deprecated">
+                  устарел: {widget.deprecated.kind === 'specifier' ? 'спецификатор' : 'имя'} «
+                  {widget.deprecated.name}» действующая таблица общих модулей больше не несёт
+                  {widget.deprecated.noteText === undefined ? '' : ` — ${widget.deprecated.noteText}`}
+                </p>
+              )}
+              <WidgetHost projectKey={project.projectKey} id={widget.id} version={widget.version} />
+            </div>
+          ))}
           {project.widgets.some((widget) => widget.deprecated !== undefined) ? (
             <MigrateAction projectKey={project.projectKey} />
           ) : null}

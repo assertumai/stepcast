@@ -54,6 +54,32 @@ describe('ui-widgets: причина устаревания и действие 
     assert.doesNotMatch(html, />мигрировать</);
   });
 
+  it('проект без виджетов на экране не показывается вовсе', () => {
+    const overview: WidgetsOverview = {
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      projects: [
+        { projectKey: 'empty', widgets: [] },
+        { projectKey: 'proj', widgets: [{ id: 'clock', version: '1:1' }] },
+      ],
+    };
+    const html = renderToStaticMarkup(<Widgets overview={undefined} widgets={overview} />);
+    assert.match(html, /proj/);
+    assert.doesNotMatch(html, /empty/);
+    assert.doesNotMatch(html, /Виджетов нет/);
+  });
+
+  it('ни одного виджета ни у одного проекта — одно объяснение, а не пустые секции', () => {
+    const overview: WidgetsOverview = {
+      generatedAt: '2026-01-01T00:00:00.000Z',
+      projects: [
+        { projectKey: 'a', widgets: [] },
+        { projectKey: 'b', widgets: [] },
+      ],
+    };
+    const html = renderToStaticMarkup(<Widgets overview={undefined} widgets={overview} />);
+    assert.match(html, /Виджетов нет ни у одного проекта/);
+  });
+
   it('загрузка — сообщение, а не отказ', () => {
     const html = renderToStaticMarkup(<Widgets overview={undefined} widgets={undefined} />);
     assert.match(html, /Загрузка/);
