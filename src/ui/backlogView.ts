@@ -11,7 +11,7 @@ import { withCurrentOption, type FilterOption } from './filters.js';
  * формата выпал бы из меню фильтра и из подсчёта молча — пункты с ним остались
  * бы видны в умолчании, а фильтр работал бы наполовину вместо внятного отказа.
  */
-export const BACKLOG_STATUSES = ['pending', 'in_progress', 'done', 'failed'] as const;
+export const BACKLOG_STATUSES = ['todo', 'in_progress', 'done', 'failed'] as const;
 
 /**
  * Отбор, нумерация и порядок списка очереди улучшений на экране «Бэклог».

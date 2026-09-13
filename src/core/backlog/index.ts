@@ -1,6 +1,7 @@
 export { parse, effectiveGroup, toRecord, type BacklogEntry, type BacklogFieldPosition } from './parse.js';
 export { isFree, selectItems, DEFAULT_STALE_HOURS } from './select.js';
-export { withFields } from './write.js';
+export { withFields, withoutFields } from './write.js';
+export { moveWithin, moveBetween, withStatus, type MoveBetweenResult } from './move.js';
 export {
   readBacklogFile,
   parseBacklogFile,
@@ -20,6 +21,7 @@ export {
   BacklogRecordSchema,
   BacklogSlotsResponseSchema,
   type BacklogItem,
+  type BacklogStatus,
   type BacklogRecord,
   type BacklogRepoBlock,
   type BacklogSlotsResponse,

@@ -18,6 +18,14 @@ export interface LaunchRunOptions {
   readonly cwd: string;
   /** Файл пайплайна относительно `cwd`, тем же именем, что видит `PipelineView.file`. */
   readonly pipeline: string;
+  /**
+   * Значения объявленных входов пайплайна — доезжают ключами `--input имя=значение`,
+   * тем же порядком, каким их набрал бы человек в терминале.
+   *
+   * Ради доски: пункт, выбранный в колонке, передаётся запускаемому пайплайну
+   * входом (`item=<слаг>`), а не угадывается им заново из очереди.
+   */
+  readonly inputs?: Readonly<Record<string, string>>;
   readonly execPath?: string;
   /** Куда сказать об отказе самого порождения. По умолчанию — журнал демона (`stderr`). */
   readonly onError?: (error: Error) => void;
@@ -32,7 +40,10 @@ export type LaunchRunFn = (options: LaunchRunOptions) => void;
  * ни его собственный.
  */
 export const launchRun: LaunchRunFn = (options) => {
-  const child = spawn(options.execPath ?? process.execPath, [binPath(), 'run', options.pipeline], {
+  const argv = [binPath(), 'run', options.pipeline];
+  for (const [name, value] of Object.entries(options.inputs ?? {})) argv.push('--input', `${name}=${value}`);
+
+  const child = spawn(options.execPath ?? process.execPath, argv, {
     cwd: options.cwd,
     detached: true,
     stdio: 'ignore',

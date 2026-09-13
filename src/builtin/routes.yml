@@ -35,38 +35,43 @@ routes:
     target: { screen: screen-backlog }
     nav: { order: 4 }
 
+  - id: screen-scrum
+    path: /scrum
+    target: { screen: screen-scrum }
+    nav: { order: 5 }
+
   - id: screen-usage
     path: /usage/:period?
     target: { screen: screen-usage }
     values: { period: [7d, 30d, 90d, all] }
-    nav: { order: 5 }
+    nav: { order: 6 }
 
   - id: screen-cleanup
     path: /cleanup
     target: { screen: screen-cleanup }
-    nav: { order: 6 }
+    nav: { order: 7 }
 
   - id: screen-agents
     path: /agents
     target: { screen: screen-agents }
-    nav: { order: 7 }
+    nav: { order: 8 }
 
   - id: screen-settings
     path: /settings
     target: { screen: screen-settings }
-    nav: { order: 8 }
+    nav: { order: 9 }
 
   - id: screen-routes
     path: /routes
     target: { screen: screen-routes }
-    nav: { order: 9 }
+    nav: { order: 10 }
 
   - id: screen-decisions
     path: /decisions
     target: { screen: screen-decisions }
-    nav: { order: 10 }
+    nav: { order: 11 }
 
   - id: screen-proposals
     path: /proposals
     target: { screen: screen-proposals }
-    nav: { order: 11 }
+    nav: { order: 12 }

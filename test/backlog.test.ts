@@ -21,7 +21,7 @@ function item(slug: string, fields: Readonly<Record<string, string>>): string {
   return `## ${slug}\n\n${body}\n`;
 }
 
-const COMPLETE = { status: 'pending', title: 'т', why: 'з', done_when: 'к' } as const;
+const COMPLETE = { status: 'todo', title: 'т', why: 'з', done_when: 'к' } as const;
 
 function backlogText(...items: readonly string[]): string {
   return `# Очередь\n\nПреамбула: не разбирается.\n\n| ключ | значение |\n|---|---|\n\n${items.join('\n')}`;
@@ -76,7 +76,7 @@ describe('backlog: разбор', () => {
       '```markdown',
       '## example-item',
       '',
-      'status: pending',
+      'status: todo',
       '```',
       '',
       item('real-item', COMPLETE),
@@ -92,13 +92,13 @@ describe('backlog: разбор', () => {
       assert.ok(error instanceof StepcastError);
       assert.match(error.message, /broken-item/);
       assert.match(error.message, /постановлено/);
-      assert.match(error.message, /pending/);
+      assert.match(error.message, /todo/);
       return true;
     });
   });
 
   it('отказывает при отсутствии обязательного поля, называя его имя', () => {
-    const text = backlogText(item('broken-item', { status: 'pending', title: 'т', why: 'з' }));
+    const text = backlogText(item('broken-item', { status: 'todo', title: 'т', why: 'з' }));
 
     assert.throws(() => parse(text), (error: unknown) => {
       assert.ok(error instanceof StepcastError);
@@ -348,8 +348,12 @@ describe('backlog: свобода пункта', () => {
     return isFree(entryOf(entries, 'some-item'), NOW, STALE_MS);
   }
 
-  it('pending свободен', () => {
-    assert.equal(freeOf('pending'), true);
+  it('backlog свободен', () => {
+    assert.equal(freeOf('todo'), true);
+  });
+
+  it('todo свободен', () => {
+    assert.equal(freeOf('todo'), true);
   });
 
   it('свежий in_progress занят', () => {
@@ -521,6 +525,28 @@ describe('backlog: правка полей', () => {
       assert.match(error.message, /missing-item/);
       return true;
     });
+  });
+});
+
+describe('backlog: очерёдность состояний при отборе', () => {
+  const NOW = Date.parse('2026-08-23T12:00:00.000Z');
+  const STALE_MS = 6 * 3600_000;
+
+  function select(text: string, slots: number): readonly string[] {
+    return selectItems(parse(text), slots, NOW, STALE_MS).map((entry) => entry.slug);
+  }
+
+  it('берёт верхний todo: порядок файла — единственный приоритет открытых пунктов', () => {
+    const text = backlogText(item('first-todo', COMPLETE), item('second-todo', COMPLETE));
+    assert.deepEqual(select(text, 2), ['first-todo', 'second-todo']);
+  });
+
+  it('зависший in_progress возвращается в работу раньше todo: начатое не вытесняется новым', () => {
+    const text = backlogText(
+      item('fresh-todo', COMPLETE),
+      item('stale-run', { ...COMPLETE, status: 'in_progress', started_at: '2026-08-23T05:00:00.000Z' }),
+    );
+    assert.deepEqual(select(text, 1), ['stale-run']);
   });
 });
 

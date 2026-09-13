@@ -341,6 +341,8 @@ export interface PipelineView {
   readonly concurrency?: number;
   readonly failFast?: boolean;
   readonly jobs: readonly PipelineJobView[];
+  /** Имена объявленных входов пайплайна: доска предлагает к запуску только те, кому слаг пункта есть куда передать. */
+  readonly inputs: readonly string[];
   readonly graph?: JobGraph;
   /** Файл не разбирается: текст, место и подсказка — тем же составом, что печатает CLI. */
   readonly error?: string;
@@ -509,12 +511,21 @@ export interface WidgetCompileFailure {
 }
 
 /** Файл, из которого пришёл пункт очереди — открытые либо решённые (`docs/backlog.md`). */
-export type BacklogSourceFile = 'backlog.md' | 'resolved.md';
+export type BacklogSourceFile = 'backlog.md' | 'archived.md';
+
+/** Состояния пункта очереди — сверено с `BACKLOG_STATUSES` (`src/core/backlog/schema.ts`). */
+export type BacklogStatus = 'todo' | 'in_progress' | 'done' | 'failed';
+
+/**
+ * Колонка доски: три состояния формата плюс `archive` — не состояние, а файл
+ * `archived.md` (`docs/backlog.md`).
+ */
+export type ScrumColumn = 'todo' | 'in_progress' | 'done' | 'archive';
 
 /** Сверено построчно с `src/ui/backlog.ts`. */
 export interface BacklogItemView {
   readonly slug: string;
-  readonly status: 'pending' | 'in_progress' | 'done' | 'failed';
+  readonly status: BacklogStatus;
   readonly title: string;
   /** Абзацы текста — раскрываются по требованию, а не занимают строку списка. */
   readonly why: string;
@@ -542,7 +553,7 @@ export interface BacklogFailure {
 export interface BacklogProjectView {
   readonly projectKey: string;
   readonly projectPath: string;
-  /** Пункты обоих файлов одним списком: сперва `backlog.md`, затем `resolved.md`. */
+  /** Пункты обоих файлов одним списком: сперва `backlog.md`, затем `archived.md`. */
   readonly items: readonly BacklogItemView[];
   /** Отказ разбора — по одному на не разобравшийся файл; пустой список — оба разобрались (или отсутствуют). */
   readonly failures: readonly BacklogFailure[];
@@ -821,9 +832,63 @@ export async function fetchRun(address: string): Promise<RunSnapshot> {
 export async function launchRun(payload: {
   readonly project: string;
   readonly pipeline: string;
+  /** Значения объявленных входов пайплайна: доска шлёт сюда `item` — слаг пункта. */
+  readonly inputs?: Readonly<Record<string, string>>;
 }): Promise<{ readonly ok: true }> {
   return json(
     await fetch('/api/run', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
+/**
+ * Перенести пункт очереди в колонку доски и на место перед `before` (без него
+ * — в конец колонки). Правит `backlog.md`/`archived.md` на диске и отвечает
+ * синхронно: отказ доезжает до карточки, а не теряется.
+ *
+ * Колонки `in_progress` маршрут не принимает нарочно: в работу пункт переводит
+ * запуск пайплайна (`backlog pick`), который проставляет и статус, и
+ * `started_at` одним вызовом.
+ */
+export async function moveBacklogItem(payload: {
+  readonly project: string;
+  readonly slug: string;
+  readonly column: ScrumColumn;
+  readonly before?: string;
+}): Promise<{ readonly ok: true }> {
+  return json(
+    await fetch('/api/backlog/move', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
+/**
+ * Правка полей пункта очереди — то, что сохраняет панель деталей доски.
+ *
+ * Пустая строка у необязательного поля (`group`, `track`, `repos`) убирает
+ * само поле; у обязательного — отказ. Статус здесь не правится: его задаёт
+ * колонка доски.
+ */
+export async function editBacklogItem(payload: {
+  readonly project: string;
+  readonly slug: string;
+  readonly fields: {
+    readonly title?: string;
+    readonly why?: string;
+    readonly done_when?: string;
+    readonly group?: string;
+    readonly track?: string;
+    readonly repos?: string;
+  };
+}): Promise<{ readonly ok: true }> {
+  return json(
+    await fetch('/api/backlog/item', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),

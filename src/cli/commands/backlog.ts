@@ -3,6 +3,7 @@ import { basename, join, relative, resolve as resolvePath } from 'node:path';
 
 import {
   DEFAULT_STALE_HOURS,
+  isFree,
   finishItem,
   parseBacklogFile,
   readBacklogFile,
@@ -131,6 +132,23 @@ function runPick(
   const text = readBacklogFile(file);
   const entries = parseBacklogFile(file, text);
 
+  // Названный пункт проверяется до отбора: «пункта нет» и «пункт занят» —
+  // разные беды, и обе обязаны прозвучать словами. Молчаливая пустая выдача
+  // на опечатку в слаге выглядела бы как «свободных пунктов нет».
+  const only = stringFlag(args.flags, 'only');
+  if (only !== undefined) {
+    const named = entries.find((entry) => entry.slug === only);
+    if (named === undefined) {
+      throw new StepcastError(`пункт «${only}» в очереди не найден`, { file, at: only });
+    }
+    if (!isFree(named, nowMs, staleMs)) {
+      throw new StepcastError(
+        `пункт «${only}» не свободен: status ${named.data.status}`,
+        { file, at: only, hint: 'свободны todo и зависший in_progress' },
+      );
+    }
+  }
+
   const lanesOption = stringFlag(args.flags, 'lanes');
   if (lanesOption !== undefined) {
     // Формы выдачи не смешиваются: у `--lanes` число пунктов задаёт перечень
@@ -139,7 +157,7 @@ function runPick(
     if (args.flags['slots'] !== undefined) {
       throw new StepcastError('ключи --lanes и --slots взаимно исключают друг друга: форма выдачи одна');
     }
-    runPickLanes(args, file, cwd, text, entries, now, nowMs, staleMs, lanesOption, write, writeErr);
+    runPickLanes(args, file, cwd, text, entries, now, nowMs, staleMs, lanesOption, only, write, writeErr);
     return ExitCode.ok;
   }
 
@@ -148,7 +166,7 @@ function runPick(
     throw new StepcastError('ключ --slots требует целого положительного числа');
   }
 
-  const chosen = selectItems(entries, slots, nowMs, staleMs);
+  const chosen = selectItems(entries, slots, nowMs, staleMs, only);
   if (chosen.length > 0) writeBacklogFile(file, applyPick(text, chosen, now));
 
   write(JSON.stringify(chosen.map(toRecord), null, 2));
@@ -165,6 +183,7 @@ function runPickLanes(
   nowMs: number,
   staleMs: number,
   lanesOption: string,
+  only: string | undefined,
   write: (line: string) => void,
   writeErr: (line: string) => void,
 ): void {
@@ -176,7 +195,7 @@ function runPickLanes(
   const runDir = declaredRunDir === undefined ? undefined : resolvePath(cwd, declaredRunDir);
   if (runDir !== undefined) prepareRunDir(runDir);
 
-  const chosen = selectItems(entries, lanes.length, nowMs, staleMs);
+  const chosen = selectItems(entries, lanes.length, nowMs, staleMs, only);
   if (chosen.length > 0) writeBacklogFile(file, applyPick(text, chosen, now));
 
   const result: Record<string, unknown> = {};

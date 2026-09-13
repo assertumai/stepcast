@@ -12,7 +12,7 @@ import {
   type BacklogSectionLike,
 } from '../src/ui/backlogView.js';
 
-function item(slug: string, status: BacklogItemLike['status'] = 'pending'): BacklogItemLike {
+function item(slug: string, status: BacklogItemLike['status'] = 'todo'): BacklogItemLike {
   return { slug, status };
 }
 
@@ -26,7 +26,7 @@ function section(
 
 describe('backlogView: нумерация', () => {
   it('номер — место в файле, считая с единицы и по всем пунктам, включая done', () => {
-    const sections = [section('p1', [item('a', 'done'), item('b', 'pending'), item('c', 'done')])];
+    const sections = [section('p1', [item('a', 'done'), item('b', 'todo'), item('c', 'done')])];
     const view = viewBacklog(sections, EMPTY_BACKLOG_FILTERS);
     assert.deepEqual(
       view.sections[0]?.items.map((entry) => [entry.item.slug, entry.planNumber]),
@@ -36,9 +36,9 @@ describe('backlogView: нумерация', () => {
 
   it('отбор сохраняет пропуски номеров, а не сжимает их в 1, 2, 3', () => {
     const sections = [
-      section('p1', [item('a', 'done'), item('b', 'pending'), item('c', 'done'), item('d', 'pending')]),
+      section('p1', [item('a', 'done'), item('b', 'todo'), item('c', 'done'), item('d', 'todo')]),
     ];
-    const view = viewBacklog(sections, { status: 'pending' });
+    const view = viewBacklog(sections, { status: 'todo' });
     assert.deepEqual(
       view.sections[0]?.items.map((entry) => [entry.item.slug, entry.planNumber]),
       [['b', 2], ['d', 4]],
@@ -64,23 +64,23 @@ describe('backlogView: нумерация', () => {
   });
 
   it('пункты из двух файлов очереди, объединённые в один список, фильтруются и нумеруются как один', () => {
-    // Модуль вида не знает о `backlog.md`/`resolved.md` — `sourceFile` для него
+    // Модуль вида не знает о `backlog.md`/`archived.md` — `sourceFile` для него
     // всего лишь ещё одно поле пункта, и на отбор с нумерацией не влияет.
     interface ItemWithSource extends BacklogItemLike {
       readonly sourceFile: string;
     }
     const merged: readonly ItemWithSource[] = [
-      { slug: 'a', status: 'pending', sourceFile: 'backlog.md' },
+      { slug: 'a', status: 'todo', sourceFile: 'backlog.md' },
       { slug: 'b', status: 'done', sourceFile: 'backlog.md' },
-      { slug: 'c', status: 'pending', sourceFile: 'resolved.md' },
+      { slug: 'c', status: 'todo', sourceFile: 'archived.md' },
     ];
     const sections: readonly BacklogSectionLike<ItemWithSource>[] = [
       { projectKey: 'p1', projectPath: '/repo/p1', items: merged },
     ];
-    const view = viewBacklog(sections, { status: 'pending' });
+    const view = viewBacklog(sections, { status: 'todo' });
     assert.deepEqual(
       view.sections[0]?.items.map((entry) => [entry.item.slug, entry.item.sourceFile, entry.planNumber]),
-      [['a', 'backlog.md', 1], ['c', 'resolved.md', 3]],
+      [['a', 'backlog.md', 1], ['c', 'archived.md', 3]],
       'план-номер продолжает нумеровать оба файла как один список, sourceFile переживает отбор',
     );
   });
@@ -99,10 +99,10 @@ describe('backlogView: перечень статусов', () => {
 describe('backlogView: фильтры', () => {
   it('статус и проект объединяются по «и»', () => {
     const sections = [
-      section('p1', [item('a', 'pending'), item('b', 'done')]),
-      section('p2', [item('c', 'pending')]),
+      section('p1', [item('a', 'todo'), item('b', 'done')]),
+      section('p2', [item('c', 'todo')]),
     ];
-    const filters: BacklogFilters = { project: 'p1', status: 'pending' };
+    const filters: BacklogFilters = { project: 'p1', status: 'todo' };
     const view = viewBacklog(sections, filters);
     assert.deepEqual(
       view.sections.map((s) => s.items.map((entry) => entry.item.slug)),
@@ -111,12 +111,12 @@ describe('backlogView: фильтры', () => {
   });
 
   it('все четыре статуса присутствуют всегда, пустой — нулём', () => {
-    const sections = [section('p1', [item('a', 'pending'), item('b', 'done')])];
+    const sections = [section('p1', [item('a', 'todo'), item('b', 'done')])];
     const view = viewBacklog(sections, EMPTY_BACKLOG_FILTERS);
     assert.deepEqual(
       view.statusCounts,
       [
-        { status: 'pending', count: 1 },
+        { status: 'todo', count: 1 },
         { status: 'in_progress', count: 0 },
         { status: 'done', count: 1 },
         { status: 'failed', count: 0 },
@@ -126,12 +126,12 @@ describe('backlogView: фильтры', () => {
 
   it('число у статуса считается по выбранному проекту', () => {
     const sections = [
-      section('p1', [item('a', 'pending'), item('b', 'pending')]),
-      section('p2', [item('c', 'pending'), item('d', 'pending'), item('e', 'pending'), item('f', 'pending'), item('g', 'pending')]),
+      section('p1', [item('a', 'todo'), item('b', 'todo')]),
+      section('p2', [item('c', 'todo'), item('d', 'todo'), item('e', 'todo'), item('f', 'todo'), item('g', 'todo')]),
     ];
     const view = viewBacklog(sections, { project: 'p1' });
-    const pending = view.statusCounts.find((entry) => entry.status === 'pending');
-    assert.equal(pending?.count, 2);
+    const inBacklog = view.statusCounts.find((entry) => entry.status === 'todo');
+    assert.equal(inBacklog?.count, 2);
   });
 
   it('выбранный проект, ушедший из очереди, даёт пустой список, а не другую линзу', () => {
@@ -171,14 +171,14 @@ describe('backlogView: порядок', () => {
 describe('backlogView: видимость разделов', () => {
   it('раздел с отказом разбора виден при выбранном статусе', () => {
     const sections = [section('p1', [], { failures: [{ error: 'не распознан' }] })];
-    const view = viewBacklog(sections, { status: 'pending' });
+    const view = viewBacklog(sections, { status: 'todo' });
     assert.equal(view.sections.length, 1);
     assert.deepEqual(view.sections[0]?.failures, [{ error: 'не распознан' }]);
   });
 
   it('раздел с отказом одного файла несёт пункты другого, прошедшие фильтр по статусу', () => {
-    const sections = [section('p1', [item('a', 'pending'), item('b', 'done')], { failures: [{ error: 'не распознан' }] })];
-    const view = viewBacklog(sections, { status: 'pending' });
+    const sections = [section('p1', [item('a', 'todo'), item('b', 'done')], { failures: [{ error: 'не распознан' }] })];
+    const view = viewBacklog(sections, { status: 'todo' });
     assert.equal(view.sections.length, 1);
     assert.deepEqual(view.sections[0]?.failures, [{ error: 'не распознан' }]);
     assert.deepEqual(view.sections[0]?.items.map((entry) => entry.item.slug), ['a']);
@@ -191,7 +191,7 @@ describe('backlogView: видимость разделов', () => {
   });
 
   it('раздел, где ни один пункт не прошёл статус, скрыт, а прошедшие разделы остаются', () => {
-    const sections = [section('p1', [item('a', 'pending')]), section('p2', [item('b', 'done')])];
+    const sections = [section('p1', [item('a', 'todo')]), section('p2', [item('b', 'done')])];
     const view = viewBacklog(sections, { status: 'done' });
     assert.deepEqual(
       view.sections.map((s) => s.projectKey),
@@ -205,15 +205,15 @@ describe('backlogView: видимость разделов', () => {
     assert.equal(atDefault.sections.length, 1);
     assert.deepEqual(atDefault.sections[0]?.failures, []);
 
-    const narrowed = viewBacklog(sections, { status: 'pending' });
+    const narrowed = viewBacklog(sections, { status: 'todo' });
     assert.deepEqual(narrowed.sections, []);
   });
 });
 
 describe('backlogView: «показано N из M»', () => {
   it('total считает все пункты, shown — прошедшие фильтр', () => {
-    const sections = [section('p1', [item('a', 'pending'), item('b', 'done')]), section('p2', [item('c', 'done')])];
-    const view = viewBacklog(sections, { status: 'pending' });
+    const sections = [section('p1', [item('a', 'todo'), item('b', 'done')]), section('p2', [item('c', 'done')])];
+    const view = viewBacklog(sections, { status: 'todo' });
     assert.equal(view.total, 3);
     assert.equal(view.shown, 1);
   });
@@ -223,12 +223,12 @@ describe('backlogView: «показано N из M»', () => {
     // фильтр по проекту прячет пункты наравне с фильтром по статусу; числа у
     // значений статуса считаются иначе — по остальным действующим фильтрам.
     const sections = [
-      section('p1', [item('a', 'pending'), item('b', 'done')]),
-      section('p2', [item('c', 'pending'), item('d', 'pending')]),
+      section('p1', [item('a', 'todo'), item('b', 'done')]),
+      section('p2', [item('c', 'todo'), item('d', 'todo')]),
     ];
     const view = viewBacklog(sections, { project: 'p1' });
     assert.equal(view.total, 4);
     assert.equal(view.shown, 2);
-    assert.equal(view.statusCounts.find((entry) => entry.status === 'pending')?.count, 1);
+    assert.equal(view.statusCounts.find((entry) => entry.status === 'todo')?.count, 1);
   });
 });

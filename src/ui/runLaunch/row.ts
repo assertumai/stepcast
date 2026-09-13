@@ -14,16 +14,39 @@ import { screenRow, type ApiHandler } from '../screens/registry.js';
  * принимает ничего сверх ключа проекта и имени файла, и запустить
  * произвольную команду через него нельзя.
  *
+ * Необязательные `inputs` доезжают до `stepcast run` ключами `--input`: так
+ * доска запускает пайплайн для названного пункта очереди. Значения не
+ * исполняются оболочкой — дочерний процесс порождается списком argv, — но
+ * форма их всё равно проверена: имя входа и одна строка значения.
+ *
  * `pipeline` формы `stepcast:<имя>` — пайплайн поставки (`ui-daemon`, «Запуск
  * прогона принимает пайплайн поставки»): проверяется закрытым перечнем
  * `packagedPipelineNames()`, а не обходом файлов проекта — иначе кнопке
  * «Мигрировать» (`ui-widgets`) нечего было бы запускать.
  */
 
+/**
+ * Имя входа — то же, чем его объявляет документ пайплайна; значение
+ * однострочно, как и всё, что доезжает ключом командной строки. Перевод
+ * строки в значении отвергается здесь, а не рассекается дочерним процессом:
+ * `--input` принимает одну пару `имя=значение`, и вторая строка стала бы
+ * невесть чем.
+ */
+const InputsSchema = z.record(
+  z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]*$/, 'имя входа: буквы, цифры, дефис и подчёркивание'),
+  z.string().max(500).refine((value) => !/[\n\r]/.test(value), 'значение входа обязано занимать одну строку'),
+);
+
 const PostBodySchema = z
   .object({
     project: z.string().min(1),
     pipeline: z.string().min(1),
+    /**
+     * Входы пайплайна: доска передаёт сюда `item: <слаг>`. Ключ необязателен —
+     * кнопка «Запустить» на экране пайплайнов шлёт запрос без него, и её
+     * поведение этой возможностью не меняется.
+     */
+    inputs: InputsSchema.optional(),
   })
   .strict();
 
@@ -46,7 +69,9 @@ const handlePost: ApiHandler = async (req, res, env) => {
 
   const parsed = PostBodySchema.safeParse(raw);
   if (!parsed.success) {
-    sendJson(res, 400, { error: 'Тело запроса не соответствует формату: только project и pipeline' });
+    sendJson(res, 400, {
+      error: `Тело запроса не соответствует формату: ${parsed.error.issues[0]?.message ?? 'только project, pipeline и inputs'}`,
+    });
     return;
   }
 
@@ -73,7 +98,11 @@ const handlePost: ApiHandler = async (req, res, env) => {
     }
   }
 
-  env.launchRun({ cwd: project.path, pipeline: parsed.data.pipeline });
+  env.launchRun({
+    cwd: project.path,
+    pipeline: parsed.data.pipeline,
+    ...(parsed.data.inputs === undefined ? {} : { inputs: parsed.data.inputs }),
+  });
   // 202: подтверждение запуска, не обещание идентификатора прогона — он
   // появится в обзоре обычным тактом наблюдателя, когда дочерний процесс
   // напишет журнал (`ui-daemon`, Решение 13).

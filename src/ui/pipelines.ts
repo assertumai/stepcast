@@ -111,6 +111,18 @@ export interface PipelineView {
   readonly concurrency?: number;
   readonly failFast?: boolean;
   readonly jobs: readonly PipelineJobView[];
+  /**
+   * Имена объявленных входов пайплайна (`inputs`), в порядке объявления.
+   *
+   * Нужны доске: она запускает пайплайн «для этой работы» и обязана знать, кому
+   * слаг пункта вообще есть куда передать. Пайплайн без входа `item` в диалоге
+   * выбора не предлагается — запуск, который молча потерял бы выбранный пункт,
+   * хуже отсутствия кнопки.
+   *
+   * Значения не публикуются намеренно: умолчание входа — часть документа
+   * пайплайна, а не состояние, за которым витрине стоит следить.
+   */
+  readonly inputs: readonly string[];
   readonly graph?: JobGraph;
   /**
    * Пайплайн не разбирается. Как и нечитаемый прогон в обзоре, он остаётся
@@ -272,6 +284,9 @@ function toView(
     concurrency: pipeline.concurrency,
     failFast: pipeline.failFast,
     jobs,
+    // Ключи раскрытых входов — это и есть объявленные имена: раскрытие
+    // подставляет умолчания объявленным и ничего не добавляет от себя.
+    inputs: Object.keys(pipeline.inputs),
     graph: layoutJobs(
       jobs.map((job) => ({
         id: job.id,
@@ -330,7 +345,7 @@ function errorView(
   file: string,
   failure: Failure,
 ): PipelineView {
-  return { projectKey, projectPath, file, name: file, jobs: [], ...failure };
+  return { projectKey, projectPath, file, name: file, jobs: [], inputs: [], ...failure };
 }
 
 function readPipeline(

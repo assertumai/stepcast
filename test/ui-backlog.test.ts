@@ -19,7 +19,7 @@ function item(slug: string, fields: Readonly<Record<string, string>>): string {
   return `## ${slug}\n\n${body}\n`;
 }
 
-const BASE = { status: 'pending', title: 'т', why: 'з', done_when: 'к' } as const;
+const BASE = { status: 'todo', title: 'т', why: 'з', done_when: 'к' } as const;
 
 function backlogText(...items: readonly string[]): string {
   return `# Очередь\n\nПреамбула.\n\n${items.join('\n')}`;
@@ -56,12 +56,12 @@ describe('ui-dashboard: сборка вида очереди (src/ui/backlog.ts)
     );
   });
 
-  it('объединяет пункты backlog.md и resolved.md одним списком, backlog.md первым', () => {
+  it('объединяет пункты backlog.md и archived.md одним списком, backlog.md первым', () => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(join(projectRoot, 'backlog.md'), backlogText(item('open-two', BASE), item('open-one', BASE)));
     writeFileSync(
-      join(projectRoot, 'resolved.md'),
+      join(projectRoot, 'archived.md'),
       backlogText(item('done-two', { ...BASE, status: 'done' }), item('done-one', { ...BASE, status: 'done' })),
     );
 
@@ -70,16 +70,16 @@ describe('ui-dashboard: сборка вида очереди (src/ui/backlog.ts)
     assert.deepEqual(
       backlog.projects[0]?.items.map((entry) => entry.slug),
       ['open-two', 'open-one', 'done-two', 'done-one'],
-      'сперва пункты backlog.md в его порядке, затем resolved.md в его',
+      'сперва пункты backlog.md в его порядке, затем archived.md в его',
     );
     assert.deepEqual(
       backlog.projects[0]?.items.map((entry) => entry.sourceFile),
-      ['backlog.md', 'backlog.md', 'resolved.md', 'resolved.md'],
+      ['backlog.md', 'backlog.md', 'archived.md', 'archived.md'],
     );
     assert.deepEqual(backlog.projects[0]?.failures, []);
   });
 
-  it('проект без backlog.md и без resolved.md остаётся без раздела и это не считается ошибкой', () => {
+  it('проект без backlog.md и без archived.md остаётся без раздела и это не считается ошибкой', () => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     // Ни один файл очереди не пишется вовсе.
@@ -88,11 +88,11 @@ describe('ui-dashboard: сборка вида очереди (src/ui/backlog.ts)
     assert.deepEqual(backlog.projects, []);
   });
 
-  it('отсутствие resolved.md при наличии backlog.md не считается ошибкой', () => {
+  it('отсутствие archived.md при наличии backlog.md не считается ошибкой', () => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(join(projectRoot, 'backlog.md'), backlogText(item('only', BASE)));
-    // resolved.md не пишется вовсе.
+    // archived.md не пишется вовсе.
 
     const backlog = buildBacklog(buildOverview(runsRoot));
     assert.equal(backlog.projects.length, 1);
@@ -191,35 +191,35 @@ describe('ui-dashboard: сборка вида очереди (src/ui/backlog.ts)
     );
   });
 
-  it('resolved.md не разбирается, backlog.md исправен: пункты backlog.md показаны, отказ назван по resolved.md', () => {
+  it('archived.md не разбирается, backlog.md исправен: пункты backlog.md показаны, отказ назван по archived.md', () => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(join(projectRoot, 'backlog.md'), backlogText(item('healthy', BASE)));
-    writeFileSync(join(projectRoot, 'resolved.md'), `${backlogText(item('broken', BASE))}просто текст\n`);
+    writeFileSync(join(projectRoot, 'archived.md'), `${backlogText(item('broken', BASE))}просто текст\n`);
 
     const backlog = buildBacklog(buildOverview(runsRoot));
     const project = backlog.projects[0];
     assert.deepEqual(
       project?.items.map((entry) => entry.slug),
       ['healthy'],
-      'отказ разбора resolved.md не должен скрывать пункты backlog.md',
+      'отказ разбора archived.md не должен скрывать пункты backlog.md',
     );
     assert.equal(project?.failures.length, 1);
-    assert.equal(project?.failures[0]?.sourceFile, 'resolved.md');
+    assert.equal(project?.failures[0]?.sourceFile, 'archived.md');
   });
 
-  it('backlog.md не разбирается, resolved.md исправен: пункты resolved.md показаны, отказ назван по backlog.md', () => {
+  it('backlog.md не разбирается, archived.md исправен: пункты archived.md показаны, отказ назван по backlog.md', () => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(join(projectRoot, 'backlog.md'), `${backlogText(item('broken', BASE))}просто текст\n`);
-    writeFileSync(join(projectRoot, 'resolved.md'), backlogText(item('healthy', { ...BASE, status: 'done' })));
+    writeFileSync(join(projectRoot, 'archived.md'), backlogText(item('healthy', { ...BASE, status: 'done' })));
 
     const backlog = buildBacklog(buildOverview(runsRoot));
     const project = backlog.projects[0];
     assert.deepEqual(
       project?.items.map((entry) => entry.slug),
       ['healthy'],
-      'отказ разбора backlog.md не должен скрывать пункты resolved.md',
+      'отказ разбора backlog.md не должен скрывать пункты archived.md',
     );
     assert.equal(project?.failures.length, 1);
     assert.equal(project?.failures[0]?.sourceFile, 'backlog.md');
@@ -229,7 +229,7 @@ describe('ui-dashboard: сборка вида очереди (src/ui/backlog.ts)
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(join(projectRoot, 'backlog.md'), `${backlogText(item('broken-open', BASE))}просто текст\n`);
-    writeFileSync(join(projectRoot, 'resolved.md'), `${backlogText(item('broken-done', BASE))}тоже текст\n`);
+    writeFileSync(join(projectRoot, 'archived.md'), `${backlogText(item('broken-done', BASE))}тоже текст\n`);
 
     const backlog = buildBacklog(buildOverview(runsRoot));
     const project = backlog.projects[0];
@@ -237,7 +237,7 @@ describe('ui-dashboard: сборка вида очереди (src/ui/backlog.ts)
     assert.equal(project?.failures.length, 2);
     assert.deepEqual(
       new Set(project?.failures.map((failure) => failure.sourceFile)),
-      new Set(['backlog.md', 'resolved.md']),
+      new Set(['backlog.md', 'archived.md']),
     );
   });
 

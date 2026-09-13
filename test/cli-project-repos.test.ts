@@ -242,7 +242,7 @@ describe('CLI: stepcast project repos', () => {
 
 describe('CLI: конвейер backlog pick --lanes | project repos', () => {
   function laneItem(slug: string, extra = ''): string {
-    return `## ${slug}\n\nstatus: pending\ntitle: т\nwhy: з\ndone_when: к\n${extra}`;
+    return `## ${slug}\n\nstatus: todo\ntitle: т\nwhy: з\ndone_when: к\n${extra}`;
   }
 
   it('выход pick, поданный на вход project repos, даёт документ, проходящий поставляемую схему', async () => {

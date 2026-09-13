@@ -1,13 +1,19 @@
 import { join } from 'node:path';
 
-import { effectiveGroup, parseBacklogFile, readBacklogFile, type BacklogEntry } from '../core/backlog/index.js';
+import {
+  effectiveGroup,
+  parseBacklogFile,
+  readBacklogFile,
+  type BacklogEntry,
+  type BacklogStatus,
+} from '../core/backlog/index.js';
 import { isStepcastError } from '../core/errors.js';
 import type { Overview } from './overview.js';
 
 /**
  * Вид очереди улучшений по проектам, видимым в обзоре.
  *
- * Читает диск (`backlog.md` и `resolved.md` в корне каждого проекта), поэтому
+ * Читает диск (`backlog.md` и `archived.md` в корне каждого проекта), поэтому
  * браузеру этот модуль не отдаётся: ни в `server.fs.allow` (`vite.config.ts`), ни в
  * `include` (`ui/tsconfig.json`) он не входит, в отличие от `routes.ts` и
  * `grouping.ts`.
@@ -20,14 +26,14 @@ import type { Overview } from './overview.js';
 /**
  * Два файла проекта, которые читает очередь: открытые пункты и решённые,
  * вынесенные из `backlog.md` (`docs/backlog.md`). Порядок перечня — порядок
- * их слияния в разделе проекта: сперва пункты `backlog.md`, затем `resolved.md`.
+ * их слияния в разделе проекта: сперва пункты `backlog.md`, затем `archived.md`.
  */
-const SOURCE_FILES = ['backlog.md', 'resolved.md'] as const;
+const SOURCE_FILES = ['backlog.md', 'archived.md'] as const;
 export type BacklogSourceFile = (typeof SOURCE_FILES)[number];
 
 export interface BacklogItemView {
   readonly slug: string;
-  readonly status: 'pending' | 'in_progress' | 'done' | 'failed';
+  readonly status: BacklogStatus;
   readonly title: string;
   /**
    * `why` и `done_when` — абзацы текста, а не строки списка: список из тысячи
@@ -42,7 +48,7 @@ export interface BacklogItemView {
   readonly track: string;
   readonly startedAt?: string;
   readonly reason?: string;
-  /** Файл, из которого пришёл пункт — `backlog.md` либо `resolved.md`. */
+  /** Файл, из которого пришёл пункт — `backlog.md` либо `archived.md`. */
   readonly sourceFile: BacklogSourceFile;
 }
 
@@ -70,7 +76,7 @@ export interface BacklogProjectView {
   readonly projectPath: string;
   /**
    * Пункты обоих файлов одним списком: сперва `backlog.md` в его файловом
-   * порядке, затем `resolved.md` в его. Тот же порядок — приоритет отбора.
+   * порядке, затем `archived.md` в его. Тот же порядок — приоритет отбора.
    */
   readonly items: readonly BacklogItemView[];
   /** Отказ разбора — по одному на файл, не разобравшийся по формату; пустой список — оба разобрались (или отсутствуют). */

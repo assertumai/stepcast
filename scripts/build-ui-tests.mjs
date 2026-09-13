@@ -25,6 +25,9 @@ import * as esbuild from 'esbuild';
  * Не бандлить сам пакет Radix — и разрешать его Node'у напрямую из
  * `node_modules` — снимает проблему целиком: их собственные транзитивные
  * зависимости тогда вовсе не попадают в поле зрения esbuild.
+ *
+ * `@dnd-kit/*` (перетаскивание карточек доски) — внешний по той же причине и
+ * с тем же отказом: его CJS-сборка зовёт `require('react')`.
  */
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -73,7 +76,7 @@ await esbuild.build({
   platform: 'node',
   format: 'esm',
   target: 'es2023',
-  external: ['react', 'react-dom', 'react-dom/*', '@radix-ui/*'],
+  external: ['react', 'react-dom', 'react-dom/*', '@radix-ui/*', '@dnd-kit/*'],
   // Имена таблицы, живущие в репозитории (design.md изменения
   // `shared-module-table`, Решения 5, 6): у плагина их разрешает карта имён
   // страницы, здесь — то же отображение, что в `vite.config.ts` и обоих

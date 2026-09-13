@@ -617,11 +617,246 @@ describe('ui-dashboard: HTTP-витрина', () => {
 const BACKLOG_ITEM = (status: string): string =>
   `# Очередь\n\n## work-item\n\nstatus: ${status}\ntitle: т\nwhy: з\ndone_when: к\n`;
 
+describe('screen-scrum: перенос пункта доской', () => {
+  const ITEMS = (...items: readonly string[]): string => `# Очередь\n\n${items.join('\n')}`;
+  const ITEM = (slug: string, status: string): string =>
+    `## ${slug}\n\nstatus: ${status}\ntitle: т\nwhy: з\ndone_when: к\n`;
+
+  function movePayload(body: Record<string, unknown>): { method: string; path: string; body: string } {
+    return { method: 'POST', path: '/api/backlog/move', body: JSON.stringify(body) };
+  }
+
+  function fieldOf(text: string, slug: string, field: string): string | undefined {
+    const block = text.split(/^## /mu).find((part) => part.startsWith(slug));
+    return new RegExp(`^${field}: (.*)$`, 'mu').exec(block ?? '')?.[1];
+  }
+
+  it('меняет статус и порядок в backlog.md одним запросом', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const tasks = join(projectRoot, 'backlog.md');
+    writeFileSync(tasks, ITEMS(ITEM('one', 'todo'), ITEM('two', 'todo')));
+    const server = await startServer(t, { runsRoot });
+    const key = projectKey(projectRoot);
+
+    const moved = await sendJson(server, movePayload({ project: key, slug: 'two', column: 'todo', before: 'one' }));
+
+    assert.equal(moved.code, 200);
+    const text = readFileSync(tasks, 'utf8');
+    assert.equal(fieldOf(text, 'two', 'status'), 'todo');
+    assert.ok(text.indexOf('## two') < text.indexOf('## one'), 'пункт обязан встать выше названного соседа');
+  });
+
+  it('переносит пункт в архив, не трогая его исход', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const tasks = join(projectRoot, 'backlog.md');
+    writeFileSync(tasks, ITEMS(ITEM('done-item', 'done')));
+    const server = await startServer(t, { runsRoot });
+
+    const moved = await sendJson(
+      server,
+      movePayload({ project: projectKey(projectRoot), slug: 'done-item', column: 'archive' }),
+    );
+
+    assert.equal(moved.code, 200);
+    assert.doesNotMatch(readFileSync(tasks, 'utf8'), /## done-item/u);
+    const archive = readFileSync(join(projectRoot, 'archived.md'), 'utf8');
+    assert.match(archive, /## done-item/u);
+    assert.equal(fieldOf(archive, 'done-item', 'status'), 'done');
+  });
+
+  it('возвращает пункт из архива в очередь с новым статусом', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), ITEMS(ITEM('live', 'todo')));
+    writeFileSync(join(projectRoot, 'archived.md'), ITEMS(ITEM('old', 'done')));
+    const server = await startServer(t, { runsRoot });
+
+    const moved = await sendJson(
+      server,
+      movePayload({ project: projectKey(projectRoot), slug: 'old', column: 'todo' }),
+    );
+
+    assert.equal(moved.code, 200);
+    const tasks = readFileSync(join(projectRoot, 'backlog.md'), 'utf8');
+    assert.equal(fieldOf(tasks, 'old', 'status'), 'todo');
+    assert.doesNotMatch(readFileSync(join(projectRoot, 'archived.md'), 'utf8'), /## old/u);
+  });
+
+  it('в работу доской не переводит: это дело запуска пайплайна', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const tasks = join(projectRoot, 'backlog.md');
+    writeFileSync(tasks, ITEMS(ITEM('one', 'todo')));
+    const server = await startServer(t, { runsRoot });
+
+    const moved = await sendJson(
+      server,
+      movePayload({ project: projectKey(projectRoot), slug: 'one', column: 'in_progress' }),
+    );
+
+    assert.equal(moved.code, 400);
+    assert.equal(fieldOf(readFileSync(tasks, 'utf8'), 'one', 'status'), 'todo');
+  });
+
+  it('неизвестный пункт — 404, файл не тронут', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const tasks = join(projectRoot, 'backlog.md');
+    writeFileSync(tasks, ITEMS(ITEM('one', 'todo')));
+    const before = readFileSync(tasks, 'utf8');
+    const server = await startServer(t, { runsRoot });
+
+    const moved = await sendJson(
+      server,
+      movePayload({ project: projectKey(projectRoot), slug: 'no-such', column: 'todo' }),
+    );
+
+    assert.equal(moved.code, 404);
+    assert.equal(readFileSync(tasks, 'utf8'), before);
+  });
+
+  it('неизвестная колонка — отказ формата', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), ITEMS(ITEM('one', 'todo')));
+    const server = await startServer(t, { runsRoot });
+
+    const moved = await sendJson(
+      server,
+      movePayload({ project: projectKey(projectRoot), slug: 'one', column: 'somewhere' }),
+    );
+
+    assert.equal(moved.code, 400);
+  });
+});
+
+describe('screen-scrum: правка пункта панелью деталей', () => {
+  const ITEMS = (...items: readonly string[]): string => `# Очередь\n\n${items.join('\n')}`;
+  const ITEM = (slug: string, status: string, extra = ''): string =>
+    `## ${slug}\n\nstatus: ${status}\ntitle: т\nwhy: з\ndone_when: к\n${extra}`;
+
+  function editPayload(body: Record<string, unknown>): { method: string; path: string; body: string } {
+    return { method: 'POST', path: '/api/backlog/item', body: JSON.stringify(body) };
+  }
+
+  function fieldOf(text: string, slug: string, field: string): string | undefined {
+    const block = text.split(/^## /mu).find((part) => part.startsWith(slug));
+    return new RegExp(`^${field}: (.*)$`, 'mu').exec(block ?? '')?.[1];
+  }
+
+  it('переписывает названные поля, не трогая остальные', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const queue = join(projectRoot, 'backlog.md');
+    writeFileSync(queue, ITEMS(ITEM('one', 'todo'), ITEM('two', 'todo')));
+    const server = await startServer(t, { runsRoot });
+
+    const saved = await sendJson(
+      server,
+      editPayload({
+        project: projectKey(projectRoot),
+        slug: 'one',
+        fields: { title: 'новый заголовок', track: 'express' },
+      }),
+    );
+
+    assert.equal(saved.code, 200);
+    const text = readFileSync(queue, 'utf8');
+    assert.equal(fieldOf(text, 'one', 'title'), 'новый заголовок');
+    assert.equal(fieldOf(text, 'one', 'why'), 'з');
+    assert.equal(fieldOf(text, 'one', 'track'), 'express');
+    assert.equal(fieldOf(text, 'two', 'title'), 'т');
+  });
+
+  it('пустое значение необязательного поля убирает само поле', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const queue = join(projectRoot, 'backlog.md');
+    writeFileSync(queue, ITEMS(ITEM('one', 'todo', 'track: express\n')));
+    const server = await startServer(t, { runsRoot });
+
+    const saved = await sendJson(
+      server,
+      editPayload({ project: projectKey(projectRoot), slug: 'one', fields: { track: '' } }),
+    );
+
+    assert.equal(saved.code, 200);
+    assert.equal(fieldOf(readFileSync(queue, 'utf8'), 'one', 'track'), undefined);
+  });
+
+  it('пустое обязательное поле — отказ, файл не тронут', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const queue = join(projectRoot, 'backlog.md');
+    writeFileSync(queue, ITEMS(ITEM('one', 'todo')));
+    const before = readFileSync(queue, 'utf8');
+    const server = await startServer(t, { runsRoot });
+
+    const saved = await sendJson(
+      server,
+      editPayload({ project: projectKey(projectRoot), slug: 'one', fields: { title: '  ' } }),
+    );
+
+    assert.equal(saved.code, 400);
+    assert.equal(readFileSync(queue, 'utf8'), before);
+  });
+
+  it('негодное значение отвергается до записи: файл остаётся разбираемым', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const queue = join(projectRoot, 'backlog.md');
+    writeFileSync(queue, ITEMS(ITEM('one', 'todo')));
+    const before = readFileSync(queue, 'utf8');
+    const server = await startServer(t, { runsRoot });
+
+    const saved = await sendJson(
+      server,
+      editPayload({ project: projectKey(projectRoot), slug: 'one', fields: { track: 'Не Слаг' } }),
+    );
+
+    assert.equal(saved.code, 400);
+    assert.equal(readFileSync(queue, 'utf8'), before);
+  });
+
+  it('статус панелью не правится: его задаёт колонка', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), ITEMS(ITEM('one', 'todo')));
+    const server = await startServer(t, { runsRoot });
+
+    const saved = await sendJson(
+      server,
+      editPayload({ project: projectKey(projectRoot), slug: 'one', fields: { status: 'done' } }),
+    );
+
+    assert.equal(saved.code, 400);
+  });
+
+  it('правит и пункт архива — он лежит в другом файле, но остаётся пунктом', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), ITEMS(ITEM('live', 'todo')));
+    const archive = join(projectRoot, 'archived.md');
+    writeFileSync(archive, ITEMS(ITEM('old', 'done')));
+    const server = await startServer(t, { runsRoot });
+
+    const saved = await sendJson(
+      server,
+      editPayload({ project: projectKey(projectRoot), slug: 'old', fields: { why: 'уточнённая причина' } }),
+    );
+
+    assert.equal(saved.code, 200);
+    assert.equal(fieldOf(readFileSync(archive, 'utf8'), 'old', 'why'), 'уточнённая причина');
+  });
+});
+
 describe('ui-dashboard: маршрут и поток очереди', () => {
   it('отдаёт очереди проектов маршрутом и страницу экрана своим адресом', async (t) => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
-    writeFileSync(join(projectRoot, 'backlog.md'), BACKLOG_ITEM('pending'));
+    writeFileSync(join(projectRoot, 'backlog.md'), BACKLOG_ITEM('todo'));
     const dashboard = ensureDashboard(t);
     const server = await startServer(t, { runsRoot });
 
@@ -654,13 +889,13 @@ describe('ui-dashboard: маршрут и поток очереди', () => {
     assert.deepEqual(pick(stream.events[1]?.data, 'projects'), []);
 
     seedRun(runsRoot, projectRoot, { runId: 'a' });
-    writeFileSync(join(projectRoot, 'backlog.md'), BACKLOG_ITEM('pending'));
+    writeFileSync(join(projectRoot, 'backlog.md'), BACKLOG_ITEM('todo'));
     await settle(300);
 
     const events = stream.events.filter((event) => event.event === 'backlog');
     assert.equal(
       pick(events.at(-1)?.data, 'projects', 0, 'items', 0, 'status'),
-      'pending',
+      'todo',
       'появление файла очереди должно дойти без перезагрузки',
     );
   });
@@ -669,7 +904,7 @@ describe('ui-dashboard: маршрут и поток очереди', () => {
   it('не повторяет кадр очереди, когда изменился только прогон', async (t) => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
-    writeFileSync(join(projectRoot, 'backlog.md'), BACKLOG_ITEM('pending'));
+    writeFileSync(join(projectRoot, 'backlog.md'), BACKLOG_ITEM('todo'));
     const watcher = startWatcher(t, runsRoot, 20);
     const server = await startServer(t, { runsRoot, watcher });
 

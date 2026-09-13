@@ -42,7 +42,7 @@ function item(slug: string, fields: Readonly<Record<string, string>>): string {
   return `## ${slug}\n\n${body}\n`;
 }
 
-const COMPLETE = { status: 'pending', title: 'т', why: 'з', done_when: 'к' } as const;
+const COMPLETE = { status: 'todo', title: 'т', why: 'з', done_when: 'к' } as const;
 
 function bed(...items: readonly string[]): string {
   const dir = tempDir('backlog-cli-');
@@ -270,6 +270,70 @@ describe('CLI: stepcast backlog pick', () => {
 
     assert.equal(result.code, ExitCode.configError);
     assert.equal(readFileSync(join(dir, 'backlog.md'), 'utf8'), before);
+  });
+});
+
+describe('CLI: stepcast backlog pick --only', () => {
+  it('берёт названный пункт, а не первый свободный', async () => {
+    const dir = bed(item('first-item', COMPLETE), item('named-item', COMPLETE));
+
+    const result = await backlog(dir, ['pick', '--only', 'named-item']);
+
+    assert.equal(result.code, ExitCode.ok);
+    const [entry] = JSON.parse(result.stdout) as readonly { slug: string }[];
+    assert.equal(entry?.slug, 'named-item');
+
+    const text = readFileSync(join(dir, 'backlog.md'), 'utf8');
+    assert.equal(fieldOf(text, 'named-item', 'status'), 'in_progress');
+    assert.equal(fieldOf(text, 'first-item', 'status'), 'todo');
+  });
+
+  it('заполняет названным пунктом первую дорожку, остальные остаются пустыми', async () => {
+    const dir = bed(item('first-item', COMPLETE), item('named-item', COMPLETE));
+
+    const result = await backlog(dir, ['pick', '--lanes', 'a,b', '--only', 'named-item']);
+
+    assert.equal(result.code, ExitCode.ok);
+    const parsed = JSON.parse(result.stdout) as { lanes: Record<string, { filled: boolean; slug: string }> };
+    assert.equal(parsed.lanes.a?.slug, 'named-item');
+    assert.equal(parsed.lanes.b?.filled, false);
+  });
+
+  it('неизвестный слаг — отказ, а не пустая выдача', async () => {
+    const dir = bed(item('an-item', COMPLETE));
+
+    const result = await backlog(dir, ['pick', '--only', 'no-such-item']);
+
+    assert.equal(result.code, ExitCode.configError);
+    assert.match(result.stderr, /no-such-item/);
+    assert.equal(fieldOf(readFileSync(join(dir, 'backlog.md'), 'utf8'), 'an-item', 'status'), 'todo');
+  });
+
+  it('несвободный пункт — отказ с названным статусом', async () => {
+    const dir = bed(item('an-item', { ...COMPLETE, status: 'done' }));
+
+    const result = await backlog(dir, ['pick', '--only', 'an-item']);
+
+    assert.equal(result.code, ExitCode.configError);
+    assert.match(result.stderr, /done/);
+  });
+
+  it('пункт занятой группы не берётся даже по имени', async () => {
+    const dir = bed(
+      item('busy-item', {
+        ...COMPLETE,
+        status: 'in_progress',
+        started_at: new Date().toISOString(),
+        group: 'shared',
+      }),
+      item('named-item', { ...COMPLETE, group: 'shared' }),
+    );
+
+    const result = await backlog(dir, ['pick', '--only', 'named-item']);
+
+    assert.equal(result.code, ExitCode.ok);
+    assert.deepEqual(JSON.parse(result.stdout), []);
+    assert.equal(fieldOf(readFileSync(join(dir, 'backlog.md'), 'utf8'), 'named-item', 'status'), 'todo');
   });
 });
 

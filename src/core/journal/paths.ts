@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { existsSync, realpathSync } from 'node:fs';
-import { dirname, join, parse as parsePath } from 'node:path';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { dirname, join, parse as parsePath, sep } from 'node:path';
 
 /**
  * Раскладка журнала прогона.
@@ -9,11 +9,45 @@ import { dirname, join, parse as parsePath } from 'node:path';
  * состояние прогона и рабочее дерево не должны смешиваться.
  */
 
-/** Корень проекта: ближайший каталог с `.git`, иначе сам рабочий каталог. */
+/**
+ * Основной каталог `.git` для линкованного worktree — по файлу `<root>/.git`
+ * (`gitdir: <common>/.git/worktrees/<name>`) находит `<root>` основного
+ * репозитория. `git worktree add` — то, чем сама stepcast заводит параллельные
+ * дорожки (`lanes`, `merge-lanes`): без этого разбора каждая дорожка со своим
+ * файлом `.git` регистрировалась бы отдельным проектом (заход
+ * 9169657a1513 — рабочее дерево дорожки `propose-a` осело в `projects.json`
+ * как самостоятельный проект-призрак).
+ */
+function mainRootOfWorktree(gitFile: string): string | undefined {
+  const match = /^gitdir:\s*(.+)$/m.exec(readFileSync(gitFile, 'utf8'));
+  const gitDir = match?.[1]?.trim();
+  if (gitDir === undefined) return undefined;
+  const marker = `${sep}.git${sep}worktrees${sep}`;
+  const index = gitDir.indexOf(marker);
+  return index === -1 ? undefined : gitDir.slice(0, index);
+}
+
+/**
+ * Корень проекта: явный маркер `.stepcast/config.yml` (заведённый `stepcast
+ * init --knowledge fs` или вручную) либо ближайший каталог с настоящим `.git`
+ * — директорией основного репозитория, а не файлом линкованного worktree.
+ * Маркер и `.git`-директория проверяются на каждом уровне вместе: у
+ * worktree дорожки маркер тоже есть (файл отслежен и потому вычитан
+ * `checkout`), но он не должен перебивать разбор `.git`, иначе рабочее дерево
+ * дорожки продолжало бы регистрироваться как отдельный проект.
+ */
 export function findProjectRoot(from: string): string {
   let current = realpathSync(from);
   for (;;) {
-    if (existsSync(join(current, '.git'))) return current;
+    const gitPath = join(current, '.git');
+    if (existsSync(gitPath)) {
+      if (statSync(gitPath).isDirectory()) return current;
+      const mainRoot = mainRootOfWorktree(gitPath);
+      if (mainRoot !== undefined && existsSync(mainRoot)) return realpathSync(mainRoot);
+      return current;
+    }
+    if (existsSync(join(current, '.stepcast', 'config.yml'))) return current;
+
     const parent = dirname(current);
     if (parent === current || parent === parsePath(current).root) return realpathSync(from);
     current = parent;
