@@ -272,7 +272,7 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     const file = join(projectRoot, 'backlog.md');
-    writeFileSync(file, backlogText('pending'));
+    writeFileSync(file, backlogText('todo'));
 
     const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
     const seen: Array<{ overview: Overview; backlog: BacklogOverview }> = [];
@@ -290,7 +290,7 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
   it('такт опроса без изменений подписчика не будит и очередь заново не разбирается', () => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
-    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('todo'));
 
     const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
     const before = watcher.currentBacklog();
@@ -313,7 +313,7 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
   it('такт, где изменился прогон, а файл очереди нет, оставляет прежнее значение очереди', () => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
-    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('todo'));
 
     const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
     const before = watcher.currentBacklog();
@@ -339,7 +339,7 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
     const { runsRoot, projectRoot } = makeJournalBed();
     // Файл очереди написан до первого прогона: сам по себе он проект в обзоре
     // не заводит, и раздела у него нет, пока прогонов нет.
-    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('todo'));
 
     const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
     assert.deepEqual(watcher.currentBacklog().projects, [], 'проекта без прогонов в очереди нет');
@@ -358,7 +358,7 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
   it('currentBacklog() отдаёт очередь без ожидания следующего опроса', () => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
-    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('todo'));
 
     const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
     assert.equal(watcher.currentBacklog().projects[0]?.items[0]?.slug, 'work-item');
@@ -511,7 +511,7 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
       const dir = widgetsDirPath(projectRoot);
       mkdirSync(dir, { recursive: true });
       writeFileSync(join(dir, 'clock.tsx'), 'export default function Clock() { return null; }\n');
-      writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+      writeFileSync(join(projectRoot, 'backlog.md'), backlogText('todo'));
 
       const watcher = createWatcher({ runsRoot, intervalMs: 10_000 });
       const before = watcher.currentWidgets();
@@ -641,7 +641,7 @@ describe('ui-routes: часть отпечатка наблюдателя', () =
   it('правка домашнего файла маршрутов пересобирает таблицу и будит подписчика, не трогая виджеты и очередь', () => {
     const { runsRoot, projectRoot } = makeJournalBed();
     const home = tempDir('routes-watcher-home-');
-    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('todo'));
 
     const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
     const beforeWidgets = watcher.currentWidgets();
@@ -728,7 +728,7 @@ describe('ui-routes: часть отпечатка наблюдателя', () =
     const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
     const before = watcher.currentRoutes();
 
-    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('todo'));
     watcher.poll();
 
     assert.equal(watcher.currentRoutes(), before, 'правка очереди не должна пересобирать таблицу маршрутов');
@@ -811,7 +811,7 @@ describe('ui-dashboards: часть отпечатка наблюдателя', 
     const watcher = createWatcher({ runsRoot, home, intervalMs: 10_000 });
     const before = watcher.currentDashboards();
 
-    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('pending'));
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText('todo'));
     watcher.poll();
 
     assert.equal(watcher.currentDashboards(), before, 'правка очереди не должна пересобирать состав дашбордов');

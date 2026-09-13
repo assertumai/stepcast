@@ -232,6 +232,10 @@ export const COMMANDS: Record<string, CommandSpec> = {
       file: { kind: 'string', description: 'путь к файлу очереди, по умолчанию backlog.md в рабочем каталоге' },
       slots: { kind: 'number', description: 'pick: сколько пунктов взять за раз, по умолчанию 1' },
       lanes: { kind: 'string', description: 'pick: раздать по дорожкам, имена через запятую — a,b' },
+      only: {
+        kind: 'string',
+        description: 'pick: взять именно этот пункт по слагу, а не первый свободный по очерёдности',
+      },
       'stale-hours': {
         kind: 'number',
         description: 'pick: порог давности зависшего in_progress в часах, по умолчанию 6',

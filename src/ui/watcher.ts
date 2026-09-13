@@ -161,7 +161,8 @@ interface Fingerprint {
  * дописывается без создания каталога, поэтому размер идёт рядом с mtime:
  * дозапись и снятие записи в пределах одной секунды mtime могут не сдвинуть.
  *
- * Часть `backlog` — файлы очередей, тем же приёмом: `mtime` **и** размер
+ * Часть `backlog` — оба файла очереди каждого проекта (`backlog.md` и
+ * `archived.md`), тем же приёмом: `mtime` **и** размер
  * вместе, потому что правка в пределах секунды может не сдвинуть `mtime`, а
  * `atomicWrite` подменяет файл переименованием, так что размер меняется вместе
  * с содержимым почти всегда (design.md, Решение 4). Отсутствие файла — такое
@@ -253,11 +254,18 @@ function fingerprint(
     // Путь неизвестен — читать очередь неоткуда, как и в buildBacklog: такой
     // проект в очереди не покажется, а стало быть, отпечатывать по нему нечего.
     if (project.path !== undefined) {
-      try {
-        const backlog = statSync(join(project.path, 'backlog.md'));
-        backlogParts.push(`${project.key}:${backlog.mtimeMs}:${backlog.size}`);
-      } catch {
-        backlogParts.push(`${project.key}:-`);
+      // Оба файла очереди, а не один: доска переносит пункт из `backlog.md` в
+      // `archived.md` и обратно (`POST /api/backlog/move`), и правка только
+      // архива обязана доехать до вкладки тем же тактом. Отпечаток по одному
+      // файлу оставлял бы перенесённый пункт видимым на прежнем месте до
+      // следующей правки очереди.
+      for (const name of ['backlog.md', 'archived.md']) {
+        try {
+          const file = statSync(join(project.path, name));
+          backlogParts.push(`${project.key}/${name}:${file.mtimeMs}:${file.size}`);
+        } catch {
+          backlogParts.push(`${project.key}/${name}:-`);
+        }
       }
 
       // Версия каждого виджета уже несёт `mtime` и размер (`fingerprintVersion`

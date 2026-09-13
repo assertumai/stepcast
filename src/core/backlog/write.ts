@@ -50,3 +50,34 @@ function assertSingleLine(name: string, value: string): void {
     { at: name },
   );
 }
+
+/**
+ * Убрать поля у пункта, вернув новый текст файла.
+ *
+ * Обратная `withFields` сторона, нужная правке пункта с витрины: пустое
+ * значение необязательного поля (`group`, `track`, `repos`) означает «поля
+ * нет», а не «поле есть и пусто» — пустая метка веса не прошла бы разбор, а
+ * строка `track:` в файле сбивала бы с толку читателя.
+ *
+ * Отсутствующее поле — не отказ: убрать то, чего нет, значит оставить как
+ * есть, и вызывающему не приходится сперва выяснять, что там было.
+ */
+export function withoutFields(text: string, slug: string, names: readonly string[]): string {
+  let result = text;
+
+  for (const name of names) {
+    const lines = result.split('\n');
+    const entry = parse(result).find((candidate) => candidate.slug === slug);
+    if (entry === undefined) {
+      throw new StepcastError(`пункт «${slug}» в очереди не найден`, { at: slug });
+    }
+
+    const existing = entry.fields.get(name);
+    if (existing === undefined) continue;
+
+    lines.splice(existing.line, 1);
+    result = lines.join('\n');
+  }
+
+  return result;
+}

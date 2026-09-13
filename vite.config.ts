@@ -99,6 +99,7 @@ export default defineConfig({
         join(ROOT, 'src', 'ui', 'runsView.ts'),
         join(ROOT, 'src', 'ui', 'filters.ts'),
         join(ROOT, 'src', 'ui', 'backlogView.ts'),
+        join(ROOT, 'src', 'ui', 'scrumView.ts'),
         join(ROOT, 'src', 'ui', 'sharedModules.ts'),
         join(ROOT, 'src', 'ui', 'screens'),
         join(ROOT, 'src', 'core', 'config', 'modelTiers.ts'),

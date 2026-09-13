@@ -1,0 +1,141 @@
+/*
+ * Доска: колонки в ряд с горизонтальной прокруткой. Ширина колонки
+ * фиксирована — колонки, ужимающиеся под число карточек, превращали бы
+ * пустую в полоску, а доска обязана показывать место, куда карточку можно
+ * положить.
+ *
+ * Панель деталей стоит вплотную к последней колонке, а не у края окна: доска
+ * занимает ширину своих колонок и не растягивается на всё свободное место
+ * (`flex: 0 1 auto`). Растянутая доска отодвигала бы панель к правому краю, и
+ * между ней и карточками зияла бы пустота тем большая, чем шире монитор.
+ *
+ * Сжиматься доска при этом вправе: когда колонок больше, чем помещается,
+ * прокручивается она, а не страница целиком, — иначе открытая панель уезжала
+ * бы из виду на первом же движении к дальней колонке.
+ */
+.scrum-layout {
+  display: flex;
+  gap: 1rem;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.scrum-layout > .scrum-board { min-width: 0; flex: 0 1 auto; }
+
+.scrum-board {
+  display: flex;
+  gap: .8rem;
+  align-items: flex-start;
+  overflow-x: auto;
+  padding-bottom: .5rem;
+}
+
+.scrum-column {
+  flex: 0 0 16.5rem;
+  background: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .6rem;
+  min-height: 8rem;
+}
+
+.scrum-column.over { border-color: var(--ring); }
+
+.scrum-column-head { display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
+.scrum-column-head h2 { font-size: .95rem; margin: 0 0 .4rem; }
+.scrum-column-note { margin: -.2rem 0 .4rem; }
+.scrum-column-body { display: flex; flex-direction: column; gap: .5rem; min-height: 3rem; }
+
+.scrum-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .5rem .6rem;
+  cursor: grab;
+}
+
+.scrum-card.dragging { cursor: grabbing; box-shadow: var(--popover-shadow); }
+.scrum-card-head { display: flex; justify-content: space-between; gap: .5rem; }
+.scrum-card-title { margin: .3rem 0 .35rem; font-size: .9rem; line-height: 1.35; }
+.scrum-card-foot { display: flex; gap: .5rem; flex-wrap: wrap; align-items: center; }
+
+.scrum-track {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 .4rem;
+  color: var(--muted-foreground);
+}
+
+.scrum-pipelines { list-style: none; margin: .5rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .5rem; }
+.scrum-pipelines li { display: flex; gap: .6rem; align-items: flex-start; }
+
+.scrum-card.selected { border-color: var(--ring); box-shadow: 0 0 0 1px var(--ring); }
+
+/*
+ * Панель тянется мышью за правый нижний угол (`resize: both`) и помнит
+ * растянутое на время вкладки: браузер пишет размер инлайновым стилем, и
+ * поэтому основной размер задан `width`, а не `flex-basis`, — иначе основа
+ * гибкого элемента перебила бы то, что человек только что растянул.
+ *
+ * Умолчание — 45rem: полторы прежних ширины, когда место есть. Когда места
+ * нет, панель ужимается до 22rem (`flex-shrink: 1` при `min-width`), а
+ * дальше ужимается уже доска, которая умеет прокручиваться.
+ */
+.scrum-details {
+  flex: 0 1 auto;
+  width: 45rem;
+  min-width: 22rem;
+  max-width: 100%;
+  position: sticky;
+  top: 1rem;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .8rem;
+  max-height: calc(100vh - 3rem);
+  overflow: auto;
+  resize: both;
+}
+
+.scrum-details-head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
+.scrum-details-meta { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin: .4rem 0 .8rem; }
+.scrum-details-foot { display: flex; gap: .6rem; align-items: center; margin-top: 1rem; }
+
+.scrum-field { display: block; margin-bottom: .9rem; }
+.scrum-field > span { display: block; margin-bottom: .25rem; }
+
+/*
+ * Поля панели крупнее общих: `.sc-input` рассчитан на строку фильтра, где
+ * значение — слово, а здесь в поле лежат абзацы `why` и `done_when`, которые
+ * человек читает и правит. Размер задан здесь, а не в `@stepcast/ui`: общий
+ * компонент остаётся прежним для всех прочих мест витрины.
+ */
+.scrum-field .sc-input {
+  width: 100%;
+  min-width: 0;
+  font-size: .95rem;
+  padding: .4rem .55rem;
+}
+
+.scrum-field textarea.sc-input {
+  resize: vertical;
+  line-height: 1.45;
+  min-height: 7rem;
+}
+
+/* Выбор пайплайна в диалоге запуска: имя крупно, файл и состав — под ним. */
+.scrum-pipeline { display: flex; gap: .55rem; align-items: flex-start; cursor: pointer; }
+/*
+ * Переключатель остаётся переключателем: общее правило витрины задаёт полям
+ * ввода `min-width: 14rem` (`styles.css`), и без снятия ширины радиокнопка
+ * растягивалась бы в полосу на весь диалог.
+ */
+.scrum-pipeline input[type='radio'] {
+  min-width: 0;
+  width: auto;
+  flex: none;
+  margin: .3rem 0 0;
+  accent-color: var(--primary);
+}
+.scrum-pipeline-body { display: flex; flex-direction: column; gap: .1rem; min-width: 0; }
+.scrum-pipeline-name { font-weight: 600; }

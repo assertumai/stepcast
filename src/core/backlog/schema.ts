@@ -16,9 +16,25 @@ export const BacklogSlugSchema = z
   .string()
   .regex(KEBAB_CASE, 'должен быть слагом в kebab-case');
 
-export const BACKLOG_STATUSES = ['pending', 'in_progress', 'done', 'failed'] as const;
+/**
+ * Состояния пункта очереди — те же слова, которыми названы колонки доски
+ * (`screen-scrum`): открытое состояние одно (`todo`), дальше рабочее и два
+ * терминальных.
+ *
+ * Ни `pending`, ни `backlog` в перечне нет. Второе открытое состояние —
+ * «заведён, но пока не к работе» — колонки на доске не имеет, а состояние без
+ * колонки означало бы пункт, невидимый на экране, которым очередь и ведут.
+ * Что взять раньше, решает порядок строк в файле, а не второе слово.
+ *
+ * Колонка доски и статус файла названы одним словом нарочно: перевод статусов
+ * в собственные имена экрана дал бы человеку, читающему `backlog.md` глазами,
+ * второй словарь на то же самое.
+ */
+export const BACKLOG_STATUSES = ['todo', 'in_progress', 'done', 'failed'] as const;
 
 export const BacklogStatusSchema = z.enum(BACKLOG_STATUSES);
+
+export type BacklogStatus = z.infer<typeof BacklogStatusSchema>;
 
 /**
  * Вес пункта — метка, по которой пайплайн выбирает цепочку работ. Проверяется

@@ -37,6 +37,7 @@
     "../src/ui/runsView.ts",
     "../src/ui/filters.ts",
     "../src/ui/backlogView.ts",
+    "../src/ui/scrumView.ts",
     "../src/ui/sharedModules.ts",
     "../src/ui/screens/declaration.ts",
     "../src/ui/screens/*/declaration.ts",
