@@ -129,6 +129,9 @@ export async function runMergeLanesCommand(
   // у откачённой дорожки все работы зелёные, и сведение — единственное
   // место, где вообще виден её отказ, поэтому код требует внимания даже
   // тогда, когда обход дошёл до конца перечня.
-  const stoppedOrRolledBack = results.some((result) => result.kind === 'conflict' || result.kind === 'check_failed');
+  const stoppedOrRolledBack = results.some(
+    (result) =>
+      result.kind === 'conflict' || result.kind === 'publication_conflict' || result.kind === 'check_failed',
+  );
   return stoppedOrRolledBack ? ExitCode.jobFailed : ExitCode.ok;
 }

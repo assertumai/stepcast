@@ -17,6 +17,7 @@ export type LaneMergeKind =
   | 'no_item'
   | 'unfit'
   | 'conflict'
+  | 'publication_conflict'
   | 'check_failed'
   | 'no_contribution'
   | 'not_reached'
@@ -40,6 +41,7 @@ const MERGE_KINDS: ReadonlySet<string> = new Set<LaneMergeKind>([
   'no_item',
   'unfit',
   'conflict',
+  'publication_conflict',
   'check_failed',
   'no_contribution',
   'not_reached',

@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 
 import { checkCompositeComposition, type AnchorKind } from '../anchor/index.js';
 import { StepcastError, isStepcastError } from '../errors.js';
@@ -7,11 +8,14 @@ import { REASON_LIMIT, finishItem, parseBacklogFile, tailLine } from '../backlog
 import type { RunPaths } from '../journal/paths.js';
 import { readManifest, readStatus } from '../journal/reader.js';
 import type { RunStatus } from '../journal/schema.js';
+import { readLock, type LockRead } from '../pipeline/lockRead.js';
 import { applyRun, laneAnchorRange, type LaneAnchorRange } from '../run/apply.js';
+import { addWorktree, removeWorktree } from '../run/worktrees.js';
 import { runCheck } from './check.js';
 import { hasLaneItem, readLaneItem } from './item.js';
 import { evaluateLane, knownLanes } from './lanes.js';
 import { readLaneMerge, writeLaneMerge } from './mergeRecord.js';
+import { preparePublication, publishPrepared, type PreparedPublication } from './publication.js';
 import {
   assertCleanTree,
   commitAll,
@@ -73,6 +77,7 @@ export type LaneMergeResult =
   | { readonly lane: string; readonly kind: 'no_item' }
   | { readonly lane: string; readonly kind: 'unfit'; readonly reason: string }
   | { readonly lane: string; readonly kind: 'conflict'; readonly reason: string }
+  | { readonly lane: string; readonly kind: 'publication_conflict'; readonly reason: string }
   | { readonly lane: string; readonly kind: 'check_failed'; readonly reason: string }
   | { readonly lane: string; readonly kind: 'no_contribution'; readonly reason: string }
   | { readonly lane: string; readonly kind: 'not_reached'; readonly reason: string }
@@ -290,7 +295,7 @@ function resolveLanes(requested: MergeLanesOptions['lanes'], known: readonly str
   return requested;
 }
 
-export async function mergeLanes(options: MergeLanesOptions): Promise<readonly LaneMergeResult[]> {
+async function mergeLanesLegacy(options: MergeLanesOptions): Promise<readonly LaneMergeResult[]> {
   const { paths, cwd, check, file, repoChecks } = options;
   const nestedRepos = options.nestedRepos ?? [];
   const runDir = paths.dir;
@@ -618,4 +623,295 @@ export async function mergeLanes(options: MergeLanesOptions): Promise<readonly L
   }
 
   return results;
+}
+
+type PublicationPolicy = NonNullable<LockRead['workspace']>;
+
+/** Путь относительно корня проекта в форме git. */
+function projectRelative(cwd: string, path: string): string {
+  return relative(cwd, path).split('\\').join('/');
+}
+
+/** Перенести явно живые файлы из checkout в интеграционное дерево. */
+function syncLiveFiles(cwd: string, integrationRoot: string, policy: PublicationPolicy): void {
+  for (const live of policy.liveFiles) {
+    const from = join(cwd, live.path);
+    const to = join(integrationRoot, live.path);
+    rmSync(to, { recursive: true, force: true });
+    if (!existsSync(from)) continue;
+    mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
+    cpSync(from, to, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+  }
+}
+
+/** Live-пути в координатах конкретного репозитория. */
+function livePathsForRepo(
+  cwd: string,
+  nestedRepos: readonly string[],
+  policy: PublicationPolicy,
+  repo: string,
+): string[] {
+  return policy.liveFiles.flatMap((live) => {
+    const owner = nestedRepoOf(cwd, nestedRepos, join(cwd, live.path)) ?? '.';
+    if (owner !== repo) return [];
+    return [repo === '.' ? live.path : live.path.slice(repo.length + 1)];
+  });
+}
+
+/**
+ * Новый путь сведения: код накладывается и проверяется только в worktree
+ * прогона, а checkout получает уже готовые коммиты через publication.ts.
+ */
+async function mergeLanesIsolated(
+  options: MergeLanesOptions,
+  policy: PublicationPolicy,
+): Promise<readonly LaneMergeResult[]> {
+  const { paths, cwd, check, file, repoChecks } = options;
+  const nestedRepos = options.nestedRepos ?? [];
+  const runDir = paths.dir;
+  const status = readStatus(paths);
+  const lanes = resolveLanes(options.lanes, knownLanes(status.jobs));
+  const manifest = readManifest(paths);
+  const sourceBases = new Map(Object.entries(manifest.source_commits ?? {}));
+  const queuePath = projectRelative(cwd, file);
+  const declaredQueue = policy.liveFiles.find((live) => live.path === queuePath);
+  if (declaredQueue === undefined) {
+    throw new StepcastError(`Файл очереди не объявлен живым файлом pipeline: ${queuePath}`, {
+      file: paths.lock,
+      at: 'workspace.live_files',
+    });
+  }
+  if (!declaredQueue.commitOnSuccess) {
+    throw new StepcastError(`Файл очереди ${queuePath} должен коммититься при успехе`, {
+      file: paths.lock,
+      at: 'workspace.live_files',
+    });
+  }
+
+  const kind: AnchorKind = manifest.anchor_kind ?? 'git';
+  const mergeable = lanes.filter(
+    (lane) => evaluateLane(status.jobs, lane).kind === 'ready' && hasLaneItem(runDir, lane),
+  );
+  assertRepoChecksDeclared(paths, mergeable, kind, nestedRepos, check, repoChecks);
+
+  const integrationDir = join(runDir, 'integration', randomUUID());
+  const integrationRoot = join(integrationDir, 'tree');
+  const rootBase = sourceBases.get('.');
+  if (rootBase === undefined) {
+    throw new StepcastError('Манифест прогона не содержит исходный коммит корня', {
+      file: paths.manifest,
+      hint: 'Повторите прогон новой версией Stepcast',
+    });
+  }
+  addWorktree({ repoDir: cwd, path: integrationRoot, ref: rootBase });
+  const addedNested: string[] = [];
+  let retainIntegration = false;
+  try {
+    for (const repo of [...nestedRepos].sort()) {
+      const base = sourceBases.get(repo);
+      if (base === undefined) {
+        throw new StepcastError(`Манифест прогона не содержит исходный коммит репозитория ${repo}`, {
+          file: paths.manifest,
+          hint: 'Повторите прогон новой версией Stepcast',
+        });
+      }
+      addWorktree({ repoDir: join(cwd, repo), path: join(integrationRoot, repo), ref: base });
+      addedNested.push(repo);
+    }
+    syncLiveFiles(cwd, integrationRoot, policy);
+    const integrationFile = join(integrationRoot, queuePath);
+    const queueRepo = nestedRepoOf(integrationRoot, nestedRepos, integrationFile) ?? '.';
+    const results: LaneMergeResult[] = [];
+    let stoppedAt: { readonly lane: string; readonly reason: string } | undefined;
+
+    const record = (result: LaneMergeResult): void => {
+      results.push(result);
+      writeLaneMerge(runDir, {
+        lane: result.lane,
+        kind: result.kind,
+        at: new Date().toISOString(),
+        ...('slug' in result ? { slug: result.slug } : {}),
+        ...('reason' in result ? { reason: result.reason } : {}),
+        ...('repos' in result ? { repos: result.repos } : {}),
+        ...('commits' in result ? { commits: result.commits } : {}),
+      });
+    };
+    const markFailed = (lane: string, reason: string): void => {
+      if (!hasLaneItem(runDir, lane)) return;
+      finishItem(file, readLaneItem(runDir, lane).slug, 'failed', reason);
+      syncLiveFiles(cwd, integrationRoot, policy);
+    };
+    const integrationTreeClean = (): void =>
+      assertCleanTree(integrationRoot, {
+        allow: policy.liveFiles.map((live) => join(integrationRoot, live.path)),
+        ...(nestedRepos.length === 0 ? {} : { nested: nestedRepos }),
+      });
+
+    for (const lane of lanes) {
+      const already = readLaneMerge(runDir, lane);
+      if (already?.kind === 'merged') {
+        const reason = `уже сведена (${
+          Object.entries(already.commits ?? {})
+            .map(([repo, sha]) => `${repo}: ${sha}`)
+            .join(', ') || 'коммиты не записаны'
+        })`;
+        record({ lane, kind: 'already_merged', reason });
+        continue;
+      }
+      if (stoppedAt !== undefined) {
+        const reason = `сведение остановилось на дорожке «${stoppedAt.lane}»: ${stoppedAt.reason}`;
+        markFailed(lane, reason);
+        record({ lane, kind: 'not_reached', reason });
+        continue;
+      }
+
+      const verdict = evaluateLane(status.jobs, lane);
+      if (verdict.kind === 'empty') {
+        record({ lane, kind: 'empty' });
+        continue;
+      }
+      if (verdict.kind === 'unfit') {
+        const reason = `работы дорожки не все успешны: ${verdict.jobs
+          .map((job) => `${job.id}=${job.status}`)
+          .join(', ')}`;
+        markFailed(lane, reason);
+        record({ lane, kind: 'unfit', reason });
+        continue;
+      }
+      if (!hasLaneItem(runDir, lane)) {
+        record({ lane, kind: 'no_item' });
+        continue;
+      }
+
+      const item = readLaneItem(runDir, lane);
+      const range = laneAnchorRange(paths, lane);
+      const affected = range === undefined ? [] : affectedRepos(kind, nestedRepos, range);
+      const commitsBefore = new Map(
+        affected.map((repo) => [repo, currentCommit(repoDirOf(integrationRoot, repo))] as const),
+      );
+      const backlogBefore = existsSync(integrationFile) ? readFileSync(integrationFile) : undefined;
+
+      let applied: ReturnType<typeof applyRun>;
+      try {
+        applied = applyRun({ paths, cwd: integrationRoot, lane, nestedRepos });
+      } catch (error) {
+        if (!isStepcastError(error)) throw error;
+        const workspace = workspaceOf(status, lane);
+        const reason = reasonWithOutput(
+          `наложение дорожки не сошлось с интеграционным деревом (рабочее дерево: ${workspace ?? 'неизвестно'}): `,
+          error.message,
+        );
+        markFailed(lane, reason);
+        record({ lane, kind: 'conflict', reason });
+        stoppedAt = { lane, reason };
+        retainIntegration = true;
+        continue;
+      }
+      if (applied.kind !== 'applied') {
+        const reason = 'дорожка не изменила дерево';
+        markFailed(lane, reason);
+        record({ lane, kind: 'no_contribution', reason });
+        continue;
+      }
+
+      let red: { readonly prefix: string; readonly output: string } | undefined;
+      for (const repo of affected) {
+        const command = checkCommandFor(repo, check, repoChecks);
+        if (command === undefined) continue;
+        const checked = await runCheck({ command, cwd: repoDirOf(integrationRoot, repo) });
+        if (checked.outcome === 'exited' && checked.exitCode === 0) continue;
+        const output = checked.stderr.trim() !== '' ? checked.stderr : checked.stdout;
+        red = {
+          prefix: `проверка после наложения красная (интеграционное дерево: ${integrationRoot}): `,
+          output,
+        };
+        break;
+      }
+      if (red !== undefined) {
+        for (const [repo, sha] of commitsBefore) resetToCommit(repoDirOf(integrationRoot, repo), sha);
+        if (backlogBefore === undefined) rmSync(integrationFile, { force: true });
+        else writeFileSync(integrationFile, backlogBefore);
+        const reason = reasonWithOutput(red.prefix, red.output);
+        markFailed(lane, reason);
+        record({ lane, kind: 'check_failed', reason });
+        try {
+          integrationTreeClean();
+        } catch (error) {
+          if (!isStepcastError(error)) throw error;
+          stoppedAt = { lane, reason: `откат интеграционного дерева не подтверждён: ${error.message}` };
+          retainIntegration = true;
+        }
+        continue;
+      }
+
+      finishItem(integrationFile, item.slug, 'done');
+      const message = `${item.slug}: ${item.title ?? 'улучшение из очереди'}`;
+      const committed: string[] = [];
+      const commits: Record<string, string> = {};
+      const order = commitOrder(integrationRoot, affected, queueRepo);
+      for (const repo of order) {
+        if (!commitAll(repoDirOf(integrationRoot, repo), message)) continue;
+        committed.push(repo);
+        commits[repo] = currentCommit(repoDirOf(integrationRoot, repo));
+      }
+
+      const prepared = new Map<string, PreparedPublication>();
+      try {
+        for (const repo of committed) {
+          const base = sourceBases.get(repo);
+          if (base === undefined) throw new StepcastError(`Не записан исходный коммит репозитория ${repo}`);
+          const stateDir = join(integrationDir, 'publication', lane, repo === '.' ? 'root' : repo.replaceAll('/', '__'));
+          prepared.set(
+            repo,
+            preparePublication({
+              repoDir: repoDirOf(cwd, repo),
+              base,
+              target: commits[repo]!,
+              stateDir,
+              exclude: livePathsForRepo(cwd, nestedRepos, policy, repo),
+            }),
+          );
+        }
+        const publicationOrder = [...committed].sort((left, right) =>
+          left === '.' ? -1 : right === '.' ? 1 : 0,
+        );
+        for (const repo of publicationOrder) {
+          const stateDir = join(integrationDir, 'publication', lane, repo === '.' ? 'root' : repo.replaceAll('/', '__'));
+          publishPrepared({ repoDir: repoDirOf(cwd, repo), prepared: prepared.get(repo)!, stateDir });
+          sourceBases.set(repo, commits[repo]!);
+        }
+      } catch (error) {
+        if (!isStepcastError(error)) throw error;
+        const reason = reasonWithOutput(
+          `результат сохранён в интеграционном дереве, но конфликтует с локальными изменениями: `,
+          error.message,
+        );
+        markFailed(lane, reason);
+        record({ lane, kind: 'publication_conflict', reason });
+        stoppedAt = { lane, reason };
+        retainIntegration = true;
+        continue;
+      }
+
+      record({ lane, kind: 'merged', slug: item.slug, repos: committed, commits });
+    }
+    return results;
+  } finally {
+    if (!retainIntegration) {
+      for (const repo of [...addedNested].reverse()) {
+        removeWorktree({
+          repoDir: join(cwd, repo),
+          path: join(integrationRoot, repo),
+          runDir: integrationDir,
+        });
+      }
+      removeWorktree({ repoDir: cwd, path: integrationRoot, runDir: integrationDir });
+    }
+  }
+}
+
+export async function mergeLanes(options: MergeLanesOptions): Promise<readonly LaneMergeResult[]> {
+  const publication = readLock(options.paths.lock).workspace;
+  if (publication?.preserveLocalChanges === true) return mergeLanesIsolated(options, publication);
+  return mergeLanesLegacy(options);
 }

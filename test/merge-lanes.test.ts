@@ -273,6 +273,27 @@ jobs:
 `;
 }
 
+/** Та же дорожка с публикацией поверх локальных правок и явно живой очередью. */
+function dirtyTreeLanePipeline(aCommand: string): string {
+  return `
+version: 1
+kind: pipeline
+name: дорожка-поверх-грязного-дерева
+workspace:
+  mode: worktree
+  source: commit
+  preserve_local_changes: true
+  live_files:
+    - path: backlog.md
+      writeback: always
+      commit_on_success: true
+jobs:
+  work-a:
+    lane: a
+    steps: [{ id: шаг, run: [sh, -c, '${aCommand}'], expect: [{ exit_code: 0 }] }]
+`;
+}
+
 /** Пайплайн с двумя однорабочими дорожками — по умолчанию обе завершаются успешно. */
 function twoLanePipeline(aCommand: string, bCommand: string): string {
   return `
@@ -317,6 +338,175 @@ jobs:
 const SUCCESS_A = 'printf "от a\\n" > a.txt';
 const SUCCESS_B = 'printf "от b\\n" > b.txt';
 const SUCCESS_C = 'printf "от c\\n" > c.txt';
+
+describe('core: mergeLanes — публикация поверх нечистого дерева', () => {
+  it('коммитит результат и live-очередь, оставляя unrelated staged, unstaged и untracked локальными', async () => {
+    const project = makeProject({
+      'stepcast.yml': dirtyTreeLanePipeline(SUCCESS_A),
+      'backlog.md': backlogItem('a-item'),
+      'tracked.txt': 'base\n',
+    });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = tempDir('lanes-runs-');
+    const result = await runLanes(project, runsRoot);
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    writeFileSync(project.path('tracked.txt'), 'staged\n');
+    execFileSync('git', ['-C', project.root, 'add', 'tracked.txt']);
+    writeFileSync(project.path('tracked.txt'), 'staged и unstaged\n');
+    writeFileSync(project.path('draft.txt'), 'untracked\n');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: project.path('backlog.md'),
+    });
+
+    assert.equal(outcomes[0]?.kind, 'merged');
+    assert.equal(readFileSync(project.path('a.txt'), 'utf8'), 'от a\n');
+    assert.equal(readFileSync(project.path('tracked.txt'), 'utf8'), 'staged и unstaged\n');
+    assert.equal(readFileSync(project.path('draft.txt'), 'utf8'), 'untracked\n');
+    assert.equal(statusOf(readFileSync(project.path('backlog.md'), 'utf8'), 'a-item'), 'done');
+    assert.match(porcelainAt(project.root), /^MM tracked\.txt$/m);
+    assert.match(porcelainAt(project.root), /^\?\? draft\.txt$/m);
+    assert.deepEqual(committedPaths(project.root), ['a.txt', 'backlog.md']);
+    assert.equal(execFileSync('git', ['-C', project.root, 'stash', 'list'], { encoding: 'utf8' }), '');
+  });
+
+  it('объединяет далёкие правки одного файла, сохраняя staged и unstaged границу', async () => {
+    const base = 'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n';
+    const project = makeProject({
+      'stepcast.yml': dirtyTreeLanePipeline(
+        'sed -i.bak "s/^ten$/pipeline/" shared.txt && rm shared.txt.bak',
+      ),
+      'backlog.md': backlogItem('a-item'),
+      'shared.txt': base,
+    });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = tempDir('lanes-runs-');
+    const result = await runLanes(project, runsRoot);
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    writeFileSync(project.path('shared.txt'), base.replace('one', 'staged'));
+    execFileSync('git', ['-C', project.root, 'add', 'shared.txt']);
+    writeFileSync(project.path('shared.txt'), base.replace('one', 'staged').replace('two', 'unstaged'));
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: project.path('backlog.md'),
+    });
+
+    assert.equal(outcomes[0]?.kind, 'merged');
+    assert.equal(
+      readFileSync(project.path('shared.txt'), 'utf8'),
+      base.replace('one', 'staged').replace('two', 'unstaged').replace('ten', 'pipeline'),
+    );
+    assert.match(porcelainAt(project.root), /^MM shared\.txt$/m);
+  });
+
+  it('на настоящем конфликте не меняет HEAD и локальные байты, оставляя интеграционный результат', async () => {
+    const project = makeProject({
+      'stepcast.yml': dirtyTreeLanePipeline('printf "pipeline\\n" > shared.txt'),
+      'backlog.md': backlogItem('a-item'),
+      'shared.txt': 'base\n',
+    });
+    gitInit(project);
+    commit(project, 'начальный');
+    const baseHead = headShaAt(project.root);
+    const runsRoot = tempDir('lanes-runs-');
+    const result = await runLanes(project, runsRoot);
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeFileSync(project.path('shared.txt'), 'local\n');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: project.path('backlog.md'),
+    });
+
+    assert.equal((outcomes[0] as { kind: string } | undefined)?.kind, 'publication_conflict');
+    assert.equal(headShaAt(project.root), baseHead);
+    assert.equal(readFileSync(project.path('shared.txt'), 'utf8'), 'local\n');
+    assert.equal(existsSync(join(result.journal.paths.dir, 'integration')), true);
+    assert.equal(execFileSync('git', ['-C', project.root, 'stash', 'list'], { encoding: 'utf8' }), '');
+  });
+
+  it('красная проверка портит только одноразовое интеграционное дерево', async () => {
+    const project = makeProject({
+      'stepcast.yml': dirtyTreeLanePipeline(SUCCESS_A),
+      'backlog.md': backlogItem('a-item'),
+    });
+    gitInit(project);
+    commit(project, 'начальный');
+    const baseHead = headShaAt(project.root);
+    const runsRoot = tempDir('lanes-runs-');
+    const result = await runLanes(project, runsRoot);
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    writeFileSync(project.path('local-draft.txt'), 'keep\n');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'printf "check debris\\n" > check-debris.txt; exit 1',
+      file: project.path('backlog.md'),
+    });
+
+    assert.equal(outcomes[0]?.kind, 'check_failed');
+    assert.equal(headShaAt(project.root), baseHead);
+    assert.equal(existsSync(project.path('a.txt')), false);
+    assert.equal(existsSync(project.path('check-debris.txt')), false);
+    assert.equal(readFileSync(project.path('local-draft.txt'), 'utf8'), 'keep\n');
+    assert.equal(statusOf(readFileSync(project.path('backlog.md'), 'utf8'), 'a-item'), 'failed');
+  });
+
+  it('публикует составной результат в корень и вложенный репозиторий поверх их локальных правок', async () => {
+    const pipeline = dirtyTreeLanePipeline(
+      'printf "root pipeline\\n" > root-a.txt; printf "backend pipeline\\n" > backend/backend-a.txt',
+    );
+    const project = makeCompositeProject(pipeline);
+    writeFileSync(project.path('backlog.md'), backlogItem('a-item'));
+    writeFileSync(project.path('root-local.txt'), 'base\n');
+    writeFileSync(project.path('backend/backend-local.txt'), 'base\n');
+    gitCommit(project.path('backend'), 'backend fixtures');
+    commit(project, 'очередь и fixtures');
+    const runsRoot = tempDir('lanes-runs-');
+    const config = withNestedRepos(project, ['backend']);
+    const result = await runLanesWithConfig(project, runsRoot, config);
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    writeFileSync(project.path('root-local.txt'), 'root local\n');
+    writeFileSync(project.path('backend/backend-local.txt'), 'backend local\n');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: project.path('backlog.md'),
+      nestedRepos: ['backend'],
+      repoChecks: new Map([['backend', 'exit 0']]),
+    });
+
+    assert.equal(outcomes[0]?.kind, 'merged');
+    assert.equal(readFileSync(project.path('root-a.txt'), 'utf8'), 'root pipeline\n');
+    assert.equal(readFileSync(project.path('backend/backend-a.txt'), 'utf8'), 'backend pipeline\n');
+    assert.equal(readFileSync(project.path('root-local.txt'), 'utf8'), 'root local\n');
+    assert.equal(readFileSync(project.path('backend/backend-local.txt'), 'utf8'), 'backend local\n');
+    assert.match(porcelainAt(project.root), /^M backend$/m, 'грязь вложенного дерева видна корню как прежде');
+    assert.match(porcelainAt(project.root), /^ M root-local\.txt$/m);
+    assert.equal(porcelainAt(project.path('backend')), 'M backend-local.txt');
+  });
+});
 
 describe('core: mergeLanes — наложение и порядок', () => {
   it('обе годные дорожки сводятся в порядке перечня, каждая своим коммитом', async () => {
