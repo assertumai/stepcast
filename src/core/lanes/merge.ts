@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
 import { checkCompositeComposition, type AnchorKind } from '../anchor/index.js';
 import { StepcastError, isStepcastError } from '../errors.js';
@@ -11,18 +11,30 @@ import type { RunStatus } from '../journal/schema.js';
 import { atomicWrite } from '../journal/writer.js';
 import { readLock, type LockRead } from '../pipeline/lockRead.js';
 import { applyRun, laneAnchorRange, type LaneAnchorRange } from '../run/apply.js';
+import {
+  assertLiveFilesUnchanged,
+  snapshotLiveFiles,
+  syncLiveFiles,
+  writebackLiveFiles,
+} from '../run/liveFiles.js';
 import { addWorktree, removeWorktree } from '../run/worktrees.js';
 import { runCheck } from './check.js';
 import { hasLaneItem, readLaneItem } from './item.js';
 import { evaluateLane, knownLanes } from './lanes.js';
 import { readLaneMerge, writeLaneMerge } from './mergeRecord.js';
-import { preparePublication, publishPrepared, type PreparedPublication } from './publication.js';
+import {
+  preparePublication,
+  publishPrepared,
+  rollbackPrepared,
+  type PreparedPublication,
+} from './publication.js';
 import {
   assertCleanTree,
   commitAll,
   currentCommit,
   headMessage,
   nestedRepoOf,
+  restorePathsToHead,
   resetToCommit,
   tracksGitlink,
 } from './tree.js';
@@ -649,18 +661,6 @@ function projectRelative(cwd: string, path: string): string {
   return relative(cwd, path).split('\\').join('/');
 }
 
-/** Перенести явно живые файлы из checkout в интеграционное дерево. */
-function syncLiveFiles(cwd: string, integrationRoot: string, policy: PublicationPolicy): void {
-  for (const live of policy.liveFiles) {
-    const from = join(cwd, live.path);
-    const to = join(integrationRoot, live.path);
-    rmSync(to, { recursive: true, force: true });
-    if (!existsSync(from)) continue;
-    mkdirSync(dirname(to), { recursive: true, mode: 0o700 });
-    cpSync(from, to, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
-  }
-}
-
 /** Live-пути в координатах конкретного репозитория. */
 function livePathsForRepo(
   cwd: string,
@@ -736,7 +736,7 @@ async function mergeLanesIsolated(
       addWorktree({ repoDir: join(cwd, repo), path: join(integrationRoot, repo), ref: base });
       addedNested.push(repo);
     }
-    syncLiveFiles(cwd, integrationRoot, policy);
+    let liveSnapshot = syncLiveFiles(cwd, integrationRoot, policy.liveFiles);
     const integrationFile = join(integrationRoot, queuePath);
     const queueRepo = nestedRepoOf(integrationRoot, nestedRepos, integrationFile) ?? '.';
     const results: LaneMergeResult[] = [];
@@ -756,14 +756,22 @@ async function mergeLanesIsolated(
     };
     const markFailed = (lane: string, reason: string): void => {
       if (!hasLaneItem(runDir, lane)) return;
+      assertLiveFilesUnchanged(cwd, policy.liveFiles, liveSnapshot);
       finishItem(file, readLaneItem(runDir, lane).slug, 'failed', reason);
-      syncLiveFiles(cwd, integrationRoot, policy);
+      liveSnapshot = syncLiveFiles(cwd, integrationRoot, policy.liveFiles);
     };
     const integrationTreeClean = (): void =>
       assertCleanTree(integrationRoot, {
         allow: policy.liveFiles.map((live) => join(integrationRoot, live.path)),
         ...(nestedRepos.length === 0 ? {} : { nested: nestedRepos }),
       });
+    const writebackOnly = policy.liveFiles.filter((live) => !live.commitOnSuccess);
+    const restoreWritebackOnly = (): void => {
+      for (const repo of ['.', ...nestedRepos]) {
+        const paths = livePathsForRepo(cwd, nestedRepos, { ...policy, liveFiles: writebackOnly }, repo);
+        if (paths.length > 0) restorePathsToHead(repoDirOf(integrationRoot, repo), paths);
+      }
+    };
 
     for (const lane of lanes) {
       const already = readLaneMerge(runDir, lane);
@@ -811,6 +819,7 @@ async function mergeLanesIsolated(
 
       let applied: ReturnType<typeof applyRun>;
       try {
+        restoreWritebackOnly();
         applied = applyRun({ paths, cwd: integrationRoot, lane, nestedRepos });
       } catch (error) {
         if (!isStepcastError(error)) throw error;
@@ -862,6 +871,28 @@ async function mergeLanesIsolated(
         continue;
       }
 
+      try {
+        assertLiveFilesUnchanged(cwd, policy.liveFiles, liveSnapshot);
+        writebackLiveFiles({
+          sourceRoot: cwd,
+          workspaceRoot: integrationRoot,
+          liveFiles: writebackOnly,
+          snapshot: liveSnapshot,
+        });
+        liveSnapshot = snapshotLiveFiles(cwd, policy.liveFiles);
+        restoreWritebackOnly();
+      } catch (error) {
+        if (!isStepcastError(error)) throw error;
+        const reason = reasonWithOutput(
+          'результат сохранён в интеграционном дереве, но живой файл изменился параллельно: ',
+          error.message,
+        );
+        record({ lane, kind: 'publication_conflict', reason });
+        stoppedAt = { lane, reason };
+        retainIntegration = true;
+        continue;
+      }
+
       finishItem(integrationFile, item.slug, 'done');
       const message = `${item.slug}: ${item.title ?? 'улучшение из очереди'}`;
       const committed: string[] = [];
@@ -875,7 +906,43 @@ async function mergeLanesIsolated(
 
       const prepared = new Map<string, PreparedPublication>();
       const recoveryPath = publicationRecoveryPath(runDir);
+      const publicationOrder = [...committed].sort((left, right) =>
+        left === '.' ? -1 : right === '.' ? 1 : 0,
+      );
+      const published: string[] = [];
+      const writeRecovery = (): void => {
+        atomicWrite(
+          recoveryPath,
+          `${JSON.stringify(
+            {
+              version: 1,
+              lane,
+              integration_dir: integrationDir,
+              order: publicationOrder,
+              published,
+              repositories: Object.fromEntries(
+                publicationOrder.map((repo) => [
+                  repo,
+                  {
+                    dir: repoDirOf(cwd, repo),
+                    state_dir: join(
+                      integrationDir,
+                      'publication',
+                      lane,
+                      repo === '.' ? 'root' : repo.replaceAll('/', '__'),
+                    ),
+                    prepared: prepared.get(repo),
+                  },
+                ]),
+              ),
+            },
+            null,
+            2,
+          )}\n`,
+        );
+      };
       try {
+        assertLiveFilesUnchanged(cwd, policy.liveFiles, liveSnapshot);
         for (const repo of committed) {
           const base = sourceBases.get(repo);
           if (base === undefined) throw new StepcastError(`Не записан исходный коммит репозитория ${repo}`);
@@ -887,45 +954,18 @@ async function mergeLanesIsolated(
               base,
               target: commits[repo]!,
               stateDir,
-              exclude: livePathsForRepo(cwd, nestedRepos, policy, repo),
+              // Коммитящиеся live-файлы берутся из target (например, очередь
+              // со status: done). Некоммитящиеся остаются обычным локальным
+              // слоем и потому переживают публикацию побайтово.
+              exclude: livePathsForRepo(
+                cwd,
+                nestedRepos,
+                { ...policy, liveFiles: policy.liveFiles.filter((live) => live.commitOnSuccess) },
+                repo,
+              ),
             }),
           );
         }
-        const publicationOrder = [...committed].sort((left, right) =>
-          left === '.' ? -1 : right === '.' ? 1 : 0,
-        );
-        const published: string[] = [];
-        const writeRecovery = (): void => {
-          atomicWrite(
-            recoveryPath,
-            `${JSON.stringify(
-              {
-                version: 1,
-                lane,
-                integration_dir: integrationDir,
-                order: publicationOrder,
-                published,
-                repositories: Object.fromEntries(
-                  publicationOrder.map((repo) => [
-                    repo,
-                    {
-                      dir: repoDirOf(cwd, repo),
-                      state_dir: join(
-                        integrationDir,
-                        'publication',
-                        lane,
-                        repo === '.' ? 'root' : repo.replaceAll('/', '__'),
-                      ),
-                      prepared: prepared.get(repo),
-                    },
-                  ]),
-                ),
-              },
-              null,
-              2,
-            )}\n`,
-          );
-        };
         // До первого update-ref: при обрыве известны оба SHA, оба дерева и
         // порядок всех репозиториев, включая ещё не начатые.
         writeRecovery();
@@ -939,11 +979,38 @@ async function mergeLanesIsolated(
         rmSync(recoveryPath, { force: true });
       } catch (error) {
         if (!isStepcastError(error)) throw error;
-        const reason = reasonWithOutput(
+        let reason = reasonWithOutput(
           `результат сохранён в интеграционном дереве, но конфликтует с локальными изменениями: `,
           error.message,
         );
-        markFailed(lane, reason);
+        try {
+          for (const repo of [...published].reverse()) {
+            const stateDir = join(
+              integrationDir,
+              'publication',
+              lane,
+              repo === '.' ? 'root' : repo.replaceAll('/', '__'),
+            );
+            rollbackPrepared({ repoDir: repoDirOf(cwd, repo), prepared: prepared.get(repo)!, stateDir });
+            sourceBases.set(repo, prepared.get(repo)!.base);
+            published.pop();
+            writeRecovery();
+          }
+          rmSync(recoveryPath, { force: true });
+        } catch (rollbackError) {
+          reason = reasonWithOutput(
+            `${reason}; составной возврат не завершён, данные восстановления сохранены: `,
+            rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+          );
+        }
+        try {
+          markFailed(lane, reason);
+        } catch (liveError) {
+          reason = reasonWithOutput(
+            `${reason}; очередь не перезаписана, потому что изменилась параллельно: `,
+            liveError instanceof Error ? liveError.message : String(liveError),
+          );
+        }
         record({ lane, kind: 'publication_conflict', reason });
         stoppedAt = { lane, reason };
         retainIntegration = true;

@@ -256,3 +256,32 @@ export function publishPrepared(options: {
     throw error;
   }
 }
+
+/**
+ * Обратить уже завершённую публикацию одного репозитория. Вызывается только
+ * агрегатором составной публикации, если следующий репозиторий не смог
+ * опубликоваться; CAS не позволяет стереть правку, случившуюся после неё.
+ */
+export function rollbackPrepared(options: {
+  readonly repoDir: string;
+  readonly prepared: PreparedPublication;
+  readonly stateDir: string;
+}): void {
+  const { repoDir, prepared, stateDir } = options;
+  const current = captureCurrent(repoDir, stateDir);
+  const publishedFingerprint = fingerprint({
+    head: prepared.target,
+    indexTree: prepared.indexTree,
+    worktreeTree: prepared.worktreeTree,
+  });
+  if (current.fingerprint !== publishedFingerprint) {
+    throw new StepcastError('Опубликованное дерево изменилось до составного возврата', {
+      file: repoDir,
+      hint: `Ожидался коммит ${prepared.target}; данные восстановления оставлены на диске`,
+    });
+  }
+  git(repoDir, ['update-ref', 'HEAD', prepared.sourceHead, prepared.target]);
+  git(repoDir, ['read-tree', prepared.sourceIndexTree]);
+  const rollbackPaths = pathsBetween(repoDir, prepared.worktreeTree, prepared.sourceWorktreeTree);
+  materialize(repoDir, prepared.sourceWorktreeTree, rollbackPaths, stateDir);
+}

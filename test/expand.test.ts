@@ -1770,6 +1770,35 @@ jobs:
     assert.throws(() => expand(project), StepcastError);
   });
 
+  for (const mode of ['cwd', 'copy']) {
+    it(`не принимает source: commit с режимом ${mode}`, () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+workspace: { mode: ${mode}, source: commit, preserve_local_changes: true }
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+      });
+      assert.throws(() => expand(project), /требует workspace\.mode: worktree/);
+    });
+  }
+
+  it('не позволяет job выйти из commit-backed worktree в cwd', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+workspace: { mode: worktree, source: commit, preserve_local_changes: true }
+jobs:
+  build:
+    workspace: { mode: cwd }
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+    assert.throws(() => expand(project), /меняет commit-backed workspace на cwd/);
+  });
+
   for (const path of ['/tmp/backlog.md', '../backlog.md', 'queue/../../backlog.md']) {
     it(`не принимает живой путь вне корня: ${path}`, () => {
       const project = makeProject({

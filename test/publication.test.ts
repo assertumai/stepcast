@@ -7,6 +7,7 @@ import { describe, it } from 'node:test';
 import {
   preparePublication,
   publishPrepared,
+  rollbackPrepared,
 } from '../src/core/lanes/publication.js';
 import { gitCommit, gitInit } from './helpers.js';
 import { tempDir } from './tmp.js';
@@ -172,5 +173,27 @@ describe('publication: результат поверх нечистого дер
     );
     assert.equal(git(repo, 'rev-parse', 'HEAD'), base);
     assert.equal(readFileSync(join(repo, 'late.txt'), 'utf8'), 'concurrent\n');
+  });
+
+  it('обращает завершённую публикацию побайтово при отказе следующего репозитория', () => {
+    const repo = repository({ 'code.txt': 'base\n', 'local.txt': 'base\n' });
+    const base = git(repo, 'rev-parse', 'HEAD');
+    const target = targetCommit(repo, (dir) => writeFileSync(join(dir, 'code.txt'), 'pipeline\n'));
+    writeFileSync(join(repo, 'local.txt'), 'staged\n');
+    git(repo, 'add', 'local.txt');
+    writeFileSync(join(repo, 'local.txt'), 'staged and unstaged\n');
+    writeFileSync(join(repo, 'draft.txt'), 'untracked\n');
+    const beforeStatus = git(repo, 'status', '--porcelain');
+
+    const stateDir = tempDir('publication-state-');
+    const prepared = preparePublication({ repoDir: repo, base, target, stateDir, exclude: [] });
+    publishPrepared({ repoDir: repo, prepared, stateDir });
+    rollbackPrepared({ repoDir: repo, prepared, stateDir });
+
+    assert.equal(git(repo, 'rev-parse', 'HEAD'), base);
+    assert.equal(git(repo, 'status', '--porcelain'), beforeStatus);
+    assert.equal(readFileSync(join(repo, 'code.txt'), 'utf8'), 'base\n');
+    assert.equal(readFileSync(join(repo, 'local.txt'), 'utf8'), 'staged and unstaged\n');
+    assert.equal(readFileSync(join(repo, 'draft.txt'), 'utf8'), 'untracked\n');
   });
 });

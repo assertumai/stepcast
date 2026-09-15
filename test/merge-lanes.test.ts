@@ -294,6 +294,25 @@ jobs:
 `;
 }
 
+function dirtyTreeLanePipelineWithNotes(aCommand: string): string {
+  return `
+version: 1
+kind: pipeline
+name: дорожка-с-некоммитным-live-файлом
+workspace:
+  mode: worktree
+  source: commit
+  preserve_local_changes: true
+  live_files:
+    - { path: backlog.md, writeback: always, commit_on_success: true }
+    - { path: notes.md, writeback: always, commit_on_success: false }
+jobs:
+  work-a:
+    lane: a
+    steps: [{ id: шаг, run: [sh, -c, '${aCommand}'], expect: [{ exit_code: 0 }] }]
+`;
+}
+
 /** Пайплайн с двумя однорабочими дорожками — по умолчанию обе завершаются успешно. */
 function twoLanePipeline(aCommand: string, bCommand: string): string {
   return `
@@ -340,6 +359,64 @@ const SUCCESS_B = 'printf "от b\\n" > b.txt';
 const SUCCESS_C = 'printf "от c\\n" > c.txt';
 
 describe('core: mergeLanes — публикация поверх нечистого дерева', () => {
+  it('не перезаписывает live-очередь, изменённую во время интеграционной проверки', async () => {
+    const project = makeProject({
+      'stepcast.yml': dirtyTreeLanePipeline(SUCCESS_A),
+      'backlog.md': backlogItem('a-item'),
+    });
+    gitInit(project);
+    commit(project, 'начальный');
+    const baseHead = headShaAt(project.root);
+    const runsRoot = tempDir('lanes-runs-');
+    const result = await runLanes(project, runsRoot);
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: `printf concurrent > "${project.path('backlog.md')}"`,
+      file: project.path('backlog.md'),
+    });
+
+    assert.equal(outcomes[0]?.kind, 'publication_conflict');
+    assert.equal(headShaAt(project.root), baseHead);
+    assert.equal(readFileSync(project.path('backlog.md'), 'utf8'), 'concurrent');
+  });
+
+  it('возвращает commit_on_success: false в checkout, но не включает его в коммит', async () => {
+    const project = makeProject({
+      'stepcast.yml': dirtyTreeLanePipelineWithNotes('printf "от a\\n" > a.txt; printf "lane\\n" > notes.md'),
+      'backlog.md': backlogItem('a-item'),
+      'notes.md': 'base\n',
+    });
+    gitInit(project);
+    commit(project, 'начальный');
+    const runsRoot = tempDir('lanes-runs-');
+    const result = await runLanes(project, runsRoot);
+    assert.equal(readFileSync(project.path('notes.md'), 'utf8'), 'lane\n');
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+
+    const outcomes = await mergeLanes({
+      paths: result.journal.paths,
+      cwd: project.root,
+      lanes: ['a'],
+      check: 'exit 0',
+      file: project.path('backlog.md'),
+    });
+
+    assert.equal(outcomes[0]?.kind, 'merged');
+    assert.equal(readFileSync(project.path('notes.md'), 'utf8'), 'lane\n');
+    assert.match(porcelainAt(project.root), /^M notes\.md$/m);
+    assert.equal(
+      execFileSync('git', ['-C', project.root, 'diff', '--cached', '--name-only', '--', 'notes.md'], {
+        encoding: 'utf8',
+      }),
+      '',
+    );
+    assert.deepEqual(committedPaths(project.root), ['a.txt', 'backlog.md']);
+  });
+
   it('коммитит результат и live-очередь, оставляя unrelated staged, unstaged и untracked локальными', async () => {
     const project = makeProject({
       'stepcast.yml': dirtyTreeLanePipeline(SUCCESS_A),

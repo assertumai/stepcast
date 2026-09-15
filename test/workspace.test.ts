@@ -482,6 +482,70 @@ function gitHead(dir: string): string {
 }
 
 describe('workspace-modes: материализация объявленных частей', () => {
+  it('исполняет commit-backed код, подкладывает live-файл и возвращает только его', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+workspace:
+  mode: worktree
+  source: commit
+  preserve_local_changes: true
+  live_files:
+    - { path: backlog.md, writeback: always, commit_on_success: true }
+jobs:
+  build:
+    steps:
+      - id: work
+        run: [sh, -c, 'test "$(cat code.txt)" = committed && test "$(cat backlog.md)" = live && printf job > backlog.md']
+        expect: [{ exit_code: 0 }]
+`,
+      'code.txt': 'committed',
+      'backlog.md': 'base',
+    });
+    gitInit(project);
+    commit(project, 'base');
+    project.write('code.txt', 'dirty');
+    project.write('backlog.md', 'live');
+
+    const result = await run(project);
+
+    assert.equal(result.status, 'success');
+    assert.equal(readFileSync(project.path('code.txt'), 'utf8'), 'dirty');
+    assert.equal(readFileSync(project.path('backlog.md'), 'utf8'), 'job');
+  });
+
+  it('не перезаписывает live-файл, изменённый параллельно исполнению job', async () => {
+    const project = makeProject({
+      'stepcast.yml': '',
+      'backlog.md': 'base',
+    });
+    project.write(
+      'stepcast.yml',
+      `
+kind: pipeline
+workspace:
+  mode: worktree
+  source: commit
+  preserve_local_changes: true
+  live_files:
+    - { path: backlog.md, writeback: always, commit_on_success: true }
+jobs:
+  build:
+    steps:
+      - id: work
+        run: [sh, -c, 'printf concurrent > "${project.path('backlog.md')}"; printf job > backlog.md']
+        expect: [{ exit_code: 0 }]
+`,
+    );
+    gitInit(project);
+    commit(project, 'base');
+
+    const result = await run(project);
+
+    assert.equal(result.status, 'failed');
+    assert.equal(readFileSync(project.path('backlog.md'), 'utf8'), 'concurrent');
+  });
+
   it('заводит позднее рабочее дерево из коммита начала прогона, а не из сдвинувшегося HEAD', async () => {
     const project = makeProject({
       'stepcast.yml': pipelineWriting('worktree'),

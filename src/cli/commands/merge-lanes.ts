@@ -3,7 +3,7 @@ import { resolve as resolvePath } from 'node:path';
 import { resolveConfig, type Config } from '../../core/config/resolve.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
-import { resolveRun } from '../../core/journal/reader.js';
+import { readManifest, resolveRun } from '../../core/journal/reader.js';
 import { mergeLanes, type LaneMergeResult } from '../../core/lanes/merge.js';
 import type { ParsedArgs } from '../args.js';
 
@@ -86,8 +86,6 @@ export async function runMergeLanesCommand(
     throw new StepcastError('ключ --check обязателен: свести непроверенное молча команда не может');
   }
 
-  const file = resolvePath(cwd, stringFlag(args.flags, 'file') ?? 'backlog.md');
-
   // «Последний прогон» здесь не подставляется: команда коммитит и стирает
   // дерево, и ошибиться прогоном по умолчанию она не должна иметь возможности.
   const runId = args.positional[0] ?? process.env.STEPCAST_RUN_ID;
@@ -98,12 +96,16 @@ export async function runMergeLanesCommand(
   const { config } = resolveConfig({ cwd });
   const projectRoot = findProjectRoot(cwd);
   const paths = resolveRun(config.runs.root, projectRoot, runId);
+  // Команда нередко сама исполняется из worktree работы. Публикуется всегда
+  // checkout, из которого стартовал прогон, записанный в неизменном манифесте.
+  const sourceRoot = readManifest(paths).project_root;
+  const file = resolvePath(sourceRoot, stringFlag(args.flags, 'file') ?? 'backlog.md');
 
   const repoChecks = repoChecksFrom(config);
 
   const results = await mergeLanes({
     paths,
-    cwd,
+    cwd: sourceRoot,
     lanes,
     check,
     file,

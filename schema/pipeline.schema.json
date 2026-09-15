@@ -3753,5 +3753,87 @@
   "required": [
     "jobs"
   ],
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "workspace"
+        ],
+        "properties": {
+          "workspace": {
+            "anyOf": [
+              {
+                "required": [
+                  "source"
+                ]
+              },
+              {
+                "required": [
+                  "preserve_local_changes"
+                ]
+              },
+              {
+                "required": [
+                  "live_files"
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "workspace": {
+            "properties": {
+              "mode": {
+                "const": "worktree"
+              }
+            }
+          },
+          "jobs": {
+            "additionalProperties": {
+              "properties": {
+                "workspace": {
+                  "properties": {
+                    "mode": {
+                      "const": "worktree"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "workspace"
+        ],
+        "properties": {
+          "workspace": {
+            "required": [
+              "live_files"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "workspace": {
+            "required": [
+              "preserve_local_changes"
+            ],
+            "properties": {
+              "preserve_local_changes": {
+                "const": true
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

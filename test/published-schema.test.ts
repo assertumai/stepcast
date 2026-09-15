@@ -160,6 +160,33 @@ describe('published-schema: политика публикации принадл
       false,
     );
   });
+
+  it('не принимает publication policy с cwd/copy или job override в cwd', () => {
+    const { pipeline } = buildPublishedSchemas();
+    const validate = compileAny(pipeline);
+    for (const mode of ['cwd', 'copy']) {
+      assert.equal(
+        validate({
+          version: 1,
+          kind: 'pipeline',
+          workspace: { ...publication, mode },
+          jobs: { build: { steps: [{ id: 'say', run: ['echo', 'ok'] }] } },
+        }),
+        false,
+      );
+    }
+    assert.equal(
+      validate({
+        version: 1,
+        kind: 'pipeline',
+        workspace: publication,
+        jobs: {
+          build: { workspace: { mode: 'cwd' }, steps: [{ id: 'say', run: ['echo', 'ok'] }] },
+        },
+      }),
+      false,
+    );
+  });
 });
 
 describe('published-schema: вложение схемы значения плагинного предиката', () => {

@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { realpathSync, statSync } from 'node:fs';
-import { relative, resolve as resolvePath } from 'node:path';
+import { realpathSync, rmSync, statSync } from 'node:fs';
+import { join, relative, resolve as resolvePath } from 'node:path';
 
 import { isGitWorktree } from '../anchor/git.js';
 import { StepcastError } from '../errors.js';
@@ -18,6 +18,19 @@ function git(dir: string, args: readonly string[]): string {
     maxBuffer: 64 * 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+}
+
+/** Вернуть названные пути одноразового интеграционного дерева к его HEAD. */
+export function restorePathsToHead(dir: string, paths: readonly string[]): void {
+  for (const path of paths) {
+    try {
+      git(dir, ['cat-file', '-e', `HEAD:${path}`]);
+      git(dir, ['restore', '--source=HEAD', '--staged', '--worktree', '--', path]);
+    } catch {
+      git(dir, ['reset', '--quiet', 'HEAD', '--', path]);
+      rmSync(join(dir, path), { recursive: true, force: true });
+    }
+  }
 }
 
 export interface CleanTreeOptions {

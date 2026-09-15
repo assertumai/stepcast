@@ -1893,6 +1893,32 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     });
   }
 
+  if (publication !== undefined) {
+    if (pipelineWorkspace.mode !== 'worktree') {
+      throw new StepcastError('Политика source: commit требует workspace.mode: worktree', {
+        file: pipelinePath,
+        at: 'workspace.mode',
+      });
+    }
+    const nonIsolated = jobs.find((job) => job.workspace.mode !== 'worktree');
+    if (nonIsolated !== undefined) {
+      throw new StepcastError(
+        `Работа ${nonIsolated.id} меняет commit-backed workspace на ${nonIsolated.workspace.mode}`,
+        {
+          file: nonIsolated.source,
+          at: `jobs.${nonIsolated.id}.workspace.mode`,
+          hint: 'При source: commit все работы исполняются в worktree; используйте workspace.inherit для выбора дерева',
+        },
+      );
+    }
+    if (publication.liveFiles.length > 0 && !publication.preserveLocalChanges) {
+      throw new StepcastError('Живые файлы требуют preserve_local_changes: true', {
+        file: pipelinePath,
+        at: 'workspace.preserve_local_changes',
+      });
+    }
+  }
+
   const triggers = toTriggers(doc.triggers);
 
   const pipeline: Pipeline = {

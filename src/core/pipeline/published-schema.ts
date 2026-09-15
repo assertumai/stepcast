@@ -236,7 +236,50 @@ function printDocument(schema: z.ZodType, title: string): Record<string, unknown
   // Тот же вызов и тот же порядок ключей, что в `scripts/generate-schema.ts`:
   // расхождение здесь сделало бы схему пакета и схему проекта разными
   // преобразованиями одного документа (design.md, Context).
-  return { title, ...z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }) };
+  const printed = { title, ...z.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' }) };
+  if (title === 'stepcast pipeline') {
+    printed['allOf'] = [
+      {
+        if: {
+          required: ['workspace'],
+          properties: {
+            workspace: {
+              anyOf: [
+                { required: ['source'] },
+                { required: ['preserve_local_changes'] },
+                { required: ['live_files'] },
+              ],
+            },
+          },
+        },
+        then: {
+          properties: {
+            workspace: { properties: { mode: { const: 'worktree' } } },
+            jobs: {
+              additionalProperties: {
+                properties: { workspace: { properties: { mode: { const: 'worktree' } } } },
+              },
+            },
+          },
+        },
+      },
+      {
+        if: {
+          required: ['workspace'],
+          properties: { workspace: { required: ['live_files'] } },
+        },
+        then: {
+          properties: {
+            workspace: {
+              required: ['preserve_local_changes'],
+              properties: { preserve_local_changes: { const: true } },
+            },
+          },
+        },
+      },
+    ];
+  }
+  return printed;
 }
 
 interface Documents {

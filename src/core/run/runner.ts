@@ -63,6 +63,7 @@ import { waitForDecision } from './decisionWait.js';
 import type { ResumePlan, SourceRun, StepPlan } from './resumePlan.js';
 import { computeStepKey, upstreamForKey } from './stepKey.js';
 import { prepareWorkspace, type PreparedWorkspace } from './workspace.js';
+import { syncLiveFiles, writebackLiveFiles } from './liveFiles.js';
 import { createWaitState } from './waitState.js';
 import { jobDataPath, readJobData, writeJobDataUnchecked } from '../journal/data.js';
 import { jobDir, jobScratchDir, shortRunId } from '../journal/paths.js';
@@ -1181,6 +1182,19 @@ async function runJob(
     };
   }
 
+  const liveFiles = context.expanded.pipeline.publication?.liveFiles ?? [];
+  let liveSnapshot;
+  try {
+    liveSnapshot = syncLiveFiles(context.runCwd, prepared.dir, liveFiles);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      status: 'failed',
+      reason: `живые файлы в рабочую директорию перенести не удалось: ${detail}`,
+      cause: HaltCause.spawnFailed,
+    };
+  }
+
   // Раскрытое определение кладётся рядом с записью работы: иначе ответ на
   // вопрос, с каким путём шаг на самом деле пошёл в файловую систему,
   // восстанавливается только из логов.
@@ -1231,8 +1245,9 @@ async function runJob(
     return checkScriptCallCount;
   };
 
-  try {
-    for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+  const outcome = await (async (): Promise<JobOutcome> => {
+    try {
+      for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       if (job.until !== undefined) {
         journal.event({ kind: 'iteration.started', job: job.id, iteration });
       }
@@ -1285,7 +1300,7 @@ async function runJob(
       cause: HaltCause.untilNotMet,
       ...(previousCheck === undefined ? {} : { lastCheck: previousCheck }),
     };
-  } catch (error) {
+    } catch (error) {
     // Ошибка внутри работы — её отказ, а не крушение прогона. Иначе состояние
     // остаётся в `running`, статусы отработавших работ теряются, а работы с
     // `needs: all` не выполняются — то есть разбирать случившееся нечем ровно
@@ -1303,7 +1318,7 @@ async function runJob(
       reason: `работа прервана ошибкой: ${detail}`,
       cause: HaltCause.spawnFailed,
     };
-  } finally {
+    } finally {
     // Каталог и последний якорь записываются независимо от исхода: наследник
     // может продолжить дерево даже упавшей работы, а работа без единого
     // снятого якоря пропускается по цепочке (`resolveInheritSource`).
@@ -1311,7 +1326,26 @@ async function runJob(
       dir: prepared.dir,
       ...(anchorState.lastAnchor === undefined ? {} : { anchor: anchorState.lastAnchor }),
     });
+    }
+  })();
+
+  try {
+    writebackLiveFiles({
+      sourceRoot: context.runCwd,
+      workspaceRoot: prepared.dir,
+      liveFiles,
+      snapshot: liveSnapshot,
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    journal.event({ kind: 'job.errored', job: job.id, detail });
+    return {
+      status: 'failed',
+      reason: `живые файлы вернуть в исходное дерево не удалось: ${detail}`,
+      cause: HaltCause.spawnFailed,
+    };
   }
+  return outcome;
 }
 
 /**
