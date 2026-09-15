@@ -1586,6 +1586,48 @@ jobs:
     );
   });
 
+  it('для Codex временно пропускает проверку enforce: strict', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: ask
+        agent: codex
+        prompt: сделай
+        permissions:
+          allow: [Read]
+          enforce: strict
+`,
+    });
+    const config = {
+      ...project.config,
+      backends: {
+        ...project.config.backends,
+        codex: {
+          command: 'codex',
+          enabled: true,
+          defaultModel: undefined,
+          concurrency: 1,
+          cacheReadWeight: 0.1,
+          sessions: true,
+          structuredOutput: true,
+          strictPermissions: false,
+          mcp: true,
+          permissions: undefined,
+          env: {},
+        },
+      },
+    };
+    const diagnostics = lintPipeline(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
+      { config },
+    );
+    assert.deepEqual(errors(diagnostics), []);
+  });
+
   it('enforce: strict на поддерживающем бэкенде с запрещающим режимом проходит молча', () => {
     const project = makeProject({
       'stepcast.yml': `

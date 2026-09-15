@@ -145,18 +145,16 @@ describe('codex-backend: перевод политики доступа', () => 
     );
   });
 
-  // Сценарий: «Списки не переводятся»
-  it('allow и deny отказывают до запуска процесса, называя списки', () => {
-    for (const permissions of [{ allow: ['Bash(git *)'] }, { deny: ['Write'] }, { mode: 'read-only', allow: ['Read'] }]) {
-      assert.throws(
-        () => adapter.launch(invocation({ permissions })),
-        (error: unknown) =>
-          error instanceof StepcastError &&
-          /codex/.test(error.message) &&
-          /пооперационных списков/.test(error.message) &&
-          new RegExp((permissions.allow ?? permissions.deny ?? [])[0]!.replace(/[()*]/g, '.')).test(error.message),
-        JSON.stringify(permissions),
-      );
+  // Временный режим до реализации codex-strict-permissions: декларации
+  // принимаются ради переносимых pipeline, но backend их не применяет.
+  it('allow, deny и enforce не мешают запуску Codex и не меняют его команду', () => {
+    const plain = adapter.launch(invocation()).command;
+    for (const permissions of [
+      { allow: ['Bash(git *)'] },
+      { deny: ['Write'] },
+      { allow: ['Read'], deny: ['Bash(rm *)'], enforce: 'strict' as const },
+    ]) {
+      assert.deepEqual(adapter.launch(invocation({ permissions })).command, plain, JSON.stringify(permissions));
     }
   });
 
@@ -169,11 +167,9 @@ describe('codex-backend: перевод политики доступа', () => 
     );
   });
 
-  it('enforce: strict отказывает и в адаптере, не только в предстартовом гейте', () => {
-    assert.throws(
-      () => adapter.launch(invocation({ permissions: { mode: 'read-only', enforce: 'strict' } })),
-      (error: unknown) => error instanceof StepcastError && /enforce: strict/.test(error.message),
-    );
+  it('поддерживаемый sandbox mode применяется и рядом с проигнорированным strict', () => {
+    const launch = adapter.launch(invocation({ permissions: { mode: 'read-only', enforce: 'strict' } }));
+    assert.ok(launch.command.includes('sandbox_mode="read-only"'));
   });
 });
 

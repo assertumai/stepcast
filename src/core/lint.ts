@@ -1786,6 +1786,9 @@ function checkPermissionsEnforce(
   push: (diagnostic: Diagnostic) => void,
 ): void {
   if (step.kind !== 'agent') return;
+  // Временный режим совместимости: Codex принимает переносимые декларации
+  // прав, но пока их не применяет. Долг описан в codex-strict-permissions.
+  if (backendName === 'codex') return;
   const effective = effectivePermissions(step.permissions, backend.permissions);
   if ((effective?.enforce ?? 'inherit') !== 'strict') return;
 

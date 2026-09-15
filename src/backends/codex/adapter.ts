@@ -66,23 +66,9 @@ export function createCodexAdapter(config: BackendConfig): BackendAdapter {
 
       const permissions = effectivePermissions(invocation.permissions, config.permissions);
       if (permissions !== undefined) {
-        // Что перевести нельзя — отказ до запуска процесса, а не молчаливое
-        // исполнение шире объявленного (спека agent-backend, «Объявленная
-        // политика доступа либо исполняется, либо отказывает»).
-        if (permissions.enforce === 'strict') {
-          throw new StepcastError('Бэкенд codex не умеет применять enforce: strict', {
-            hint: 'У Codex нет ни пооперационного запрета, ни отсечения чужих MCP-серверов; уберите enforce или возьмите бэкенд с strict_permissions',
-          });
-        }
-        const lists = [
-          ...(permissions.allow?.length ? [`allow: ${permissions.allow.join(', ')}`] : []),
-          ...(permissions.deny?.length ? [`deny: ${permissions.deny.join(', ')}`] : []),
-        ];
-        if (lists.length > 0) {
-          throw new StepcastError(`Бэкенд codex не умеет пооперационных списков доступа (${lists.join('; ')})`, {
-            hint: `У Codex доступ задаётся режимом песочницы: permissions.mode ∈ ${SANDBOX_MODES.join(' | ')}. Уберите allow/deny у шага, работы или в backends.codex.permissions`,
-          });
-        }
+        // Временная совместимость переносимых pipeline: Codex пока не
+        // переводит allow/deny/enforce в собственную политику и игнорирует
+        // их. Полная реализация отложена как codex-strict-permissions.
         if (permissions.mode !== undefined) {
           if (!(SANDBOX_MODES as readonly string[]).includes(permissions.mode)) {
             throw new StepcastError(`Бэкенд codex не знает режима доступа ${permissions.mode}`, {

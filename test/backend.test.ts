@@ -142,6 +142,39 @@ jobs:
     );
   });
 
+  it('прогон с Codex временно пропускает предстартовую проверку жёсткого режима', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+jobs:
+  build:
+    steps:
+      - id: ask
+        agent: codex
+        prompt: сделай
+        permissions:
+          allow: [Read]
+          enforce: strict
+`,
+    });
+    const runsRoot = tempDir('runs-');
+    const backend = createFakeBackend({
+      capabilities: { strictPermissions: false },
+      lines: [resultLine({ text: 'готово' })],
+    });
+
+    const result = await runPipeline({
+      expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+      config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+      projectRoot: project.root,
+      cwd: project.root,
+      adapterFor: () => ({ ...backend.adapter, name: 'codex' }),
+    });
+
+    assert.equal(result.status, 'success');
+  });
+
   it('фейковый бэкенд умеет объявлять возможность выключенной', () => {
     assert.equal(
       createFakeBackend({ lines: [] }).adapter.capabilities.strictPermissions,

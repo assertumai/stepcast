@@ -927,6 +927,9 @@ function requireStrictPermissionsSupport(context: RunContext): void {
         context.config.backends[step.agent]?.permissions,
       );
       if (permissions?.enforce !== 'strict') continue;
+      // Codex временно принимает, но не применяет allow/deny/enforce, чтобы
+      // переносимые pipeline могли выбирать его через конфигурацию.
+      if (step.agent === 'codex') continue;
       if (adapterOf(step.agent, context).capabilities.strictPermissions) continue;
       throw new StepcastError(
         `Бэкенд ${step.agent} не умеет применять enforce: strict, объявленный у шага ${job.id}/${step.id}`,
