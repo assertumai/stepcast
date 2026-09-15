@@ -180,6 +180,8 @@ export interface PrepareOptions {
   readonly anchorsDir?: string;
   /** Объявленный состав вложенных репозиториев (`project.nested_repos`), в каноническом порядке. */
   readonly nestedRepos?: readonly string[];
+  /** Коммиты начала прогона: `.` для корня и относительный путь для каждой части. */
+  readonly sourceCommits?: Readonly<Record<string, string>>;
   /**
    * Каталог, перенятый у исходного прогона для продолжения оборванной сессии
    * — назван планом возобновления (`ResumePlan.adoptWorkspace`). Перенимается
@@ -269,7 +271,8 @@ export async function prepareWorkspace(options: PrepareOptions): Promise<Prepare
     if (workspace.mode === 'worktree') {
       // Отделённый worktree от текущего HEAD: незакоммиченные изменения в него
       // не попадают, а ветка проекта остаётся свободной.
-      addWorktree({ repoDir: cwd, path: dir });
+      const rootRef = options.sourceCommits?.['.'];
+      addWorktree({ repoDir: cwd, path: dir, ...(rootRef === undefined ? {} : { ref: rootRef }) });
       preparation.defer('снятие рабочего дерева работы', () => {
         removeWorktree({ repoDir: cwd, path: dir, runDir });
       });
@@ -282,7 +285,12 @@ export async function prepareWorkspace(options: PrepareOptions): Promise<Prepare
         // Родительский каталог мог не существовать (часть, которую корень
         // игнорирует) или уже существовать пустым (часть под gitlink'ом) —
         // `addWorktree` заводит его и принимает оба случая.
-        addWorktree({ repoDir: repo, path: join(dir, relDir) });
+        const partRef = options.sourceCommits?.[relDir];
+        addWorktree({
+          repoDir: repo,
+          path: join(dir, relDir),
+          ...(partRef === undefined ? {} : { ref: partRef }),
+        });
         preparation.defer(`снятие части ${relDir} рабочего дерева работы`, () => {
           removeWorktree({ repoDir: repo, path: join(dir, relDir), runDir });
         });

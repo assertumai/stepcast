@@ -234,6 +234,20 @@ describe('run-journal: раскладка и состояние', () => {
     assert.equal(RunStatusSchema.safeParse(readStatus(journal.paths)).success, true);
   });
 
+  it('манифест сохраняет коммиты корня и частей, зафиксированные в начале прогона', () => {
+    const { runsRoot, projectRoot } = bed();
+    const journal = RunJournal.create({ runsRoot, projectRoot });
+    journal.writeManifest({
+      ...sampleManifest(journal.paths.runId),
+      source_commits: { '.': 'root-sha', backend: 'backend-sha' },
+    });
+
+    assert.deepEqual(readManifest(journal.paths).source_commits, {
+      '.': 'root-sha',
+      backend: 'backend-sha',
+    });
+  });
+
   // Спека pipeline-lanes: «Дорожка в записи работы состояния прогона»
   it('запись работы с объявленной lane несёт её, а запись без lane — нет', () => {
     const { runsRoot, projectRoot } = bed();

@@ -482,6 +482,65 @@ function gitHead(dir: string): string {
 }
 
 describe('workspace-modes: материализация объявленных частей', () => {
+  it('заводит позднее рабочее дерево из коммита начала прогона, а не из сдвинувшегося HEAD', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('worktree'),
+      'версия.txt': 'первая',
+    });
+    gitInit(project);
+    commit(project, 'первая');
+    const sourceCommit = gitHead(project.root).trim();
+
+    project.write('версия.txt', 'вторая');
+    commit(project, 'вторая');
+
+    const { pipeline } = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
+    const job = pipeline.jobs.find((item) => item.id === 'build')!;
+    const runsRoot = tempDir('runs-');
+    const prepared = await prepareWorkspace({
+      job,
+      cwd: project.root,
+      runDir: runsRoot,
+      bookkeeping: { journal: RunJournal.create({ runsRoot, projectRoot: project.root }), job: job.id },
+      sourceCommits: { '.': sourceCommit },
+    });
+
+    assert.equal(gitHead(prepared.dir).trim(), sourceCommit);
+    assert.equal(readFileSync(join(prepared.dir, 'версия.txt'), 'utf8'), 'первая');
+  });
+
+  it('использует отдельный записанный коммит для каждой объявленной части', async () => {
+    const project = makeProject({
+      'stepcast.yml': pipelineWriting('worktree'),
+      '.gitignore': 'part/\n',
+      'part/версия.txt': 'первая',
+    });
+    gitInit(project);
+    gitInitDir(project.path('part'));
+    gitCommit(project.path('part'), 'первая часть');
+    commit(project, 'первая основа');
+    const rootCommit = gitHead(project.root).trim();
+    const partCommit = gitHead(project.path('part')).trim();
+
+    project.write('part/версия.txt', 'вторая');
+    gitCommit(project.path('part'), 'вторая часть');
+
+    const { pipeline } = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config });
+    const job = pipeline.jobs.find((item) => item.id === 'build')!;
+    const runsRoot = tempDir('runs-');
+    const prepared = await prepareWorkspace({
+      job,
+      cwd: project.root,
+      runDir: runsRoot,
+      bookkeeping: { journal: RunJournal.create({ runsRoot, projectRoot: project.root }), job: job.id },
+      nestedRepos: ['part'],
+      sourceCommits: { '.': rootCommit, part: partCommit },
+    });
+
+    assert.equal(gitHead(join(prepared.dir, 'part')).trim(), partCommit);
+    assert.equal(readFileSync(join(prepared.dir, 'part', 'версия.txt'), 'utf8'), 'первая');
+  });
+
   it('часть материализована и является рабочим деревом собственного репозитория', async () => {
     const project = makeProject({
       'stepcast.yml': pipelineWriting('worktree'),

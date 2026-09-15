@@ -28,6 +28,8 @@ export interface AddWorktreeOptions {
   readonly repoDir: string;
   /** Путь, по которому дерево будет выложено. */
   readonly path: string;
+  /** Коммит или ссылка, из которой выкладывается дерево. По умолчанию HEAD. */
+  readonly ref?: string;
 }
 
 /**
@@ -41,7 +43,7 @@ export function addWorktree(options: AddWorktreeOptions): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   // Отделённый worktree от текущего HEAD: незакоммиченные изменения в него не
   // попадают, а ветка репозитория остаётся свободной.
-  git(repoDir, ['worktree', 'add', '--detach', '--quiet', path, 'HEAD']);
+  git(repoDir, ['worktree', 'add', '--detach', '--quiet', path, options.ref ?? 'HEAD']);
 }
 
 export interface RemoveWorktreeOptions {

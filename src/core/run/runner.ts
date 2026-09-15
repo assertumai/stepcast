@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, readFileSync, readdirSync, rmSync, rmdirSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 
@@ -228,6 +229,26 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   // Способ фиксации выбирается один раз на прогон: якоря разных способов
   // несравнимы, и смешивать их в пределах прогона нельзя.
   const anchorKind = detectAnchorKind(options.cwd, config.project.nestedRepos);
+  const sourceCommits: Readonly<Record<string, string>> =
+    anchorKind === 'manifest'
+      ? {}
+      : Object.fromEntries(
+          ['.', ...(config.project.nestedRepos ?? [])].flatMap((relativePath) => {
+            const dir = relativePath === '.' ? options.cwd : join(options.cwd, relativePath);
+            try {
+              const commit = execFileSync('git', ['-C', dir, 'rev-parse', '--verify', 'HEAD'], {
+                encoding: 'utf8',
+                stdio: ['ignore', 'pipe', 'pipe'],
+              }).trim();
+              return [[relativePath, commit]];
+            } catch {
+              // Репозиторий без первого коммита допустим для cwd/copy. Если
+              // работа запросит worktree, прежняя предстартовая проверка
+              // назовёт невозможность точнее, чем запись манифеста.
+              return [];
+            }
+          }),
+        );
 
   const lock = serializeLock(pipeline);
   const lockHash = createHash('sha256').update(lock).digest('hex').slice(0, 16);
@@ -262,6 +283,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     // журнала нужно.
     plugins: (options.registry?.plugins ?? []).map((plugin) => ({ ...plugin })),
     ...(config.project.nestedRepos === undefined ? {} : { nested_repos: [...config.project.nestedRepos] }),
+    ...(Object.keys(sourceCommits).length === 0 ? {} : { source_commits: sourceCommits }),
     ...(options.resume === undefined ? {} : { resumed_from: options.resume.source.manifest.run_id }),
     inputs: pipeline.inputs,
     git: {},
@@ -375,6 +397,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
     pipelineContextSent: new Set<string>(),
     lockHash,
     anchorKind,
+    sourceCommits,
     engine,
     runCwd: options.cwd,
     graph,
@@ -793,6 +816,8 @@ export interface RunContext extends RunOptions {
   readonly lockHash: string;
   /** Способ фиксации состояния: определён один раз на прогон. */
   readonly anchorKind: AnchorKind;
+  /** Неизменные коммиты, от которых заводятся все worktree этого прогона. */
+  readonly sourceCommits: Readonly<Record<string, string>>;
   /**
    * Движок, которым прогон исполняется, — корень, точка входа и признак
    * снимка (`run/engine.ts`). Определяется один раз на прогон, до первой
@@ -1081,6 +1106,7 @@ async function runJob(
       ...(context.config.project.nestedRepos === undefined
         ? {}
         : { nestedRepos: context.config.project.nestedRepos }),
+      sourceCommits: context.sourceCommits,
       ...(context.anchorerFor === undefined ? {} : { anchorerFor: context.anchorerFor }),
       ...(adoptWorkspace === undefined || context.resume === undefined
         ? {}
