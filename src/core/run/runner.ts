@@ -1381,7 +1381,7 @@ function jobEnv(job: Job, context: RunContext): Record<string, string> {
       scratch: jobScratchDir(context.journal.paths, job.id),
     }),
     deny: pipeline.envDeny,
-    cwd: context.cwd,
+    cwd: context.projectRoot,
   });
   return env;
 }
@@ -3189,7 +3189,7 @@ export function stepEnv(
         : {}),
     }),
     deny: pipeline.envDeny,
-    cwd: context.cwd,
+    cwd: context.projectRoot,
   });
 
   for (const item of denied) {

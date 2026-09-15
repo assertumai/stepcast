@@ -7,7 +7,7 @@ import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import type { EngineLocation } from '../src/core/run/engine.js';
 import { readStatus } from '../src/core/journal/reader.js';
-import { makeProject, testBaseEnv, type Project } from './helpers.js';
+import { gitCommit, gitInit, makeProject, testBaseEnv, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 async function run(project: Project, engineLocator?: () => EngineLocation): Promise<RunResult> {
@@ -27,6 +27,34 @@ async function run(project: Project, engineLocator?: () => EngineLocation): Prom
 }
 
 describe('job-iteration: окружение проверки цикла', () => {
+  it('env_files из корня проекта доступны шагу и проверке в отдельном worktree', async () => {
+    const project = makeProject({
+      '.gitignore': '.machine.env\n',
+      'stepcast.yml': `
+version: 1
+kind: pipeline
+name: checked
+workspace: { mode: worktree }
+env_files: [.machine.env]
+jobs:
+  looped:
+    until:
+      max_iterations: 1
+      check:
+        - cmd: 'test "$FROM_MACHINE" = root'
+    steps:
+      - id: require-env
+        run: [sh, -c, 'test "$FROM_MACHINE" = root']
+        expect: [{ exit_code: 0 }]
+`,
+    });
+    gitInit(project.root);
+    gitCommit(project.root, 'init');
+    project.write('.machine.env', 'FROM_MACHINE=root\n');
+
+    assert.equal((await run(project)).status, 'success');
+  });
+
   /**
    * Проверка цикла запускает настоящую команду сборки или тестов. Раньше она
    * получала пустой набор переменных, а `execaSync` зовётся с
