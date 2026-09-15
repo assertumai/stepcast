@@ -8,6 +8,7 @@ import { REASON_LIMIT, finishItem, parseBacklogFile, tailLine } from '../backlog
 import type { RunPaths } from '../journal/paths.js';
 import { readManifest, readStatus } from '../journal/reader.js';
 import type { RunStatus } from '../journal/schema.js';
+import { atomicWrite } from '../journal/writer.js';
 import { readLock, type LockRead } from '../pipeline/lockRead.js';
 import { applyRun, laneAnchorRange, type LaneAnchorRange } from '../run/apply.js';
 import { addWorktree, removeWorktree } from '../run/worktrees.js';
@@ -627,6 +628,22 @@ async function mergeLanesLegacy(options: MergeLanesOptions): Promise<readonly La
 
 type PublicationPolicy = NonNullable<LockRead['workspace']>;
 
+const PUBLICATION_RECOVERY_FILE = 'publication-recovery.json';
+
+function publicationRecoveryPath(runDir: string): string {
+  return join(runDir, PUBLICATION_RECOVERY_FILE);
+}
+
+/** Незавершённую публикацию нельзя перекрывать новым обходом. */
+function assertNoPendingPublication(runDir: string): void {
+  const recovery = publicationRecoveryPath(runDir);
+  if (!existsSync(recovery)) return;
+  throw new StepcastError('Предыдущая публикация прервалась и требует восстановления', {
+    file: recovery,
+    hint: 'Файл называет исходные и целевые коммиты каждого репозитория; завершите либо обратите только эти обновления перед повторным merge-lanes',
+  });
+}
+
 /** Путь относительно корня проекта в форме git. */
 function projectRelative(cwd: string, path: string): string {
   return relative(cwd, path).split('\\').join('/');
@@ -671,6 +688,7 @@ async function mergeLanesIsolated(
   const runDir = paths.dir;
   const status = readStatus(paths);
   const lanes = resolveLanes(options.lanes, knownLanes(status.jobs));
+  assertNoPendingPublication(runDir);
   const manifest = readManifest(paths);
   const sourceBases = new Map(Object.entries(manifest.source_commits ?? {}));
   const queuePath = projectRelative(cwd, file);
@@ -856,6 +874,7 @@ async function mergeLanesIsolated(
       }
 
       const prepared = new Map<string, PreparedPublication>();
+      const recoveryPath = publicationRecoveryPath(runDir);
       try {
         for (const repo of committed) {
           const base = sourceBases.get(repo);
@@ -875,11 +894,49 @@ async function mergeLanesIsolated(
         const publicationOrder = [...committed].sort((left, right) =>
           left === '.' ? -1 : right === '.' ? 1 : 0,
         );
+        const published: string[] = [];
+        const writeRecovery = (): void => {
+          atomicWrite(
+            recoveryPath,
+            `${JSON.stringify(
+              {
+                version: 1,
+                lane,
+                integration_dir: integrationDir,
+                order: publicationOrder,
+                published,
+                repositories: Object.fromEntries(
+                  publicationOrder.map((repo) => [
+                    repo,
+                    {
+                      dir: repoDirOf(cwd, repo),
+                      state_dir: join(
+                        integrationDir,
+                        'publication',
+                        lane,
+                        repo === '.' ? 'root' : repo.replaceAll('/', '__'),
+                      ),
+                      prepared: prepared.get(repo),
+                    },
+                  ]),
+                ),
+              },
+              null,
+              2,
+            )}\n`,
+          );
+        };
+        // До первого update-ref: при обрыве известны оба SHA, оба дерева и
+        // порядок всех репозиториев, включая ещё не начатые.
+        writeRecovery();
         for (const repo of publicationOrder) {
           const stateDir = join(integrationDir, 'publication', lane, repo === '.' ? 'root' : repo.replaceAll('/', '__'));
           publishPrepared({ repoDir: repoDirOf(cwd, repo), prepared: prepared.get(repo)!, stateDir });
           sourceBases.set(repo, commits[repo]!);
+          published.push(repo);
+          writeRecovery();
         }
+        rmSync(recoveryPath, { force: true });
       } catch (error) {
         if (!isStepcastError(error)) throw error;
         const reason = reasonWithOutput(

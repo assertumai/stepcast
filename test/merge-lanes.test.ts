@@ -374,6 +374,7 @@ describe('core: mergeLanes — публикация поверх нечисто�
     assert.match(porcelainAt(project.root), /^\?\? draft\.txt$/m);
     assert.deepEqual(committedPaths(project.root), ['a.txt', 'backlog.md']);
     assert.equal(execFileSync('git', ['-C', project.root, 'stash', 'list'], { encoding: 'utf8' }), '');
+    assert.equal(existsSync(join(result.journal.paths.dir, 'publication-recovery.json')), false);
   });
 
   it('объединяет далёкие правки одного файла, сохраняя staged и unstaged границу', async () => {
@@ -505,6 +506,40 @@ describe('core: mergeLanes — публикация поверх нечисто�
     assert.match(porcelainAt(project.root), /^M backend$/m, 'грязь вложенного дерева видна корню как прежде');
     assert.match(porcelainAt(project.root), /^ M root-local\.txt$/m);
     assert.equal(porcelainAt(project.path('backend')), 'M backend-local.txt');
+  });
+
+  it('не начинает новый обход поверх журнала прерванной публикации', async () => {
+    const project = makeProject({
+      'stepcast.yml': dirtyTreeLanePipeline(SUCCESS_A),
+      'backlog.md': backlogItem('a-item'),
+    });
+    gitInit(project);
+    commit(project, 'начальный');
+    const baseHead = headShaAt(project.root);
+    const runsRoot = tempDir('lanes-runs-');
+    const result = await runLanes(project, runsRoot);
+    writeItem(result.journal.paths.dir, 'a', 'a-item', 'A');
+    const recovery = join(result.journal.paths.dir, 'publication-recovery.json');
+    writeFileSync(recovery, JSON.stringify({ version: 1, published: ['.'] }));
+
+    await assert.rejects(
+      () =>
+        mergeLanes({
+          paths: result.journal.paths,
+          cwd: project.root,
+          lanes: ['a'],
+          check: 'exit 0',
+          file: project.path('backlog.md'),
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /публикация прервалась/);
+        assert.equal(error.file, recovery);
+        return true;
+      },
+    );
+    assert.equal(headShaAt(project.root), baseHead);
+    assert.equal(existsSync(project.path('a.txt')), false);
   });
 });
 
