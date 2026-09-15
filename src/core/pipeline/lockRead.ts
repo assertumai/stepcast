@@ -248,6 +248,15 @@ function toJob(value: unknown): LockJob | undefined {
 export interface LockRead {
   readonly readable: boolean;
   readonly jobs: LockJob[];
+  readonly workspace?: {
+    readonly source: 'commit';
+    readonly preserveLocalChanges: boolean;
+    readonly liveFiles: readonly {
+      readonly path: string;
+      readonly writeback: 'always';
+      readonly commitOnSuccess: boolean;
+    }[];
+  };
 }
 
 /** Разбор лока с признаком читаемости. */
@@ -259,9 +268,33 @@ export function readLock(path: string): LockRead {
     return { readable: false, jobs: [] };
   }
 
-  const jobs = asRecord(document)?.jobs;
+  const root = asRecord(document);
+  const jobs = root?.jobs;
   if (!Array.isArray(jobs)) return { readable: false, jobs: [] };
-  return { readable: true, jobs: jobs.map(toJob).filter((job): job is LockJob => job !== undefined) };
+  const workspace = asRecord(root?.workspace);
+  const liveFiles = Array.isArray(workspace?.live_files)
+    ? workspace.live_files.flatMap((value) => {
+        const entry = asRecord(value);
+        const path = asString(entry?.path);
+        if (path === undefined || entry?.writeback !== 'always' || typeof entry.commit_on_success !== 'boolean') {
+          return [];
+        }
+        return [{ path, writeback: 'always' as const, commitOnSuccess: entry.commit_on_success }];
+      })
+    : [];
+  const publication =
+    workspace?.source === 'commit' && typeof workspace.preserve_local_changes === 'boolean'
+      ? {
+          source: 'commit' as const,
+          preserveLocalChanges: workspace.preserve_local_changes,
+          liveFiles,
+        }
+      : undefined;
+  return {
+    readable: true,
+    jobs: jobs.map(toJob).filter((job): job is LockJob => job !== undefined),
+    ...(publication === undefined ? {} : { workspace: publication }),
+  };
 }
 
 /** Работы из лока. Нечитаемый или отсутствующий файл даёт пустой список. */

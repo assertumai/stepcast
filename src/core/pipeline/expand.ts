@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, extname, isAbsolute, join, resolve as resolvePath } from 'node:path';
+import { dirname, extname, isAbsolute, join, posix, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ModelTierSchema } from '../config/schema.js';
@@ -67,6 +67,7 @@ import type {
   Triggers,
   UsesOrigin,
   Workspace,
+  PipelinePublication,
 } from './model.js';
 
 /**
@@ -1533,10 +1534,45 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   collect(interpolatedPipeline.substitutions);
   const doc = interpolatedPipeline.value as typeof pipelineRest;
 
+  const liveFiles = (doc.workspace?.live_files ?? []).map((entry) => {
+    const normalized = posix.normalize(entry.path.replaceAll('\\', '/'));
+    if (isAbsolute(entry.path) || normalized === '..' || normalized.startsWith('../')) {
+      throw new StepcastError(`Путь живого файла выходит за корень проекта: ${entry.path}`, {
+        file: pipelinePath,
+        at: 'workspace.live_files',
+      });
+    }
+    return {
+      path: normalized.replace(/^\.\//, ''),
+      writeback: entry.writeback,
+      commitOnSuccess: entry.commit_on_success,
+    } as const;
+  });
+  const duplicateLivePath = liveFiles.find(
+    (entry, index) => liveFiles.findIndex((candidate) => candidate.path === entry.path) !== index,
+  );
+  if (duplicateLivePath !== undefined) {
+    throw new StepcastError(`Живой файл объявлен дважды: ${duplicateLivePath.path}`, {
+      file: pipelinePath,
+      at: 'workspace.live_files',
+    });
+  }
+
   const pipelineWorkspace: Workspace = {
     mode: doc.workspace?.mode ?? config.defaults.workspace.mode,
     ...(doc.workspace?.path === undefined ? {} : { path: doc.workspace.path }),
   };
+  const publicationDeclared =
+    doc.workspace?.source !== undefined ||
+    doc.workspace?.preserve_local_changes !== undefined ||
+    doc.workspace?.live_files !== undefined;
+  const publication: PipelinePublication | undefined = publicationDeclared
+    ? {
+        source: doc.workspace?.source ?? 'commit',
+        preserveLocalChanges: doc.workspace?.preserve_local_changes ?? false,
+        liveFiles,
+      }
+    : undefined;
 
   const defaultSession = doc.defaults?.session ?? config.defaults.session;
   const defaultAgent = doc.agent ?? doc.defaults?.agent ?? config.defaults.agent;
@@ -1865,6 +1901,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     knowledge: resolveKnowledge(document, config, pipelinePath),
     inputs,
     workspace: pipelineWorkspace,
+    ...(publication === undefined ? {} : { publication }),
     env: doc.env ?? {},
     envFiles: doc.env_files ?? [],
     envDeny: [...config.envDeny, ...(doc.env_deny ?? [])],

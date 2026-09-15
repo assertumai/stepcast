@@ -246,6 +246,20 @@ export function buildDocumentSchemas(
     })
     .strict();
 
+  const LiveFileSchema = z
+    .object({
+      path: RelativeRepoPathSchema,
+      writeback: z.literal('always'),
+      commit_on_success: z.boolean(),
+    })
+    .strict();
+
+  const PipelineWorkspaceSchema = WorkspaceSchema.extend({
+    source: z.literal('commit').optional(),
+    preserve_local_changes: z.boolean().optional(),
+    live_files: z.array(LiveFileSchema).optional(),
+  });
+
   /**
    * `inherit` осмыслен только на работе — источник наследования выбирается для
    * конкретной зависимой работы, а не для пайплайна целиком. На уровне
@@ -571,7 +585,7 @@ export function buildDocumentSchemas(
       ...SelectionShape,
       name: z.string().optional(),
       inputs: z.record(z.string(), ParamSchema).optional(),
-      workspace: WorkspaceSchema.optional(),
+      workspace: PipelineWorkspaceSchema.optional(),
       env: z.record(z.string(), z.string()).optional(),
       env_files: z.array(z.string()).optional(),
       env_deny: z.array(z.string()).optional(),

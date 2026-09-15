@@ -3,7 +3,7 @@ import { writeFileSync } from 'node:fs';
 import { stringify } from 'yaml';
 
 import { formatDuration, formatTokens } from '../units.js';
-import type { Budget, Job, Pipeline, Step, Triggers } from './model.js';
+import type { Budget, Job, Pipeline, PipelinePublication, Step, Triggers, Workspace } from './model.js';
 
 /**
  * Сериализация раскрытого пайплайна в `pipeline.lock.yml`.
@@ -28,6 +28,24 @@ function budgetToPlain(budget: Budget | undefined): Record<string, unknown> | un
     ...(budget.wallclockMs === undefined ? {} : { wallclock: formatDuration(budget.wallclockMs) }),
     ...(budget.rateLimitPct === undefined ? {} : { rate_limit_pct: budget.rateLimitPct }),
     on_exceed: budget.onExceed,
+  };
+}
+
+function pipelineWorkspaceToPlain(
+  workspace: Workspace,
+  publication: PipelinePublication | undefined,
+): Workspace | Record<string, unknown> {
+  if (publication === undefined) return workspace;
+  return {
+    mode: workspace.mode,
+    ...(workspace.path === undefined ? {} : { path: workspace.path }),
+    source: publication.source,
+    preserve_local_changes: publication.preserveLocalChanges,
+    live_files: publication.liveFiles.map((entry) => ({
+      path: entry.path,
+      writeback: entry.writeback,
+      commit_on_success: entry.commitOnSuccess,
+    })),
   };
 }
 
@@ -176,7 +194,7 @@ export function pipelineToPlain(pipeline: Pipeline): Record<string, unknown> {
     name: pipeline.name,
     file: pipeline.file,
     inputs: pipeline.inputs,
-    workspace: pipeline.workspace,
+    workspace: pipelineWorkspaceToPlain(pipeline.workspace, pipeline.publication),
     ...(Object.keys(pipeline.env).length === 0 ? {} : { env: pipeline.env }),
     ...(pipeline.envFiles.length === 0 ? {} : { env_files: pipeline.envFiles }),
     env_deny: pipeline.envDeny,

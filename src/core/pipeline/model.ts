@@ -18,6 +18,20 @@ export interface Workspace {
   readonly inherit?: string;
 }
 
+export interface LiveFile {
+  /** Путь относительно корня проекта, уже раскрытый и нормализованный. */
+  readonly path: string;
+  readonly writeback: 'always';
+  readonly commitOnSuccess: boolean;
+}
+
+/** Политика исходного дерева принадлежит пайплайну, а не отдельной работе. */
+export interface PipelinePublication {
+  readonly source: 'commit';
+  readonly preserveLocalChanges: boolean;
+  readonly liveFiles: readonly LiveFile[];
+}
+
 export interface Budget {
   readonly tokens?: number;
   readonly costMicroUsd?: number;
@@ -467,6 +481,7 @@ export interface Pipeline {
   readonly knowledge: KnowledgeDeclaration;
   readonly inputs: Readonly<Record<string, string | number | boolean>>;
   readonly workspace: Workspace;
+  readonly publication?: PipelinePublication;
   readonly env: Readonly<Record<string, string>>;
   readonly envFiles: readonly string[];
   readonly envDeny: readonly string[];

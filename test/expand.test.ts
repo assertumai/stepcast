@@ -1710,6 +1710,102 @@ jobs:
     assert.equal(parsed.jobs[0]!.steps[0]!.timeout, '30m');
   });
 
+  it('раскрывает политику публикации и живые файлы только на уровне пайплайна', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+inputs:
+  queue: { type: string, default: backlog.md }
+workspace:
+  mode: worktree
+  source: commit
+  preserve_local_changes: true
+  live_files:
+    - path: \${inputs.queue}
+      writeback: always
+      commit_on_success: true
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    const { pipeline } = expand(project);
+    assert.deepEqual(pipeline.workspace, { mode: 'worktree' });
+    assert.deepEqual(pipeline.publication, {
+      source: 'commit',
+      preserveLocalChanges: true,
+      liveFiles: [{ path: 'backlog.md', writeback: 'always', commitOnSuccess: true }],
+    });
+    assert.deepEqual(pipeline.jobs[0]!.workspace, { mode: 'worktree' });
+
+    const parsed = parseYaml(serializeLock(pipeline)) as {
+      workspace: {
+        mode: string;
+        source: string;
+        preserve_local_changes: boolean;
+        live_files: Array<{ path: string; writeback: string; commit_on_success: boolean }>;
+      };
+    };
+    assert.deepEqual(parsed.workspace.live_files, [
+      { path: 'backlog.md', writeback: 'always', commit_on_success: true },
+    ]);
+    assert.equal(parsed.workspace.source, 'commit');
+    assert.equal(parsed.workspace.preserve_local_changes, true);
+  });
+
+  it('не принимает живые файлы в workspace отдельной работы', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+workspace: { mode: worktree }
+jobs:
+  build:
+    workspace:
+      live_files: [{ path: backlog.md, writeback: always, commit_on_success: true }]
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    assert.throws(() => expand(project), StepcastError);
+  });
+
+  for (const path of ['/tmp/backlog.md', '../backlog.md', 'queue/../../backlog.md']) {
+    it(`не принимает живой путь вне корня: ${path}`, () => {
+      const project = makeProject({
+        'stepcast.yml': `
+kind: pipeline
+workspace:
+  mode: worktree
+  live_files: [{ path: ${path}, writeback: always, commit_on_success: true }]
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+      });
+
+      assert.throws(() => expand(project), StepcastError);
+    });
+  }
+
+  it('не принимает один живой путь дважды', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+workspace:
+  mode: worktree
+  live_files:
+    - { path: backlog.md, writeback: always, commit_on_success: true }
+    - { path: ./backlog.md, writeback: always, commit_on_success: true }
+jobs:
+  build:
+    steps: [{ id: c, run: [echo, ok] }]
+`,
+    });
+
+    assert.throws(() => expand(project), StepcastError);
+  });
+
   // Сценарий: «Работа объявляет источник наследования»
   it('раскрывает workspace.inherit и сохраняет его в локе', () => {
     const project = makeProject({
