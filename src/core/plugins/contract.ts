@@ -222,9 +222,9 @@ export class DecisionHalt extends Error {
  * получает ровно то же по объёму, что получает `BackendAdapter` — описание
  * вызова, а не шаг.
  */
-export interface StepKindInput {
+export interface StepKindInput<F = unknown> {
   /** Поля шага под ключом вида — уже проверенные схемой вклада, после позднего раскрытия. */
-  readonly fields: unknown;
+  readonly fields: F;
   readonly step: { readonly id: string; readonly index: number; readonly timeoutMs: number };
   readonly job: { readonly id: string };
   /** Номер попытки — тот же цикл `runAttempts`, что и у командного шага. */

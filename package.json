@@ -29,13 +29,14 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "typecheck:ui": "tsc -p ui/tsconfig.json --noEmit",
     "typecheck:ui-test": "tsc -p ui/tsconfig.test.json --noEmit",
-    "typecheck:plugin": "tsc -p examples/plugins/board/tsconfig.json && tsc -p examples/plugins/element/tsconfig.json",
+    "typecheck:plugin": "tsc -p examples/plugins/board/tsconfig.json && tsc -p examples/plugins/element/tsconfig.json && tsc -p examples/plugins/typed/tsconfig.json --noEmit",
     "lint": "eslint src test ui examples/plugins",
     "test": "npm run build:node && node --test \"dist/test/**/*.test.js\"",
     "test:only": "node --test \"dist/test/**/*.test.js\"",
     "build:ui-test": "node scripts/build-ui-tests.mjs",
     "test:ui": "node --test \"dist/ui-test/**/*.test.js\"",
-    "check": "npm run typecheck && npm run typecheck:ui && npm run typecheck:ui-test && npm run typecheck:plugin && npm run lint && npm run build && npm run build:ui-test && npm run test:only && npm run test:ui",
+    "build:plugin-example": "tsc -p examples/plugins/typed/tsconfig.json",
+    "check": "npm run typecheck && npm run typecheck:ui && npm run typecheck:ui-test && npm run lint && npm run build && npm run typecheck:plugin && npm run build:plugin-example && npm run build:ui-test && npm run test:only && npm run test:ui",
     "schema": "npm run build:node && node dist/scripts/generate-schema.js"
   },
   "dependencies": {

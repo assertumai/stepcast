@@ -217,12 +217,13 @@ started_at: 2026-09-12T17:15:27.254Z
 
 ## plugin-typed-helpers
 
-status: todo
+status: done
 title: Хелперы define* и один источник схемы в stepcast/plugin
 group: microkernel
 goal: docs/microkernel-target.md
 why: Шаг 1 плана `docs/microkernel-target.md`. Публичная поверхность `src/plugin.ts` экспортирует одни типы: автор вклада пишет JSON Schema руками и TS-тип руками, и расходятся они молча, а вход вычислителя приходит как `unknown` с приведением в каждом вкладе. Целевая архитектура выносит домен строками, и число авторских вкладов растёт — граница обязана закрываться хелпером с параметром типа, а не дисциплиной автора. Пункт самостоятелен: ничего не ломает и полезен до любого переезда.
 done_when: `stepcast/plugin` экспортирует `definePlugin`, `definePredicate<T>`, `defineStepKind<F>` и `defineBackend`, типизирующие вход вычислителя объявленным типом при единственном приведении внутри хелпера; описан и покрыт примером способ иметь один источник схемы и типа (модель `zod` у автора при сборке, JSON Schema на выходе), при неизменном запрете передавать zod-модель через границу; плагины `examples/plugins/*` и `src/backends/codex` переписаны на хелперы без правки поведения; хелперы покрыты тестами типов и рантайма; `docs/plugins.md` описывает их и называет `docs/microkernel-target.md` как цель; `npm run check` зелёный
+started_at: 2026-09-15T22:14:25.420Z
 
 ## kernel-domain-free-imports
 

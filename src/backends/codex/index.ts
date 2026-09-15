@@ -1,4 +1,4 @@
-import type { StepcastPlugin } from '../../plugin.js';
+import { defineBackend, definePlugin } from '../../plugin.js';
 import { createCodexAdapter } from './adapter.js';
 
 /**
@@ -10,11 +10,11 @@ import { createCodexAdapter } from './adapter.js';
  * умеет, и вес чтения кеша как у `claude` (кешированный ввод у OpenAI тоже
  * дешевле обычного примерно на порядок).
  */
-const plugin: StepcastPlugin = {
+const plugin = definePlugin({
   name: 'codex',
   version: '0.1.0',
   backends: {
-    codex: {
+    codex: defineBackend({
       create: (config) => createCodexAdapter(config),
       defaults: {
         command: 'codex',
@@ -28,9 +28,9 @@ const plugin: StepcastPlugin = {
         concurrency: 2,
         cache_read_weight: 0.1,
       },
-    },
+    }),
   },
-};
+});
 
 export default plugin;
 export { createCodexAdapter, SANDBOX_MODES } from './adapter.js';

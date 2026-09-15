@@ -1,5 +1,5 @@
-import { parseDuration } from '../../plugin.js';
-import type { StepKindContribution, StepKindInput, StepKindOutcome } from '../../plugin.js';
+import { defineStepKind, parseDuration } from '../../plugin.js';
+import type { StepKindOutcome } from '../../plugin.js';
 
 import { DECISION_FIELDS_SCHEMA, DECISION_OUTPUT_SCHEMA, lintDecisionFields, normalizedOutcomes, type DecisionFields } from './fields.js';
 
@@ -13,15 +13,15 @@ import { DECISION_FIELDS_SCHEMA, DECISION_OUTPUT_SCHEMA, lintDecisionFields, nor
  * исход. Судьбу прогона (continue/reject/restart) решает движок; вклад несёт
  * только форму полей и вопрос.
  */
-export const stepDecisionContribution: StepKindContribution = {
+export const stepDecisionContribution = defineStepKind<DecisionFields>({
   name: 'decision',
   title: 'Решение',
   fields: DECISION_FIELDS_SCHEMA,
   output: DECISION_OUTPUT_SCHEMA,
   waits: true,
   lint: lintDecisionFields,
-  async execute(input: StepKindInput): Promise<StepKindOutcome> {
-    const fields = input.fields as DecisionFields;
+  async execute(input): Promise<StepKindOutcome> {
+    const fields = input.fields;
     if (input.decision === undefined) {
       // Недостижимо на практике: способность даётся движком только виду,
       // объявившему `waits: true`, а `decision` объявляет его как раз здесь.
@@ -47,4 +47,4 @@ export const stepDecisionContribution: StepKindContribution = {
       },
     };
   },
-};
+});
