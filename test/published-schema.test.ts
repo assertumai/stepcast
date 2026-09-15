@@ -115,6 +115,53 @@ describe('published-schema: печать встроенного дерева', (
   });
 });
 
+describe('published-schema: политика публикации принадлежит только pipeline', () => {
+  const publication = {
+    mode: 'worktree',
+    source: 'commit',
+    preserve_local_changes: true,
+    live_files: [{ path: 'backlog.md', writeback: 'always', commit_on_success: true }],
+  };
+
+  it('принимает committed source и live_files в workspace пайплайна', () => {
+    const { pipeline } = buildPublishedSchemas();
+    const validate = compileAny(pipeline);
+    assert.equal(
+      validate({
+        version: 1,
+        kind: 'pipeline',
+        workspace: publication,
+        jobs: { build: { steps: [{ id: 'say', run: ['echo', 'ok'] }] } },
+      }),
+      true,
+      JSON.stringify(validate.errors),
+    );
+  });
+
+  it('не принимает live_files в workspace работы или job-документа', () => {
+    const schemas = buildPublishedSchemas();
+    const validatePipeline = compileAny(schemas.pipeline);
+    const validateJob = compileAny(schemas.job);
+    assert.equal(
+      validatePipeline({
+        version: 1,
+        kind: 'pipeline',
+        jobs: { build: { workspace: publication, steps: [{ id: 'say', run: ['echo', 'ok'] }] } },
+      }),
+      false,
+    );
+    assert.equal(
+      validateJob({
+        version: 1,
+        kind: 'job',
+        workspace: publication,
+        steps: [{ id: 'say', run: ['echo', 'ok'] }],
+      }),
+      false,
+    );
+  });
+});
+
 describe('published-schema: вложение схемы значения плагинного предиката', () => {
   const textHas: PluginPredicateEntry = {
     name: 'text_has',

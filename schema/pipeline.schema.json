@@ -90,6 +90,39 @@
         },
         "path": {
           "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "const": "commit"
+        },
+        "preserve_local_changes": {
+          "type": "boolean"
+        },
+        "live_files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "writeback": {
+                "type": "string",
+                "const": "always"
+              },
+              "commit_on_success": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "writeback",
+              "commit_on_success"
+            ],
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false
