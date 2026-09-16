@@ -2,15 +2,17 @@ import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { Ajv2020 } from 'ajv/dist/2020.js';
 
 import { run, type CliIo } from '../src/cli/main.js';
 import type { Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import type { BackendConfig } from '../src/core/config/resolve.js';
-import { createBuiltinKernel } from '../src/parts/builtin.js';
+import { createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
+import { BUILTIN_ROWS } from '../src/parts/rows.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
-import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
-import { buildPublishedSchemas, pluginStepKindEntries } from '../src/core/pipeline/published-schema.js';
+import { nativeStepKindNames, registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
+import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../src/core/pipeline/published-schema.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../src/core/lint.js';
 import type { StepKindContribution } from '../src/core/plugins/contract.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
@@ -2950,6 +2952,51 @@ jobs:
       warnings(diagnostics).filter((text) => /Схема проекта/.test(text)),
       [],
     );
+  });
+
+  /**
+   * Реестр дефолтного состава без одной названной строки вида шага
+   * (`builtin-step-kinds-as-rows`) — тем же приёмом, каким состав снимает вид
+   * шага патчем `enabled: false`: применены все строки `BUILTIN_ROWS`, кроме
+   * названной.
+   */
+  function registryWithoutRow(excludedRowId: string): Registry {
+    const kernel = createKernelShell();
+    for (const row of BUILTIN_ROWS) {
+      if (row.id === excludedRowId) continue;
+      row.apply(kernel);
+    }
+    return registryFromKernel(kernel);
+  }
+
+  // Задача 5.5 (builtin-step-kinds-as-rows): печать и сверка схемы следуют
+  // составу — отключённый встроенный вид шага снимает ключи из напечатанной
+  // схемы, а прежде напечатанный файл (со всеми ключами) становится устаревшим.
+  it('при отключённом step-agent напечатанная схема не признаёт ключа prompt, а прежде напечатанная — устарела', async () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE });
+    // «Прежде напечатанная» — полным дефолтным составом, до отключения строки.
+    project.write(
+      join('.stepcast', 'schema', 'pipeline.schema.json'),
+      `${JSON.stringify(buildPublishedSchemas().pipeline, null, 2)}\n`,
+    );
+    project.write(join('.stepcast', 'schema', 'job.schema.json'), `${JSON.stringify(buildPublishedSchemas().job, null, 2)}\n`);
+
+    const registryWithoutAgent = registryWithoutRow('step-agent');
+    const fresh = buildPublishedSchemas(
+      pluginPredicateEntries(registryWithoutAgent),
+      pluginStepKindEntries(registryWithoutAgent),
+      nativeStepKindNames(registryWithoutAgent),
+    );
+    // Проверка по значению, а не поиском подстроки "prompt" в тексте: у
+    // ключей run/script/uses есть свой on_fail.prompt, и строковый поиск
+    // спутал бы его с ключом отключённого вида agent.
+    const validateJob = new Ajv2020({ allErrors: true, strict: false }).compile(fresh.job as object);
+    assert.equal(validateJob({ kind: 'job', steps: [{ id: 'c', run: 'echo hi' }] }), true, JSON.stringify(validateJob.errors));
+    assert.equal(validateJob({ kind: 'job', steps: [{ id: 'c', prompt: 'hi' }] }), false);
+
+    const diagnostics = lintWithRegistry(project, registryWithoutAgent);
+    const message = warnings(diagnostics).find((text) => /Схема проекта устарела/.test(text));
+    assert.ok(message !== undefined, warnings(diagnostics).join('\n'));
   });
 });
 

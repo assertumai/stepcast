@@ -14,11 +14,11 @@ import { assertDataKey } from '../journal/data.js';
 import { findProjectRoot } from '../journal/paths.js';
 import { findPackageRoot, packagedSchemaPath, packagedWrapperPath } from '../package-schema.js';
 import { builtinRegistry } from '../../parts/builtin.js';
-import { hasStepExecutor, isNativeStepKind, type NativeStepKindForm, type StepKind, type StepKindContribution, type StepKindDocumentForm } from '../plugins/contract.js';
-import type { Kernel } from '../plugins/kernel.js';
+import { hasStepExecutor, isNativeStepKind, type NativeStepKind, type StepKind, type StepKindContribution, type StepKindDocumentForm } from '../plugins/contract.js';
 import {
   contributionOwner,
   formerStepKindOwner,
+  nativeStepKindNames,
   predicateNames,
   pluginStepKindDescriptors,
   stepKindNames,
@@ -31,6 +31,7 @@ import { resolveParams, type ParamValue } from './params.js';
 import { resolveUsesStep } from './steps.js';
 import {
   buildDocumentSchemas,
+  isDefaultNativeStepKinds,
   JobDocumentSchema,
   PipelineDocumentSchema,
   STEP_COMMON_KEYS,
@@ -1095,8 +1096,9 @@ function isUsesStepRaw(raw: Record<string, unknown>): boolean {
 // названы в его схеме (`declaredByManifest`) необязательными — и по
 // присутствию ключа `script` два вида шага уже не различаются. Различает их
 // сам `uses`, которого у шага `script` нет вовсе. Порядок обхода видов в
-// `toStep` — порядок регистрации в `createKernelShell` (`src/parts/builtin.ts`):
-// `uses` зарегистрирован раньше `script` ровно поэтому.
+// `toStep` — порядок регистрации строк встроенного слоя в перечне дефолта
+// (`src/parts/rows.ts`, `BUILTIN_ROWS`): `step-uses` стоит в нём раньше
+// `step-script` ровно поэтому, и это единственное место, где порядок узнан.
 function parseUsesStep(raw: RawStep, ctx: BuiltinStepParseContext): StepParseResult {
   if (!('uses' in raw)) throw new Error('parseUsesStep: раскрытие вызвано на шаге без ключа uses');
   const { common, scope, substitutions, at, stepRoots, scriptRoots, config } = ctx;
@@ -1413,10 +1415,12 @@ function toPluginStep(
  * Вид шага, узнавший себя в сыром шаге, — обход реестра вместо перечисления
  * (design.md, решение 1, решение 2): каждый вид узнаётся своей формой
  * (`stepKindTest`), без ветви «встроенный / плагинный» в самом обходе. Порядок
- * обхода — порядок регистрации в `createKernelShell` (`src/parts/builtin.ts`):
- * `run`, `uses`, `script`, `agent`, затем плагинные в порядке их загрузки.
- * Побеждает первый по порядку регистрации (design.md, Решение 8) — два вида,
- * узнавшие один и тот же сырой шаг, не различаются иначе.
+ * обхода — порядок регистрации строк встроенного слоя в перечне дефолта
+ * (`src/parts/rows.ts`, `BUILTIN_ROWS`): `step-run`, `step-uses`, `step-script`,
+ * `step-agent`, затем плагинные в порядке их загрузки. Побеждает первый по
+ * порядку регистрации (design.md, Решение 8) — два вида, узнавшие один и тот
+ * же сырой шаг, не различаются иначе; перечень строк — единственное место,
+ * где этот порядок записан (`builtin-step-kinds-as-rows`, design.md, Решение 2).
  *
  * Отдельной функцией, потому что вопрос «какого вида этот шаг» задаётся
  * дважды: при разборе (`toStep`) и раньше него — проверкой документа
@@ -1473,6 +1477,30 @@ function checkRawSteps(rawSteps: unknown, file: string, at: string, registry: Re
       const former = formerStepKindOwner(registry, key);
       if (former === undefined) continue;
       throw new StepcastError(`Вид шага ${key} снят вместе с плагином ${former}`, site);
+    }
+
+    // Третья причина, между «снят вместе с плагином» и «неизвестен вовсе»
+    // (`builtin-step-kinds-as-rows`, design.md, Решение 5): вид шага известен
+    // формату, но патч состава отключил строку, вносящую его, и в реестре
+    // вида нет. Опечатки в ключе нет: искать нужно не в документе, а в
+    // составе строк.
+    //
+    // Спрашивается об этом та же форма, которой вид узнаёт свой шаг
+    // (`native.test`), а не таблица «ключ → владельцы»: таблица резерва
+    // отвечает на другой вопрос (какие ключи заняты форматом) и вид по ключу
+    // называет не всегда — ключи `script`, `args`, `runner`, `input`
+    // принадлежат сразу `script` и `uses`, а `run` и `prompt` — по одному
+    // виду. Обход формами даёт точный ответ и ровно то различие, которого
+    // требует спека: текст отличается тогда и только тогда, когда шаг был бы
+    // узнан, будь вид в составе. Порядок обхода — канонический порядок строк
+    // (`src/parts/rows.ts`, `BUILTIN_ROWS`), тот же, что и у `matchStepKind`.
+    for (const kind of BUILTIN_STEP_KINDS_IN_ROW_ORDER) {
+      if (registry.steps.has(kind.name)) continue;
+      if (!kind.native.test(record)) continue;
+      throw new StepcastError(`Вид шага ${kind.name} отключён составом: строки, вносящей его, в дереве нет`, {
+        ...site,
+        hint: 'Вид шага приносит строка дерева; действующий состав показывает stepcast plugins',
+      });
     }
 
     throw new StepcastError(
@@ -1537,23 +1565,53 @@ function toStep(
 }
 
 /**
- * Зарегистрировать четыре встроенных вида шага в сервисе `steps` ядра —
- * вкладом внутренней формы `native` (design.md, решение 2, решение 4), тем же
- * вызовом, каким регистрируется плагинный. Вызывается `createKernelShell`
- * (`src/parts/builtin.ts`), а не отсюда: ядро — модуль `plugins`, а разбор —
- * модуль `pipeline`, и порядок регистрации здесь же фиксирует порядок обхода
- * `toStep` — `run`, `uses`, `script` раньше `agent` (см. комментарий у
- * `parseUsesStep`).
+ * Внутренние формы четырёх встроенных видов шага — вкладом того же вида,
+ * которым сервис `steps` ядра принимает плагинный (`native`, design.md,
+ * решение 2, решение 4). Экспортированы поимённо, а не собраны в одну
+ * функцию регистрации: регистрирует их теперь не сборка ядра, а строки
+ * встроенного слоя (`src/parts/steps/{run,uses,script,agent}/row.ts`), по
+ * одной строке на вид — `registerBuiltinStepKinds` этот пункт снимает вовсе
+ * (`builtin-step-kinds-as-rows`, design.md, Решение 1). Порядок регистрации
+ * (а с ним и порядок обхода `toStep`) фиксирует перечень строк
+ * (`src/parts/rows.ts`, `BUILTIN_ROWS`), а не порядок этих объявлений —
+ * они всего лишь называют форму разбора, которую строка внесёт.
  */
-export function registerBuiltinStepKinds(kernel: Kernel): void {
-  const entries: readonly { readonly name: string; readonly title: string; readonly native: NativeStepKindForm }[] = [
-    { name: 'run', title: 'Команда', native: { test: isRunStepRaw, parse: parseRunStep } },
-    { name: 'uses', title: 'Переиспользуемый шаг', native: { test: isUsesStepRaw, parse: parseUsesStep } },
-    { name: 'script', title: 'Скрипт', native: { test: isScriptStepRaw, parse: parseScriptStep } },
-    { name: 'agent', title: 'Агент', native: { test: isAgentStepRaw, parse: parseAgentStep } },
-  ];
-  for (const entry of entries) kernel.ctx.steps.register(entry.name, entry);
-}
+export const RUN_STEP_KIND: NativeStepKind = {
+  name: 'run',
+  title: 'Команда',
+  native: { test: isRunStepRaw, parse: parseRunStep },
+};
+export const USES_STEP_KIND: NativeStepKind = {
+  name: 'uses',
+  title: 'Переиспользуемый шаг',
+  native: { test: isUsesStepRaw, parse: parseUsesStep },
+};
+export const SCRIPT_STEP_KIND: NativeStepKind = {
+  name: 'script',
+  title: 'Скрипт',
+  native: { test: isScriptStepRaw, parse: parseScriptStep },
+};
+export const AGENT_STEP_KIND: NativeStepKind = {
+  name: 'agent',
+  title: 'Агент',
+  native: { test: isAgentStepRaw, parse: parseAgentStep },
+};
+
+/**
+ * Те же четыре формы в каноническом порядке строк дефолта (`src/parts/rows.ts`,
+ * `BUILTIN_ROWS`) — для единственного вопроса, который задаётся о виде шага
+ * **вне** действующего состава: узнал бы он этот шаг, будь его строка включена
+ * (`checkRawSteps`). Обход реестра (`matchStepKind`) на него ответить не может
+ * — снятого вида в реестре нет, — а таблица резерва ключей отвечает на другой
+ * вопрос (Решение 5, Решение 6). Перечень не задаёт ни порядка регистрации, ни
+ * порядка узнавания: и то и другое по-прежнему записано только в перечне строк.
+ */
+const BUILTIN_STEP_KINDS_IN_ROW_ORDER: readonly NativeStepKind[] = [
+  RUN_STEP_KIND,
+  USES_STEP_KIND,
+  SCRIPT_STEP_KIND,
+  AGENT_STEP_KIND,
+];
 
 /**
  * Раскрыть пайплайн: подставить значения, втянуть подключённые работы,
@@ -1577,14 +1635,18 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     home: scriptRoots.home,
     builtin: join(findPackageRoot(fileURLToPath(new URL('.', import.meta.url))), 'src', 'builtin', 'steps'),
   };
-  // Схемы документа зависят от загруженных плагинов: ключ предиката и ключ
+  // Схемы документа зависят от действующего состава: ключ предиката и ключ
   // плагинного вида шага — закрытые объединения, и без их ветвей предикат или
-  // шаг отклонялись бы как опечатка.
+  // шаг отклонялись бы как опечатка; ветвь встроенного вида шага, снятого
+  // составом (`builtin-step-kinds-as-rows`, design.md, Решение 4), схема
+  // обязана не показывать вовсе — иначе редактор подсказал бы ключ, ведущий
+  // в отказ `checkRawSteps`.
   const pluginKinds = pluginStepKindDescriptors(registry);
+  const activeNativeKinds = nativeStepKindNames(registry);
   const schemas =
-    registry.predicates.size === 0 && pluginKinds.length === 0
+    registry.predicates.size === 0 && pluginKinds.length === 0 && isDefaultNativeStepKinds(activeNativeKinds)
       ? { PipelineDocumentSchema, JobDocumentSchema }
-      : buildDocumentSchemas([...registry.predicates.keys()], pluginKinds);
+      : buildDocumentSchemas([...registry.predicates.keys()], pluginKinds, activeNativeKinds);
 
   const rawPipeline = readYamlDocument(pipelinePath);
   rejectUnknownStepKinds(rawPipeline, pipelinePath, registry);

@@ -2,7 +2,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 
 import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../../core/pipeline/published-schema.js';
-import type { Registry } from '../../core/plugins/registry.js';
+import { nativeStepKindNames, type Registry } from '../../core/plugins/registry.js';
+import { isDefaultNativeStepKinds } from '../../core/pipeline/schema.js';
 import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
 import type { ParsedArgs } from '../args.js';
 
@@ -25,8 +26,9 @@ export function runSchemaCommand(
   // Тот же перечень, с каким сверяет записанный файл `stepcast lint`.
   const predicates = pluginPredicateEntries(registry);
   const stepKinds = pluginStepKindEntries(registry);
+  const nativeStepKinds = nativeStepKindNames(registry);
 
-  const { pipeline, job, notes } = buildPublishedSchemas(predicates, stepKinds);
+  const { pipeline, job, notes } = buildPublishedSchemas(predicates, stepKinds, nativeStepKinds);
 
   mkdirSync(outDir, { recursive: true });
   const pipelinePath = join(outDir, 'pipeline.schema.json');
@@ -40,8 +42,11 @@ export function runSchemaCommand(
   // Виды шага встроенных строк дерева (`decision`) в этот счёт не входят: они
   // есть и в поставляемой пакетом схеме, и проект, ничего своего не
   // добавивший, получает файл, совпадающий с ней, — сообщать обратное значило
-  // бы звать пользователя искать отличие, которого нет.
-  if (predicates.length === 0 && stepKinds.every((entry) => entry.builtin === true)) {
+  // бы звать пользователя искать отличие, которого нет. Отключённый встроенный
+  // вид шага (`builtin-step-kinds-as-rows`) снимает эту схожесть тоже: схема
+  // проекта тогда не признаёт его ключей, и печатать «совпадает» значило бы
+  // соврать.
+  if (predicates.length === 0 && stepKinds.every((entry) => entry.builtin === true) && isDefaultNativeStepKinds(nativeStepKinds)) {
     write('плагинных предикатов и видов шага нет: схема совпадает с поставляемой пакетом');
   }
 

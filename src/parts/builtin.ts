@@ -1,14 +1,12 @@
-// Связь с разбором взаимная и остаётся таковой: отсюда берётся
-// `registerBuiltinStepKinds`, а `pipeline/expand.ts` читает здешний
-// `builtinRegistry`. Цикл держится тем, что оба обращения происходят внутри
-// вызова функции, а не на верхнем уровне модуля, — загрузчик ES-модулей
-// разводит их без ошибки (см. комментарий у `registerBuiltinStepKinds`).
-// Переезд этого файла из ядра плагинов цикл не разорвал и не обязан был:
-// после него цикл замкнут между встроенным слоем поставки и разбором, мимо
-// ядра (`kernel-domain-free-imports`, design.md, «Risks / Trade-offs»).
-// Разрывает его шаг 5 плана `docs/microkernel-target.md`, когда встроенные
-// виды шага станут строками и `registerBuiltinStepKinds` исчезнет вовсе.
-import { registerBuiltinStepKinds } from '../core/pipeline/expand.js';
+// Цикл «встроенный слой поставки ↔ разбор» не исчез переносом регистрации
+// видов шага в строки (`builtin-step-kinds-as-rows`) — он перестал проходить
+// через этот файл и через `registerBuiltinStepKinds`, но замкнулся между
+// `parts/rows.ts` и `core/pipeline/expand.ts`: `expand.ts` читает
+// `builtinRegistry` отсюда, а строки `step-run`/`step-uses`/`step-script`/
+// `step-agent` (`src/parts/steps/*/row.ts`), перечисленные в `rows.ts`, читают
+// внутренние формы разбора из `expand.ts`. Разрывает его физический переезд
+// разбора (шаг 10 плана `docs/microkernel-target.md`) либо снятие умолчания
+// `registry` у `expandPipeline` — не этот пункт (design.md, «Risks»).
 import { assertStepKindNameAvailable } from '../core/pipeline/schema.js';
 import type { CommandContribution } from '../core/plugins/contract.js';
 import { createKernel, type Kernel } from '../core/plugins/kernel.js';
@@ -84,11 +82,6 @@ export function createKernelShell(commands: readonly CommandContribution[] = [])
   const kernel = createKernel({ nameGuards: { steps: assertStepKindNameAvailable } });
   for (const name of BUILTIN_PREDICATE_NAMES) kernel.reservePredicate(name);
   for (const command of commands) kernel.ctx.commands.register(command.name, command);
-  // `agent`, `run`, `script`, `uses` — виды шага ядра, не строки дерева: их
-  // нельзя ни отключить, ни заменить патчем, в отличие от `step-http`
-  // (design.md, решение 10). Регистрируются здесь же, а не в `BUILTIN_ROWS`,
-  // ровно как резерв имён предикатов выше.
-  registerBuiltinStepKinds(kernel);
   return kernel;
 }
 

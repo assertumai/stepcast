@@ -9,21 +9,31 @@ import { describe, it } from 'node:test';
  * design.md `user-decision-steps`, решение 12) закреплена дважды: правилом
  * линта (`eslint.config.js`) и здесь. Линт решает построчно и не разворачивает
  * `**`-паттерн заранее — этот тест перечисляет модули на диске, так что новый
- * файл `src/backends/**` или `src/steps/**` проверяется без отдельной правки
- * теста, а не только когда кто-то напишет нарушающий импорт.
+ * файл `src/backends/**` или `src/parts/steps/decision/**` проверяется без
+ * отдельной правки теста, а не только когда кто-то напишет нарушающий импорт.
  *
  * Разрешено ровно два направления: публичная поверхность `../../plugin.js` и
  * соседний модуль того же каталога — плагин из нескольких файлов (манифест
  * отдельно от адаптера, поля отдельно от исполнителя) остаётся законной
  * раскладкой, а путь наружу, в ядро, отсюда не ведёт никуда. Оба каталога —
- * `src/backends` и `src/steps` — обходятся одним перечислением: граница у них
- * одна и та же, а не две её копии.
+ * `src/backends` и `src/parts/steps/decision` — обходятся одним
+ * перечислением: граница у них одна и та же, а не две её копии.
+ *
+ * Каталог `src/parts/steps/decision` — не единственный вид шага в
+ * `src/parts/steps/`: `run`/`uses`/`script`/`agent` под этой же границей не
+ * ходят вовсе — их строки лишь называют внутреннюю форму разбора движка
+ * (`core/pipeline/expand.js`), и этой поверхности не имеют
+ * (`builtin-step-kinds-as-rows`, design.md, Решение 8). Корень назван точно
+ * на `decision`, не на всём `src/parts/steps/`.
+ *
+ * `row.ts` границы не проверяет — исключён так же, как в `eslint.config.js`:
+ * он не реализация вклада, ему нужен тип `BuiltinRow` из `src/core/plugins/load.js`.
  *
  * На пустом каталоге тест проходит вырожденно: перечислять и проверять нечего,
  * пока в пакете нет ни одного плагина этого вида.
  */
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
-const surfaceRoots = [join(repoRoot, 'src/backends'), join(repoRoot, 'src/steps')];
+const surfaceRoots = [join(repoRoot, 'src/backends'), join(repoRoot, 'src/parts/steps/decision')];
 const pluginModule = resolve(repoRoot, 'src/plugin.ts');
 
 function listTsFiles(dir: string): string[] {
@@ -96,6 +106,9 @@ function surfaceViolations(): string[] {
 
   for (const root of surfaceRoots) {
     for (const file of listTsFiles(root)) {
+      // Модуль строки — не реализация вклада, границу с ним не проверяет
+      // (та же оговорка, что у блока `eslint.config.js`).
+      if (file.endsWith(`${sep}row.ts`)) continue;
       const where = relative(repoRoot, file);
       const { specifiers, computed } = parseImports(readFileSync(file, 'utf8'));
 
@@ -123,7 +136,7 @@ function surfaceViolations(): string[] {
   return violations;
 }
 
-describe('backends и steps: публичная поверхность', () => {
+describe('backends и steps/decision: публичная поверхность', () => {
   it('каждый импорт ведёт во встроенный модуль Node, в ../../plugin.js либо в соседний модуль плагина', () => {
     assert.deepEqual(surfaceViolations(), []);
   });

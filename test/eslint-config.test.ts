@@ -33,7 +33,7 @@ const CORE_IMPORT = "import { createClaudeAdapter } from '../../core/backend/cla
 // Импорты для файла ядра плагинов (`src/core/plugins/проба.ts`): пути на
 // уровень выше, чем у ядра общего вида (`src/core/run/проба.ts`).
 const PLUGIN_KERNEL_BACKEND_IMPORT = "import { createClaudeAdapter } from '../backend/claude.js';\n";
-const PLUGIN_KERNEL_PIPELINE_IMPORT = "import { registerBuiltinStepKinds } from '../pipeline/expand.js';\n";
+const PLUGIN_KERNEL_PIPELINE_IMPORT = "import { RUN_STEP_KIND } from '../pipeline/expand.js';\n";
 const PLUGIN_KERNEL_PIPELINE_TYPE_IMPORT = "import type { ExpandOptions } from '../pipeline/expand.js';\n";
 const BACKEND_TYPES_IMPORT = "import type { BackendAdapter } from '../backend/types.js';\n";
 
@@ -128,6 +128,50 @@ describe('eslint: запреты импорта действуют одновр�
       messages.some((message) => message.includes('withTempDir()')),
       messages.join('\n'),
     );
+  });
+
+  // Задача 6.4 (builtin-step-kinds-as-rows): реализация `decision` переехала
+  // в `src/parts/steps/decision/`, где без отдельного блока конфига файлы
+  // попали бы под общий `src/parts/**` — там запрета на импорт `src/core` нет
+  // (design.md, Решение 8). Тот же образец, что и у `src/backends/codex`.
+  it('реализация decision (src/parts/steps/decision) не вправе импортировать src/core', async () => {
+    const messages = await restrictedImports('src/parts/steps/decision/проба.ts', CORE_IMPORT);
+    assert.ok(
+      messages.some((message) => message.includes('plugin.js')),
+      messages.join('\n'),
+    );
+  });
+
+  // Блок плагинов пакета совпадает на этих файлах последним и заменяет опции
+  // правила целиком — значит, граница ядра и поверхности, которую строкам
+  // поставки даёт блок `src/parts/**`, обязана быть перечислена в нём же.
+  // Иначе переезд `decision` под `src/parts/` молча снял бы с него запрет
+  // импорта `src/cli`, оставленный всем прочим строкам.
+  it('реализация decision: граница плагина и граница поверхности срабатывают вместе', async () => {
+    const messages = await restrictedImports('src/parts/steps/decision/проба.ts', CORE_IMPORT + CLI_IMPORT + TEMP_IMPORT);
+    assert.ok(
+      messages.some((message) => message.includes('plugin.js')),
+      messages.join('\n'),
+    );
+    assert.ok(
+      messages.some((message) => message.includes('граница ядра')),
+      messages.join('\n'),
+    );
+    assert.ok(
+      messages.some((message) => message.includes('withTempDir()')),
+      messages.join('\n'),
+    );
+  });
+
+  // `row.ts` той же строки — не реализация вклада, ему нужен тип `BuiltinRow`
+  // из `src/core/plugins/load.js`, и границе плагина он не подчиняется
+  // (`ignores` блока в `eslint.config.js`).
+  it('row.ts строки step-decision вправе импортировать src/core', async () => {
+    const messages = await restrictedImports(
+      'src/parts/steps/decision/row.ts',
+      "import type { BuiltinRow } from '../../../core/plugins/load.js';\n",
+    );
+    assert.deepEqual(messages, []);
   });
 
   // Ядро плагинов не зависит от домена (`kernel-domain-free-imports`,

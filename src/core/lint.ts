@@ -11,7 +11,7 @@ import { describeScriptUnresolved } from './pipeline/expand.js';
 import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from './pipeline/published-schema.js';
 import { builtinRegistry } from '../parts/builtin.js';
 import { hasStepExecutor } from './plugins/contract.js';
-import { availableNames, type Registry } from './plugins/registry.js';
+import { availableNames, nativeStepKindNames, type Registry } from './plugins/registry.js';
 import { isGitWorktree } from './anchor/git.js';
 import { workspaceInheritanceDiagnostics } from './run/inherit.js';
 import {
@@ -448,8 +448,14 @@ function checkPublishedSchema(base: string, registry: Registry, push: (diagnosti
   if (!targets.some((target) => existsSync(target.path))) return;
 
   // Тот же перечень, каким печатает команда `stepcast schema`: сверка со
-  // «свежим» выводом верна лишь пока сборка перечня у них одна.
-  const current = buildPublishedSchemas(pluginPredicateEntries(registry), pluginStepKindEntries(registry));
+  // «свежим» выводом верна лишь пока сборка перечня у них одна — включая
+  // состав видов внутренней формы (`builtin-step-kinds-as-rows`): отключённый
+  // встроенный вид шага тоже обязан ловиться этой сверкой, не только плагинный.
+  const current = buildPublishedSchemas(
+    pluginPredicateEntries(registry),
+    pluginStepKindEntries(registry),
+    nativeStepKindNames(registry),
+  );
 
   for (const target of targets) {
     if (!existsSync(target.path)) continue;

@@ -1,4 +1,4 @@
-import { hasStepExecutor, type BackendContribution, type CommandContribution, type LoadedPlugin, type PredicateContribution, type StepKind, type StepKindContribution } from './contract.js';
+import { hasStepExecutor, isNativeStepKind, type BackendContribution, type CommandContribution, type LoadedPlugin, type PredicateContribution, type StepKind, type StepKindContribution } from './contract.js';
 import { BUILTIN_OWNER, type Kernel } from './kernel.js';
 
 /**
@@ -149,6 +149,19 @@ export interface PluginStepKindDescriptor {
  */
 export function formerStepKindOwner(registry: Registry, name: string): string | undefined {
   return kernels.get(registry)?.ctx.steps.formerOwner(name);
+}
+
+/**
+ * Имена видов внутренней формы `native` действующего реестра, в порядке
+ * регистрации (`builtin-step-kinds-as-rows`, design.md, Решение 4): подаются
+ * `buildDocumentSchemas`/`buildPublishedSchemas` третьим параметром — ветвь
+ * схемы документа собирается только по видам, которых состав не снял.
+ * Порядок — порядок вставки `Map`, то есть порядок применения строк
+ * (`src/parts/rows.ts`), а не алфавитный, в отличие от `stepKindNames`: он же
+ * порядок узнавания шага, и подавать его нужно как есть.
+ */
+export function nativeStepKindNames(registry: Registry): string[] {
+  return [...registry.steps.entries()].filter(([, kind]) => isNativeStepKind(kind)).map(([name]) => name);
 }
 
 /**

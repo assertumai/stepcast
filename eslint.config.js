@@ -14,17 +14,17 @@ const coreBoundaryPatterns = [
 ];
 
 /**
- * Плагины пакета (`src/backends/**`, `src/steps/**`) — не половина ядра:
- * близость ограничена механически, тем же приёмом, что и граница
- * ядра/поверхности выше (design.md первого настоящего плагина, решение 2;
- * design.md `user-decision-steps`, решение 12). Импорт из ядра — относительной
- * формой любой глубины, `**` ловит и её.
+ * Плагины пакета (`src/backends/**`, `src/parts/steps/decision/**`) — не
+ * половина ядра: близость ограничена механически, тем же приёмом, что и
+ * граница ядра/поверхности выше (design.md первого настоящего плагина,
+ * решение 2; design.md `user-decision-steps`, решение 12). Импорт из ядра —
+ * относительной формой любой глубины, `**` ловит и её.
  */
 const backendsBoundaryPatterns = [
   {
     group: ['**/core/**'],
     message:
-      'src/backends и src/steps не должны импортировать src/core — вклад обязан идти через ../../plugin.js (design.md, решение 2).',
+      'src/backends и src/parts/steps/decision не должны импортировать src/core — вклад обязан идти через ../../plugin.js (design.md, решение 2).',
   },
 ];
 
@@ -237,9 +237,32 @@ export default tseslint.config(
     // напрямую. Оба перечислены одной записью правила по той же причине, что
     // и у блока ядра выше — раздельные блоки на одном наборе файлов не
     // сливаются, второй молча заменил бы первый.
-    files: ['src/backends/**/*.ts', 'src/steps/**/*.ts'],
+    //
+    // `src/parts/steps/decision/**` — реализация встроенного плагинного вида
+    // `decision`, переехавшая рядом с родственными видами шага
+    // (`builtin-step-kinds-as-rows`, design.md, Решение 8); она написана тем
+    // же контрактом, что видит сторонний автор плагина, и без этого блока
+    // (файлы попали бы под общий `src/parts/**` выше, где запрета на импорт
+    // `src/core` нет) граница молча исчезла бы. `row.ts` той же строки —
+    // исключение: он не реализация вклада, ему нужен тип `BuiltinRow` из
+    // `src/core/plugins/load.js`, а братьям (`run/`, `uses/`, `script/`,
+    // `agent/row.ts`) под `src/parts/steps/**` этот запрет не грозит вовсе —
+    // они лишь называют внутреннюю форму разбора из `core/pipeline/expand.js`
+    // и под этот блок не подпадают.
+    //
+    // Граница ядра и поверхности (`coreBoundaryPatterns`) перечислена здесь
+    // третьей по той же причине: блок на `src/parts/**` выше даёт её всем
+    // строкам поставки, а этот блок, совпав на файлах `decision` последним,
+    // заменил бы опции целиком и снял бы её с одной только реализации
+    // переехавшего вида. `src/backends/**` она тоже касается — плагин пакета
+    // тем более не поверхность.
+    files: ['src/backends/**/*.ts', 'src/parts/steps/decision/**/*.ts'],
+    ignores: ['src/parts/steps/decision/row.ts'],
     rules: {
-      'no-restricted-imports': ['error', { paths: enginePaths, patterns: backendsBoundaryPatterns }],
+      'no-restricted-imports': [
+        'error',
+        { paths: enginePaths, patterns: [...coreBoundaryPatterns, ...backendsBoundaryPatterns] },
+      ],
     },
   },
   {

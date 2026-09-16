@@ -100,6 +100,29 @@ describe('published-schema: печать встроенного дерева', (
     assert.equal(`${JSON.stringify(job, null, 2)}\n`, expectedJobText);
   });
 
+  // Перечень видов внутренней формы приходит сюда посчитанным по реестру
+  // (`nativeStepKindNames`), а не константой модуля: совпадение с дефолтным —
+  // вопрос состава, а не тождества массивов и не их длины
+  // (`builtin-step-kinds-as-rows`, находка ревью).
+  it('дефолтный состав, поданный своим массивом, печатает то же побайтово', () => {
+    const registry = builtinRegistry();
+    const predicates = pluginPredicateEntries(registry);
+    const stepKinds = pluginStepKindEntries(registry);
+
+    // Порядок намеренно не канонический: ветви объединения собираются в
+    // каноническом всегда, перечень отвечает лишь «входит ли вид в состав».
+    const shuffled = ['uses', 'agent', 'script', 'run'];
+    const { pipeline, job, notes } = buildPublishedSchemas(predicates, stepKinds, shuffled);
+
+    assert.deepEqual(notes, []);
+    assert.equal(`${JSON.stringify(pipeline, null, 2)}\n`, readSchemaFile('schema/pipeline.schema.json'));
+    assert.equal(`${JSON.stringify(job, null, 2)}\n`, readSchemaFile('schema/job.schema.json'));
+
+    // И ранний путь «плагинных вкладов нет» — он единственный смотрит на
+    // перечень до сборки, и именно он раньше сверял перечень по ссылке.
+    assert.deepEqual(buildPublishedSchemas([], [], shuffled), buildPublishedSchemas());
+  });
+
   it('не называет отличием от себя вид шага встроенной строки', () => {
     const registry = builtinRegistry();
     const { pipeline, job } = buildPublishedSchemas(

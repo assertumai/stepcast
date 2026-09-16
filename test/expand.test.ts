@@ -14,6 +14,25 @@ import { asAgent, asRun, asScript, makeProject, MINIMAL_PIPELINE, type Project }
 import { tempDir } from './tmp.js';
 import type { ScriptRoots } from '../src/core/pipeline/expand.js';
 import type { Predicate } from '../src/core/pipeline/model.js';
+import { createKernelShell } from '../src/parts/builtin.js';
+import { BUILTIN_ROWS } from '../src/parts/rows.js';
+import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
+
+/**
+ * Реестр дефолтного состава без одной названной строки вида шага — тем же
+ * приёмом, каким состав снимает вид шага патчем `enabled: false`
+ * (`builtin-step-kinds-as-rows`): применены все строки `BUILTIN_ROWS`, кроме
+ * той, чей `id` назван, так что реестр воспроизводит именно то, что видит
+ * `checkRawSteps`/`buildDocumentSchemas`, когда патч состава отключил строку.
+ */
+function registryWithoutRow(excludedRowId: string): Registry {
+  const kernel = createKernelShell();
+  for (const row of BUILTIN_ROWS) {
+    if (row.id === excludedRowId) continue;
+    row.apply(kernel);
+  }
+  return registryFromKernel(kernel);
+}
 
 /** Бэкенд с умолчанием модели — для проверки слоя `backend`. */
 const BACKEND_WITH_DEFAULT_MODEL: BackendConfig = {
@@ -4820,6 +4839,166 @@ jobs:
     });
     project.write('schema.json', JSON.stringify({ type: 'object' }));
     assert.doesNotThrow(() => expandScript(project, isolatedScriptRoots(project)));
+  });
+});
+
+// Задача 1.2 (builtin-step-kinds-as-rows): порядок узнавания видов шага
+// (`run`, `uses`, `script`, `agent`) держится порядком строк в перечне
+// дефолта (`src/parts/rows.ts`, `BUILTIN_ROWS`) — `step-uses` стоит в нём
+// раньше `step-script`, и это обязано
+// быть так: ключ `script` объявлен в схеме `uses` через `declaredByManifest`
+// (значение не вправе присутствовать), и по одному присутствию ключа
+// `script` виды уже не различаются. Шаг, назвавший оба ключа, обязан
+// узнаться видом `uses` — отказ схемы называет `script` ключом манифеста, а
+// не шаг видом `script`, отказывающим на незнакомом ключе `uses`.
+describe('pipeline-definition: приоритет узнавания uses над script', () => {
+  it('шаг с uses и ключом script узнаётся видом uses, а не script', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        uses: some-step
+        script: ./main.cjs
+`,
+    });
+
+    const error = thrown(() => expand(project));
+    assert.match(error.message, /ключ script объявляет манифест шага/);
+    assert.doesNotMatch(error.message, /неизвестный ключ uses/);
+  });
+});
+
+// Задача 5.4 (builtin-step-kinds-as-rows): отказ разбора на виде шага,
+// снятом составом, — третья ветвь `checkRawSteps` между «снят вместе с
+// плагином» и «неизвестен» (design.md, Решение 5).
+describe('pipeline-definition: вид шага вне действующего состава', () => {
+  it('патч состава отключает step-run — пайплайн с шагом run: отказывает, называя вид и состав', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, hi]
+`,
+    });
+
+    const registry = registryWithoutRow('step-run');
+    const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
+
+    assert.match(error.message, /Вид шага run отключён составом/);
+    assert.match(error.hint ?? '', /строка дерева/);
+    assert.match(error.hint ?? '', /stepcast plugins/);
+    // Имя строки (`step-run`) в тексте отказа не звучит: соответствие «вид →
+    // строка» знает только перечень дефолта, а разбор документа о нём не
+    // спрашивает (design.md, Решение 5).
+    assert.doesNotMatch(error.message, /step-run/);
+    assert.doesNotMatch(error.hint ?? '', /step-run/);
+  });
+
+  it('тот же пайплайн при дефолтном составе разбирается как прежде', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, hi]
+`,
+    });
+
+    assert.doesNotThrow(() => expand(project));
+  });
+
+  // У вида `script` нет ни одного ключа, который принадлежал бы ему одному:
+  // `script`, `args`, `runner`, `input` он делит с `uses`, `on_fail` — ещё
+  // шире. Отказ обязан назвать вид всё равно: спрашивается форма узнавания
+  // самого вида, а не таблица «ключ → владельцы» резерва формата.
+  it('патч состава отключает step-script — шаг script: отказывает тем же текстом, а не как опечатка', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: ./main.cjs
+`,
+    });
+    project.write('main.cjs', 'process.exit(0);\n');
+
+    const registry = registryWithoutRow('step-script');
+    const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
+
+    assert.match(error.message, /Вид шага script отключён составом/);
+    assert.doesNotMatch(error.message, /неизвестен/);
+    assert.match(error.hint ?? '', /stepcast plugins/);
+  });
+
+  // Тот же ключ `script` при живом `step-script`, но снятом `step-uses`:
+  // отказ называет вид `uses` только тогда, когда шаг назвал его ключ.
+  it('шаг script: при отключённом step-uses разбирается как прежде', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        script: ./main.cjs
+`,
+    });
+    project.write('main.cjs', 'process.exit(0);\n');
+
+    const registry = registryWithoutRow('step-uses');
+    assert.doesNotThrow(() =>
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }),
+    );
+  });
+
+  it('патч состава отключает step-agent — шаг prompt: называет вид agent', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        prompt: Привет
+`,
+    });
+
+    const registry = registryWithoutRow('step-agent');
+    const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
+
+    assert.match(error.message, /Вид шага agent отключён составом/);
+  });
+
+  // Ключ, которого не знает ни один вид и ни один формат, остаётся опечаткой
+  // и при неполном составе: третья ветвь отвечает только за виды, которые
+  // узнали бы шаг, будь их строка включена (спека, «Неизвестный ключ
+  // остаётся опечаткой»).
+  it('незнакомый ключ при отключённой строке остаётся прежним отказом о неизвестном виде', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        frobnicate: да
+`,
+    });
+
+    const registry = registryWithoutRow('step-run');
+    const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
+
+    assert.match(error.message, /Вид шага frobnicate неизвестен: такого вклада в реестре нет/);
   });
 });
 

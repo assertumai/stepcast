@@ -2,12 +2,15 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { StepcastError } from '../src/core/errors.js';
-import { BUILTIN_PREDICATE_NAMES, builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
+import { BUILTIN_PREDICATE_NAMES, builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { createKernel } from '../src/core/plugins/kernel.js';
-import { availableNames, contributionOwner, predicateNames, registryFromKernel } from '../src/core/plugins/registry.js';
-import type { PredicateContribution, StepcastPlugin, StepKindContribution } from '../src/core/plugins/contract.js';
+import { availableNames, contributionOwner, predicateNames, registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
+import { isNativeStepKind, type PredicateContribution, type StepcastPlugin, type StepKindContribution } from '../src/core/plugins/contract.js';
 import { ExitCode } from '../src/core/errors.js';
+import { BUILTIN_ROWS } from '../src/parts/rows.js';
+import { row as stepRun } from '../src/parts/steps/run/row.js';
+import { row as stepUses } from '../src/parts/steps/uses/row.js';
 
 /** Вклад предиката, годный для реестра: содержимое здесь не важно. */
 function predicate(name: string): PredicateContribution {
@@ -180,6 +183,44 @@ describe('plugin-registry: имя вида шага занято ключом д
       },
     );
   });
+
+  // Сценарий спеки `builtin-step-kinds-as-rows` «Плагин занимает имя
+  // встроенного вида при отключённой строке» (находка ревью): резерв ключей
+  // формата составом дерева не управляется. Пайплайн, где `run:` значит не то,
+  // что во всех остальных, читается неверно и человеком, и документацией, и
+  // линтом чужого проекта, — поэтому отключение строки `step-run` имени `run`
+  // не освобождает, и отказ остаётся дословно прежним.
+  it('отключённая строка вида шага не освобождает ни его имени, ни его ключей', async () => {
+    const kernel = createKernelShell();
+    for (const row of BUILTIN_ROWS) {
+      if (row.id === 'step-run') continue;
+      row.apply(kernel);
+    }
+    assert.equal(registryFromKernel(kernel).steps.has('run'), false, 'строка снята составом');
+
+    await assert.rejects(
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец', steps: [fakeStepKind('run')] }, '/м.js'),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.message, 'Имя вида шага run занято ключом встроенного вида шага run');
+        assert.equal(
+          error.hint,
+          'Выберите другое имя: ключи встроенных видов не могут стать именем плагинного вида шага',
+        );
+        return true;
+      },
+    );
+
+    // И ключ документа того же вида — тем же отказом, не только имя.
+    await assert.rejects(
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец2', steps: [fakeStepKind('on_fail')] }, '/м2.js'),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.message, 'Имя вида шага on_fail занято ключом встроенного вида шага run, script, uses');
+        return true;
+      },
+    );
+  });
 });
 
 // Задача 2.6: голое ядро без проверок имени — перечня занятых имён в нём нет
@@ -201,8 +242,9 @@ describe('plugin-registry: снимок дефолтного дерева', () =
     const kernel = createBuiltinKernel();
 
     assert.deepEqual([...kernel.ctx.backends.contributions.keys()], ['claude']);
-    // Порядок — регистрации, не алфавитный: run, uses, script, agent (ядро),
-    // затем decision (первая строка встроенного слоя, `BUILTIN_ROWS`).
+    // Порядок — регистрации, не алфавитный, и записан он теперь только в
+    // перечне строк (`src/parts/rows.ts`, `BUILTIN_ROWS`): строки видов шага
+    // идут в нём после `backend-claude` — run, uses, script, agent, decision.
     assert.deepEqual([...kernel.ctx.steps.contributions.keys()], ['run', 'uses', 'script', 'agent', 'decision']);
     assert.deepEqual([...kernel.ctx.predicates.reserved].sort(), [...BUILTIN_PREDICATE_NAMES].sort());
   });
@@ -216,5 +258,61 @@ describe('plugin-registry: снимок дефолтного дерева', () =
     const registry = builtinRegistry();
 
     assert.equal(contributionOwner(registry, 'backends', 'claude'), 'встроенный');
+  });
+
+  // Задача 1.1 (builtin-step-kinds-as-rows): снимок владельца — не только у
+  // бэкенда, но и у каждого вида шага. Все пять вносятся своей строкой тем же
+  // вызовом сервиса на корневой области ядра (`ctx.steps.register`), а не
+  // через `kernel.ctx.plugin`, — владелец поэтому «встроенный», а не имя
+  // строки, и переезд регистрации в `BUILTIN_ROWS` этого не изменил.
+  it('владелец каждого вида шага — «встроенный»', () => {
+    const registry = builtinRegistry();
+
+    for (const name of ['run', 'uses', 'script', 'agent', 'decision']) {
+      assert.equal(contributionOwner(registry, 'steps', name), 'встроенный');
+    }
+  });
+});
+
+/**
+ * Первый вид, чей `native.test` узнаёт запись, — то же обращение к реестру,
+ * каким `matchStepKind` (`src/core/pipeline/expand.ts`) обходит `registry.steps`
+ * и останавливается на первом совпадении. Записывается здесь заново, а не
+ * зовётся из `expand.ts`, потому что сама функция не экспортирована: вопрос
+ * теста — «чей порядок это решает», а не «как разбирается документ», и полный
+ * проход через схему документа тут не нужен и не пройден бы — `run` и `uses`
+ * одновременно не проходят ни одну настоящую ветвь схемы (`declaredByManifest`).
+ */
+function firstNativeMatch(record: Record<string, unknown>, registry: Registry): string | undefined {
+  for (const [name, kind] of registry.steps) {
+    if (isNativeStepKind(kind) && kind.native.test(record)) return name;
+  }
+  return undefined;
+}
+
+// Задача 7.5 (builtin-step-kinds-as-rows): порядок узнавания — свойство
+// перечня строк (`src/parts/rows.ts`, `BUILTIN_ROWS`), а не порядка вызовов
+// нигде больше (design.md, Решение 2). Перестановка строк, собранных вручную,
+// меняет ответ — то же дерево, построенное в обратном порядке, узнаёт запись
+// другим видом.
+describe('plugin-registry: порядок узнавания — свойство перечня строк', () => {
+  const AMBIGUOUS_RECORD = { run: 'echo hi', uses: 'some-step' };
+
+  it('run перед uses в перечне — запись, назвавшая оба ключа, узнаётся видом run', () => {
+    const kernel = createKernelShell();
+    stepRun.apply(kernel);
+    stepUses.apply(kernel);
+    const registry = registryFromKernel(kernel);
+
+    assert.equal(firstNativeMatch(AMBIGUOUS_RECORD, registry), 'run');
+  });
+
+  it('та же пара строк в обратном порядке — та же запись узнаётся видом uses', () => {
+    const kernel = createKernelShell();
+    stepUses.apply(kernel);
+    stepRun.apply(kernel);
+    const registry = registryFromKernel(kernel);
+
+    assert.equal(firstNativeMatch(AMBIGUOUS_RECORD, registry), 'uses');
   });
 });

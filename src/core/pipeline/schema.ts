@@ -296,9 +296,39 @@ export interface PluginStepKindKeys {
   readonly keys: readonly string[];
 }
 
+/**
+ * Имена видов внутренней формы `native` в каноническом порядке — том же, в
+ * котором их ветви стоят в объединении `StepSchema` (`builtin-step-kinds-as-rows`,
+ * design.md, Решение 4). Умолчание третьего параметра `buildDocumentSchemas`:
+ * с ним константы модуля (`StepSchema`, `PipelineDocumentSchema`, …) и схема,
+ * поставляемая пакетом, остаются byte-в-byte прежними.
+ */
+export const DEFAULT_NATIVE_STEP_KINDS: readonly string[] = ['agent', 'run', 'script', 'uses'];
+
+/**
+ * Совпал ли поданный состав видов внутренней формы с дефолтным — по составу, а
+ * не по длине и не по ссылке. Спрашивают об этом трое: быстрый путь готовых
+ * констант (`expandPipeline`), ранний путь печати (`buildPublishedSchemas`) и
+ * сообщение команды «схема совпадает с поставляемой пакетом»
+ * (`cli/commands/schema.ts`), — и ответ у всех троих обязан быть один.
+ *
+ * Порядок не сверяется намеренно: ветви объединения `StepSchema` собираются в
+ * каноническом порядке всегда, а перечень отвечает лишь на вопрос «входит ли
+ * вид в состав» (Решение 4). Длина же перестала бы быть верным ответом в тот
+ * день, когда внутренней формой окажется вид вне канонической четвёрки, —
+ * молча и без единого падающего теста.
+ */
+export function isDefaultNativeStepKinds(nativeStepKinds: readonly string[]): boolean {
+  return (
+    nativeStepKinds.length === DEFAULT_NATIVE_STEP_KINDS.length &&
+    DEFAULT_NATIVE_STEP_KINDS.every((name) => nativeStepKinds.includes(name))
+  );
+}
+
 export function buildDocumentSchemas(
   pluginPredicates: readonly string[] = [],
   pluginStepKinds: readonly PluginStepKindKeys[] = [],
+  nativeStepKinds: readonly string[] = DEFAULT_NATIVE_STEP_KINDS,
 ) {
   const PredicateSchema =
     pluginPredicates.length === 0
@@ -525,16 +555,38 @@ export function buildDocumentSchemas(
     return rest.length === 0 ? branch(first) : z.union([branch(first), ...rest.map(branch)]);
   };
 
-  const StepSchema =
-    pluginStepKinds.length === 0
-      ? z.union([AgentStepSchema, RunStepSchema, ScriptStepSchema, UsesStepSchema])
-      : z.union([
-          AgentStepSchema,
-          RunStepSchema,
-          ScriptStepSchema,
-          UsesStepSchema,
-          ...pluginStepKinds.map((kind) => PluginStepSchema(kind.keys)),
-        ]);
+  // Имя без ветви — именованный отказ сборки (design.md, Решение 4), а не
+  // молчаливый пропуск: иначе опечатка в имени, поданном `buildDocumentSchemas`,
+  // тихо сузила бы объединение и разбилась о шаг много позже, дампом ветвей.
+  const NATIVE_STEP_KIND_NAMES = ['agent', 'run', 'script', 'uses'] as const;
+  for (const name of nativeStepKinds) {
+    if (!(NATIVE_STEP_KIND_NAMES as readonly string[]).includes(name)) {
+      throw new StepcastError(`Вид шага ${name} не имеет ветви схемы документа: неизвестный внутренний вид`, {
+        hint: 'Внутренние виды шага — agent, run, script, uses; проверьте имя, поданное buildDocumentSchemas',
+      });
+    }
+  }
+
+  /**
+   * Объединение ветвей шага — четыре позиции встроенных видов фиксированы
+   * всегда, а не отданы длине `nativeStepKinds` (design.md, Решение 4): вид,
+   * которого состав не содержит, занимает позицию `z.never()` — ветвью,
+   * не принимающей ничего и не несущей ни одного своего ключа, — а не
+   * пропадает из массива. Так `StepSchema` остаётся размеченным объединением
+   * ровно этих четырёх форм (`z.infer` отбрасывает `never` из объединения
+   * сам), на котором ниже стоит сужение по `'run' in raw` и подобное
+   * (`parseRunStep`, функция `capable`), — а не общим `ZodTypeAny`, стёршим
+   * его до `any`. Ноль и одна ветвь поэтому не особые случаи для арности
+   * `z.union`: четыре позиции (пусть все — `z.never()`) плюс плагинные дают
+   * не меньше тех же четырёх аргументов, что и в дефолте.
+   */
+  const StepSchema = z.union([
+    nativeStepKinds.includes('agent') ? AgentStepSchema : z.never(),
+    nativeStepKinds.includes('run') ? RunStepSchema : z.never(),
+    nativeStepKinds.includes('script') ? ScriptStepSchema : z.never(),
+    nativeStepKinds.includes('uses') ? UsesStepSchema : z.never(),
+    ...pluginStepKinds.map((kind) => PluginStepSchema(kind.keys)),
+  ]);
 
   const ParamSchema = z
     .object({

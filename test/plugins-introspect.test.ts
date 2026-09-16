@@ -224,16 +224,44 @@ describe('introspect: встроенное вне строк дерева', () =
     const { registry, outcomes } = await loadPlugins(config, { projectRoot: place.root });
     const model = introspect(outcomes, kernelFromRegistry(registry), 'cli');
 
-    // Виды шага ядра (`registerBuiltinStepKinds`) и четыре служебных сервиса
-    // заводятся `createKernelShell` до применения первой строки.
-    assert.deepEqual(model.builtin.contributions.steps, ['run', 'uses', 'script', 'agent']);
+    // Четыре служебных сервиса заводятся `createKernelShell` до применения
+    // первой строки; виды шага (`run`, `uses`, `script`, `agent`, `decision`)
+    // с этого пункта вносят строки `step-*`, а не сборка ядра
+    // (`builtin-step-kinds-as-rows`) — во встроенном вне строк их не осталось.
+    assert.deepEqual(model.builtin.contributions.steps, []);
     assert.deepEqual(
       model.builtin.declaredServices.map((service) => service.name),
       ['backends', 'predicates', 'commands', 'steps'],
     );
-    // `claude` и `decision` — вклады своих строк, и во встроенном вне строк их нет.
+    // `claude` и виды шага — вклады своих строк, и во встроенном вне строк их нет.
     assert.deepEqual(model.builtin.contributions.backends, []);
-    assert.ok(!model.builtin.contributions.steps.includes('decision'));
+    for (const name of ['run', 'uses', 'script', 'agent', 'decision']) {
+      const row = model.rows.find((candidate) => candidate.id === `step-${name}`);
+      assert.deepEqual(row?.contributions.steps, [name]);
+    }
+  });
+
+  // Задача 7.4 (builtin-step-kinds-as-rows): отключение строки вида шага
+  // снимает её вклад из реестра, но не из дерева — строка остаётся видна
+  // отключённой, а прочие виды шага не задеты (`plugin-tree`, Решение 5).
+  it('отключённая строка вида шага снимает свой вклад из реестра, оставаясь видимой отключённой, прочие виды на месте', async () => {
+    const place = bed();
+    writeFileSync(
+      join(place.root, '.stepcast', 'plugins.patch.yml'),
+      'version: 1\nkind: plugins-patch\nplugins:\n  - id: step-script\n    use: stepcast:step-script\n    enabled: false\n',
+    );
+    const config = resolved(place, '');
+
+    const { registry, outcomes } = await loadPlugins(config, { projectRoot: place.root });
+    const model = introspect(outcomes, kernelFromRegistry(registry), 'cli');
+
+    const row = model.rows.find((candidate) => candidate.id === 'step-script');
+    assert.deepEqual(row?.state, { kind: 'disabled' });
+    assert.deepEqual(row?.contributions, { backends: [], predicates: [], commands: [], steps: [] });
+    assert.ok(!registry.steps.has('script'));
+    for (const name of ['run', 'uses', 'agent', 'decision']) {
+      assert.ok(registry.steps.has(name), `вид ${name} остался в реестре`);
+    }
   });
 });
 

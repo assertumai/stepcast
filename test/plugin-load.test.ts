@@ -107,13 +107,13 @@ describe('plugin-contributions: загрузка плагинов', () => {
       project: 'plugins: ["./plugins/local.mjs", "./plugins/местный"]\n',
     });
 
-    // Порядок: встроенная строка первой, затем вклад глобального слоя, затем
+    // Порядок: встроенные строки первыми, затем вклад глобального слоя, затем
     // проектного; повтор спецификатора внутри проектного слоя схлопнут в одну
     // строку — вставка нашла свой id в дереве и не сделала ничего (design.md,
     // Решение 4).
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'step-decision', './plugins/местный', './plugins/local.mjs'],
+      ['backend-claude', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './plugins/местный', './plugins/local.mjs'],
     );
     // `Config.plugins` — модули: псевдоспецификатора встроенной строки в нём нет.
     assert.deepEqual(config.config.plugins, ['./plugins/местный', './plugins/local.mjs']);

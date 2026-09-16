@@ -66,29 +66,39 @@ describe('plugin-tree: stepcast plugins печатает дерево со сл�
     assert.equal(outcome.code, ExitCode.ok);
     const lines = outcome.stdout.split('\n');
     // Пять колонок дерева — на прежних четырёх строках; вклады встроенных
-    // строк (`backend-claude`, `step-decision`) печатаются отдельной строкой
-    // под каждой (`plugin-introspection`, Migration Plan), затем раздел
-    // встроенного вне строк дерева (виды шага ядра, команды CLI, служебные
-    // сервисы — три строки), а раздел витрины — двумя строками в конце, потому
-    // что демон в этом тесте не поднят.
-    assert.equal(lines.length, 11);
+    // строк (`backend-claude`, `step-run`, `step-uses`, `step-script`,
+    // `step-agent`, `step-decision`) печатаются отдельной строкой под каждой
+    // (`plugin-introspection`, Migration Plan), затем раздел встроенного вне
+    // строк дерева (команды CLI, служебные сервисы — виды шага в нём больше
+    // не числятся, `builtin-step-kinds-as-rows`), а раздел витрины — двумя
+    // строками в конце, потому что демон в этом тесте не поднят.
+    assert.equal(lines.length, 19);
     assert.match(lines[0] ?? '', /^1\s+backend-claude\s+встроенный\s+stepcast:backend-claude\s+действует$/);
     assert.equal(lines[1], '    вклады: бэкенды: claude');
-    assert.match(lines[2] ?? '', /^2\s+step-decision\s+встроенный\s+stepcast:step-decision\s+действует$/);
-    assert.equal(lines[3], '    вклады: виды шага: decision');
+    assert.match(lines[2] ?? '', /^2\s+step-run\s+встроенный\s+stepcast:step-run\s+действует$/);
+    assert.equal(lines[3], '    вклады: виды шага: run');
+    assert.match(lines[4] ?? '', /^3\s+step-uses\s+встроенный\s+stepcast:step-uses\s+действует$/);
+    assert.equal(lines[5], '    вклады: виды шага: uses');
+    assert.match(lines[6] ?? '', /^4\s+step-script\s+встроенный\s+stepcast:step-script\s+действует$/);
+    assert.equal(lines[7], '    вклады: виды шага: script');
+    assert.match(lines[8] ?? '', /^5\s+step-agent\s+встроенный\s+stepcast:step-agent\s+действует$/);
+    assert.equal(lines[9], '    вклады: виды шага: agent');
+    assert.match(lines[10] ?? '', /^6\s+step-decision\s+встроенный\s+stepcast:step-decision\s+действует$/);
+    assert.equal(lines[11], '    вклады: виды шага: decision');
     assert.match(
-      lines[4] ?? '',
-      new RegExp(`^3\\s+home-extra\\s+${escapeRegExp(join(project.home, '.stepcast', 'plugins.patch.yml'))}\\s+\\./home-extra\\.mjs\\s+действует$`),
+      lines[12] ?? '',
+      new RegExp(`^7\\s+home-extra\\s+${escapeRegExp(join(project.home, '.stepcast', 'plugins.patch.yml'))}\\s+\\./home-extra\\.mjs\\s+действует$`),
     );
     assert.match(
-      lines[5] ?? '',
-      new RegExp(`^4\\s+project-extra\\s+${escapeRegExp(join(project.root, '.stepcast', 'plugins.patch.yml'))}\\s+\\./project-extra\\.mjs\\s+действует$`),
+      lines[13] ?? '',
+      new RegExp(`^8\\s+project-extra\\s+${escapeRegExp(join(project.root, '.stepcast', 'plugins.patch.yml'))}\\s+\\./project-extra\\.mjs\\s+действует$`),
     );
-    assert.equal(lines[6], 'встроенный (вне строк дерева):');
-    assert.equal(lines[7], '    сервисы объявлены: backends, predicates, commands, steps');
-    assert.match(lines[8] ?? '', /^ {4}вклады: команды: .*виды шага: run, uses, script, agent$/);
-    assert.equal(lines[9], '');
-    assert.equal(lines[10], 'витрина: демон витрины не запущен');
+    assert.equal(lines[14], 'встроенный (вне строк дерева):');
+    assert.equal(lines[15], '    сервисы объявлены: backends, predicates, commands, steps');
+    assert.match(lines[16] ?? '', /^ {4}вклады: команды: /);
+    assert.doesNotMatch(lines[16] ?? '', /виды шага/);
+    assert.equal(lines[17], '');
+    assert.equal(lines[18], 'витрина: демон витрины не запущен');
   });
 
   it('вклад, внесённый на корневой области вне строк дерева, назван встроенным и не приписан строке', async () => {
@@ -101,11 +111,13 @@ describe('plugin-tree: stepcast plugins печатает дерево со сл�
     const builtinIndex = lines.findIndex((line) => line === 'встроенный (вне строк дерева):');
     assert.ok(builtinIndex !== -1, 'раздел встроенного вне строк дерева напечатан');
     const section = lines.slice(builtinIndex).join('\n');
-    // Виды шага ядра (`agent`, `run`, `script`, `uses`) и встроенные команды CLI
-    // регистрируются на корне до применения первой строки — ни одной строке они
-    // не принадлежат и обязаны быть названы встроенным владельцем
-    // (`plugin-introspection`, «Вклад без строки не приписан наугад»).
-    assert.match(section, /виды шага: run, uses, script, agent/);
+    // Встроенные команды CLI регистрируются на корне до применения первой
+    // строки — ни одной строке они не принадлежат и обязаны быть названы
+    // встроенным владельцем (`plugin-introspection`, «Вклад без строки не
+    // приписан наугад»). Виды шага (`agent`, `run`, `script`, `uses`) с этим
+    // разделом больше не связаны вовсе: их вносят строки `step-*`
+    // (`builtin-step-kinds-as-rows`).
+    assert.doesNotMatch(section, /виды шага/);
     assert.match(section, /команды: /);
     // Вклад строки `backend-claude` остался за своей строкой: во встроенное вне
     // строк он не попал.
@@ -145,19 +157,27 @@ describe('plugin-tree: отказ загрузки не заслоняет де�
     const lines = outcome.stdout.split('\n');
     // Вклады соседних строк по-прежнему называются — отказ одной строки не
     // теряет их (`plugin-introspection`, «Осмотр после отказа загрузки»); за
-    // ними идёт раздел встроенного вне строк дерева (три строки) и раздел
-    // витрины (две).
-    assert.equal(lines.length, 11);
-    assert.match(lines[0] ?? '', /действует/); // встроенная строка загрузилась раньше отказавшей
+    // шестью встроенными строками идёт раздел встроенного вне строк дерева
+    // (три строки) и раздел витрины (две).
+    assert.equal(lines.length, 19);
+    assert.match(lines[0] ?? '', /действует/); // backend-claude загрузилась раньше отказавшей
     assert.equal(lines[1], '    вклады: бэкенды: claude');
-    assert.match(lines[2] ?? '', /действует/); // step-decision — тоже встроенная, тоже раньше отказавшей
-    assert.equal(lines[3], '    вклады: виды шага: decision');
-    assert.match(lines[4] ?? '', /отказ:/);
-    assert.match(lines[4] ?? '', /не загружается/);
-    assert.match(lines[5] ?? '', /не загружалась/);
-    assert.equal(lines[6], 'встроенный (вне строк дерева):');
-    assert.equal(lines[9], '');
-    assert.equal(lines[10], 'витрина: демон витрины не запущен');
+    assert.match(lines[2] ?? '', /действует/); // step-run — тоже встроенная, тоже раньше отказавшей
+    assert.equal(lines[3], '    вклады: виды шага: run');
+    assert.match(lines[4] ?? '', /действует/);
+    assert.equal(lines[5], '    вклады: виды шага: uses');
+    assert.match(lines[6] ?? '', /действует/);
+    assert.equal(lines[7], '    вклады: виды шага: script');
+    assert.match(lines[8] ?? '', /действует/);
+    assert.equal(lines[9], '    вклады: виды шага: agent');
+    assert.match(lines[10] ?? '', /действует/);
+    assert.equal(lines[11], '    вклады: виды шага: decision');
+    assert.match(lines[12] ?? '', /отказ:/);
+    assert.match(lines[12] ?? '', /не загружается/);
+    assert.match(lines[13] ?? '', /не загружалась/);
+    assert.equal(lines[14], 'встроенный (вне строк дерева):');
+    assert.equal(lines[17], '');
+    assert.equal(lines[18], 'витрина: демон витрины не запущен');
   });
 
   it('отказ о незакрытом внедрении тоже назван: строка-виновница несёт причину, а не числится действующей', async () => {
@@ -375,7 +395,9 @@ describe('plugin-introspection: --json печатает ту же модель �
     // человеческий вывод выводим из неё целиком (`plugin-introspection`,
     // «Машинный формат … MUST совпадать с моделью осмотра по составу полей»).
     assert.equal(payload.own.builtin.owner, 'встроенный');
-    assert.deepEqual(payload.own.builtin.contributions.steps, ['run', 'uses', 'script', 'agent']);
+    // Виды шага больше не встроенное вне строк — их вносят строки `step-*`
+    // (`builtin-step-kinds-as-rows`); во встроенном остаются только команды.
+    assert.deepEqual(payload.own.builtin.contributions.steps, []);
     assert.deepEqual(payload.own.attribution, { available: true });
 
     const providerRow = payload.own.rows.find((row) => row.use === './plugins/provider.mjs') as
