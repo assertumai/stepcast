@@ -307,9 +307,11 @@ started_at: 2026-09-16T10:21:14.611Z
 
 ## source-tree-microkernel-layout
 
-status: todo
+status: failed
 title: Переезд дерева кода в kernel и parts по целевой структуре
 group: microkernel
 goal: docs/microkernel-target.md
 why: Шаг 10 и последний плана `docs/microkernel-target.md`: физическая раскладка приводится к целевой, когда границы уже проверены компилятором и линтером, а не наоборот. Переезд, сделанный раньше, был бы перестановкой каталогов без гарантий; сделанный последним — он лишь делает видимым то, что уже верно.
 done_when: дерево исходников соответствует разделу «Финальная структура кода» в `docs/microkernel-target.md`: `src/kernel/`, `src/plugin/`, `src/parts/{pipeline,backends,ui}`, `src/builtin/`, `bin.ts`; правило линтера запрещает импорт из `src/parts/**` в `src/kernel/**`; `package.json` (`exports`, `files`, `bin`) и пути опубликованных подпутей не изменились для потребителя либо изменение названо в `docs/`; тесты переехали вслед за модулями без правки ожиданий; `docs/microkernel-target.md` обновлён до состояния «сделано» с указанием, что осталось открытым; `npm run check` зелёный
+started_at: 2026-09-16T14:57:30.760Z
+reason: заход до сведения дорожки не дошёл
