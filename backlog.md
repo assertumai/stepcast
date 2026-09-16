@@ -227,12 +227,13 @@ started_at: 2026-09-15T22:14:25.420Z
 
 ## kernel-domain-free-imports
 
-status: todo
+status: done
 title: Ядро плагинов не импортирует пайплайн и бэкенд
 group: microkernel
 goal: docs/microkernel-target.md
 why: Шаг 2 плана `docs/microkernel-target.md`. Сегодня зависимость двусторонняя: `src/core/plugins/kernel.ts` тянет `BUILTIN_STEP_KIND_KEY_OWNERS` и `STEP_COMMON_KEYS` из `../pipeline/schema.js`, а `builtin.ts` — `backend/claude.js`, `pipeline/expand.js` и `steps/decision`, и взаимный импорт уже носит комментарий-оправдание про то, как его разводит загрузчик модулей. Пока цикл есть, ядро физически не отделить от домена, и любой следующий шаг плана упрётся в него.
 done_when: ни один модуль `src/core/plugins/**` не импортирует `core/pipeline/**`, `core/backend/**`, `core/run/**` и `src/steps/**` — ни значением, ни типом; перечень имён, занятых общей частью шага и ключами встроенных видов, объявлен на стороне домена и доходит до ядра параметром или регистрацией, а не импортом; проверка отсутствия таких импортов автоматизирована правилом линтера, а не соглашением; `createBuiltinKernel` и `builtinRegistry` собирают прежнее дерево и все прежние отказы (занятое имя вида шага, ключ общей части) сохраняют текст и покрыты тестами; `npm run check` зелёный
+started_at: 2026-09-15T23:31:14.871Z
 
 ## row-module-convention
 

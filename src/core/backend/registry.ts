@@ -1,6 +1,6 @@
 import type { Config } from '../config/resolve.js';
 import { StepcastError } from '../errors.js';
-import { builtinRegistry } from '../plugins/builtin.js';
+import { builtinRegistry } from '../../parts/builtin.js';
 import { availableNames, type Registry } from '../plugins/registry.js';
 import type { BackendAdapter } from './types.js';
 

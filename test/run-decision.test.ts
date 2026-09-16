@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { builtinRegistry } from '../src/core/plugins/builtin.js';
+import { builtinRegistry } from '../src/parts/builtin.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { readStatus } from '../src/core/journal/reader.js';
 import type { RunPaths } from '../src/core/journal/paths.js';

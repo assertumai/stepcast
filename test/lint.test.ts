@@ -7,7 +7,7 @@ import { run, type CliIo } from '../src/cli/main.js';
 import type { Config } from '../src/core/config/resolve.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import type { BackendConfig } from '../src/core/config/resolve.js';
-import { createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { createBuiltinKernel } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import { buildPublishedSchemas, pluginStepKindEntries } from '../src/core/pipeline/published-schema.js';

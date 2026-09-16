@@ -12,7 +12,7 @@ import { describeComparison, diffRuns, lineDiff } from '../src/core/run/diff.js'
 import { cleanupRun } from '../src/core/run/cleanup.js';
 import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { ExitCode, StepcastError } from '../src/core/errors.js';
-import { builtinRegistry, createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import type { ParsedArgs } from '../src/cli/args.js';

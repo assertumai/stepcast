@@ -2,7 +2,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { resolveConfig, type ResolvedConfig } from '../core/config/resolve.js';
-import { loadPlugins, type RowOutcome } from '../core/plugins/load.js';
+import type { RowOutcome } from '../core/plugins/load.js';
+import { loadPlugins } from '../parts/load.js';
 import { kernelFromRegistry, type Registry } from '../core/plugins/registry.js';
 import { resolveWithCachedKernel, type KernelCache } from './pipelines.js';
 import { UI_ROWS, UI_SHELL_ROW } from './screens/rows.js';

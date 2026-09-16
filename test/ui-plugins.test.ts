@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, it, type TestContext } from 'node:test';
 
 import { resolveConfig } from '../src/core/config/resolve.js';
-import { loadPlugins } from '../src/core/plugins/load.js';
+import { loadPlugins } from '../src/parts/load.js';
 import type { KernelCache } from '../src/ui/pipelines.js';
 import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';

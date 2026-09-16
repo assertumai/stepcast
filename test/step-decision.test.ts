@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 
 import { stepDecisionContribution } from '../src/steps/decision/index.js';
 import { lintDecisionFields } from '../src/steps/decision/fields.js';
-import { builtinRegistry } from '../src/core/plugins/builtin.js';
+import { builtinRegistry } from '../src/parts/builtin.js';
 import { lintPipeline } from '../src/core/lint.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { serializeLock } from '../src/core/pipeline/lock.js';

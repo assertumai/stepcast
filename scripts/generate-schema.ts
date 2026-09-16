@@ -5,7 +5,7 @@ import { z } from 'zod';
 
 import { SCHEMA_TARGETS } from './schema-targets.js';
 import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../src/core/pipeline/published-schema.js';
-import { builtinRegistry } from '../src/core/plugins/builtin.js';
+import { builtinRegistry } from '../src/parts/builtin.js';
 
 /**
  * JSON Schema для автодополнения в редакторах.
@@ -17,7 +17,7 @@ import { builtinRegistry } from '../src/core/plugins/builtin.js';
  * каким `stepcast schema` печатает схему проекта (design.md, решение 4): две
  * реализации одного преобразования разошлись бы. Перечень предикатов
  * встроенного реестра пуст (встроенные предикаты — резерв имени, а не
- * настоящий вклад, `plugins/builtin.ts`), а перечень видов шага несёт
+ * настоящий вклад, `src/parts/builtin.ts`), а перечень видов шага несёт
  * `decision` (`user-decision-steps`) — первый плагинный вид, идущий в
  * поставке строкой дерева: без него схема пакета не знала бы о нём вовсе.
  */

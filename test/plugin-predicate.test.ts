@@ -7,7 +7,7 @@ import { StepcastError } from '../src/core/errors.js';
 import { evaluatePredicates } from '../src/core/expect/evaluate.js';
 import { findStepDir, readStatus } from '../src/core/journal/reader.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { builtinRegistry, createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import type { PredicateContribution } from '../src/core/plugins/contract.js';

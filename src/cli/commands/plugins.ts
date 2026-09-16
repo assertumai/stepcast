@@ -13,8 +13,9 @@ import {
   type IntrospectionState,
 } from '../../core/plugins/introspect.js';
 import type { Kernel } from '../../core/plugins/kernel.js';
-import { inspectPluginTree, rowFailureError, type LoadOptions, type RowOutcome } from '../../core/plugins/load.js';
+import { rowFailureError, type RowOutcome } from '../../core/plugins/load.js';
 import type { TreeRow, TreeRowSource } from '../../core/plugins/tree.js';
+import { inspectPluginTree, type DefaultLoadOptions } from '../../parts/load.js';
 import { daemonPaths, runningDaemon } from '../../ui/daemon.js';
 import type { CliIo, ParsedArgs } from '../args.js';
 import { formatColumns } from '../output.js';
@@ -258,7 +259,7 @@ export async function runPluginsCommandAfterLoadFailure(
   args: ParsedArgs,
   io: CliIo,
   resolved: ResolvedConfig,
-  loadOptions: LoadOptions,
+  loadOptions: DefaultLoadOptions,
 ): Promise<ExitCodeValue> {
   const { introspection } = await inspectPluginTree(resolved, loadOptions);
   const daemon = await fetchDaemonSection();

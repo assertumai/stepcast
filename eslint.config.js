@@ -28,6 +28,49 @@ const backendsBoundaryPatterns = [
   },
 ];
 
+/**
+ * Ядро плагинов не знает домена (`kernel-domain-free-imports`, design.md,
+ * Решение 4): разбор пайплайна, бэкенды, исполнение прогона, плагины пакета,
+ * встроенный слой поставки и витрина — не его дело. `parts/**` добавлено,
+ * чтобы Решение 3 того же изменения нельзя было откатить обратным импортом
+ * таблицы встроенных строк; `backends/**` и `ui/**` — по тому же основанию,
+ * что и `steps/**`.
+ */
+// Модули ядра плагинов лежат прямо в `src/core/plugins/`, без вложенных
+// каталогов: относительный импорт соседа по `core/` (`pipeline`, `backend`,
+// `run`) поднимается на один уровень и в тексте специфика не несёт сегмента
+// `core` вовсе (`../pipeline/expand.js`, а не `.../core/pipeline/...`).
+// Поэтому группа называет сегменты дерева без префикса `core/` — этот блок
+// конфига всё равно ограничен файлами `src/core/plugins/**`, и раньше
+// никакого стороннего `pipeline`/`backend`/`run` в их относительных путях не
+// возникает.
+const kernelBoundaryPatterns = [
+  {
+    group: ['**/pipeline/**', '**/backend/**', '**/run/**', '**/steps/**', '**/backends/**', '**/parts/**', '**/ui/**'],
+    message:
+      'Ядро плагинов не зависит от домена: перечень и вклад приходят параметром сборки или регистрацией, а не импортом (docs/microkernel-target.md, шаг 2).',
+  },
+];
+
+/**
+ * То же ограничение доменных деревьев, но без `backend/**` целиком — ровно
+ * для `contract.ts` ниже, которому разрешён один модуль этого дерева
+ * (`backend/types.js`, только тип). Дерево бэкендов вынесено у него в
+ * отдельную группу затем, что исключение действует в ней одной: отрицающий
+ * шаблон на `backend/types.js`, внесённый в общую группу доменных деревьев,
+ * снял бы запрет и с прочих. Само отрицание установленная версия правила
+ * понимает — это и проверяет `test/eslint-config.test.ts` («backend/types.js
+ * разрешён, соседний backend/claude.js — нет»), и потому исключение выражено
+ * им, а не третьим блоком конфига (design.md, Решение 4: «если отрицание
+ * работает, блоки допустимо слить»).
+ */
+const kernelBoundaryPatternsExceptBackend = [
+  {
+    group: ['**/pipeline/**', '**/run/**', '**/steps/**', '**/backends/**', '**/parts/**', '**/ui/**'],
+    message: kernelBoundaryPatterns[0].message,
+  },
+];
+
 /** Прямое создание временного каталога заводит утечку у пользователя, а не только под тестом. */
 const enginePaths = [
   {
@@ -108,6 +151,22 @@ export default tseslint.config(
     },
   },
   {
+    // Состав дефолта и строки поставки (`src/parts/**`) — половина движка, а
+    // не поверхность: граница ядра и поверхности на них та же, что на
+    // `src/core/**`. Блок заведён явно, потому что переезд
+    // `builtin.ts`/`resolve.ts` из `src/core/plugins/` в `src/parts/`
+    // (`kernel-domain-free-imports`, Решение 2) вывел их из-под блока ядра
+    // ниже и оставил бы им только `paths: enginePaths` из блока поверхностей
+    // выше — то есть молча вернул бы запрет импорта `src/cli` в разряд
+    // соглашений. Оба запрета перечислены одной записью правила по той же
+    // причине, что и у блоков ядра: раздельные блоки на одном наборе файлов
+    // не сливаются.
+    files: ['src/parts/**/*.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { paths: enginePaths, patterns: coreBoundaryPatterns }],
+    },
+  },
+  {
     // Ядро: та же граница временного каталога плюс граница ядра и поверхности.
     // Оба запрета перечислены одной записью правила — раздельными блоками
     // второй молча заменил бы первый.
@@ -115,6 +174,45 @@ export default tseslint.config(
     ignores: ['src/core/fs/tempDir.ts'],
     rules: {
       'no-restricted-imports': ['error', { paths: enginePaths, patterns: coreBoundaryPatterns }],
+    },
+  },
+  {
+    // Ядро плагинов — те же запреты, что у ядра выше, плюс граница домена
+    // (`kernel-domain-free-imports`): узкий блок на тех же файлах молча снял
+    // бы прежние запреты, если не повторить их здесь одной записью правила.
+    // `contract.ts` — публикуемая поверхность, а не модуль ядра, — исключён
+    // отсюда и получает свой блок ниже с одним разрешённым исключением.
+    files: ['src/core/plugins/**/*.ts'],
+    ignores: ['src/core/plugins/contract.ts'],
+    rules: {
+      'no-restricted-imports': ['error', { paths: enginePaths, patterns: [...coreBoundaryPatterns, ...kernelBoundaryPatterns] }],
+    },
+  },
+  {
+    // Контракт вклада (`stepcast/plugin`) доменен по определению
+    // (design.md, «Что в пункте очереди уточнено»): рядом с ним живут
+    // `EvaluationInput` и `Usage`, а `src/plugin.ts` реэкспортирует его типы
+    // напрямую. Исключение — ровно один модуль домена, `backend/types.js`, и
+    // только типом; снять его целиком — шаг 8 плана
+    // (docs/microkernel-target.md): разделение `stepcast/plugin` и
+    // `stepcast/pipeline`.
+    files: ['src/core/plugins/contract.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: enginePaths,
+          patterns: [
+            ...coreBoundaryPatterns,
+            ...kernelBoundaryPatternsExceptBackend,
+            {
+              group: ['**/backend/**', '!**/backend/types.js'],
+              message:
+                'Контракту вклада разрешён только backend/types.js (типом) — прочее из core/backend доменно (docs/microkernel-target.md, шаг 2; снятие исключения — шаг 8).',
+            },
+          ],
+        },
+      ],
     },
   },
   {

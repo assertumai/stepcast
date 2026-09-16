@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import type { BuiltinRow } from '../../core/plugins/builtin.js';
+import type { BuiltinRow } from '../../core/plugins/load.js';
 import { sendJson } from '../http.js';
 import { snapshotOrRecord, parseRunAddress } from '../runAddress.js';
 import type { BacklogOverview } from '../backlog.js';

@@ -10,7 +10,7 @@ import {
   pluginStepKindEntries,
   type PluginPredicateEntry,
 } from '../src/core/pipeline/published-schema.js';
-import { builtinRegistry, createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel } from '../src/core/plugins/registry.js';
 

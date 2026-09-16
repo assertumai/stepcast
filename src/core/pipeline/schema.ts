@@ -7,6 +7,7 @@ import {
   RawSpecSchema,
   RelativeRepoPathSchema,
 } from '../config/schema.js';
+import { StepcastError } from '../errors.js';
 
 /**
  * Схемы документов пайплайна и работы в исходном виде — до подстановок и
@@ -176,8 +177,8 @@ export type StepManifestDocument = z.infer<typeof StepManifestSchema>;
 /**
  * Ключи, которые вид шага плагина не вправе занять: общая часть шага — своими
  * ключами документа, встроенные виды — своими собственными (design.md,
- * решение 3). Список общий с `plugins/kernel.ts` — отказ регистрации читает
- * его же, второй копии перечня в репозитории нет.
+ * решение 3). Отказ на совпадении — `assertStepKindNameAvailable` ниже, рядом
+ * с перечнем: второй копии перечня в репозитории нет.
  */
 export const STEP_COMMON_KEYS: readonly string[] = [
   'id',
@@ -211,6 +212,29 @@ export const BUILTIN_STEP_KIND_KEY_OWNERS: Readonly<Record<string, readonly stri
   uses: ['uses'],
   with: ['uses'],
 };
+
+/**
+ * Отказ регистрации вида шага плагином на имени, занятом ключом документа
+ * (design.md, решение 3): ключом общей части шага либо ключом встроенного
+ * вида. Проверка — при регистрации, а не при первом разборе документа: имя
+ * `expect` не должно дожить до первого пайплайна, который его использует.
+ * Ядро (`plugins/kernel.ts`) зовёт эту функцию параметром сборки
+ * (`KernelOptions.nameGuards`), а не читает перечни выше импортом.
+ */
+export function assertStepKindNameAvailable(name: string): void {
+  if (STEP_COMMON_KEYS.includes(name)) {
+    throw new StepcastError(`Имя вида шага ${name} занято ключом общей части шага`, {
+      hint: 'Ключи общей части (id, env, context, timeout, expect, attempts, …) не могут стать именем вида шага',
+    });
+  }
+  const owningKinds = BUILTIN_STEP_KIND_KEY_OWNERS[name];
+  if (owningKinds !== undefined) {
+    throw new StepcastError(
+      `Имя вида шага ${name} занято ключом встроенного вида шага ${owningKinds.join(', ')}`,
+      { hint: 'Выберите другое имя: ключи встроенных видов не могут стать именем плагинного вида шага' },
+    );
+  }
+}
 
 export function buildDocumentSchemas(
   pluginPredicates: readonly string[] = [],

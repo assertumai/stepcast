@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { StepcastError } from '../src/core/errors.js';
-import { BUILTIN_PREDICATE_NAMES, builtinRegistry, createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { BUILTIN_PREDICATE_NAMES, builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
+import { createKernel } from '../src/core/plugins/kernel.js';
 import { availableNames, predicateNames, registryFromKernel } from '../src/core/plugins/registry.js';
-import type { PredicateContribution, StepcastPlugin } from '../src/core/plugins/contract.js';
+import type { PredicateContribution, StepcastPlugin, StepKindContribution } from '../src/core/plugins/contract.js';
 import { ExitCode } from '../src/core/errors.js';
 
 /** Вклад предиката, годный для реестра: содержимое здесь не важно. */
@@ -15,6 +16,11 @@ function predicate(name: string): PredicateContribution {
     schema: { type: 'string' },
     evaluate: () => ({ predicate: name, passed: true, hard: true }),
   };
+}
+
+/** Вклад вида шага, годный для реестра: содержимое здесь не важно — важно только имя. */
+function fakeStepKind(name: string): StepKindContribution {
+  return { name, title: name, fields: {}, execute: () => ({}) };
 }
 
 describe('plugin-contributions: реестр вкладов', () => {
@@ -124,5 +130,80 @@ describe('plugin-contributions: реестр вкладов', () => {
 
     assert.ok(registry.backends.has('codex'));
     assert.ok(registry.commands.has('codex'));
+  });
+});
+
+// Задача 1.1–1.2 (openspec/changes/kernel-domain-free-imports): тексты обоих
+// отказов по занятому имени вида шага сегодня не проверяет ни один тест —
+// закрепляются здесь, на неизменённом коде, до переноса проверки в разбор
+// документа.
+describe('plugin-registry: имя вида шага занято ключом документа', () => {
+  it('имя, совпавшее с ключом общей части шага, отказывает дословным текстом и подсказкой', async () => {
+    const kernel = createBuiltinKernel();
+
+    await assert.rejects(
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец', steps: [fakeStepKind('expect')] }, '/м.js'),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.message, 'Имя вида шага expect занято ключом общей части шага');
+        assert.equal(
+          error.hint,
+          'Ключи общей части (id, env, context, timeout, expect, attempts, …) не могут стать именем вида шага',
+        );
+        return true;
+      },
+    );
+  });
+
+  it('имя, совпавшее с ключом встроенного вида шага, отказывает дословным текстом, называющим виды-владельцы', async () => {
+    const kernel = createBuiltinKernel();
+
+    await assert.rejects(
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец', steps: [fakeStepKind('prompt')] }, '/м.js'),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.message, 'Имя вида шага prompt занято ключом встроенного вида шага agent');
+        assert.equal(
+          error.hint,
+          'Выберите другое имя: ключи встроенных видов не могут стать именем плагинного вида шага',
+        );
+        return true;
+      },
+    );
+
+    await assert.rejects(
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец2', steps: [fakeStepKind('on_fail')] }, '/м2.js'),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.message, 'Имя вида шага on_fail занято ключом встроенного вида шага run, script, uses');
+        return true;
+      },
+    );
+  });
+});
+
+// Задача 2.6: голое ядро без проверок имени — перечня занятых имён в нём нет
+// вовсе, только вызов того, что подано параметром сборки (`createKernelShell`).
+describe('plugin-registry: ядро без проверки имени', () => {
+  it('createKernel() без параметров регистрирует вид шага expect без отказа', async () => {
+    const kernel = createKernel();
+
+    await applyDeclarativePlugin(kernel, { name: 'смелый', steps: [fakeStepKind('expect')] }, '/м.js');
+
+    assert.ok(registryFromKernel(kernel).steps.has('expect'));
+  });
+});
+
+// Задача 1.3: снимок дефолтного дерева — чтобы переезд встроенного слоя
+// (src/parts/**) было чем сверить.
+describe('plugin-registry: снимок дефолтного дерева', () => {
+  it('бэкенды, порядок регистрации видов шага и зарезервированные предикаты не меняются переездом', () => {
+    const kernel = createBuiltinKernel();
+
+    assert.deepEqual([...kernel.ctx.backends.contributions.keys()], ['claude']);
+    // Порядок — регистрации, не алфавитный: run, uses, script, agent (ядро),
+    // затем decision (первая строка встроенного слоя, `BUILTIN_ROWS`).
+    assert.deepEqual([...kernel.ctx.steps.contributions.keys()], ['run', 'uses', 'script', 'agent', 'decision']);
+    assert.deepEqual([...kernel.ctx.predicates.reserved].sort(), [...BUILTIN_PREDICATE_NAMES].sort());
   });
 });

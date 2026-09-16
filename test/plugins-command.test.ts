@@ -8,7 +8,7 @@ import type { CliIo } from '../src/cli/args.js';
 import { CACHED_REGISTRY_ATTRIBUTION, outcomeWithoutLoad, runPluginsCommand } from '../src/cli/commands/plugins.js';
 import { run as runCli } from '../src/cli/main.js';
 import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
-import { createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { createBuiltinKernel } from '../src/parts/builtin.js';
 import type { TreeRow } from '../src/core/plugins/tree.js';
 import { daemonPaths, writeRecord } from '../src/ui/daemon.js';
 import { makeProject, withHome, type Project } from './helpers.js';

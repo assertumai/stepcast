@@ -235,7 +235,7 @@ function builtinOf(kernel: Kernel, outcomes: readonly RowOutcome[]): Introspecti
 
 /**
  * Собрать осмотр из итогов строк и ядра, породившего реестр (design.md,
- * Решение 1). Зовётся до `kernel.dispose()` — `inspectPluginTree` строит его
+ * Решение 1). Зовётся до `kernel.dispose()` — `walkPluginTree` строит его
  * внутри себя, до снятия ядра (Решение 15).
  *
  * `browser` — причина «этот вызов не собирает браузерную половину» по

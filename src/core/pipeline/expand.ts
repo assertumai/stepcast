@@ -13,7 +13,7 @@ import { StepcastError } from '../errors.js';
 import { assertDataKey } from '../journal/data.js';
 import { findProjectRoot } from '../journal/paths.js';
 import { findPackageRoot, packagedSchemaPath, packagedWrapperPath } from '../package-schema.js';
-import { builtinRegistry } from '../plugins/builtin.js';
+import { builtinRegistry } from '../../parts/builtin.js';
 import { isBuiltinStepKind, type BuiltinStepKindDocument, type StepKind, type StepKindContribution } from '../plugins/contract.js';
 import type { Kernel } from '../plugins/kernel.js';
 import {
@@ -1095,7 +1095,7 @@ function isUsesStepRaw(raw: Record<string, unknown>): boolean {
 // названы в его схеме (`declaredByManifest`) необязательными — и по
 // присутствию ключа `script` два вида шага уже не различаются. Различает их
 // сам `uses`, которого у шага `script` нет вовсе. Порядок обхода видов в
-// `toStep` — порядок регистрации в `createKernelShell` (`plugins/builtin.ts`):
+// `toStep` — порядок регистрации в `createKernelShell` (`src/parts/builtin.ts`):
 // `uses` зарегистрирован раньше `script` ровно поэтому.
 function parseUsesStep(raw: RawStep, ctx: BuiltinStepParseContext): StepParseResult {
   if (!('uses' in raw)) throw new Error('parseUsesStep: раскрытие вызвано на шаге без ключа uses');
@@ -1318,7 +1318,7 @@ function toPluginStep(
  * Вид шага, узнавший себя в сыром шаге, — обход реестра вместо перечисления
  * (design.md, решение 1, решение 2): встроенные узнают себя формой
  * `document.test`, плагинные — присутствием своего имени-ключа. Порядок обхода
- * — порядок регистрации в `createKernelShell` (`plugins/builtin.ts`): `run`,
+ * — порядок регистрации в `createKernelShell` (`src/parts/builtin.ts`): `run`,
  * `uses`, `script`, `agent`, затем плагинные в порядке их загрузки.
  *
  * Отдельной функцией, потому что вопрос «какого вида этот шаг» задаётся
@@ -1440,7 +1440,7 @@ function toStep(
  * Зарегистрировать четыре встроенных вида шага в сервисе `steps` ядра —
  * вкладом внутренней формы `document` (design.md, решение 2), тем же вызовом,
  * каким регистрируется плагинный. Вызывается `createKernelShell`
- * (`plugins/builtin.ts`), а не отсюда: ядро — модуль `plugins`, а разбор —
+ * (`src/parts/builtin.ts`), а не отсюда: ядро — модуль `plugins`, а разбор —
  * модуль `pipeline`, и порядок регистрации здесь же фиксирует порядок обхода
  * `toStep` — `run`, `uses`, `script` раньше `agent` (см. комментарий у
  * `parseUsesStep`).

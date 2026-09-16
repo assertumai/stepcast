@@ -30,6 +30,17 @@ const TEMP_IMPORT = "import { mkdtempSync } from 'node:fs';\n";
 const TMPDIR_IMPORT = "import { tmpdir } from 'node:os';\n";
 const CORE_IMPORT = "import { createClaudeAdapter } from '../../core/backend/claude.js';\n";
 
+// Импорты для файла ядра плагинов (`src/core/plugins/проба.ts`): пути на
+// уровень выше, чем у ядра общего вида (`src/core/run/проба.ts`).
+const PLUGIN_KERNEL_BACKEND_IMPORT = "import { createClaudeAdapter } from '../backend/claude.js';\n";
+const PLUGIN_KERNEL_PIPELINE_IMPORT = "import { registerBuiltinStepKinds } from '../pipeline/expand.js';\n";
+const PLUGIN_KERNEL_PIPELINE_TYPE_IMPORT = "import type { ExpandOptions } from '../pipeline/expand.js';\n";
+const BACKEND_TYPES_IMPORT = "import type { BackendAdapter } from '../backend/types.js';\n";
+
+// Состав дефолта (`src/parts/проба.ts`) лежит на уровень ближе к корню
+// `src/`, чем ядро: поверхность для него — `../cli/main.js`.
+const PARTS_CLI_IMPORT = "import { run } from '../cli/main.js';\n";
+
 describe('eslint: запреты импорта действуют одновременно', () => {
   // test-sandbox, «Код движка мимо помощника».
   it('ядро: прямое создание временного каталога отклоняется', async () => {
@@ -111,6 +122,115 @@ describe('eslint: запреты импорта действуют одновр�
     const messages = await restrictedImports('src/backends/codex/проба.ts', CORE_IMPORT + TEMP_IMPORT);
     assert.ok(
       messages.some((message) => message.includes('../../plugin.js')),
+      messages.join('\n'),
+    );
+    assert.ok(
+      messages.some((message) => message.includes('withTempDir()')),
+      messages.join('\n'),
+    );
+  });
+
+  // Ядро плагинов не зависит от домена (`kernel-domain-free-imports`,
+  // design.md, Решение 4): разбор пайплайна и бэкенды — доменные деревья,
+  // запрещённые модулям `src/core/plugins/**`.
+  it('ядро плагинов: импорт бэкендов значением отклоняется границей домена', async () => {
+    const messages = await restrictedImports('src/core/plugins/проба.ts', PLUGIN_KERNEL_BACKEND_IMPORT);
+    assert.ok(
+      messages.some((message) => message.includes('docs/microkernel-target.md')),
+      messages.join('\n'),
+    );
+  });
+
+  it('ядро плагинов: импорт разбора пайплайна типом отклоняется так же, как значением', async () => {
+    const byValue = await restrictedImports('src/core/plugins/проба.ts', PLUGIN_KERNEL_PIPELINE_IMPORT);
+    const byType = await restrictedImports('src/core/plugins/проба.ts', PLUGIN_KERNEL_PIPELINE_TYPE_IMPORT);
+    assert.ok(
+      byValue.some((message) => message.includes('docs/microkernel-target.md')),
+      byValue.join('\n'),
+    );
+    assert.ok(
+      byType.some((message) => message.includes('docs/microkernel-target.md')),
+      byType.join('\n'),
+    );
+  });
+
+  // Тот самый случай, ради которого написан этот файл: на модуле ядра
+  // плагинов срабатывают все три запрета сразу, и ни один не вытесняет
+  // прочие — граница домена, граница ядра и поверхности, запрет временного
+  // каталога напрямую.
+  it('ядро плагинов: граница домена, граница поверхности и запрет временного каталога срабатывают одновременно', async () => {
+    const messages = await restrictedImports(
+      'src/core/plugins/проба.ts',
+      PLUGIN_KERNEL_PIPELINE_IMPORT + CLI_IMPORT + TEMP_IMPORT,
+    );
+    assert.ok(
+      messages.some((message) => message.includes('docs/microkernel-target.md')),
+      messages.join('\n'),
+    );
+    assert.ok(
+      messages.some((message) => message.includes('граница ядра')),
+      messages.join('\n'),
+    );
+    assert.ok(
+      messages.some((message) => message.includes('withTempDir()')),
+      messages.join('\n'),
+    );
+  });
+
+  // Исключение поверхности контракта (design.md, «Что в пункте очереди
+  // уточнено»): ровно `backend/types.js`, только типом, и ничего больше из
+  // `core/backend/**`.
+  it('контракт вклада: backend/types.js разрешён, соседний backend/claude.js — нет', async () => {
+    const allowed = await restrictedImports('src/core/plugins/contract.ts', BACKEND_TYPES_IMPORT);
+    assert.deepEqual(allowed, [], allowed.join('\n'));
+
+    const forbidden = await restrictedImports('src/core/plugins/contract.ts', PLUGIN_KERNEL_BACKEND_IMPORT);
+    assert.ok(
+      forbidden.some((message) => message.includes('docs/microkernel-target.md')),
+      forbidden.join('\n'),
+    );
+  });
+
+  // Блок исключения заменяет опции правила, унаследованные от блока
+  // `src/core/**/*.ts`, целиком — и обязан повторить их (требование спеки:
+  // «MUST действовать одновременно с прочими запретами… не снимая ни одного
+  // из них»). Без этого случая потеря была бы видна только нарушением,
+  // которое правило обязано было поймать.
+  it('контракт вклада: исключение не сняло ни границы поверхности, ни запрета временного каталога', async () => {
+    const messages = await restrictedImports(
+      'src/core/plugins/contract.ts',
+      BACKEND_TYPES_IMPORT + PLUGIN_KERNEL_PIPELINE_IMPORT + CLI_IMPORT + TEMP_IMPORT,
+    );
+    assert.ok(
+      messages.some((message) => message.includes('docs/microkernel-target.md')),
+      messages.join('\n'),
+    );
+    assert.ok(
+      messages.some((message) => message.includes('граница ядра')),
+      messages.join('\n'),
+    );
+    assert.ok(
+      messages.some((message) => message.includes('withTempDir()')),
+      messages.join('\n'),
+    );
+  });
+
+  // Переезд `builtin.ts`/`resolve.ts` из `src/core/plugins/` в `src/parts/`
+  // (`kernel-domain-free-imports`, Решение 2) вывел их из-под блока ядра:
+  // граница ядра и поверхности на новом месте держится собственным блоком, а
+  // не тем, что её никто не нарушал.
+  it('состав дефолта: импорт поверхности отклоняется границей ядра', async () => {
+    const messages = await restrictedImports('src/parts/проба.ts', PARTS_CLI_IMPORT);
+    assert.ok(
+      messages.some((message) => message.includes('граница ядра')),
+      messages.join('\n'),
+    );
+  });
+
+  it('состав дефолта: оба запрета срабатывают в одном файле', async () => {
+    const messages = await restrictedImports('src/parts/проба.ts', PARTS_CLI_IMPORT + TEMP_IMPORT);
+    assert.ok(
+      messages.some((message) => message.includes('граница ядра')),
       messages.join('\n'),
     );
     assert.ok(

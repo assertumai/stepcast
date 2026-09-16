@@ -1,7 +1,6 @@
 import { Context, Service, type Fiber } from 'cordis';
 
 import { StepcastError } from '../errors.js';
-import { BUILTIN_STEP_KIND_KEY_OWNERS, STEP_COMMON_KEYS } from '../pipeline/schema.js';
 import type { Context as PluginContext, ContributionRegistrar } from './context.js';
 import type {
   BackendContribution,
@@ -58,6 +57,24 @@ function describeOwner(owner: string): string {
 }
 
 /**
+ * Проверка имени вклада перед регистрацией — вызываемая, а не перечень
+ * данных (design.md, Решение 1): текст отказа и подсказка остаются там, где
+ * живёт знание о занятых именах (`pipeline/schema.ts`), а не приходят в ядро
+ * доменными строками. Отказывает исключением; имя, которое проверка приняла,
+ * ничем не подтверждается.
+ */
+export type ContributionNameGuard = (name: string) => void;
+
+export interface KernelOptions {
+  /**
+   * Проверка имени вклада по виду — только для вклада, поданного не областью
+   * ядра (design.md, Решение 1). Ядро, собранное без неё, принимает любое имя:
+   * перечня занятых имён в нём нет вовсе, только вызов того, что подано.
+   */
+  readonly nameGuards?: Partial<Record<ContributionKind, ContributionNameGuard>>;
+}
+
+/**
  * Резерв имени без вклада — встроенные предикаты (Решение 11). Ключ метода —
  * символ, не экспортируемый ни из этого модуля, ни тем более из
  * `stepcast/plugin`: сервис доступен плагину как `ctx.predicates`, и публичный
@@ -93,11 +110,13 @@ export class ContributionService<T> extends Service implements ContributionRegis
    * живёт в памяти этого объекта и не сериализуется никуда.
    */
   private readonly formerOwners = new Map<string, string>();
+  private readonly nameGuard: ContributionNameGuard | undefined;
 
-  constructor(ctx: Context, kind: ContributionKind, builtinFiber: Fiber) {
+  constructor(ctx: Context, kind: ContributionKind, builtinFiber: Fiber, nameGuard?: ContributionNameGuard) {
     super(ctx, kind);
     this.kind = kind;
     this.builtinFiber = builtinFiber;
+    this.nameGuard = nameGuard;
   }
 
   /** Вклады вида — то, чем сегодня был `registry[kind]`. */
@@ -141,13 +160,11 @@ export class ContributionService<T> extends Service implements ContributionRegis
   register(name: string, contribution: T): () => void {
     const owner = this.ctx.fiber === this.builtinFiber ? BUILTIN_OWNER : this.ctx.fiber.name;
 
-    // Запрет на имя вида шага, пересекающееся с ключом документа (design.md,
-    // решение 3), касается только плагина: встроенные виды регистрируют себя
-    // на корневой области ровно под этими же именами (`run`, `script`, …), и
-    // это не конфликт, а определение.
-    if (this.kind === 'steps' && owner !== BUILTIN_OWNER) {
-      assertStepKindNameAvailable(name);
-    }
+    // Проверка имени (`KernelOptions.nameGuards`) касается только плагина:
+    // встроенные вклады регистрируют себя на корневой области ровно под теми
+    // же именами (`run`, `script`, …), и это не конфликт, а определение
+    // (design.md, Решение 1).
+    if (owner !== BUILTIN_OWNER) this.nameGuard?.(name);
 
     const existingOwner = this.owner(name);
     if (existingOwner !== undefined) {
@@ -167,27 +184,6 @@ export class ContributionService<T> extends Service implements ContributionRegis
         this.formerOwners.set(name, owner);
       };
     }, `${this.kind}.register(${name})`);
-  }
-}
-
-/**
- * Отказ регистрации вида шага плагином на имени, занятом ключом документа
- * (design.md, решение 3): ключом общей части шага либо ключом встроенного
- * вида. Проверка — при регистрации, а не при первом разборе документа: имя
- * `expect` не должно дожить до первого пайплайна, который его использует.
- */
-function assertStepKindNameAvailable(name: string): void {
-  if (STEP_COMMON_KEYS.includes(name)) {
-    throw new StepcastError(`Имя вида шага ${name} занято ключом общей части шага`, {
-      hint: 'Ключи общей части (id, env, context, timeout, expect, attempts, …) не могут стать именем вида шага',
-    });
-  }
-  const owningKinds = BUILTIN_STEP_KIND_KEY_OWNERS[name];
-  if (owningKinds !== undefined) {
-    throw new StepcastError(
-      `Имя вида шага ${name} занято ключом встроенного вида шага ${owningKinds.join(', ')}`,
-      { hint: 'Выберите другое имя: ключи встроенных видов не могут стать именем плагинного вида шага' },
-    );
   }
 }
 
@@ -285,14 +281,15 @@ export function translateReservedNameConflict(error: unknown): unknown {
   });
 }
 
-export function createKernel(): Kernel {
+export function createKernel(options?: KernelOptions): Kernel {
   const ctx = new Context();
   const builtinFiber = ctx.fiber;
+  const nameGuards = options?.nameGuards;
 
-  new ContributionService<BackendContribution>(ctx, 'backends', builtinFiber);
-  const predicates = new ContributionService<PredicateContribution>(ctx, 'predicates', builtinFiber);
-  new ContributionService<CommandContribution>(ctx, 'commands', builtinFiber);
-  new ContributionService<StepKind>(ctx, 'steps', builtinFiber);
+  new ContributionService<BackendContribution>(ctx, 'backends', builtinFiber, nameGuards?.backends);
+  const predicates = new ContributionService<PredicateContribution>(ctx, 'predicates', builtinFiber, nameGuards?.predicates);
+  new ContributionService<CommandContribution>(ctx, 'commands', builtinFiber, nameGuards?.commands);
+  new ContributionService<StepKind>(ctx, 'steps', builtinFiber, nameGuards?.steps);
 
   const plugins: LoadedPlugin[] = [];
   /** Запись, сделанная областью: нужна `forgetPlugin` — см. её объяснение. */

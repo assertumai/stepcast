@@ -6,7 +6,7 @@ import { parse as parseYaml } from 'yaml';
 import { StepcastError } from '../errors.js';
 import { packagedWrapperNames } from '../package-schema.js';
 import { describeSchemaFailure } from '../pipeline/load.js';
-import { BUILTIN_ROW_IDS } from '../plugins/builtin.js';
+import { BUILTIN_ROW_IDS } from '../../parts/builtin.js';
 import { discoverPluginDirectories, pluginsDirPath } from '../plugins/discover.js';
 import {
   applyOperations,
@@ -254,7 +254,7 @@ export interface ResolveOptions {
    * Умолчания, объявленные плагинами для своих бэкендов, — слой сразу после
    * встроенного. Заполняется вторым проходом разрешения: список плагинов
    * называет сама конфигурация, а прочитать её надо раньше, чем плагины
-   * загружены (`core/plugins/resolve.ts`).
+   * загружены (`parts/resolve.ts`).
    */
   readonly pluginDefaults?: readonly {
     readonly plugin: string;

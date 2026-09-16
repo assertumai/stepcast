@@ -50,7 +50,7 @@ import { buildIterationNote, type IterationNoteTruncation } from './iterationNot
 import { locateEngine, isEditableEngine, pinEngine, type EngineInfo, type EngineLocation } from './engine.js';
 import { HaltCause, type HaltCauseValue } from './halt.js';
 import { resolveInheritSource, type CompletedJob } from './inherit.js';
-import { builtinRegistry } from '../plugins/builtin.js';
+import { builtinRegistry } from '../../parts/builtin.js';
 import { DecisionHalt, isBuiltinStepKind, type StepKindDecisionRequest, type StepKindDecisionResult } from '../plugins/contract.js';
 import { contributionOwner, formerStepKindOwner, stepKindNames, type Registry } from '../plugins/registry.js';
 import { preflight } from './preflight.js';
@@ -775,7 +775,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
 // и тот же исход шага (`StepOutcome` ниже). Импорт в обе стороны безопасен:
 // оба места используют друг друга только внутри тел функций, вызываемых уже
 // после того, как загрузчик модулей ES связал оба файла (см. комментарий у
-// `registerBuiltinStepKinds` в `plugins/builtin.ts` — тот же приём).
+// `registerBuiltinStepKinds` в `src/parts/builtin.ts` — тот же приём).
 export interface RunContext extends RunOptions {
   /**
    * Реестр вкладов прогона — в отличие от `RunOptions.registry`, здесь он есть

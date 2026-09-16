@@ -5,8 +5,10 @@ import { describe, it } from 'node:test';
 
 import { resolveConfig, type ResolvedConfig } from '../src/core/config/resolve.js';
 import { StepcastError } from '../src/core/errors.js';
+import { createKernel } from '../src/core/plugins/kernel.js';
+import { walkPluginTree } from '../src/core/plugins/load.js';
 import { availableNames, contributionOwner } from '../src/core/plugins/registry.js';
-import { loadPlugins } from '../src/core/plugins/load.js';
+import { loadPlugins } from '../src/parts/load.js';
 import { tempDir } from './tmp.js';
 
 interface Bed {
@@ -405,7 +407,7 @@ describe('plugin-tree: замена встроенной строки', () => {
 });
 
 describe('plugin-tree: фабрики строк поставки при загрузке', () => {
-  it('applyTreeRow ищет фабрику среди builtinRows наравне с findBuiltinRow', async () => {
+  it('applyTreeRow ищет фабрику строки поставки среди builtinRows', async () => {
     const place = bed();
     const config = resolved(place, {}, ['ui-shell']);
     const applied: string[] = [];
@@ -419,7 +421,7 @@ describe('plugin-tree: фабрики строк поставки при заг�
     assert.deepEqual(availableNames(registry, 'backends'), ['claude']);
   });
 
-  it('неизвестное stepcast:<id> отказывает прежним текстом, перечисляя и строки движка, и строки вызывающего', async () => {
+  it('неизвестное stepcast:<id> отказывает прежним текстом, перечисляя строки движка, а за ними строки вызывающего', async () => {
     const place = bed();
     const config = resolved(place, {
       projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: mine\n    use: stepcast:screen-usage\n',
@@ -434,10 +436,39 @@ describe('plugin-tree: фабрики строк поставки при заг�
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /несуществующую встроенную строку stepcast:screen-usage/);
-        assert.match(error.hint ?? '', /stepcast:backend-claude/);
-        assert.match(error.hint ?? '', /stepcast:ui-shell/);
+        const hint = error.hint ?? '';
+        assert.match(hint, /stepcast:backend-claude/);
+        assert.match(hint, /stepcast:ui-shell/);
+        // Порядок обязателен (design.md, Решение 3): строки движка
+        // (`BUILTIN_ROWS`), затем строки вызывающего, в порядке подстановки
+        // `src/parts/load.ts`.
+        assert.equal(
+          hint,
+          'Пакет поставляет: stepcast:backend-claude, stepcast:step-decision, stepcast:ui-shell',
+        );
         return true;
       },
+    );
+  });
+
+  // Задача 3.7: ядро не несёт собственной таблицы строк поставки — обходу,
+  // которому не подано ни одной, строка `stepcast:<имя>` отказывает как
+  // несуществующая, даже когда речь о встроенной строке движка.
+  it('walkPluginTree без единой поданной строки поставки отказывает на stepcast:backend-claude как на несуществующей', async () => {
+    const place = bed();
+    const config = resolved(place);
+
+    const { outcomes } = await walkPluginTree(createKernel(), config, { projectRoot: place.root });
+
+    const backendClaude = outcomes.find((outcome) => outcome.row.id === 'backend-claude');
+    assert.equal(backendClaude?.status, 'failed');
+    assert.match(backendClaude?.error?.message ?? '', /несуществующую встроенную строку stepcast:backend-claude/);
+    // Подсказка на этом пути называет причину, а не вырождается в перечень
+    // «Пакет поставляет: » с пустым хвостом: поставки не «нет вовсе» —
+    // обходу её не подали.
+    assert.equal(
+      backendClaude?.error?.hint,
+      'Обходу не подано ни одной строки поставки: форму stepcast:<имя> разрешают только строки параметра builtinRows',
     );
   });
 

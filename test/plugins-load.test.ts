@@ -5,7 +5,8 @@ import { describe, it } from 'node:test';
 
 import { resolveConfig } from '../src/core/config/resolve.js';
 import { StepcastError } from '../src/core/errors.js';
-import { loadPlugins, toContextPlugin } from '../src/core/plugins/load.js';
+import { toContextPlugin } from '../src/core/plugins/load.js';
+import { loadPlugins } from '../src/parts/load.js';
 import { availableNames } from '../src/core/plugins/registry.js';
 import { tempDir } from './tmp.js';
 

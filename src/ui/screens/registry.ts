@@ -4,7 +4,7 @@ import { Service, type Context, type Fiber } from 'cordis';
 
 import type { Config } from '../../core/config/resolve.js';
 import { StepcastError } from '../../core/errors.js';
-import type { BuiltinRow } from '../../core/plugins/builtin.js';
+import type { BuiltinRow } from '../../core/plugins/load.js';
 import type { Kernel } from '../../core/plugins/kernel.js';
 import type { KernelCache } from '../pipelines.js';
 import type { PluginsOverview } from '../plugins.js';

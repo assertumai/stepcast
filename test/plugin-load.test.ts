@@ -7,11 +7,11 @@ import { describe, it } from 'node:test';
 
 import { resolveConfig, type ResolvedConfig } from '../src/core/config/resolve.js';
 import { StepcastError } from '../src/core/errors.js';
-import { loadPlugins } from '../src/core/plugins/load.js';
+import { loadPlugins } from '../src/parts/load.js';
 import { availableNames, predicateNames } from '../src/core/plugins/registry.js';
-import { resolveWithPlugins, type ResolvedWithPlugins } from '../src/core/plugins/resolve.js';
+import { resolveWithPlugins, type ResolvedWithPlugins } from '../src/parts/resolve.js';
 import { resolveAdapter } from '../src/core/backend/registry.js';
-import { builtinRegistry } from '../src/core/plugins/builtin.js';
+import { builtinRegistry } from '../src/parts/builtin.js';
 import { tempDir } from './tmp.js';
 
 interface Bed {

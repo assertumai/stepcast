@@ -9,7 +9,7 @@ import { runPaths } from '../src/core/journal/paths.js';
 import { listRuns, readStatus } from '../src/core/journal/reader.js';
 import { writeDecisionRecord } from '../src/core/journal/writer.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { builtinRegistry } from '../src/core/plugins/builtin.js';
+import { builtinRegistry } from '../src/parts/builtin.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { continueRestartChain } from '../src/cli/commands/resume.js';
 import { runRunCommand } from '../src/cli/commands/run.js';

@@ -21,7 +21,7 @@ import { RunJournal } from '../src/core/journal/writer.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { resolveAdapter } from '../src/core/backend/registry.js';
-import { builtinRegistry, createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel } from '../src/core/plugins/registry.js';
 import { readEvents, readStatus } from '../src/core/journal/reader.js';

@@ -5,7 +5,8 @@ import { describe, it } from 'node:test';
 
 import { resolveConfig, type ResolvedConfig } from '../src/core/config/resolve.js';
 import { introspect, isIntrospection } from '../src/core/plugins/introspect.js';
-import { applyContextPlugin, loadPlugins } from '../src/core/plugins/load.js';
+import { applyContextPlugin } from '../src/core/plugins/load.js';
+import { loadPlugins } from '../src/parts/load.js';
 import { BUILTIN_OWNER, createKernel } from '../src/core/plugins/kernel.js';
 import { kernelFromRegistry } from '../src/core/plugins/registry.js';
 import { declaredServices, requestedServices } from '../src/core/plugins/services.js';

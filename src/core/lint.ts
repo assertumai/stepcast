@@ -9,7 +9,7 @@ import { buildGraph } from './graph.js';
 import { isStepcastError } from './errors.js';
 import { describeScriptUnresolved } from './pipeline/expand.js';
 import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from './pipeline/published-schema.js';
-import { builtinRegistry } from './plugins/builtin.js';
+import { builtinRegistry } from '../parts/builtin.js';
 import { isBuiltinStepKind } from './plugins/contract.js';
 import { availableNames, type Registry } from './plugins/registry.js';
 import { isGitWorktree } from './anchor/git.js';

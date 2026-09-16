@@ -7,11 +7,9 @@ import { findPackageRoot } from '../package-schema.js';
 
 import type { ResolvedConfig } from '../config/resolve.js';
 import { isStepcastError, StepcastError } from '../errors.js';
-import { BUILTIN_ROW_IDS, createKernelShell, findBuiltinRow, type BuiltinRow } from './builtin.js';
 import {
   isContextPlugin,
   StepcastPluginSchema,
-  type CommandContribution,
   type ContextPlugin,
   type ContextPluginObject,
   type StepcastPlugin,
@@ -33,14 +31,14 @@ import { BUILTIN_USE_PREFIX, isBuiltinUse, type TreeRow } from './tree.js';
  *
  * Вход загрузчика — дерево плагинов (`ResolvedConfig.pluginTree`,
  * `plugin-tree`), а не список объявлений: строки идут по порядку дерева,
- * отключённые пропускаются, встроенные разрешаются таблицей `builtin.ts`, а
- * не диском.
+ * отключённые пропускаются, встроенные разрешаются строками `options.builtinRows`,
+ * а не диском.
  *
  * Отказ загрузки прекращает команду целиком, а не пропускает строку молча:
  * пайплайн, объявивший предикат плагина, без него разбирается неверно, а
  * `stepcast config` без него печатает конфигурацию, которой не будет.
  * Исключение — команда осмотра дерева (`stepcast plugins`, `plugin-tree`):
- * она переживает отказ загрузки одной из строк (`inspectPluginTree` ниже).
+ * она переживает отказ загрузки одной из строк (`walkPluginTree` ниже).
  *
  * Плагин применяется областью контекста (`kernel.ctx.plugin`), а не полем
  * реестра: снятие области снимает вклад без единой строки учёта здесь
@@ -65,6 +63,33 @@ function fileOption(row: TreeRow): { readonly file: string } | Record<string, ne
   return file === undefined ? {} : { file };
 }
 
+/**
+ * Встроенная строка дерева: id и фабрика, вносящая вклады. Тип объявлен
+ * здесь, а не в `src/parts/builtin.ts` (design.md, Решение 2): он доменно
+ * пуст — `id` и `apply(kernel)` — и его читает загрузчик, а не только состав
+ * дефолта.
+ *
+ * Строка движка вносит вклады прямо на корневой области ядра, синхронно, и не
+ * возвращает область — её вклады приписываются осмотром (`introspect.ts`) по
+ * окну применения (design.md, Решение 2, второе правило), а не по фиберу.
+ * Строка поставки витрины (`src/ui/screens/registry.ts`, `screenRow()`)
+ * заводит для себя область плагина внутри `apply` и возвращает её: без этого
+ * осмотр приписывал бы её вклады тоже окну, а не собственной строке (`row-fiber`,
+ * design.md, Решение 2, первое правило) — отсюда `Fiber | void`, а не голый
+ * `void`.
+ */
+export interface BuiltinRow {
+  readonly id: string;
+  apply(kernel: Kernel): Fiber | void | Promise<Fiber | void>;
+}
+
+/**
+ * Опции обхода дерева. Всё, чем распоряжается не обход, а состав дефолта —
+ * например встроенные команды, которые вносит точка входа при сборке ядра, —
+ * объявлено в опциях обёртки (`src/parts/load.ts`), а не здесь: поле, которое
+ * ядерная пара не читает, молча ничего бы не делало, а вызывающий считал бы
+ * его учтённым (`kernel-domain-free-imports`, Решение 3).
+ */
 export interface LoadOptions {
   /** Корень проекта: от него разрешается спецификатор пакета. */
   readonly projectRoot: string;
@@ -72,14 +97,13 @@ export interface LoadOptions {
   readonly engineRoot?: string;
   /** Подмена импорта: тесты подставляют модуль, не выкладывая его на диск. */
   readonly importModule?: (url: string) => Promise<unknown>;
-  /** Встроенные команды: их вносит точка входа, ядро о них не знает. */
-  readonly builtinCommands?: readonly CommandContribution[];
   /**
-   * Строки поставки вызывающего — фабрики встроенного слоя сверх строк движка
-   * (`plugin-tree`, design.md Решение 2): витрина передаёт `src/ui/screens/rows.ts`.
-   * `applyTreeRow` ищет их наравне с `findBuiltinRow`; вызов, не назвавший
-   * поле, ищет фабрику только среди строк движка, как и до появления строк
-   * поставки.
+   * Строки поставки — единственный источник фабрик встроенного слоя
+   * (`plugin-tree`, design.md Решение 2): ядро своей таблицы строк не несёт
+   * вовсе (`kernel-domain-free-imports`, Решение 3). Состав дефолта
+   * (`src/parts/load.ts`) подставляет сюда строки движка (`BUILTIN_ROWS`)
+   * впереди строк вызывающего; вызов без поля означает пустой встроенный
+   * слой — строка `stepcast:<имя>` отказывает как несуществующая.
    */
   readonly builtinRows?: readonly BuiltinRow[];
   /**
@@ -282,7 +306,7 @@ function tentativePluginName(recognized: Recognized): string | undefined {
 /**
  * Применить один плагин (любой формы) к ядру и, если применение прошло без
  * отказа, записать его в перечень загруженных. Используется и загрузкой из
- * файла (`loadPlugins`), и напрямую — синтетическим плагином без файла на
+ * файла (`applyPluginTree`), и напрямую — синтетическим плагином без файла на
  * диске (тесты ядра). Возвращает область плагина: её `dispose()` снимает всё,
  * что плагин зарегистрировал, разом (тест «снятие области»).
  */
@@ -311,7 +335,7 @@ export async function applyPlugin(kernel: Kernel, recognized: Recognized, source
   return fiber;
 }
 
-/** Применить плагин декларативной формы — сокращение для частого случая (тесты, `loadPlugins`). */
+/** Применить плагин декларативной формы — сокращение для частого случая (тесты, `applyPluginTree`). */
 export function applyDeclarativePlugin(kernel: Kernel, plugin: StepcastPlugin, source: string): Promise<Fiber> {
   return applyPlugin(kernel, { form: 'declarative', plugin }, source);
 }
@@ -321,13 +345,24 @@ export function applyContextPlugin(kernel: Kernel, plugin: ContextPlugin, source
   return applyPlugin(kernel, { form: 'context', plugin }, source);
 }
 
-/** Отказ: строка называет несуществующую встроенную строку формой `stepcast:<имя>`. */
-function unknownBuiltinRow(row: TreeRow, name: string, callerRows: readonly BuiltinRow[]): StepcastError {
-  const names = [...BUILTIN_ROW_IDS, ...callerRows.map((candidate) => candidate.id)];
+/**
+ * Отказ: строка называет несуществующую встроенную строку формой
+ * `stepcast:<имя>`. Подсказка перечисляет строки в том порядке, в каком они
+ * поданы обходу (`kernel-domain-free-imports`, Решение 3). Обход без единой
+ * поданной строки — законный вызов ядерной пары (собственной таблицы у ядра
+ * нет), и подсказка о нём говорит прямо: перечень «Пакет поставляет: » с
+ * пустым хвостом сказал бы читателю, что поставки нет вовсе, вместо того что
+ * произошло на деле — состав дефолта до обхода не дошёл.
+ */
+function unknownBuiltinRow(row: TreeRow, name: string, rows: readonly BuiltinRow[]): StepcastError {
+  const names = rows.map((candidate) => candidate.id);
   return new StepcastError(`Строка ${row.id} называет несуществующую встроенную строку stepcast:${name}`, {
     ...fileOption(row),
     at: 'plugins',
-    hint: `Пакет поставляет: ${names.map((id) => `stepcast:${id}`).join(', ')}`,
+    hint:
+      names.length === 0
+        ? 'Обходу не подано ни одной строки поставки: форму stepcast:<имя> разрешают только строки параметра builtinRows'
+        : `Пакет поставляет: ${names.map((id) => `stepcast:${id}`).join(', ')}`,
   });
 }
 
@@ -464,17 +499,19 @@ interface RowApplication {
 }
 
 /**
- * Применить одну строку дерева: встроенная — фабрика из таблицы `builtin.ts`
- * по форме `use: stepcast:<имя>`, каталог с манифестом — каталожный плагин
- * пользователя (`applyDirectoryTreeRow`, `user-plugins`, Решение 2), обычная —
- * прежние `resolveModulePath`, импорт и `applyPlugin` (задача 3.1, 3.2).
- * Опознание каталога — по диску, а не по источнику строки: строка, написанная
- * руками в патче с `use`, указывающим на каталог с манифестом, даёт тот же
- * плагин, что и найденная обходом (`plugin-tree`, Решение источника строки).
- * Строка встроенного слоя, заменённая патчем, сюда не доходит вовсе: в дереве
- * её больше нет — на её месте новая строка со своим `use`.
+ * Применить одну строку дерева: встроенная — фабрика из `options.builtinRows`
+ * по форме `use: stepcast:<имя>` (единственный источник — ядро своей таблицы
+ * не несёт, `kernel-domain-free-imports`, Решение 3), каталог с манифестом —
+ * каталожный плагин пользователя (`applyDirectoryTreeRow`, `user-plugins`,
+ * Решение 2), обычная — прежние `resolveModulePath`, импорт и `applyPlugin`
+ * (задача 3.1, 3.2). Опознание каталога — по диску, а не по источнику строки:
+ * строка, написанная руками в патче с `use`, указывающим на каталог с
+ * манифестом, даёт тот же плагин, что и найденная обходом (`plugin-tree`,
+ * Решение источника строки). Строка встроенного слоя, заменённая патчем, сюда
+ * не доходит вовсе: в дереве её больше нет — на её месте новая строка со
+ * своим `use`.
  *
- * Возвращает область плагина, если она была заведена, — её `loadPlugins`
+ * Возвращает область плагина, если она была заведена, — её `applyPluginTree`
  * использует для отказа о незакрытом внедрении, а осмотр (`introspect.ts`) —
  * для приписывания вкладов и сервисов строке (design.md `plugin-introspection`,
  * Решение 2). Встроенная строка движка область не заводит вовсе — вместо неё
@@ -497,7 +534,7 @@ async function applyTreeRow(
 
   if (isBuiltinUse(row.use)) {
     const name = row.use.slice(BUILTIN_USE_PREFIX.length);
-    const builtinRow = findBuiltinRow(name) ?? options.builtinRows?.find((candidate) => candidate.id === name);
+    const builtinRow = options.builtinRows?.find((candidate) => candidate.id === name);
     if (builtinRow === undefined) throw unknownBuiltinRow(row, name, options.builtinRows ?? []);
     const before = snapshotRoot(kernel);
     let ownFiber: Fiber | undefined;
@@ -713,9 +750,12 @@ export interface LoadResult {
  * реестр собирается без её вкладов. Строка, названная явно — ключом `plugins`
  * или патчем, — при отказе по-прежнему прекращает загрузку целиком, как и до
  * появления каталогов плагинов.
+ *
+ * Принимает готовое ядро, а не поднимает его сама (`kernel-domain-free-imports`,
+ * Решение 3): состав дефолта — какое ядро поднять и какими строками поставки
+ * его дополнить — решает вызывающий (`src/parts/load.ts`), а не эта функция.
  */
-export async function loadPlugins(resolved: ResolvedConfig, options: LoadOptions): Promise<LoadResult> {
-  const kernel = createKernelShell(options.builtinCommands ?? []);
+export async function applyPluginTree(kernel: Kernel, resolved: ResolvedConfig, options: LoadOptions): Promise<LoadResult> {
   const load = options.importModule ?? ((url: string) => import(url));
   // Чьей строкой заведена область. Нужно отказу о незакрытом внедрении: он
   // рождается после цикла, когда текущей строки уже нет, а файл конфигурации
@@ -754,7 +794,7 @@ export async function loadPlugins(resolved: ResolvedConfig, options: LoadOptions
 }
 
 /**
- * Пройти дерево, как это делает `loadPlugins`, но не бросая исключение на
+ * Пройти дерево, как это делает `applyPluginTree`, но не бросая исключение на
  * первом отказе: команда осмотра (`stepcast plugins`) обязана напечатать
  * дерево целиком и тогда, когда одна из строк не загрузилась (design.md,
  * Решение 8). Отказ строки, найденной обходом каталога плагинов, — её
@@ -764,7 +804,7 @@ export async function loadPlugins(resolved: ResolvedConfig, options: LoadOptions
  * помечаются «не загружалась», их и не пытались применить, а команда
  * завершится кодом ошибки конфигурации.
  *
- * Успокоение контекста здесь такое же, как в `loadPlugins`: отказ о
+ * Успокоение контекста здесь такое же, как в `applyPluginTree`: отказ о
  * незакрытом внедрении рождается только после него, и без него команда
  * осмотра напечатала бы все строки действующими там, где загрузка отказала, —
  * молча потеряв и виновницу, и причину.
@@ -773,12 +813,15 @@ export async function loadPlugins(resolved: ResolvedConfig, options: LoadOptions
  * здесь же, до `kernel.dispose()`: после снятия ядра ни сервисов, ни областей
  * не осталось бы, и путь «после отказа загрузки» — тот, где осмотр нужнее
  * всего, — печатал бы строки без вкладов и без сервисов.
+ *
+ * Принимает готовое ядро — тем же основанием, что и `applyPluginTree`
+ * (Решение 3): состав дефолта решает вызывающий (`src/parts/load.ts`).
  */
-export async function inspectPluginTree(
+export async function walkPluginTree(
+  kernel: Kernel,
   resolved: ResolvedConfig,
   options: LoadOptions,
 ): Promise<{ readonly outcomes: readonly RowOutcome[]; readonly introspection: Introspection }> {
-  const kernel = createKernelShell(options.builtinCommands ?? []);
   const load = options.importModule ?? ((url: string) => import(url));
   const outcomes: RowOutcome[] = [];
   const declaredBy = new Map<Fiber, TreeRow>();

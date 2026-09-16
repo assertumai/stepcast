@@ -3,7 +3,7 @@ import { ExitCode, isStepcastError, StepcastError, type ExitCodeValue } from '..
 import { parseArgs, type CliIo, type CommandSpec } from './args.js';
 import type { CommandContribution, CommandEnv } from '../core/plugins/contract.js';
 import { kernelFromRegistry } from '../core/plugins/registry.js';
-import { resolveWithPlugins } from '../core/plugins/resolve.js';
+import { resolveWithPlugins } from '../parts/resolve.js';
 import { reportError } from './output.js';
 import { runApplyCommand } from './commands/apply.js';
 import { runAssertCleanCommand } from './commands/assert-clean.js';

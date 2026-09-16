@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { FiberState, Service } from 'cordis';
 
 import { ExitCode, StepcastError } from '../src/core/errors.js';
-import { BUILTIN_PREDICATE_NAMES, createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { BUILTIN_PREDICATE_NAMES, createBuiltinKernel } from '../src/parts/builtin.js';
 import type {
   BackendContribution,
   CommandContribution,
@@ -16,11 +16,11 @@ import type {
 import {
   applyContextPlugin,
   applyDeclarativePlugin,
-  loadPlugins,
 } from '../src/core/plugins/load.js';
+import { loadPlugins } from '../src/parts/load.js';
 import { ContributionService, createKernel } from '../src/core/plugins/kernel.js';
 import { availableNames, predicateNames, registryFromKernel } from '../src/core/plugins/registry.js';
-import { resolveWithPlugins } from '../src/core/plugins/resolve.js';
+import { resolveWithPlugins } from '../src/parts/resolve.js';
 import { resolveConfig, type ResolvedConfig } from '../src/core/config/resolve.js';
 import { run as runCli } from '../src/cli/main.js';
 import type { CliIo } from '../src/cli/args.js';

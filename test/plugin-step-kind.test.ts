@@ -11,7 +11,7 @@ import { resolveLate } from '../src/core/pipeline/late.js';
 import { serializeLock } from '../src/core/pipeline/lock.js';
 import type { Job } from '../src/core/pipeline/model.js';
 import { computeStepKey } from '../src/core/run/stepKey.js';
-import { builtinRegistry, createBuiltinKernel } from '../src/core/plugins/builtin.js';
+import { builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
 import type { ContributionService } from '../src/core/plugins/kernel.js';
 import { applyContextPlugin, applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, stepKindNames, type Registry } from '../src/core/plugins/registry.js';
