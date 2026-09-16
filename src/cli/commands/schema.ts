@@ -5,6 +5,8 @@ import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } 
 import { nativePredicateNames, nativeStepKindNames, type Registry } from '../../core/plugins/registry.js';
 import { isDefaultNativePredicates, isDefaultNativeStepKinds } from '../../core/pipeline/schema.js';
 import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
+import type { PipelineCommandEnv } from '../../core/plugins/pipeline-contract.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -63,3 +65,18 @@ export function runSchemaCommand(
 
   return ExitCode.ok;
 }
+
+export const row = commandRow<PipelineCommandEnv>(
+  {
+    name: 'schema',
+    spec: {
+      description:
+        'записать в .stepcast/schema/ JSON Schema документов проекта, знающую предикаты загруженных плагинов',
+      flags: {
+        out: { kind: 'string', description: 'каталог вывода вместо .stepcast/schema/' },
+      },
+    },
+    run: (args, io, env) => runSchemaCommand(args, io.out, env.cwd, env.registry),
+  },
+  { inject: PIPELINE_SERVICES },
+);

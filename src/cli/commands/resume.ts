@@ -2,9 +2,11 @@ import { resolveConfig, type Config } from '../../core/config/resolve.js';
 import type { Registry } from '../../core/plugins/registry.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { findProjectRoot, shortRunId, type RunPaths } from '../../core/journal/paths.js';
+import type { PipelineCommandEnv } from '../../core/plugins/pipeline-contract.js';
 import { resolveRun } from '../../core/journal/reader.js';
 import { describePlan, planResume, readSourceRun } from '../../core/run/resumePlan.js';
 import { runPipeline } from '../../core/run/runner.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import { formatDiagnostic } from './lint.js';
 import type { ParsedArgs } from '../args.js';
 
@@ -154,3 +156,20 @@ export async function runResumeCommand(
     return error.exitCode;
   }
 }
+
+export const row = commandRow<PipelineCommandEnv>(
+  {
+    name: 'resume',
+    spec: {
+      description: 'возобновить прогон, переиспользовав шаги с совпавшим ключом',
+      positional: ['run'],
+      flags: {
+        from: { kind: 'string', description: 'начать заново с работы или шага: --from job[/step]' },
+        set: { kind: 'keyValue', description: 'переопределить вход: --set имя=значение' },
+        'dry-run': { kind: 'boolean', description: 'показать план, ничего не исполняя' },
+      },
+    },
+    run: (args, io, env) => runResumeCommand(args, io.out, env.cwd, env.registry, env.config),
+  },
+  { inject: PIPELINE_SERVICES },
+);

@@ -38,9 +38,9 @@ export interface ResolvedWithPlugins {
  *
  * Варианты разведены типом, а не необязательным полем рядом с прочими:
  * готовый реестр отменяет `loadPlugins` целиком, то есть вместе с ним
- * отменяет и `builtinCommands`, и `importModule`. Пара
- * `{ builtinCommands, registry }` в одном объекте выглядела бы осмысленно и
- * молча вернула бы реестр без единой команды — здесь она не компилируется.
+ * отменяет и `builtinRows`, и `importModule`. Пара `{ builtinRows, registry }`
+ * в одном объекте выглядела бы осмысленно и молча вернула бы реестр без
+ * единой строки вызывающего — здесь она не компилируется.
  */
 export type ResolveWithPluginsOptions =
   | (Omit<DefaultLoadOptions, 'projectRoot'> & {

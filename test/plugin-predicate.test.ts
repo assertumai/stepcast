@@ -12,6 +12,7 @@ import { BUILTIN_ROWS } from '../src/parts/rows.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { contributionOwner, registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import type { PredicateContribution } from '../src/core/plugins/pipeline-contract.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
 import { planResume, readSourceRun } from '../src/core/run/resumePlan.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { computeStepKey } from '../src/core/run/stepKey.js';
@@ -48,6 +49,7 @@ async function pluginRegistry(overrides: Partial<PredicateContribution> = {}): P
       ],
     },
     '/модуль/example.js',
+    DECLARATIVE_CONTRIBUTION_FIELDS,
   );
   return registry;
 }
@@ -423,6 +425,7 @@ describe('plugin-contributions: плагин занимает имя exit_code �
         ],
       },
       '/модуль/own-exit-code.js',
+      DECLARATIVE_CONTRIBUTION_FIELDS,
     );
     const registry = registryFromKernel(kernel);
 

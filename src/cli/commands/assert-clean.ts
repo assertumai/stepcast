@@ -5,6 +5,7 @@ import { resolveConfig } from '../../core/config/resolve.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { assertCleanTree } from '../../core/lanes/tree.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -59,3 +60,21 @@ export function runAssertCleanCommand(args: ParsedArgs, cwd: string): ExitCodeVa
 
   return ExitCode.ok;
 }
+
+export const row = commandRow(
+  {
+    name: 'assert-clean',
+    spec: {
+      description:
+        'проверить чистоту каталога запуска и объявленных вложенных репозиториев (project.nested_repos), ничего не правя',
+      flags: {
+        allow: {
+          kind: 'string',
+          description: 'пути, правки которых чистоту не нарушают, через запятую',
+        },
+      },
+    },
+    run: (args, io, env) => runAssertCleanCommand(args, env.cwd),
+  },
+  { inject: PIPELINE_SERVICES },
+);

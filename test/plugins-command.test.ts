@@ -7,12 +7,48 @@ import { describe, it } from 'node:test';
 import type { CliIo } from '../src/cli/args.js';
 import { CACHED_REGISTRY_ATTRIBUTION, outcomeWithoutLoad, runPluginsCommand } from '../src/cli/commands/plugins.js';
 import { run as runCli } from '../src/cli/main.js';
+import { COMMAND_ROWS } from '../src/cli/rows.js';
 import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
 import { createBuiltinKernel } from '../src/parts/builtin.js';
 import { BUILTIN_ROW_IDS } from '../src/parts/rows.js';
 import type { TreeRow } from '../src/core/plugins/tree.js';
 import { daemonPaths, writeRecord } from '../src/ui/daemon.js';
 import { makeProject, MINIMAL_PIPELINE, withHome, type Project } from './helpers.js';
+
+/**
+ * Строки доменных команд (design.md изменения `cli-commands-as-rows`,
+ * Решение 3) — те, чья строка объявляет `inject` на сервисы движка
+ * пайплайнов и потому печатает строку «сервисы запрошены». Список — тот же,
+ * что называет комментарий у `COMMAND_ROWS` (`src/cli/rows.ts`).
+ */
+const DOMAIN_COMMAND_NAMES = new Set([
+  'run', 'resume', 'lint', 'status', 'logs', 'diff', 'decide', 'usage',
+  'context', 'schema', 'gc', 'apply', 'propose', 'backlog', 'knowledge',
+  'merge-lanes', 'assert-clean', 'project',
+]);
+
+/**
+ * Строки дополнений печати ровно одной строки команды (`renderIntrospectionRows`,
+ * `src/cli/commands/plugins.ts`): заголовок, затем «сервисы запрошены» —
+ * только у доменной команды, — затем «вклады: commands: <имя>» всегда.
+ * Помощник читает их из `lines`, начиная с `index`, и возвращает индекс сразу
+ * за прочитанным блоком — вызывающий тест проверяет дерево построчно, не
+ * храня 97 литеральных строк руками.
+ */
+function assertCommandRowLines(lines: readonly string[], index: number, place: number, name: string): number {
+  let cursor = index;
+  assert.match(
+    lines[cursor] ?? '',
+    new RegExp(`^${place}\\s+command-${name}\\s+встроенный\\s+stepcast:command-${name}\\s+действует$`),
+  );
+  cursor += 1;
+  if (DOMAIN_COMMAND_NAMES.has(name)) {
+    assert.equal(lines[cursor], '    сервисы запрошены: backends (разрешён), predicates (разрешён), steps (разрешён)');
+    cursor += 1;
+  }
+  assert.equal(lines[cursor], `    вклады: commands: ${name}`);
+  return cursor + 1;
+}
 
 /**
  * Команда осмотра дерева плагинов (`plugin-tree`, design.md, Решение 8):
@@ -68,13 +104,16 @@ describe('plugin-tree: stepcast plugins печатает дерево со сл�
     const lines = outcome.stdout.split('\n');
     // Пять колонок дерева — на прежних четырёх строках. Первой стоит строка
     // `pipeline` (design.md `pipeline-owns-services`, Решение 1) с объявленными
-    // сервисами; каждая из семи строк-потребителей (`backend-claude`,
+    // сервисами; каждая из семи строк-потребителей движка (`backend-claude`,
     // `predicates`, `step-run`, `step-uses`, `step-script`, `step-agent`,
-    // `step-decision`) названа и запрошенным сервисом, и своим вкладом —
-    // Решение 2. Раздел встроенного вне строк дерева сузился до сервиса
-    // `commands`: служебные сервисы пайплайна переехали в строку `pipeline`.
-    // Раздел витрины — двумя строками в конце, демон в этом тесте не поднят.
-    assert.equal(lines.length, 30);
+    // `step-decision`) названа и запрошенным сервисом, и своим вкладом
+    // (Решение 2); следом — 25 строк команд (`cli-commands-as-rows`,
+    // Решение 1), каждая со своим вкладом `commands: <имя>`, а доменные —
+    // ещё и запрошенными сервисами пайплайна. Раздел встроенного вне строк
+    // дерева сузился до объявленного сервиса `commands`: ни служебных
+    // сервисов пайплайна, ни единой команды на корне больше нет — все они
+    // строки. Раздел витрины — двумя строками в конце, демон в этом тесте не
+    // поднят.
     assert.match(lines[0] ?? '', /^1\s+pipeline\s+встроенный\s+stepcast:pipeline\s+действует$/);
     assert.equal(lines[1], '    сервисы объявлены: backends, predicates, steps');
     assert.match(lines[2] ?? '', /^2\s+backend-claude\s+встроенный\s+stepcast:backend-claude\s+действует$/);
@@ -101,24 +140,37 @@ describe('plugin-tree: stepcast plugins печатает дерево со сл�
     assert.match(lines[20] ?? '', /^8\s+step-decision\s+встроенный\s+stepcast:step-decision\s+действует$/);
     assert.equal(lines[21], '    сервисы запрошены: steps (разрешён)');
     assert.equal(lines[22], '    вклады: steps: decision');
+
+    let cursor = 23;
+    let place = 9;
+    for (const row of COMMAND_ROWS) {
+      cursor = assertCommandRowLines(lines, cursor, place, row.command.name);
+      place += 1;
+    }
+
     assert.match(
-      lines[23] ?? '',
-      new RegExp(`^9\\s+home-extra\\s+${escapeRegExp(join(project.home, '.stepcast', 'plugins.patch.yml'))}\\s+\\./home-extra\\.mjs\\s+действует$`),
+      lines[cursor] ?? '',
+      new RegExp(`^${place}\\s+home-extra\\s+${escapeRegExp(join(project.home, '.stepcast', 'plugins.patch.yml'))}\\s+\\./home-extra\\.mjs\\s+действует$`),
     );
+    cursor += 1;
+    place += 1;
     assert.match(
-      lines[24] ?? '',
-      new RegExp(`^10\\s+project-extra\\s+${escapeRegExp(join(project.root, '.stepcast', 'plugins.patch.yml'))}\\s+\\./project-extra\\.mjs\\s+действует$`),
+      lines[cursor] ?? '',
+      new RegExp(`^${place}\\s+project-extra\\s+${escapeRegExp(join(project.root, '.stepcast', 'plugins.patch.yml'))}\\s+\\./project-extra\\.mjs\\s+действует$`),
     );
-    assert.equal(lines[25], 'встроенный (вне строк дерева):');
-    assert.equal(lines[26], '    сервисы объявлены: commands');
-    assert.match(lines[27] ?? '', /^ {4}вклады: commands: /);
-    assert.doesNotMatch(lines[27] ?? '', /steps:/);
-    assert.doesNotMatch(lines[27] ?? '', /predicates:/);
-    assert.equal(lines[28], '');
-    assert.equal(lines[29], 'витрина: демон витрины не запущен');
+    cursor += 1;
+
+    assert.equal(lines[cursor], 'встроенный (вне строк дерева):');
+    assert.equal(lines[cursor + 1], '    сервисы объявлены: commands');
+    // Ни одна команда и ни один сервис пайплайна больше не приписаны корню:
+    // раздел «вклады: …» этого раздела не несёт вовсе.
+    assert.doesNotMatch(lines[cursor + 2] ?? '', /вклады:/);
+    assert.equal(lines[cursor + 2], '');
+    assert.equal(lines[cursor + 3], 'витрина: демон витрины не запущен');
+    assert.equal(lines.length, cursor + 4);
   });
 
-  it('вклад, внесённый на корневой области вне строк дерева, назван встроенным и не приписан строке', async () => {
+  it('раздел встроенного вне строк дерева не несёт ни одного вклада — только сервис commands', async () => {
     const project = makeProject({});
 
     const outcome = await cli(project, ['plugins']);
@@ -128,16 +180,18 @@ describe('plugin-tree: stepcast plugins печатает дерево со сл�
     const builtinIndex = lines.findIndex((line) => line === 'встроенный (вне строк дерева):');
     assert.ok(builtinIndex !== -1, 'раздел встроенного вне строк дерева напечатан');
     const section = lines.slice(builtinIndex).join('\n');
-    // Встроенные команды CLI регистрируются на корне до применения первой
-    // строки — ни одной строке они не принадлежат и обязаны быть названы
-    // встроенным владельцем (`plugin-introspection`, «Вклад без строки не
-    // приписан наугад»). Служебные сервисы движка пайплайнов (`backends`,
-    // `predicates`, `steps`) с этим разделом больше не связаны вовсе: их
-    // заводит строка `pipeline`, а виды шага вносят строки `step-*`
-    // (`pipeline-owns-services`, `builtin-step-kinds-as-rows`).
+    // Команды CLI регистрируются собственными строками теперь (design.md
+    // изменения `cli-commands-as-rows`, Решение 1) — ни одна не приписана
+    // корню. Служебные сервисы движка пайплайнов (`backends`, `predicates`,
+    // `steps`) с этим разделом тоже не связаны: их заводит строка `pipeline`,
+    // а виды шага вносят строки `step-*` (`pipeline-owns-services`,
+    // `builtin-step-kinds-as-rows`). Единственное, что осталось на корне, —
+    // сам служебный сервис `commands`, который заводит сборка ядра
+    // (`createKernel`); вкладов у него нет вовсе.
     assert.doesNotMatch(section, /steps:/);
     assert.doesNotMatch(section, /predicates:/);
-    assert.match(section, /commands: /);
+    assert.doesNotMatch(section, /вклады:/);
+    assert.match(section, /сервисы объявлены: commands/);
     // Вклад строки `backend-claude` остался за своей строкой: во встроенное вне
     // строк он не попал.
     assert.ok(!section.includes('backends: claude'), 'вклад строки не продублирован во встроенном');
@@ -176,9 +230,10 @@ describe('plugin-tree: отказ загрузки не заслоняет де�
     const lines = outcome.stdout.split('\n');
     // Вклады соседних строк по-прежнему называются — отказ одной строки не
     // теряет их (`plugin-introspection`, «Осмотр после отказа загрузки»); за
-    // строкой `pipeline` и семью строками-потребителями идёт раздел
-    // встроенного вне строк дерева (три строки) и раздел витрины (две).
-    assert.equal(lines.length, 30);
+    // строкой `pipeline` и семью строками-потребителями идёт явная строка
+    // `./plugins/нет.mjs` (отказавшая, останавливает применение — строка не
+    // каталожная), а следом — вторая явная строка и все 25 строк команд:
+    // применение до них не дошло, каждая напечатана «не загружалась».
     assert.match(lines[0] ?? '', /действует/); // pipeline применилась раньше отказавшей
     assert.equal(lines[1], '    сервисы объявлены: backends, predicates, steps');
     assert.match(lines[2] ?? '', /действует/); // backend-claude загрузилась раньше отказавшей
@@ -196,12 +251,29 @@ describe('plugin-tree: отказ загрузки не заслоняет де�
     assert.equal(lines[19], '    вклады: steps: agent');
     assert.match(lines[20] ?? '', /действует/);
     assert.equal(lines[22], '    вклады: steps: decision');
-    assert.match(lines[23] ?? '', /отказ:/);
-    assert.match(lines[23] ?? '', /не загружается/);
-    assert.match(lines[24] ?? '', /не загружалась/);
-    assert.equal(lines[25], 'встроенный (вне строк дерева):');
-    assert.equal(lines[28], '');
-    assert.equal(lines[29], 'витрина: демон витрины не запущен');
+
+    // Семя дерева называет строки команд наравне со строками движка
+    // (`resolveConfig`, `reservedRowIds`) — они стоят в дереве раньше явных
+    // строк ключа `plugins`, и применяются успешно: отказавшая явная строка
+    // ещё не встретилась.
+    let cursor = 23;
+    let place = 9;
+    for (const row of COMMAND_ROWS) {
+      cursor = assertCommandRowLines(lines, cursor, place, row.command.name);
+      place += 1;
+    }
+
+    assert.match(lines[cursor] ?? '', /отказ:/);
+    assert.match(lines[cursor] ?? '', /не загружается/);
+    cursor += 1;
+    assert.match(lines[cursor] ?? '', /не загружалась/);
+    cursor += 1;
+
+    assert.equal(lines[cursor], 'встроенный (вне строк дерева):');
+    assert.equal(lines[cursor + 1], '    сервисы объявлены: commands');
+    assert.equal(lines[cursor + 2], '');
+    assert.equal(lines[cursor + 3], 'витрина: демон витрины не запущен');
+    assert.equal(lines.length, cursor + 4);
   });
 
   it('отказ о незакрытом внедрении тоже назван: строка-виновница несёт причину, а не числится действующей', async () => {
@@ -427,6 +499,14 @@ describe('plugin-introspection: --json печатает ту же модель �
     // не перечисляет их сервисы вовсе, а не пустыми списками.
     assert.equal(payload.own.builtin.contributions.steps, undefined);
     assert.equal(payload.own.builtin.contributions.predicates, undefined);
+    // Команды CLI больше не вклад вне строк тоже (`cli-commands-as-rows`,
+    // Решение 1): каждая — вклад своей строки `command-<имя>`.
+    assert.equal(payload.own.builtin.contributions.commands, undefined);
+    const runRow = payload.own.rows.find((row) => row.id === 'command-run') as
+      | { contributions: Record<string, readonly string[]> }
+      | undefined;
+    assert.ok(runRow !== undefined, 'строка command-run видна в машинном выводе');
+    assert.deepEqual(runRow?.contributions.commands, ['run']);
     const predicatesRow = payload.own.rows.find((row) => row.id === 'predicates') as
       | { contributions: Record<string, readonly string[]> }
       | undefined;
@@ -617,32 +697,41 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * Патч, отключающий строку `pipeline` и всех её потребителей разом — состав
- * без единого сервиса пайплайна, но без единого незакрытого внедрения
- * (design.md изменения `pipeline-owns-services`, Решение 8, 9): загрузка
- * проходит целиком, а `Registry.missingServices` называет три имени.
- * Отключение одной только `pipeline` при включённых потребителях — другой,
- * прежний сценарий (отказ загрузки, `plugin-tree: отключение строки pipeline
- * при включённых потребителях`), здесь не проверяется.
+ * Патч, отключающий строку `pipeline`, всех её потребителей-строк движка и
+ * все 18 доменных строк команд разом — состав без единого сервиса пайплайна
+ * и без единого незакрытого внедрения (design.md изменения
+ * `pipeline-owns-services`, Решение 8, 9; `cli-commands-as-rows`, Решение 3):
+ * загрузка проходит целиком, а `Registry.missingServices` называет три
+ * имени. Доменные строки команд обязаны быть отключены вместе со строкой
+ * `pipeline` явно — само по себе отключение `pipeline` их не снимает
+ * (design.md, «Risks»: «Отключение pipeline без отключения её потребителей
+ * по-прежнему обрывает загрузку»). Отключение одной только `pipeline` при
+ * включённых потребителях — другой, прежний сценарий (отказ загрузки,
+ * `plugin-tree: отключение строки pipeline при включённых потребителях`),
+ * здесь не проверяется.
  */
 function disableAllPipelineRows(): string {
+  const ids = [...BUILTIN_ROW_IDS, ...[...DOMAIN_COMMAND_NAMES].map((name) => `command-${name}`)];
   const lines = ['version: 1', 'kind: plugins-patch', 'plugins:'];
-  for (const id of BUILTIN_ROW_IDS) lines.push(`  - id: ${id}`, `    use: stepcast:${id}`, '    enabled: false');
+  for (const id of ids) lines.push(`  - id: ${id}`, `    use: stepcast:${id}`, '    enabled: false');
   return `${lines.join('\n')}\n`;
 }
 
 describe('plugin-tree: команды в составе без единого сервиса пайплайна', () => {
-  it('run отказывает названно кодом ошибки конфигурации, не доходя до разбора документа', async () => {
+  it('run отказывает названно кодом ошибки конфигурации: строка команды снята вместе со строкой pipeline', async () => {
     const project = makeProject({ 'stepcast.yml': MINIMAL_PIPELINE });
     withProjectPatch(project, disableAllPipelineRows());
 
     const outcome = await cli(project, ['run', 'stepcast.yml']);
 
     assert.equal(outcome.code, ExitCode.configError);
-    assert.match(outcome.stderr, /run/);
-    assert.match(outcome.stderr, /backends|predicates|steps/);
+    // Строка `command-run` отключена тем же патчем — дерево применяется
+    // целиком, и дальше срабатывает названный отказ об отсутствующей команде
+    // (design.md, Решение 10), а не отказ о незакрытом внедрении.
+    assert.match(outcome.stderr, /command-run/);
+    assert.match(outcome.stderr, /отключена/);
     // Отказ до разбора документа: пайплайн синтаксически неверный дал бы
-    // другой текст (об узнавании шага), а не о недостающем сервисе.
+    // другой текст (об узнавании шага), а не о снятой команде.
     assert.doesNotMatch(outcome.stderr, /неизвестен/);
   });
 
@@ -655,6 +744,9 @@ describe('plugin-tree: команды в составе без единого с
     assert.match(plugins.stdout, /pipeline/);
     assert.match(plugins.stdout, /backend-claude/);
     for (const id of BUILTIN_ROW_IDS) assert.match(plugins.stdout, new RegExp(`${id}.*отключена`));
+    for (const name of DOMAIN_COMMAND_NAMES) {
+      assert.match(plugins.stdout, new RegExp(`command-${name}.*отключена`), `строка command-${name} обязана быть отключена`);
+    }
 
     const config = await cli(project, ['config']);
     assert.equal(config.code, ExitCode.ok);

@@ -14,6 +14,7 @@ import { runPipeline, type RunResult } from '../src/core/run/runner.js';
 import { ExitCode, StepcastError } from '../src/core/errors.js';
 import { builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
 import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import type { ParsedArgs } from '../src/cli/args.js';
 import { makeProject, withHome, type Project } from './helpers.js';
@@ -536,7 +537,7 @@ jobs:
 
   async function withPlugin(name: string, version: string): Promise<Registry> {
     const kernel = createBuiltinKernel();
-    await applyDeclarativePlugin(kernel, { name, version }, `/модуль/${name}.js`);
+    await applyDeclarativePlugin(kernel, { name, version }, `/модуль/${name}.js`, DECLARATIVE_CONTRIBUTION_FIELDS);
     return registryFromKernel(kernel);
   }
 

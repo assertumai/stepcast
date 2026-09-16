@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { definePlugin } from '../src/plugin.js';
 import type { StepcastPlugin } from '../src/core/plugins/contract.js';
 import {
+  DECLARATIVE_CONTRIBUTION_FIELDS,
   defineBackend,
   definePipelinePlugin,
   definePredicate,
@@ -118,11 +119,11 @@ describe('plugin-helpers: вклад из хелпера принимается 
 
   it('плагин из хелперов собирается в реестр — те же имена вкладов и те же умолчания бэкенда, что у эквивалента из литералов', async () => {
     const helperKernel = createPipelineKernel();
-    await applyDeclarativePlugin(helperKernel, pluginFromHelpers(), '<synthetic-helpers>');
+    await applyDeclarativePlugin(helperKernel, pluginFromHelpers(), '<synthetic-helpers>', DECLARATIVE_CONTRIBUTION_FIELDS);
     const helperRegistry = registryFromKernel(helperKernel);
 
     const literalKernel = createPipelineKernel();
-    await applyDeclarativePlugin(literalKernel, pluginFromLiterals(), '<synthetic-literals>');
+    await applyDeclarativePlugin(literalKernel, pluginFromLiterals(), '<synthetic-literals>', DECLARATIVE_CONTRIBUTION_FIELDS);
     const literalRegistry = registryFromKernel(literalKernel);
 
     assert.deepEqual(availableNames(helperRegistry, 'backends'), availableNames(literalRegistry, 'backends'));

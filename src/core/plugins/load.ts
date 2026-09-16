@@ -8,7 +8,7 @@ import { findPackageRoot } from '../package-schema.js';
 import type { ResolvedConfig } from '../config/resolve.js';
 import { isStepcastError, StepcastError } from '../errors.js';
 import { isContextPlugin, type ContextPlugin, type ContextPluginObject } from './contract.js';
-import { DECLARATIVE_CONTRIBUTION_FIELDS, StepcastPluginSchema, type PipelinePlugin } from './pipeline-contract.js';
+import { StepcastPluginSchema, type DeclarativeContributionFields, type PipelinePlugin } from './pipeline-contract.js';
 import { translateReservedNameConflict, unresolvedFibers, type Context, type Fiber, type Kernel } from './kernel.js';
 import { readPluginManifest, type PluginManifest } from './manifest.js';
 import { registryFromKernel, type Registry } from './registry.js';
@@ -87,10 +87,15 @@ export interface BuiltinRow {
  * области, а не по имени или порядку дерева; (2) отказ применения не должен
  * оставить ни вклада, ни занятого им имени — область снимается целиком, а
  * наружу идёт исходный отказ, а не отказ снятия. Общий для строки экрана
- * витрины (`screenRow`, `src/ui/screens/registry.ts`) и строк движка
- * (`partRow`, `src/parts/pipeline/services.ts`): две копии этого кода
- * разошлись бы в обработке отказа — именно там, где расхождение видно позже
- * всего.
+ * витрины (`screenRow`, `src/ui/screens/registry.ts`), строк движка (`partRow`,
+ * `src/parts/pipeline/services.ts`) и строк команд (`src/cli/rows.ts`): копии
+ * этого кода разошлись бы в обработке отказа — именно там, где расхождение
+ * видно позже всего.
+ *
+ * Пометка происхождения (design.md изменения `cli-commands-as-rows`, Решение
+ * 7) тоже ставится здесь, а не у каждого вызывающего по отдельности: область,
+ * заведённая `rowScope`, всегда область строки встроенного слоя, и второй
+ * копии этого признака в репозитории быть не должно.
  */
 export function rowScope(
   kernel: Kernel,
@@ -98,7 +103,11 @@ export function rowScope(
   inject: readonly string[],
   apply: (ctx: Context) => void,
 ): Promise<Fiber> {
-  const fiber = kernel.ctx.plugin({ name: id, inject: [...inject], apply });
+  const marked = (ctx: Context): void => {
+    builtinRowFibers.add(ctx.fiber);
+    apply(ctx);
+  };
+  const fiber = kernel.ctx.plugin({ name: id, inject: [...inject], apply: marked });
   return (async () => {
     try {
       await fiber;
@@ -108,6 +117,26 @@ export function rowScope(
     }
     return fiber;
   })();
+}
+
+/**
+ * Области строк встроенного слоя, заведённые `rowScope` — строки движка,
+ * строки поставки витрины и строки команд разом (design.md изменения
+ * `cli-commands-as-rows`, Решение 7). Модульное множество, не поле сервиса и
+ * не параметр `register`: признак встроенности обязан быть неподделываемым —
+ * пометка ставится изнутри загрузчика, до первой регистрации, и `stepcast/plugin`
+ * её не публикует.
+ */
+const builtinRowFibers = new WeakSet<Fiber>();
+
+/**
+ * Признак «эта область — область строки встроенного слоя», подаётся ядром
+ * (`kernel.ts`) конструктору `ContributionService` наравне с идентичностью
+ * корневой области: сервис `commands` признаёт встроенным вклад корневой
+ * области ИЛИ помеченной этим признаком.
+ */
+export function isBuiltinRowFiber(fiber: Fiber): boolean {
+  return builtinRowFibers.has(fiber);
 }
 
 /**
@@ -147,6 +176,16 @@ export interface LoadOptions {
     readonly manifest: PluginManifest;
     readonly fiber: Fiber | undefined;
   }) => void;
+  /**
+   * Таблица ключей декларативной формы вклада (design.md изменения
+   * `cli-commands-as-rows`, Решение 11): единственный источник, по которому
+   * `toContextPlugin` регистрирует вклады декларативного плагина и объявляет
+   * его `inject` — обход своей таблицы не несёт (`kernel-domain-free-imports`,
+   * Решение 3, тем же приёмом, что и `builtinRows`). Состав дефолта
+   * (`src/parts/load.ts`) подаёт сюда действующую таблицу
+   * (`DECLARATIVE_CONTRIBUTION_FIELDS`) целиком.
+   */
+  readonly declarativeFields: DeclarativeContributionFields;
 }
 
 /**
@@ -256,23 +295,72 @@ function toPlugin(module: unknown, row: TreeRow, path: string): Recognized {
 }
 
 /**
+ * Ключи декларативной формы — ключи схемы `StepcastPluginSchema`, кроме
+ * `name` и `version` (design.md изменения `cli-commands-as-rows`, Решение
+ * 11): те же имена, что называет `test/plugins-load.test.ts`, сверяя их с
+ * таблицей. Вычислены от схемы, а не перечислены строками здесь второй раз —
+ * иначе ключ, добавленный в схему без таблицы, читался бы этим списком как
+ * известный.
+ *
+ * Перечень служит одному — проверке на ключ, которого таблица сборки не
+ * называет. Регистрация идёт по ключам самой таблицы (`toContextPlugin`,
+ * находка ревью): пойди она отсюда, ключ, объявленный составом, но схеме
+ * неизвестный, не зарегистрировал бы ничего и не отказал бы — то самое
+ * молчание, ради устранения которого заведён `unknownDeclarativeField`.
+ */
+const DECLARATIVE_FORM_KEYS = Object.keys(StepcastPluginSchema.shape).filter(
+  (key) => key !== 'name' && key !== 'version',
+) as (keyof DeclarativeContributionFields)[];
+
+/** Плагин действительно объявил этот ключ формы — запись непуста (объект с ключами либо непустой список). */
+function declaresField(plugin: PipelinePlugin, key: keyof DeclarativeContributionFields): boolean {
+  const value = (plugin as unknown as Record<string, unknown>)[key];
+  if (Array.isArray(value)) return value.length > 0;
+  return value !== undefined && value !== null && Object.keys(value).length > 0;
+}
+
+/** Отказ: плагин объявил ключ декларативной формы, которого таблица сборки не называет (design.md, Решение 11). */
+function unknownDeclarativeField(plugin: PipelinePlugin, key: string): StepcastError {
+  return new StepcastError(
+    `Плагин ${plugin.name} объявляет ключ декларативной формы ${key}, которого таблица сборки не называет`,
+    { at: 'plugins', hint: 'Ключ декларативной формы неизвестен составу сборки — обновите его таблицу (src/parts/load.ts) либо снимите ключ' },
+  );
+}
+
+/**
  * Адаптер в одну сторону (design.md, Решение 7): декларативный объект
  * превращается в плагин контекста самим движком, а не наоборот. Каждая
  * регистрация — тем же вызовом, каким её сделал бы плагин контекста, и в той
  * же области — области этого плагина.
+ *
+ * Таблица (design.md изменения `cli-commands-as-rows`, Решение 11) —
+ * параметр, не импорт: обход своей таблицы не несёт
+ * (`kernel-domain-free-imports`, Решение 3). Ключ, который плагин объявил
+ * непустым, а таблица не называет, — названный отказ (задача 7.3): молчаливо
+ * пропущенный ключ превратил бы опечатку в составе (или самого плагина) в
+ * тихую потерю вклада. Ключ, которого плагин не объявил вовсе или объявил
+ * пустым, таблицей может не называться — это не отказ: то же самое молчание,
+ * каким `.loose()` уже встречает лишний ключ схемы.
  */
-export function toContextPlugin(plugin: PipelinePlugin): ContextPluginObject {
-  // Инъекция и регистрация идут по одной и той же таблице
-  // (`DECLARATIVE_CONTRIBUTION_FIELDS`, `contract.ts`, design.md, Решение 10):
-  // перечень имён, по которым плагин ждёт сервисы, и перечень ключей, которые
-  // он объявил, — не два независимых списка. Инъекция называет только те
-  // сервисы, которыми плагин действительно пользуется: плагин без предикатов
-  // не должен казаться «ждущим» сервис предикатов (design.md
-  // `plugin-introspection`, Решение 5, второй абзац). Ключ, которого таблица
-  // не знает, остаётся безобидным полем объекта — тем же молчанием, каким
-  // `.loose()` уже встречает лишний ключ схемы.
-  const registrations = (Object.keys(DECLARATIVE_CONTRIBUTION_FIELDS) as (keyof typeof DECLARATIVE_CONTRIBUTION_FIELDS)[])
-    .map((key) => ({ service: DECLARATIVE_CONTRIBUTION_FIELDS[key].service, entries: DECLARATIVE_CONTRIBUTION_FIELDS[key].entries(plugin) }))
+export function toContextPlugin(plugin: PipelinePlugin, fields: DeclarativeContributionFields): ContextPluginObject {
+  for (const key of DECLARATIVE_FORM_KEYS) {
+    if (declaresField(plugin, key) && fields[key] === undefined) throw unknownDeclarativeField(plugin, key);
+  }
+
+  // Инъекция и регистрация идут по одной и той же таблице: перечень имён, по
+  // которым плагин ждёт сервисы, и перечень ключей, которые он объявил, — не
+  // два независимых списка. Инъекция называет только те сервисы, которыми
+  // плагин действительно пользуется: плагин без предикатов не должен
+  // казаться «ждущим» сервис предикатов (design.md `plugin-introspection`,
+  // Решение 5, второй абзац).
+  //
+  // Обход — по ключам поданной таблицы, а не по перечню, выведенному от схемы
+  // (находка ревью): своего перечня ключей тело обхода не несёт вовсе, схема
+  // остаётся источником одной только проверки выше. Порядок регистрации —
+  // порядок объявления таблицы.
+  const registrations = Object.values(fields)
+    .filter((entry): entry is NonNullable<DeclarativeContributionFields[keyof DeclarativeContributionFields]> => entry !== undefined)
+    .map((entry) => ({ service: entry.service, entries: entry.entries(plugin) }))
     .filter((item) => item.entries.length > 0);
 
   return {
@@ -323,14 +411,39 @@ function tentativePluginName(recognized: Recognized): string | undefined {
 }
 
 /**
+ * Отказ: тело формы декларативного плагина позвано без таблицы ключей
+ * (design.md изменения `cli-commands-as-rows`, Решение 11) — дефект
+ * вызывающего, а не состояние, которое стоит проглатывать молча. Форма
+ * контекста таблицы не читает вовсе, поэтому отказ этой ветки не касается.
+ */
+function requireDeclarativeFields(fields: DeclarativeContributionFields | undefined): DeclarativeContributionFields {
+  if (fields === undefined) {
+    throw new StepcastError(
+      'Внутренняя ошибка: декларативный плагин применён без таблицы ключей декларативной формы',
+      { hint: 'Передайте таблицу: LoadOptions.declarativeFields на пути дерева либо явным параметром applyDeclarativePlugin/applyPlugin' },
+    );
+  }
+  return fields;
+}
+
+/**
  * Применить один плагин (любой формы) к ядру и, если применение прошло без
  * отказа, записать его в перечень загруженных. Используется и загрузкой из
  * файла (`applyPluginTree`), и напрямую — синтетическим плагином без файла на
  * диске (тесты ядра). Возвращает область плагина: её `dispose()` снимает всё,
  * что плагин зарегистрировал, разом (тест «снятие области»).
+ *
+ * `fields` нужна только форме декларативного плагина — форма контекста
+ * регистрирует вклады сама, вызовами `ctx.<сервис>.register` в своём `apply`.
  */
-export async function applyPlugin(kernel: Kernel, recognized: Recognized, source: string): Promise<Fiber> {
-  const plugin = recognized.form === 'declarative' ? toContextPlugin(recognized.plugin) : recognized.plugin;
+export async function applyPlugin(
+  kernel: Kernel,
+  recognized: Recognized,
+  source: string,
+  fields?: DeclarativeContributionFields,
+): Promise<Fiber> {
+  const plugin =
+    recognized.form === 'declarative' ? toContextPlugin(recognized.plugin, requireDeclarativeFields(fields)) : recognized.plugin;
   const name = pluginName(plugin);
   const version = recognized.form === 'declarative' ? recognized.plugin.version : plugin.version;
   const wrapped: ContextPluginObject =
@@ -355,8 +468,13 @@ export async function applyPlugin(kernel: Kernel, recognized: Recognized, source
 }
 
 /** Применить плагин декларативной формы — сокращение для частого случая (тесты, `applyPluginTree`). */
-export function applyDeclarativePlugin(kernel: Kernel, plugin: PipelinePlugin, source: string): Promise<Fiber> {
-  return applyPlugin(kernel, { form: 'declarative', plugin }, source);
+export function applyDeclarativePlugin(
+  kernel: Kernel,
+  plugin: PipelinePlugin,
+  source: string,
+  fields: DeclarativeContributionFields,
+): Promise<Fiber> {
+  return applyPlugin(kernel, { form: 'declarative', plugin }, source, fields);
 }
 
 /** Применить плагин контекста — сокращение, симметричное `applyDeclarativePlugin`. */
@@ -447,7 +565,7 @@ async function applyDirectoryTreeRow(
     throw pluginNameMismatch(row, declaredName, manifest.manifestPath);
   }
 
-  const fiber = await applyPlugin(kernel, recognized, manifest.server);
+  const fiber = await applyPlugin(kernel, recognized, manifest.server, options.declarativeFields);
   try {
     options.onDirectoryRow?.({ row, manifest, fiber });
   } catch (error) {
@@ -614,7 +732,7 @@ async function applyTreeRow(
 
   const recognized = toPlugin(module, row, path);
   try {
-    const fiber = await applyPlugin(kernel, recognized, path);
+    const fiber = await applyPlugin(kernel, recognized, path, options.declarativeFields);
     return { fiber, rootWindow: undefined };
   } catch (error) {
     withRowLocation(error, row);

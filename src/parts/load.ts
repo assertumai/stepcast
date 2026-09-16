@@ -1,9 +1,9 @@
 import type { ResolvedConfig } from '../core/config/resolve.js';
 import { StepcastError } from '../core/errors.js';
-import type { CommandContribution } from '../core/plugins/contract.js';
 import { applyPluginTree, walkPluginTree, type LoadOptions, type LoadResult, type RowOutcome } from '../core/plugins/load.js';
 import type { Introspection } from '../core/plugins/introspect.js';
 import type { Kernel } from '../core/plugins/kernel.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../core/plugins/pipeline-contract.js';
 import { createKernelShell } from './builtin.js';
 import { BUILTIN_ROWS } from './rows.js';
 
@@ -30,16 +30,15 @@ import { BUILTIN_ROWS } from './rows.js';
  */
 
 /**
- * Опции состава дефолта: опции обхода плюс то, чем распоряжается сборка ядра,
- * а не обход. `builtinCommands` объявлено здесь, а не в `LoadOptions` ядерной
- * пары: читает его только `createKernelShell` ниже, и поле, оставленное в
- * общих опциях, молча не вносило бы команд при прямом вызове
- * `applyPluginTree`/`walkPluginTree`.
+ * Опции состава дефолта — опции обхода без `declarativeFields`
+ * (`cli-commands-as-rows`, Решение 11): её подаёт сам состав дефолта, ниже, —
+ * вызывающему (CLI, витрина, тесты) называть действующую таблицу незачем,
+ * она всегда одна и та же (`DECLARATIVE_CONTRIBUTION_FIELDS`). Сборка ядра
+ * (`createKernelShell`) больше не принимает ничего, что вызывающий мог бы
+ * подать этим типом отдельно от строк (Решение 2) — команды приходят
+ * строками `builtinRows`, тем же полем, что и прочие строки вызывающего.
  */
-export interface DefaultLoadOptions extends LoadOptions {
-  /** Встроенные команды: их вносит точка входа, ядро о них не знает. */
-  readonly builtinCommands?: readonly CommandContribution[];
-}
+export type DefaultLoadOptions = Omit<LoadOptions, 'declarativeFields'>;
 
 /**
  * Отказ: строка вызывающего повторяет `id` строки движка (`plugin-tree`,
@@ -59,13 +58,12 @@ function duplicateBuiltinRow(id: string): StepcastError {
 
 /** Ядро состава дефолта и опции обхода к нему — общая часть обеих обёрток ниже. */
 function defaultComposition(options: DefaultLoadOptions): { readonly kernel: Kernel; readonly options: LoadOptions } {
-  const { builtinCommands, ...rest } = options;
   const callerRows = options.builtinRows ?? [];
   const engineIds = new Set(BUILTIN_ROWS.map((row) => row.id));
   for (const row of callerRows) if (engineIds.has(row.id)) throw duplicateBuiltinRow(row.id);
   return {
-    kernel: createKernelShell(builtinCommands ?? []),
-    options: { ...rest, builtinRows: [...BUILTIN_ROWS, ...callerRows] },
+    kernel: createKernelShell(),
+    options: { ...options, builtinRows: [...BUILTIN_ROWS, ...callerRows], declarativeFields: DECLARATIVE_CONTRIBUTION_FIELDS },
   };
 }
 

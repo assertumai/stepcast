@@ -5,7 +5,9 @@ import { findProjectRoot, shortRunId } from '../../core/journal/paths.js';
 import { isRunAlive, readManifest, readStatus, resolveRun } from '../../core/journal/reader.js';
 import { writeDecisionRecord } from '../../core/journal/writer.js';
 import { expandPipeline } from '../../core/pipeline/expand.js';
+import type { PipelineCommandEnv } from '../../core/plugins/pipeline-contract.js';
 import { pipelineStepAddresses, selectAwaiting, validateDecision } from '../../core/run/decision.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import { formatDiagnostic } from './lint.js';
 import type { ParsedArgs } from '../args.js';
 
@@ -86,3 +88,27 @@ export async function runDecideCommand(
     return error.exitCode;
   }
 }
+
+/**
+ * Встроенная команда, а не вклад плагина (design.md изменения
+ * `user-decision-steps`, решение 10): команда читает состояние прогона и
+ * пишет в его каталог, а читатель журнала и его раскладка плагинам не
+ * опубликованы — публиковать их ради одной команды значило бы обещать
+ * плагинам формат журнала.
+ */
+export const row = commandRow<PipelineCommandEnv>(
+  {
+    name: 'decide',
+    spec: {
+      description: 'принять решение по ожиданию прогона: stepcast decide <run> <исход>',
+      positional: ['run', 'outcome'],
+      flags: {
+        step: { kind: 'string', description: 'адрес ожидающего шага (job или job/step) — обязателен при нескольких ожиданиях' },
+        reason: { kind: 'string', description: 'причина отклонения — обязательна для исхода с эффектом reject' },
+        from: { kind: 'string', description: 'точка перезапуска job[/step] — обязательна для исхода с эффектом restart' },
+      },
+    },
+    run: (args, io, env) => runDecideCommand(args, io.out, env.cwd, env.registry, env.config),
+  },
+  { inject: PIPELINE_SERVICES },
+);

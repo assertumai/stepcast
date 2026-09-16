@@ -3,8 +3,10 @@ import { resolveConfig } from '../../core/config/resolve.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { withTempDir } from '../../core/fs/tempDir.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
+import type { PipelineCommandEnv } from '../../core/plugins/pipeline-contract.js';
 import { resolveRun } from '../../core/journal/reader.js';
 import { describeComparison, diffRuns } from '../../core/run/diff.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 export function runDiffCommand(
@@ -44,3 +46,15 @@ export function runDiffCommand(
     }
   });
 }
+
+export const row = commandRow<PipelineCommandEnv>(
+  {
+    name: 'diff',
+    spec: {
+      description: 'сравнить два прогона по ключам шагов, промптам, контексту и деревьям',
+      positional: ['run-a', 'run-b'],
+    },
+    run: (args, io, env) => runDiffCommand(args, io.out, env.cwd),
+  },
+  { inject: PIPELINE_SERVICES },
+);

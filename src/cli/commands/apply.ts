@@ -3,6 +3,7 @@ import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.j
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { resolveRun } from '../../core/journal/reader.js';
 import { applyRun } from '../../core/run/apply.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 export function runApplyCommand(
@@ -41,3 +42,23 @@ export function runApplyCommand(
       return ExitCode.ok;
   }
 }
+
+export const row = commandRow(
+  {
+    name: 'apply',
+    spec: {
+      description: 'наложить результат изолированного прогона на текущее дерево',
+      positional: ['run'],
+      flags: {
+        job: { kind: 'string', description: 'наложить только результат этой работы' },
+        lane: { kind: 'string', description: 'наложить только результат этой дорожки, одним диффом' },
+        force: {
+          kind: 'boolean',
+          description: 'снять отказ в повторном наложении дорожки, чей записанный исход — «сведена»',
+        },
+      },
+    },
+    run: (args, io, env) => runApplyCommand(args, io.out, env.cwd),
+  },
+  { inject: PIPELINE_SERVICES },
+);

@@ -11,7 +11,9 @@ import { findProjectRoot } from '../../core/journal/paths.js';
 import { resolveRun } from '../../core/journal/reader.js';
 import { formatTokens } from '../../core/units.js';
 import { StepcastError, ExitCode, type ExitCodeValue } from '../../core/errors.js';
+import type { PipelineCommandEnv } from '../../core/plugins/pipeline-contract.js';
 import { formatColumns } from '../output.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 const LEVEL_LABEL: Record<Origin, string> = {
@@ -162,3 +164,20 @@ function readUpstreamOutputs(
 
   return { outputs, known: outputs.length > 0 };
 }
+
+export const row = commandRow<PipelineCommandEnv>(
+  {
+    name: 'context',
+    spec: {
+      description: 'показать состав и размер контекста шага без запуска пайплайна',
+      positional: ['pipeline'],
+      flags: {
+        job: { kind: 'string', description: 'работа, для которой считается контекст' },
+        step: { kind: 'string', description: 'шаг, для которого считается контекст' },
+        input: { kind: 'keyValue', description: 'значение входа пайплайна: --input имя=значение' },
+      },
+    },
+    run: (args, io, env) => runContextCommand(args, io.out, env.cwd, env.registry),
+  },
+  { inject: PIPELINE_SERVICES },
+);

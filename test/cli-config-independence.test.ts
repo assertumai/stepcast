@@ -4,12 +4,8 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import type { CliIo } from '../src/cli/args.js';
-import {
-  BUILTIN_COMMANDS,
-  CONFIG_INDEPENDENT_COMMANDS,
-  buildIndependentCommandEnv,
-  run as runCli,
-} from '../src/cli/main.js';
+import { buildIndependentCommandEnv, run as runCli } from '../src/cli/main.js';
+import { COMMAND_ROWS } from '../src/cli/rows.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
 import { makeProject, seedRun, withHome, type Project } from './helpers.js';
 
@@ -222,23 +218,17 @@ describe('config-error-breaks-every-command: зависимые команды �
   });
 });
 
-describe('config-error-breaks-every-command: граница покрывает весь состав BUILTIN_COMMANDS', () => {
-  it('перечень независимых состоит из имён встроенных команд', () => {
-    // Вторая сторона границы: опечатка в перечне не отказала бы ничем
-    // заметным — имя, которого нет среди встроенных, просто увело бы настоящую
-    // команду на зависимый путь молча.
-    const builtinNames = new Set(BUILTIN_COMMANDS.map((contribution) => contribution.name));
-
-    for (const name of CONFIG_INDEPENDENT_COMMANDS) {
-      assert.ok(builtinNames.has(name), `перечень называет невстроенную команду ${name}`);
-    }
-    assert.equal(CONFIG_INDEPENDENT_COMMANDS.size, 3);
+describe('config-error-breaks-every-command: граница выводится из объявлений строк (cli-commands-as-rows)', () => {
+  it('независимыми объявлены ровно data, down и init', () => {
+    // Единственный источник перечня — сами строки (design.md изменения
+    // `cli-commands-as-rows`, Решение 5): второго списка имён рядом с ними
+    // нет, и опечатка в объявлении строки была бы видна здесь же.
+    const independentNames = COMMAND_ROWS.filter((row) => row.independent).map((row) => row.command.name).sort();
+    assert.deepEqual(independentNames, ['data', 'down', 'init']);
   });
 
-  it('каждая встроенная команда вне перечня независимых отказывает при сломанной конфигурации', async () => {
-    const dependentNames = BUILTIN_COMMANDS.map((contribution) => contribution.name).filter(
-      (name) => !CONFIG_INDEPENDENT_COMMANDS.has(name),
-    );
+  it('каждая встроенная команда вне независимых строк отказывает при сломанной конфигурации', async () => {
+    const dependentNames = COMMAND_ROWS.filter((row) => !row.independent).map((row) => row.command.name);
     assert.ok(dependentNames.length > 0);
 
     for (const name of dependentNames) {
@@ -284,5 +274,74 @@ describe('config-error-breaks-every-command: команда перечня, об
         /down/.test(error.message) &&
         /независим/.test(error.message),
     );
+  });
+});
+
+/** Патч, отключающий одну названную строку. */
+function withDisabledRowPatch(project: Project, id: string): void {
+  mkdirSync(join(project.root, '.stepcast'), { recursive: true });
+  writeFileSync(
+    join(project.root, '.stepcast', 'plugins.patch.yml'),
+    `version: 1\nkind: plugins-patch\nplugins:\n  - id: ${id}\n    use: stepcast:${id}\n    enabled: false\n`,
+  );
+}
+
+// Задача 6.4 (`cli-commands-as-rows`, design.md Решение 6): состав не вправе
+// распорядиться строкой независимой команды — патч, отключивший её, не
+// действует так, как подействовал бы на любую другую строку. `resolveConfig`
+// возвращает строке встроенную идентичность и нанизывает на неё
+// `TreeRowFailure` вместо того, чтобы дать патчу снять её тихо.
+describe('cli-commands-as-rows: составу не принадлежит строка независимой команды', () => {
+  it('патч отключает строку command-init: зависимая команда отказывает названно, называя строку и то, что составу она не принадлежит', async () => {
+    const project = makeProject({});
+    withDisabledRowPatch(project, 'command-init');
+
+    const outcome = await cli(project, ['status']);
+
+    assert.equal(outcome.code, ExitCode.configError);
+    assert.match(outcome.stderr, /command-init/);
+    assert.match(outcome.stderr, /не распоряжается/);
+  });
+
+  it('сама независимая команда init при том же патче исполняется прежним образом и прежним кодом возврата', async () => {
+    const project = makeProject({});
+    withDisabledRowPatch(project, 'command-init');
+
+    const outcome = await cli(project, ['init']);
+
+    assert.equal(outcome.code, ExitCode.ok);
+    assert.ok(existsSync(project.path('stepcast.yml')));
+  });
+
+  it('stepcast plugins печатает дерево целиком, строка-виновница несёт причину', async () => {
+    const project = makeProject({});
+    withDisabledRowPatch(project, 'command-init');
+
+    const outcome = await cli(project, ['plugins']);
+
+    // Строка вернулась активной (Решение 6: `enabled: true`, а не тихо
+    // отключённой) и несёт названный отказ — тем же правилом, что и всякая
+    // другая явная строка, отказавшая при загрузке (`plugin-tree`, «Отказ
+    // загрузки не заслоняет дерево»): команда осмотра переживает его и
+    // печатает дерево целиком, но код возврата — ошибка конфигурации.
+    assert.equal(outcome.code, ExitCode.configError);
+    const line = outcome.stdout.split('\n').find((entry) => entry.includes('command-init'));
+    assert.match(line ?? '', /отказ:/);
+    assert.match(line ?? '', /не распоряжается/);
+  });
+
+  it('своя команда под другим именем заводится как обычно — независимость не мешает замене чужим именем', async () => {
+    const project = makeProject({
+      '.stepcast/config.yml': 'plugins: ["./plugins/hello.mjs"]\n',
+    });
+    project.write(
+      '.stepcast/plugins/hello.mjs',
+      "export default { name: 'hello-plugin', commands: [{ name: 'hello', spec: { description: 'привет' }, run: (args, io) => { io.out('привет'); return 0; } }] };\n",
+    );
+
+    const outcome = await cli(project, ['hello']);
+
+    assert.equal(outcome.code, ExitCode.ok);
+    assert.match(outcome.stdout, /привет/);
   });
 });

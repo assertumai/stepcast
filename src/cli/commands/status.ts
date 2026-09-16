@@ -11,6 +11,7 @@ import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
 import { knownLanes } from '../../core/lanes/lanes.js';
 import { mergedLanes, readLaneMerge, type LaneMergeRecord } from '../../core/lanes/mergeRecord.js';
 import { formatColumns } from '../output.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 const STATUS_LABEL: Record<string, string> = {
@@ -121,6 +122,24 @@ export function runStatusCommand(
 
   return status.status === 'failed' ? ExitCode.jobFailed : ExitCode.ok;
 }
+
+export const row = commandRow(
+  {
+    name: 'status',
+    spec: {
+      description: 'показать состояние прогона',
+      flags: {
+        run: { kind: 'string', description: 'идентификатор прогона, по умолчанию последний' },
+        explain: {
+          kind: 'boolean',
+          description: 'объяснить по каждому шагу, будет ли он переиспользован при возобновлении',
+        },
+      },
+    },
+    run: (args, io, env) => runStatusCommand(args, io.out, env.cwd),
+  },
+  { inject: PIPELINE_SERVICES },
+);
 
 function explainInvalidation(
   paths: RunPaths,

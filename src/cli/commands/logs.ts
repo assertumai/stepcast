@@ -5,6 +5,7 @@ import { resolveConfig } from '../../core/config/resolve.js';
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { findStepDir, follow, resolveRun } from '../../core/journal/reader.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -62,3 +63,18 @@ function stepLogFiles(paths: ReturnType<typeof resolveRun>, target: string): str
 
   return [join(dir, 'stdout.log'), join(dir, 'stderr.log')];
 }
+
+export const row = commandRow(
+  {
+    name: 'logs',
+    spec: {
+      description: 'показать логи прогона или шага',
+      positional: ['run', 'job/step'],
+      flags: {
+        follow: { kind: 'boolean', description: 'продолжать показывать вывод по мере записи' },
+      },
+    },
+    run: (args, io, env) => runLogsCommand(args, io.out, env.cwd),
+  },
+  { inject: PIPELINE_SERVICES },
+);

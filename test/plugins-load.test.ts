@@ -5,7 +5,12 @@ import { describe, it } from 'node:test';
 
 import { resolveConfig } from '../src/core/config/resolve.js';
 import { ExitCode, StepcastError } from '../src/core/errors.js';
-import { DECLARATIVE_CONTRIBUTION_FIELDS, StepcastPluginSchema } from '../src/core/plugins/pipeline-contract.js';
+import {
+  DECLARATIVE_CONTRIBUTION_FIELDS,
+  StepcastPluginSchema,
+  type DeclarativeContributionFields,
+  type PipelinePlugin,
+} from '../src/core/plugins/pipeline-contract.js';
 import { toContextPlugin } from '../src/core/plugins/load.js';
 import { declaredServices } from '../src/core/plugins/services.js';
 import { createKernelShell } from '../src/parts/builtin.js';
@@ -177,9 +182,9 @@ describe('plugins-load: адаптер декларативной формы о�
    * сервис предикатов, а плагин с бэкендом обязан называть его зависимостью.
    */
   it('называет ровно те служебные сервисы, в которые плагин вносит вклад', () => {
-    assert.deepEqual(toContextPlugin({ name: 'пустой' }).inject, []);
+    assert.deepEqual(toContextPlugin({ name: 'пустой' }, DECLARATIVE_CONTRIBUTION_FIELDS).inject, []);
     assert.deepEqual(
-      toContextPlugin({ name: 'бэкендный', backends: { own: { create: () => ({}) as never } } }).inject,
+      toContextPlugin({ name: 'бэкендный', backends: { own: { create: () => ({}) as never } } }, DECLARATIVE_CONTRIBUTION_FIELDS).inject,
       ['backends'],
     );
     assert.deepEqual(
@@ -187,13 +192,13 @@ describe('plugins-load: адаптер декларативной формы о�
         name: 'оба',
         backends: { own: { create: () => ({}) as never } },
         steps: [{ name: 'own', title: 'Свой', fields: {}, execute: () => ({}) as never }],
-      }).inject,
+      }, DECLARATIVE_CONTRIBUTION_FIELDS).inject,
       ['backends', 'steps'],
     );
   });
 
   it('пустой перечень вкладов зависимостью не считается', () => {
-    assert.deepEqual(toContextPlugin({ name: 'пустые перечни', backends: {}, predicates: [], commands: [], steps: [] }).inject, []);
+    assert.deepEqual(toContextPlugin({ name: 'пустые перечни', backends: {}, predicates: [], commands: [], steps: [] }, DECLARATIVE_CONTRIBUTION_FIELDS).inject, []);
   });
 
   /**
@@ -222,8 +227,78 @@ describe('plugins-load: адаптер декларативной формы о�
         predicates: [{ name: 'own_p', schema: {}, evaluate: () => ({ predicate: 'own_p', passed: true, hard: true }) }],
         commands: [{ name: 'own-cmd', spec: { description: 'своя' }, run: () => ExitCode.ok }],
         steps: [{ name: 'own', title: 'Свой', fields: {}, execute: () => ({}) as never }],
-      }).inject,
+      }, DECLARATIVE_CONTRIBUTION_FIELDS).inject,
       services,
+    );
+  });
+
+  // Задача 7.3 (`cli-commands-as-rows`, design.md Решение 11): таблица —
+  // параметр сборки, и обход своей таблицы не несёт. Ключ, который плагин
+  // объявил непустым, а поданная таблица не называет, обязан отказать по
+  // имени — молчаливый пропуск превратил бы опечатку состава в тихую потерю
+  // вклада, а не в ответ, который можно заметить.
+  it('ключ декларативной формы, которого поданная таблица не называет, отказывает, называя ключ и плагин', () => {
+    // Убрана деструктуризацией с остатком, а не присвоением `undefined`:
+    // таблица типа `Partial<…>`, и ключ, которого она не называет, обязан
+    // отсутствовать, а не значить `undefined` явно (`exactOptionalPropertyTypes`).
+    const { predicates: _predicates, ...withoutPredicates } = DECLARATIVE_CONTRIBUTION_FIELDS;
+
+    assert.throws(
+      () =>
+        toContextPlugin(
+          {
+            name: 'без-предикатов-в-таблице',
+            predicates: [{ name: 'own_p', schema: {}, evaluate: () => ({ predicate: 'own_p', passed: true, hard: true }) }],
+          },
+          withoutPredicates,
+        ),
+      (error: unknown) =>
+        error instanceof StepcastError &&
+        /без-предикатов-в-таблице/.test(error.message) &&
+        /predicates/.test(error.message),
+    );
+  });
+
+  /**
+   * Находка ревью: требование дельты `plugin-kernel` — загрузчик собственного
+   * перечня ключей формы не несёт. Регистрация обязана идти по ключам
+   * поданной таблицы, а перечень, выведенный от схемы, — служить одной только
+   * проверке на неизвестный ключ. Ключ, которого в схеме нет, сегодня не
+   * пройдёт типом (`DeclarativeContributionFields` замкнут на четыре имени) —
+   * отсюда приведение: проверяется именно то, чем обход ходит, а не то, что
+   * разрешает тип.
+   */
+  it('регистрация идёт по ключам поданной таблицы, а не по перечню, выведенному от схемы', () => {
+    const withExtraKey = {
+      ...DECLARATIVE_CONTRIBUTION_FIELDS,
+      widgets: {
+        service: 'widgets',
+        entries: (plugin: PipelinePlugin) =>
+          ((plugin as unknown as { widgets?: readonly string[] }).widgets ?? []).map((name) => ({
+            name,
+            contribution: { name },
+          })),
+      },
+    } as DeclarativeContributionFields;
+
+    const plugin = { name: 'с-чужим-ключом', widgets: ['часы'] } as unknown as PipelinePlugin;
+
+    assert.deepEqual(toContextPlugin(plugin, withExtraKey).inject, ['widgets']);
+  });
+
+  // Обратная сторона: ключ, объявленный плагином пустым (или не объявленный
+  // вовсе), не отказывает, даже если таблица его не называет, — то же
+  // молчание, каким `.loose()` уже встречает лишний ключ схемы.
+  it('пустой либо необъявленный ключ таблицей может не называться — это не отказ', () => {
+    const { predicates: _predicates, ...withoutPredicates } = DECLARATIVE_CONTRIBUTION_FIELDS;
+
+    assert.deepEqual(
+      toContextPlugin({ name: 'без-упоминания-предикатов' }, withoutPredicates).inject,
+      [],
+    );
+    assert.deepEqual(
+      toContextPlugin({ name: 'с-пустыми-предикатами', predicates: [] }, withoutPredicates).inject,
+      [],
     );
   });
 });

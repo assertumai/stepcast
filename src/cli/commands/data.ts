@@ -5,6 +5,7 @@ import {
   type JobData,
 } from '../../core/journal/data.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
+import { commandRow } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -149,3 +150,27 @@ function runGet(
   write(value);
   return ExitCode.ok;
 }
+
+/**
+ * Независима от конфигурации (design.md изменения `cli-commands-as-rows`,
+ * Решение 4): целевая работа выводится из `STEPCAST_JOB_DIR`, и ни
+ * конфигурация, ни реестр вкладов команде не нужны.
+ */
+export const row = commandRow(
+  {
+    name: 'data',
+    spec: {
+      description:
+        'опубликовать данные работы, видимые в витрине и подстановкой ${jobs.<работа>.data.<ключ>}: set|merge|get',
+      positional: ['action', 'key', 'value'],
+      flags: {
+        json: {
+          kind: 'string',
+          description: 'merge: объект вида {"ключ": "значение"}, дописываемый поверх опубликованного',
+        },
+      },
+    },
+    run: (args, io) => runDataCommand(args, io.out),
+  },
+  { independent: true },
+);

@@ -10,6 +10,7 @@ import { KnowledgeWriteRequestSchema, type KnowledgeSource } from '../../core/kn
 import { mergeJobData } from '../../core/journal/data.js';
 import type { KnowledgeDeclaration } from '../../core/pipeline/model.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -283,3 +284,32 @@ function runWrite(
 
   return ok ? ExitCode.ok : ExitCode.jobFailed;
 }
+
+export const row = commandRow(
+  {
+    name: 'knowledge',
+    spec: {
+      description: 'читать и проверять память репозитория: index|select|check|write, см. docs/knowledge.md',
+      positional: ['action'],
+      flags: {
+        scope: { kind: 'string', description: 'select: области через запятую — src/**,test/**' },
+        id: { kind: 'string', description: 'select: идентификаторы через запятую' },
+        file: { kind: 'string', description: 'write: файл с описанием единицы знания' },
+        stdin: { kind: 'boolean', description: 'write: читать описание со стандартного ввода' },
+        json: { kind: 'boolean', description: 'вывести ответ источника как есть, машинным JSON' },
+        publish: {
+          kind: 'string',
+          description:
+            'check: опубликовать данными работы ключом true/false — есть ли среди нарушений index-overflow; только внутри шага прогона',
+        },
+        record: {
+          kind: 'boolean',
+          description:
+            'check: датировать обнаруженные расхождения по якорям — без этого ключа check дерева не правит',
+        },
+      },
+    },
+    run: (args, io, env) => runKnowledgeCommand(args, io.out, env.cwd),
+  },
+  { inject: PIPELINE_SERVICES },
+);

@@ -4,6 +4,8 @@ import { resolveConfig, type Config } from '../../core/config/resolve.js';
 import type { Registry } from '../../core/plugins/registry.js';
 import { ExitCode, isStepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { resolvePipelineTarget } from '../../core/package-schema.js';
+import type { PipelineCommandEnv } from '../../core/plugins/pipeline-contract.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 export function formatDiagnostic(diagnostic: Diagnostic): string[] {
@@ -76,3 +78,18 @@ export function runLintCommand(
   write(warnings === 0 ? `ok: ${target}` : `ok: ${target} (предупреждений ${warnings})`);
   return ExitCode.ok;
 }
+
+export const row = commandRow<PipelineCommandEnv>(
+  {
+    name: 'lint',
+    spec: {
+      description: 'статически проверить пайплайн, ничего не запуская',
+      positional: ['pipeline'],
+      flags: {
+        input: { kind: 'keyValue', description: 'значение входа пайплайна: --input имя=значение' },
+      },
+    },
+    run: (args, io, env) => runLintCommand(args, io.out, env.cwd, env.registry, env.config),
+  },
+  { inject: PIPELINE_SERVICES },
+);

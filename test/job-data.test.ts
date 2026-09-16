@@ -4,9 +4,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { runDataCommand } from '../src/cli/commands/data.js';
+import { row as dataRow, runDataCommand } from '../src/cli/commands/data.js';
 import { parseArgs } from '../src/cli/args.js';
-import { COMMANDS } from '../src/cli/main.js';
+import type { CommandSpec } from '../src/core/plugins/cli-types.js';
+
+/** Описание аргументов команды `data` — из её собственного модуля (`cli-commands-as-rows`), не из общего литерала. */
+const DATA_COMMANDS: Record<string, CommandSpec> = { data: dataRow.command.spec };
 import { StepcastError } from '../src/core/errors.js';
 import { readJobData, writeJobDataUnchecked, jobDataPath } from '../src/core/journal/data.js';
 import { readStatus } from '../src/core/journal/reader.js';
@@ -54,7 +57,7 @@ function data(
 ): { readonly lines: string[] } {
   const lines: string[] = [];
   runDataCommand(
-    parseArgs(['data', ...argv], COMMANDS),
+    parseArgs(['data', ...argv], DATA_COMMANDS),
     (line) => lines.push(line),
     dir === undefined ? {} : { STEPCAST_JOB_DIR: dir },
   );
@@ -217,7 +220,7 @@ describe('job-display-data: команда stepcast data', () => {
   });
 
   it('не принимает путей вовсе — целевая работа только из окружения', () => {
-    assert.throws(() => parseArgs(['data', 'set', 'k', 'v', '--job-dir', '/tmp'], COMMANDS));
+    assert.throws(() => parseArgs(['data', 'set', 'k', 'v', '--job-dir', '/tmp'], DATA_COMMANDS));
   });
 
   it('отклоняет ключ с точкой: пространство подстановки одноуровневое', () => {

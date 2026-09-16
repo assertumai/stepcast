@@ -12,6 +12,7 @@ import {
   writeRecord,
 } from '../../ui/daemon.js';
 import { createUiServer } from '../../ui/server.js';
+import { commandRow } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 /** Точка входа CLI: её же демон запускает сам себя в фоне с --foreground. */
@@ -71,3 +72,17 @@ export async function runUpCommand(
   write('остановить: stepcast down');
   return ExitCode.ok;
 }
+
+export const row = commandRow({
+  name: 'up',
+  spec: {
+    description: 'поднять витрину: наблюдение за всеми прогонами в браузере',
+    flags: {
+      foreground: {
+        kind: 'boolean',
+        description: 'держать сервер в текущем терминале, не отсоединяя его',
+      },
+    },
+  },
+  run: (args, io, env) => runUpCommand(args, io.out, env.cwd),
+});

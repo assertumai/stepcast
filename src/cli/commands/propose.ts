@@ -5,8 +5,10 @@ import { resolveConfig } from '../../core/config/resolve.js';
 import { ExitCode, isStepcastError, StepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { findProjectRoot, runPaths } from '../../core/journal/paths.js';
 import { readManifest } from '../../core/journal/reader.js';
+import type { PipelineCommandEnv } from '../../core/plugins/pipeline-contract.js';
 import type { ProposalOrigin } from '../../core/proposals/entry.js';
 import { proposeEntry, writeProposalTargetDirect } from '../../core/proposals/store.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import { formatDiagnostic } from './lint.js';
 import type { ParsedArgs } from '../args.js';
 
@@ -130,3 +132,27 @@ export async function runProposeCommand(
     return error.exitCode;
   }
 }
+
+/**
+ * Встроенная команда, тем же приёмом, что `decide` (`ui-proposals`,
+ * design.md изменения `agent-edits-widgets`, Решение 2): единственный
+ * писатель очереди читает `STEPCAST_RUN_DIR`/`STEPCAST_JOB`/`STEPCAST_STEP`
+ * из окружения шага напрямую, публиковать их плагинам ради одной команды
+ * незачем.
+ */
+export const row = commandRow<PipelineCommandEnv>(
+  {
+    name: 'propose',
+    spec: {
+      description:
+        'предложить правку файла кабинета проекта: stepcast propose <цель> --from <файл> — единственный писатель очереди',
+      positional: ['target'],
+      flags: {
+        from: { kind: 'string', description: 'файл с содержимым предложения — без него читается стандартный ввод' },
+        reason: { kind: 'string', description: 'причина предложения, необязательна' },
+      },
+    },
+    run: (args, io) => runProposeCommand(args, io.out, io.cwd, io.readStdin),
+  },
+  { inject: PIPELINE_SERVICES },
+);

@@ -5,6 +5,7 @@ import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.j
 import { findProjectRoot } from '../../core/journal/paths.js';
 import { readManifest, resolveRun } from '../../core/journal/reader.js';
 import { mergeLanes, type LaneMergeResult } from '../../core/lanes/merge.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -137,3 +138,20 @@ export async function runMergeLanesCommand(
   );
   return stoppedOrRolledBack ? ExitCode.jobFailed : ExitCode.ok;
 }
+
+export const row = commandRow(
+  {
+    name: 'merge-lanes',
+    spec: {
+      description: 'свести названные дорожки прогона в дерево запуска: наложить, проверить, закоммитить зелёную',
+      positional: ['run'],
+      flags: {
+        lanes: { kind: 'string', description: 'перечень дорожек через запятую, обязателен' },
+        check: { kind: 'string', description: 'команда проверки объединённого дерева, обязателен' },
+        file: { kind: 'string', description: 'путь к файлу очереди, по умолчанию backlog.md в рабочем каталоге' },
+      },
+    },
+    run: (args, io, env) => runMergeLanesCommand(args, io.out, env.cwd),
+  },
+  { inject: PIPELINE_SERVICES },
+);

@@ -546,23 +546,34 @@ export interface DeclarativeContributionEntry {
 }
 
 /**
- * Ключ декларативной формы → служебный сервис → как достать из него имя
- * вклада (design.md изменения `pipeline-owns-services`, Решение 10). Живёт
- * рядом со `StepcastPluginSchema`, чьи ключи описывает: загрузчик
- * (`toContextPlugin`, `core/plugins/load.ts`) идёт по этой таблице и только
- * по ней — и регистрирует вклады, и объявляет `inject`, — а не по двум
- * независимым перечням имён в своём теле. Ключ, которого таблица не знает,
- * остаётся полем объекта плагина, ни к какой регистрации не приводящим: то
- * же самое молчание, каким `.loose()` уже встречает лишний ключ схемы.
+ * Форма таблицы `DECLARATIVE_CONTRIBUTION_FIELDS` — именованный тип для
+ * параметра сборки (design.md изменения `cli-commands-as-rows`, Решение 11):
+ * загрузчик (`toContextPlugin`, `core/plugins/load.ts`) больше не импортирует
+ * эту таблицу значением, а получает её опцией обхода (`LoadOptions.declarativeFields`,
+ * подаётся составом дефолта, `src/parts/load.ts`) — этим типом.
  */
-export const DECLARATIVE_CONTRIBUTION_FIELDS: {
-  readonly [K in 'backends' | 'predicates' | 'commands' | 'steps']: {
+export type DeclarativeContributionFields = {
+  readonly [K in 'backends' | 'predicates' | 'commands' | 'steps']?: {
     /** Имя сервиса, в который идёт этот ключ формы. */
     readonly service: string;
     /** Вклады ключа, приведённые к паре «имя, значение» — пусто, если плагин ключ не объявил или объявил его пустым. */
     entries(plugin: PipelinePlugin): readonly DeclarativeContributionEntry[];
   };
-} = {
+};
+
+/**
+ * Ключ декларативной формы → служебный сервис → как достать из него имя
+ * вклада (design.md изменения `pipeline-owns-services`, Решение 10). Живёт
+ * рядом со `StepcastPluginSchema`, чьи ключи описывает: загрузчик
+ * (`toContextPlugin`, `core/plugins/load.ts`) идёт по поданной ему таблице
+ * этой же формы и только по ней — и регистрирует вклады, и объявляет
+ * `inject`, — а не по двум независимым перечням имён в своём теле. Ключ,
+ * которого таблица не знает, остаётся полем объекта плагина, ни к какой
+ * регистрации не приводящим: то же самое молчание, каким `.loose()` уже
+ * встречает лишний ключ схемы. Сама таблица — единственный экземпляр этой
+ * формы, подаваемый составом дефолта (`src/parts/load.ts`) целиком.
+ */
+export const DECLARATIVE_CONTRIBUTION_FIELDS: DeclarativeContributionFields = {
   backends: {
     service: 'backends',
     entries: (plugin) =>

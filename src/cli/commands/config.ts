@@ -1,7 +1,9 @@
 import { describeSource, resolveConfig, type ResolvedConfig } from '../../core/index.js';
 import { formatDuration, formatMoney, formatTokens } from '../../core/units.js';
 import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
+import type { PipelineCommandEnv } from '../../core/plugins/pipeline-contract.js';
 import { formatColumns } from '../output.js';
+import { commandRow } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 import { contributionOwner, type Registry } from '../../core/plugins/registry.js';
 
@@ -208,3 +210,15 @@ function pluginDefaultsOf(registry: Registry | undefined): {
   });
   return layers.length === 0 ? {} : { pluginDefaults: layers };
 }
+
+export const row = commandRow<PipelineCommandEnv>({
+  name: 'config',
+  spec: {
+    description: 'показать действующую конфигурацию и происхождение каждого значения',
+    flags: {
+      model: { kind: 'string', description: 'переопределить модель по умолчанию' },
+      agent: { kind: 'string', description: 'переопределить бэкенд по умолчанию' },
+    },
+  },
+  run: (args, io, env) => runConfigCommand(args, io.out, env.cwd, env.registry),
+});

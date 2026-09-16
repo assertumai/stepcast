@@ -14,11 +14,14 @@ import {
 } from '../../core/plugins/introspect.js';
 import type { Kernel } from '../../core/plugins/kernel.js';
 import { rowFailureError, type RowOutcome } from '../../core/plugins/load.js';
+import type { PipelineCommandEnv } from '../../core/plugins/pipeline-contract.js';
+import { kernelFromRegistry } from '../../core/plugins/registry.js';
 import type { TreeRow, TreeRowSource } from '../../core/plugins/tree.js';
 import { inspectPluginTree, type DefaultLoadOptions } from '../../parts/load.js';
 import { daemonPaths, runningDaemon } from '../../ui/daemon.js';
 import type { CliIo, ParsedArgs } from '../args.js';
 import { formatColumns } from '../output.js';
+import { commandRow } from '../commandRow.js';
 
 /**
  * Команда осмотра дерева плагинов (`plugin-tree`, `plugin-introspection`,
@@ -272,3 +275,38 @@ export async function runPluginsCommandAfterLoadFailure(
   }
   return ExitCode.configError;
 }
+
+export const row = commandRow<PipelineCommandEnv>({
+  name: 'plugins',
+  spec: {
+    description: 'печатать осмотр дерева плагинов: место, id, слой, модуль, состояние, сервисы и вклады',
+    flags: {
+      dump: {
+        kind: 'boolean',
+        description: 'то же самое — флаг ради совместимости, поведение команды от него не зависит',
+      },
+      json: {
+        kind: 'boolean',
+        description: 'печатать ту же модель осмотра машинным JSON, без единой строки сверх',
+      },
+    },
+  },
+  run: (args, io, env) =>
+    runPluginsCommand(
+      args,
+      io,
+      // Точка входа всегда загружает плагины заново для этой команды — итоги
+      // определены. `undefined` остаётся на случай вызова с кешированным
+      // реестром (`resolveWithPlugins`, вариант `registry`): тогда состояние
+      // строки выводится из неё самой — заведомый отказ (`TreeRow.failure`)
+      // со своей причиной, иначе `enabled`, как и до появления каталогов.
+      env.pluginOutcomes ?? env.pluginTree.map((treeRow) => outcomeWithoutLoad(treeRow)),
+      kernelFromRegistry(env.registry),
+      // Выведенный из строк итог областей не несёт, и вклады с сервисами по
+      // строкам не раскладываются. Это названная причина, а не пустые
+      // перечни: ядро живо, а приписывать его вклады строкам по совпадению
+      // имён осмотр не вправе (`plugin-introspection`, «Неизвестное осмотру
+      // называется причиной, а не пустотой»).
+      env.pluginOutcomes === undefined ? CACHED_REGISTRY_ATTRIBUTION : { available: true },
+    ),
+});

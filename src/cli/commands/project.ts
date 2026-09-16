@@ -7,6 +7,7 @@ import { findProjectRoot } from '../../core/journal/paths.js';
 import { describeSchemaFailure } from '../../core/pipeline/load.js';
 import { BacklogSlotsResponseSchema, type BacklogSlotsResponse } from '../../core/backlog/schema.js';
 import { resolveItemRepo } from '../../core/project/repos.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -119,3 +120,22 @@ export async function runProjectCommand(
   write(JSON.stringify({ lanes }, null, 2));
   return ExitCode.ok;
 }
+
+export const row = commandRow(
+  {
+    name: 'project',
+    spec: {
+      description:
+        'repos: дополнить документ дорожек (backlog pick --lanes) объявлениями репозиториев конфигурации',
+      positional: ['action'],
+      flags: {
+        file: {
+          kind: 'string',
+          description: 'repos: файл с документом дорожек вместо стандартного ввода',
+        },
+      },
+    },
+    run: (args, io, env) => runProjectCommand(args, io.out, env.cwd, io.readStdin),
+  },
+  { inject: PIPELINE_SERVICES },
+);

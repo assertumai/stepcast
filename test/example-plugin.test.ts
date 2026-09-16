@@ -13,6 +13,7 @@ import {
   pluginStepKindEntries,
 } from '../src/core/pipeline/published-schema.js';
 import type { PipelinePlugin, PredicateContribution, StepKindContribution } from '../src/core/plugins/pipeline-contract.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import { createPipelineKernel } from './helpers.js';
@@ -72,7 +73,7 @@ function onlyStepKind(plugin: PipelinePlugin): StepKindContribution {
 /** Реестр с одним применённым образцом — тем же путём, каким его применяет загрузка. */
 async function exampleRegistry(): Promise<Registry> {
   const kernel = createPipelineKernel();
-  await applyDeclarativePlugin(kernel, await loadExample(), '<examples/plugins/typed>');
+  await applyDeclarativePlugin(kernel, await loadExample(), '<examples/plugins/typed>', DECLARATIVE_CONTRIBUTION_FIELDS);
   return registryFromKernel(kernel);
 }
 

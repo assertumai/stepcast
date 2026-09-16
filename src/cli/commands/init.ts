@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { StepcastError, ExitCode, type ExitCodeValue } from '../../core/errors.js';
+import { commandRow } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -217,3 +218,27 @@ function initKnowledge(cwd: string, force: boolean, write: (line: string) => voi
   write(`создан ${samplePath}`);
   return ExitCode.ok;
 }
+
+/**
+ * Независима от конфигурации (design.md изменения `cli-commands-as-rows`,
+ * Решение 4): исполняется раньше, чем состав существует, и потребителем
+ * того, чего ещё нет, быть не может, — доменна по содержанию (заготовка
+ * пайплайна), но граница проводится по порядку, а не по домену.
+ */
+export const row = commandRow(
+  {
+    name: 'init',
+    spec: {
+      description: 'создать stepcast.yml и пример работы в текущем каталоге',
+      flags: {
+        force: { kind: 'boolean', description: 'перезаписать существующий stepcast.yml' },
+        knowledge: {
+          kind: 'string',
+          description: 'развернуть практику памяти вместо пайплайна: fs — встроенный источник',
+        },
+      },
+    },
+    run: (args, io, env) => runInitCommand(args, io.out, env.cwd),
+  },
+  { independent: true },
+);

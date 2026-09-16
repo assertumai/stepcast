@@ -5,6 +5,7 @@ import { findProjectRoot } from '../../core/journal/paths.js';
 import { SHARED_MODULE_TABLE_VERSION } from '../../ui/sharedModules.js';
 import { listProjectWidgetIds, resolveWidgetFile } from '../../ui/widgets.js';
 import { parseWidgetImports, unresolvedSharedNames } from '../../ui/widgetImports.js';
+import { commandRow } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -84,3 +85,16 @@ export function runWidgetsCommand(args: ParsedArgs, write: (line: string) => voi
   write(`версия таблицы общих модулей: ${SHARED_MODULE_TABLE_VERSION}`);
   return ExitCode.ok;
 }
+
+export const row = commandRow(
+  {
+    name: 'widgets',
+    spec: {
+      description: 'печатать состав виджетов проекта: имя, файл, голые импорты и неразрешимые по действующей таблице',
+      flags: {
+        json: { kind: 'boolean', description: 'печатать тот же состав машинным JSON' },
+      },
+    },
+    run: (args, io, env) => runWidgetsCommand(args, io.out, env.cwd),
+  },
+);

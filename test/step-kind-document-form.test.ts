@@ -13,6 +13,7 @@ import { pipelineContext } from '../src/parts/pipeline/surface.js';
 import { applyContextPlugin, applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, stepKindNames, type Registry } from '../src/core/plugins/registry.js';
 import type { StepKindContribution } from '../src/core/plugins/pipeline-contract.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { buildPipelines } from '../src/ui/pipelines.js';
 import { resolveConfig } from '../src/core/config/resolve.js';
@@ -59,6 +60,7 @@ async function documentStepKindRegistry(overrides: Partial<StepKindContribution>
     kernel,
     { name: 'deploy-steps', version: '1.0.0', steps: [fakeDocumentStepKind(overrides)] },
     '/модуль/deploy-steps.js',
+    DECLARATIVE_CONTRIBUTION_FIELDS,
   );
   return registry;
 }

@@ -23,6 +23,7 @@ import { runPipeline } from '../src/core/run/runner.js';
 import { resolveAdapter } from '../src/core/backend/registry.js';
 import { builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
 import { registryFromKernel } from '../src/core/plugins/registry.js';
 import { readEvents, readStatus } from '../src/core/journal/reader.js';
 import { StepcastError } from '../src/core/errors.js';
@@ -351,6 +352,7 @@ jobs:
         },
       },
       '/м.js',
+      DECLARATIVE_CONTRIBUTION_FIELDS,
     );
     const config = withCodex(project.config);
 
@@ -416,6 +418,7 @@ jobs:
       kernel,
       { name: 'codex-adapter', backends: { codex: { create: () => adapter } } },
       '/м.js',
+      DECLARATIVE_CONTRIBUTION_FIELDS,
     );
 
     assert.throws(

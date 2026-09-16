@@ -13,6 +13,7 @@ import {
 import { builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
 import { BUILTIN_ROWS } from '../src/parts/rows.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
 import {
   nativePredicateNames,
   nativeStepKindNames,
@@ -623,6 +624,7 @@ describe('published-schema: ветвь вида шага', () => {
         ],
       },
       '<synthetic>',
+      DECLARATIVE_CONTRIBUTION_FIELDS,
     );
 
     const { job, pipeline } = buildPublishedSchemas(pluginPredicateEntries(registry), pluginStepKindEntries(registry));
@@ -741,6 +743,7 @@ describe('published-schema: состав предикатов', () => {
         ],
       },
       '<synthetic>',
+      DECLARATIVE_CONTRIBUTION_FIELDS,
     );
 
     const schemas = schemasFor(registry);

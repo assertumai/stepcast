@@ -1,10 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { Service, type Context, type Fiber } from 'cordis';
+import { Service, type Context } from 'cordis';
 
 import type { Config } from '../../core/config/resolve.js';
 import { StepcastError } from '../../core/errors.js';
-import { rowScope, type BuiltinRow } from '../../core/plugins/load.js';
+import { isBuiltinRowFiber, rowScope, type BuiltinRow } from '../../core/plugins/load.js';
 import type { Kernel } from '../../core/plugins/kernel.js';
 import type { KernelCache } from '../pipelines.js';
 import type { PluginsOverview } from '../plugins.js';
@@ -109,15 +109,6 @@ interface ScreenEntry extends ActiveScreen {
   readonly owner: string;
 }
 
-/**
- * Области, заведённые строками поставки витрины (`screenRow` ниже). Модульное
- * множество, не поле сервиса и не параметр `register`: признак происхождения
- * обязан быть неподделываемым — чужой модуль вправе назваться как угодно и
- * назвать себя встроенным, но дотянуться до этого множества ему нечем.
- * Область помечается изнутри применения самой строки, до первой регистрации.
- */
-const builtinFibers = new WeakSet<Fiber>();
-
 /** Сервис `screens`: объявления экранов действующего состава. */
 export class ScreensService extends Service {
   private readonly entries = new Map<string, ScreenEntry>();
@@ -150,7 +141,7 @@ export class ScreensService extends Service {
         },
       );
     }
-    const builtin = builtinFibers.has(this.ctx.fiber);
+    const builtin = isBuiltinRowFiber(this.ctx.fiber);
     return this.ctx.effect(() => {
       this.entries.set(declaration.id, { declaration, owner, builtin });
       return () => {
@@ -262,15 +253,11 @@ export function screenRow(id: string, inject: readonly string[], apply: (ctx: Co
       // Область строки — не окно применения (`BuiltinRow.apply`, design.md
       // `plugin-introspection`, Решение 2, первое правило): осмотр приписывает
       // её вклады этой строке напрямую, по фиберу, а не по тому, что появилось
-      // на корне за время вызова.
-      return rowScope(kernel, id, inject, (ctx) => {
-        // Пометка происхождения — первым делом применения, до любой
-        // регистрации: `ctx.fiber` здесь и есть область строки, и по ней
-        // `ScreensService.register` отличает строку поставки от чужого модуля
-        // (см. `builtinFibers` выше).
-        builtinFibers.add(ctx.fiber);
-        apply(ctx);
-      });
+      // на корне за время вызова. Пометка происхождения ставится самим
+      // `rowScope` (design.md изменения `cli-commands-as-rows`, Решение 7) —
+      // `ctx.fiber` здесь и есть область строки, и по ней `ScreensService.register`
+      // отличает строку поставки от чужого модуля.
+      return rowScope(kernel, id, inject, apply);
     },
   };
 }

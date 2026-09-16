@@ -16,6 +16,7 @@ import type { ContributionService } from '../src/core/plugins/kernel.js';
 import { applyContextPlugin, applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, stepKindNames, type Registry } from '../src/core/plugins/registry.js';
 import type { StepKindContribution, StepKindInput } from '../src/core/plugins/pipeline-contract.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
 import { lintPipeline } from '../src/core/lint.js';
 import { resolveConfig } from '../src/core/config/resolve.js';
 import { projectKey, runPaths } from '../src/core/journal/paths.js';
@@ -51,7 +52,7 @@ function fakeStepKind(overrides: Partial<StepKindContribution> = {}): StepKindCo
 async function stepKindRegistry(overrides: Partial<StepKindContribution> = {}): Promise<Registry> {
   const kernel = createBuiltinKernel();
   const registry = registryFromKernel(kernel);
-  await applyDeclarativePlugin(kernel, { name: 'example-steps', version: '1.0.0', steps: [fakeStepKind(overrides)] }, '/модуль/example-steps.js');
+  await applyDeclarativePlugin(kernel, { name: 'example-steps', version: '1.0.0', steps: [fakeStepKind(overrides)] }, '/модуль/example-steps.js', DECLARATIVE_CONTRIBUTION_FIELDS);
   return registry;
 }
 
@@ -115,9 +116,9 @@ describe('step-kinds-registry: реестр видов шага', () => {
 
   it('конфликт двух плагинов на одно имя вида — отказ называет обоих', async () => {
     const kernel = createBuiltinKernel();
-    await applyDeclarativePlugin(kernel, { name: 'first', steps: [fakeStepKind()] }, '<first>');
+    await applyDeclarativePlugin(kernel, { name: 'first', steps: [fakeStepKind()] }, '<first>', DECLARATIVE_CONTRIBUTION_FIELDS);
     await assert.rejects(
-      () => applyDeclarativePlugin(kernel, { name: 'second', steps: [fakeStepKind()] }, '<second>'),
+      () => applyDeclarativePlugin(kernel, { name: 'second', steps: [fakeStepKind()] }, '<second>', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /first/);
@@ -130,7 +131,7 @@ describe('step-kinds-registry: реестр видов шага', () => {
   it('плагин не занимает имя встроенного вида', async () => {
     const kernel = createBuiltinKernel();
     await assert.rejects(
-      () => applyDeclarativePlugin(kernel, { name: 'greedy', steps: [fakeStepKind({ name: 'run' })] }, '<synthetic>'),
+      () => applyDeclarativePlugin(kernel, { name: 'greedy', steps: [fakeStepKind({ name: 'run' })] }, '<synthetic>', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /run/);
@@ -143,7 +144,7 @@ describe('step-kinds-registry: реестр видов шага', () => {
   it('имя вида шага не вправе совпасть с ключом общей части', async () => {
     const kernel = createBuiltinKernel();
     await assert.rejects(
-      () => applyDeclarativePlugin(kernel, { name: 'greedy', steps: [fakeStepKind({ name: 'expect' })] }, '<synthetic>'),
+      () => applyDeclarativePlugin(kernel, { name: 'greedy', steps: [fakeStepKind({ name: 'expect' })] }, '<synthetic>', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /expect/);
@@ -156,7 +157,7 @@ describe('step-kinds-registry: реестр видов шага', () => {
   it('имя вида шага не вправе совпасть с ключом встроенного вида (prompt)', async () => {
     const kernel = createBuiltinKernel();
     await assert.rejects(
-      () => applyDeclarativePlugin(kernel, { name: 'greedy', steps: [fakeStepKind({ name: 'prompt' })] }, '<synthetic>'),
+      () => applyDeclarativePlugin(kernel, { name: 'greedy', steps: [fakeStepKind({ name: 'prompt' })] }, '<synthetic>', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /prompt/);
@@ -187,6 +188,7 @@ describe('step-kinds-registry: реестр видов шага', () => {
             ],
           },
           '<synthetic>',
+          DECLARATIVE_CONTRIBUTION_FIELDS,
         ),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
@@ -215,6 +217,7 @@ describe('step-kinds-registry: реестр видов шага', () => {
           createBuiltinKernel(),
           { name: 'greedy', steps: [fakeStepKind({ name: 'expect', document: documentOf('deploy') })] },
           '<synthetic>',
+          DECLARATIVE_CONTRIBUTION_FIELDS,
         ),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
@@ -229,6 +232,7 @@ describe('step-kinds-registry: реестр видов шага', () => {
           createBuiltinKernel(),
           { name: 'greedy', steps: [fakeStepKind({ name: 'prompt', document: documentOf('deploy') })] },
           '<synthetic>',
+          DECLARATIVE_CONTRIBUTION_FIELDS,
         ),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
@@ -257,13 +261,14 @@ describe('step-kinds-registry: реестр видов шага', () => {
         ],
       },
       '<first>',
+      DECLARATIVE_CONTRIBUTION_FIELDS,
     );
 
     // Вид без собственной формы записи занимает ключ-имя: `shared` уже занят
     // соседом, и в документе два вида боролись бы за один ключ.
     await assert.rejects(
       () =>
-        applyDeclarativePlugin(kernel, { name: 'second', steps: [fakeStepKind({ name: 'shared' })] }, '<second>'),
+        applyDeclarativePlugin(kernel, { name: 'second', steps: [fakeStepKind({ name: 'shared' })] }, '<second>', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /shared/);
@@ -285,6 +290,7 @@ describe('step-kinds-registry: реестр видов шага', () => {
       kernel,
       { name: 'first', steps: [fakeStepKind({ name: 'first-kind', document: documentOf('shared') })] },
       '<first>',
+      DECLARATIVE_CONTRIBUTION_FIELDS,
     );
     await assert.rejects(
       () =>
@@ -292,6 +298,7 @@ describe('step-kinds-registry: реестр видов шага', () => {
           kernel,
           { name: 'second', steps: [fakeStepKind({ name: 'second-kind', document: documentOf('shared') })] },
           '<second>',
+          DECLARATIVE_CONTRIBUTION_FIELDS,
         ),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
@@ -330,7 +337,7 @@ describe('step-kinds-registry: реестр видов шага', () => {
 
   it('снятие области снимает вид шага, освобождает имя, и ядро помнит прежнего владельца', async () => {
     const kernel = createBuiltinKernel();
-    const fiber = await applyDeclarativePlugin(kernel, { name: 'example-steps', steps: [fakeStepKind()] }, '<synthetic>');
+    const fiber = await applyDeclarativePlugin(kernel, { name: 'example-steps', steps: [fakeStepKind()] }, '<synthetic>', DECLARATIVE_CONTRIBUTION_FIELDS);
     const registry = registryFromKernel(kernel);
     assert.ok(registry.steps.has('http_probe'));
 
@@ -341,7 +348,7 @@ describe('step-kinds-registry: реестр видов шага', () => {
     assert.equal(service.formerOwner('http_probe'), 'example-steps');
 
     // Освобождённое имя достаётся следующему плагину.
-    await applyDeclarativePlugin(kernel, { name: 'other', steps: [fakeStepKind()] }, '<other>');
+    await applyDeclarativePlugin(kernel, { name: 'other', steps: [fakeStepKind()] }, '<other>', DECLARATIVE_CONTRIBUTION_FIELDS);
     assert.equal(registry.owners.get('steps:http_probe'), 'other');
   });
 });
@@ -418,7 +425,7 @@ describe('step-kinds-registry: разбор документа', () => {
   it('пайплайн после снятия области плагина отказывает разбором, называя плагина', async () => {
     const kernel = createBuiltinKernel();
     const registry = registryFromKernel(kernel);
-    const fiber = await applyDeclarativePlugin(kernel, { name: 'example-steps', steps: [fakeStepKind()] }, '<synthetic>');
+    const fiber = await applyDeclarativePlugin(kernel, { name: 'example-steps', steps: [fakeStepKind()] }, '<synthetic>', DECLARATIVE_CONTRIBUTION_FIELDS);
     const project = makeProject({
       'stepcast.yml': pipelineWith(`        http_probe:
           url: https://example.org`),
@@ -570,7 +577,7 @@ describe('step-kinds-registry: линт', () => {
   it('вид шага, снятый вместе с плагином, отказывает при исполнении, называя плагина', async () => {
     const kernel = createBuiltinKernel();
     const registry = registryFromKernel(kernel);
-    const fiber = await applyDeclarativePlugin(kernel, { name: 'example-steps', steps: [fakeStepKind()] }, '<synthetic>');
+    const fiber = await applyDeclarativePlugin(kernel, { name: 'example-steps', steps: [fakeStepKind()] }, '<synthetic>', DECLARATIVE_CONTRIBUTION_FIELDS);
     const project = makeProject({
       'stepcast.yml': pipelineWith(`        http_probe:
           url: https://example.org`),

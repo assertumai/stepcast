@@ -21,6 +21,7 @@ import { shortRunId } from '../../core/journal/paths.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { readLaneItem, takenLanes } from '../../core/lanes/item.js';
 import { commitPath, nestedRepoOf } from '../../core/lanes/tree.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -373,3 +374,35 @@ function runSettle(
 
   return ExitCode.ok;
 }
+
+export const row = commandRow(
+  {
+    name: 'backlog',
+    spec: {
+      description: 'вести очередь улучшений backlog.md: list|pick|finish|settle, см. docs/backlog.md',
+      positional: ['action', 'slug'],
+      flags: {
+        file: { kind: 'string', description: 'путь к файлу очереди, по умолчанию backlog.md в рабочем каталоге' },
+        slots: { kind: 'number', description: 'pick: сколько пунктов взять за раз, по умолчанию 1' },
+        lanes: { kind: 'string', description: 'pick: раздать по дорожкам, имена через запятую — a,b' },
+        only: {
+          kind: 'string',
+          description: 'pick: взять именно этот пункт по слагу, а не первый свободный по очерёдности',
+        },
+        'stale-hours': {
+          kind: 'number',
+          description: 'pick: порог давности зависшего in_progress в часах, по умолчанию 6',
+        },
+        'run-dir': {
+          kind: 'string',
+          description:
+            'pick --lanes: каталог для файлов item-<дорожка>.json на каждую заполненную дорожку; settle: тот же каталог, обязателен',
+        },
+        status: { kind: 'string', description: 'finish: исход done либо failed' },
+        reason: { kind: 'string', description: 'finish --status failed: причина отказа' },
+      },
+    },
+    run: (args, io, env) => runBacklogCommand(args, io.out, env.cwd, io.err),
+  },
+  { inject: PIPELINE_SERVICES },
+);

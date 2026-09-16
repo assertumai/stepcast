@@ -12,6 +12,7 @@ import { cleanupRun, listCandidates, selectOlderThan } from '../../core/run/clea
 import { formatBytes, parseDuration } from '../../core/units.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../../core/errors.js';
 import { formatColumns } from '../output.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 /**
@@ -186,3 +187,33 @@ export function runGcCommand(
   write(`освобождено: ${formatBytes(freed)}, прогонов ${selected.length}`);
   return ExitCode.ok;
 }
+
+export const row = commandRow(
+  {
+    name: 'gc',
+    spec: {
+      description:
+        'уборка: две отдельные цели — файлы прогонов (умолчание) и записи хранилища расхода (--stats); без ключей только отчёт',
+      flags: {
+        'older-than': {
+          kind: 'string',
+          description: 'удалить прогоны (или, вместе с --stats, записи) старше этой длительности, например 30d',
+        },
+        stats: {
+          kind: 'boolean',
+          description: 'снять записи хранилища расхода вместо файлов прогонов; --failed и --project действуют только с ним',
+        },
+        failed: {
+          kind: 'boolean',
+          description: 'отбирать отказавшие прогоны — только вместе с --stats',
+        },
+        project: {
+          kind: 'string',
+          description: 'ограничить отбор ключом проекта — только вместе с --stats',
+        },
+      },
+    },
+    run: (args, io, env) => runGcCommand(args, io.out, env.cwd),
+  },
+  { inject: PIPELINE_SERVICES },
+);

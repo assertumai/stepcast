@@ -14,6 +14,7 @@ import type {
   BackendContribution,
   PredicateContribution,
 } from '../src/core/plugins/pipeline-contract.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
 import {
   applyContextPlugin,
   applyDeclarativePlugin,
@@ -170,7 +171,7 @@ describe('plugin-kernel: загрузить, выгрузить — следов
       commands: [command('temp-cmd')],
     };
 
-    const fiber = await applyDeclarativePlugin(kernel, plugin, '<synthetic-1>');
+    const fiber = await applyDeclarativePlugin(kernel, plugin, '<synthetic-1>', DECLARATIVE_CONTRIBUTION_FIELDS);
     assert.deepEqual(availableNames(registry, 'backends'), ['claude', 'temp']);
     assert.equal(registry.plugins.length, 1);
 
@@ -184,12 +185,12 @@ describe('plugin-kernel: загрузить, выгрузить — следов
 
     // Освобождённое имя достаётся следующему плагину без отказа по конфликту.
     const other = { name: 'other', backends: { temp: backend() } };
-    const otherFiber = await applyDeclarativePlugin(kernel, other, '<synthetic-2>');
+    const otherFiber = await applyDeclarativePlugin(kernel, other, '<synthetic-2>', DECLARATIVE_CONTRIBUTION_FIELDS);
     assert.ok(registry.backends.has('temp'));
     await otherFiber.dispose();
 
     // Снятый плагин загружается заново без отказа.
-    await applyDeclarativePlugin(kernel, plugin, '<synthetic-1-again>');
+    await applyDeclarativePlugin(kernel, plugin, '<synthetic-1-again>', DECLARATIVE_CONTRIBUTION_FIELDS);
     assert.ok(registry.commands.has('temp-cmd'));
   });
 });
@@ -527,7 +528,7 @@ describe('plugin-kernel: наполовину загруженный плаги�
     assert.equal(registry.owners.get('predicates:half_ok'), undefined);
 
     // Освобождённое имя достаётся следующему плагину в том же ядре.
-    await applyDeclarativePlugin(kernel, { name: 'salvage', predicates: [predicate('half_ok')] }, '<synthetic-2>');
+    await applyDeclarativePlugin(kernel, { name: 'salvage', predicates: [predicate('half_ok')] }, '<synthetic-2>', DECLARATIVE_CONTRIBUTION_FIELDS);
     assert.ok(registry.predicates.has('half_ok'));
     assert.equal(registry.owners.get('predicates:half_ok'), 'salvage');
   });
@@ -599,7 +600,7 @@ describe('plugin-kernel: конфликт имени встроенного пр
 describe('plugin-kernel: две формы плагина', () => {
   it('декларативный объект и плагин контекста дают одинаково доступные вклады', async () => {
     const declarative = createBuiltinKernel();
-    await applyDeclarativePlugin(declarative, { name: 'twin', backends: { twin: backend() } }, '<d>');
+    await applyDeclarativePlugin(declarative, { name: 'twin', backends: { twin: backend() } }, '<d>', DECLARATIVE_CONTRIBUTION_FIELDS);
 
     const context = createBuiltinKernel();
     await applyContextPlugin(

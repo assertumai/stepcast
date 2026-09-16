@@ -7,6 +7,7 @@ import { resolveConfig, type ResolvedConfig } from '../src/core/config/resolve.j
 import { StepcastError } from '../src/core/errors.js';
 import { createKernel } from '../src/core/plugins/kernel.js';
 import { walkPluginTree } from '../src/core/plugins/load.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
 import { availableNames, contributionOwner } from '../src/core/plugins/registry.js';
 import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
 import { loadPlugins } from '../src/parts/load.js';
@@ -577,7 +578,10 @@ describe('plugin-tree: фабрики строк поставки при заг�
     const place = bed();
     const config = resolved(place);
 
-    const { outcomes } = await walkPluginTree(createKernel(), config, { projectRoot: place.root });
+    const { outcomes } = await walkPluginTree(createKernel(), config, {
+      projectRoot: place.root,
+      declarativeFields: DECLARATIVE_CONTRIBUTION_FIELDS,
+    });
 
     const pipelineRow = outcomes.find((outcome) => outcome.row.id === 'pipeline');
     assert.equal(pipelineRow?.status, 'failed');
@@ -997,7 +1001,11 @@ describe('plugin-tree: отключение строки pipeline при вкл�
       projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: pipeline\n    use: stepcast:pipeline\n    enabled: false\n',
     });
 
-    const { outcomes } = await walkPluginTree(createKernel(), config, { projectRoot: place.root, builtinRows: BUILTIN_ROWS });
+    const { outcomes } = await walkPluginTree(createKernel(), config, {
+      projectRoot: place.root,
+      builtinRows: BUILTIN_ROWS,
+      declarativeFields: DECLARATIVE_CONTRIBUTION_FIELDS,
+    });
 
     const pipelineRow = outcomes.find((outcome) => outcome.row.id === 'pipeline');
     assert.equal(pipelineRow?.status, 'disabled');
@@ -1093,6 +1101,7 @@ describe('plugin-tree: замена строки pipeline строкой пол�
     const { outcomes, introspection } = await walkPluginTree(createKernel(), config, {
       projectRoot: place.root,
       builtinRows: BUILTIN_ROWS,
+      declarativeFields: DECLARATIVE_CONTRIBUTION_FIELDS,
     });
 
     const replaced = introspection.rows.find((row) => row.id === 'pipeline');

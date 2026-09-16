@@ -7,9 +7,11 @@ import type { Event } from '../../core/journal/schema.js';
 import { hasErrors, lintPipeline } from '../../core/lint.js';
 import { expandPipeline } from '../../core/pipeline/expand.js';
 import { resolvePipelineTarget } from '../../core/package-schema.js';
+import type { PipelineCommandEnv } from '../../core/plugins/pipeline-contract.js';
 import { runPipeline } from '../../core/run/runner.js';
 import type { UsageSnapshot } from '../../core/budget/accumulator.js';
 import { renderProgressLine } from '../progress.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import { formatDiagnostic } from './lint.js';
 import { continueRestartChain } from './resume.js';
 import type { ParsedArgs } from '../args.js';
@@ -162,3 +164,20 @@ function buildProgressObserver(
     if (rendered !== undefined) write(rendered);
   };
 }
+
+export const row = commandRow<PipelineCommandEnv>(
+  {
+    name: 'run',
+    spec: {
+      description: 'выполнить пайплайн',
+      positional: ['pipeline'],
+      flags: {
+        input: { kind: 'keyValue', description: 'значение входа пайплайна: --input имя=значение' },
+        'dry-run': { kind: 'boolean', description: 'только проверить, не запуская работы' },
+        quiet: { kind: 'boolean', description: 'не печатать ход прогона' },
+      },
+    },
+    run: (args, io, env) => runRunCommand(args, io.out, env.cwd, env.registry, env.config),
+  },
+  { inject: PIPELINE_SERVICES },
+);

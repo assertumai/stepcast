@@ -10,6 +10,7 @@ import { BUILTIN_ROW_IDS } from '../../parts/rows.js';
 import { discoverPluginDirectories, pluginsDirPath } from '../plugins/discover.js';
 import {
   applyOperations,
+  BUILTIN_USE_PREFIX,
   builtinSeedRows,
   isBuiltinUse,
   keyOperations,
@@ -270,6 +271,19 @@ export interface ResolveOptions {
    */
   readonly builtinRows?: readonly string[];
   /**
+   * Id строк, которыми состав не вправе распоряжаться (`stepcast-configuration`,
+   * design.md изменения `cli-commands-as-rows`, Решение 6): патч или ключ
+   * `plugins`, заменивший или отключивший такую строку, не действует —
+   * дерево возвращает ей встроенную идентичность и `enabled: true`, нанося на
+   * неё названный отказ (`TreeRowFailure`) вместо молчаливого игнорирования
+   * подмены. Сегодня это строки независимых команд CLI (`data`, `down`,
+   * `init`, `src/cli/rows.ts`): они исполняются раньше, чем дерево вообще
+   * существует, и патч на них не подействовал бы ничем, кроме того, что
+   * `stepcast plugins` соврал бы об их составе. Витрина этого поля не подаёт —
+   * у её строк такой защиты нет.
+   */
+  readonly independentRowIds?: readonly string[];
+  /**
    * Корень проекта, каталоги плагинов которого обходятся проектным слоем
    * (`user-plugins`, design.md, Решение 13). По умолчанию — `cwd`, тот же
    * каталог, из которого читается проектный конфиг: для обычного вызова CLI
@@ -470,6 +484,48 @@ function canonicalizeNestedRepos(value: unknown): CanonicalNestedRepos | undefin
   }
 
   return { dirs: [...dirs].sort(), declarations };
+}
+
+/**
+ * Вернуть строкам, которыми состав не вправе распоряжаться, их встроенную
+ * идентичность (design.md изменения `cli-commands-as-rows`, Решение 6).
+ * Строка, которую ни один слой не тронул, возвращается как есть — пометка
+ * `failure` обязана появляться только там, где патч действительно что-то
+ * заменил, отключил или назвал каталогом: молчаливое поведение здесь и есть
+ * то, что отказ обязан заменить, а не сама проверка.
+ *
+ * Возвращается ровно то место, которое защищённая строка занимает в дереве, —
+ * её первое вхождение (находка ревью). Второе вхождение того же `id` бывает
+ * только одно: каталог плагинов, названный идентификатором встроенной строки,
+ * дописывается в дерево отдельной строкой со своим отказом, не трогая
+ * встроенную (`applyOperation`, ветка `failure`). Такая строка защищаемого
+ * места не занимает, и переписывать её здесь нельзя: она потеряла бы и
+ * настоящую причину («Каталог плагина … назван идентификатором встроенной
+ * строки»), и путь каталога в `source`, — для двадцати двух прочих команд тот
+ * же каталог отказывает именно этим текстом.
+ */
+function protectIndependentRows(tree: readonly TreeRow[], protectedIds: readonly string[]): readonly TreeRow[] {
+  const protectedSet = new Set(protectedIds);
+  if (protectedSet.size === 0) return tree;
+
+  return tree.map((row, index) => {
+    if (!protectedSet.has(row.id)) return row;
+    if (tree.findIndex((entry) => entry.id === row.id) !== index) return row;
+    const identity = `${BUILTIN_USE_PREFIX}${row.id}`;
+    if (row.source.kind === 'builtin' && row.use === identity && row.enabled && row.failure === undefined) {
+      return row;
+    }
+    return {
+      id: row.id,
+      use: identity,
+      enabled: true,
+      source: { kind: 'builtin' },
+      failure: {
+        message: `Строкой ${row.id} состав не распоряжается: команда исполняется до разрешения конфигурации`,
+        hint: 'Своя команда под другим именем заводится как обычно — эту строку заменить или отключить нельзя',
+      },
+    };
+  });
 }
 
 function requireNumber(values: ReadonlyMap<string, unknown>, path: string): number {
@@ -723,6 +779,10 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   }
   if (projectOperations.length > 0) {
     pluginTree = applyOperations(pluginTree, projectOperations);
+  }
+
+  if (options.independentRowIds !== undefined) {
+    pluginTree = protectIndependentRows(pluginTree, options.independentRowIds);
   }
 
   const values = merged.values;

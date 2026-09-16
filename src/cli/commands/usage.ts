@@ -11,6 +11,7 @@ import type { AttemptRecord, UsageAttemptReport, UsageReport } from '../../core/
 import { formatDuration, formatMoney, formatTokens } from '../../core/units.js';
 import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
 import { formatColumns } from '../output.js';
+import { commandRow, PIPELINE_SERVICES } from '../commandRow.js';
 import type { ParsedArgs } from '../args.js';
 
 const DASH = '—';
@@ -253,3 +254,15 @@ function pluralAttempts(count: number): string {
   if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return 'попытки';
   return 'попыток';
 }
+
+export const row = commandRow(
+  {
+    name: 'usage',
+    spec: {
+      description: 'показать расход прогона по работам, шагам и попыткам',
+      positional: ['run'],
+    },
+    run: (args, io, env) => runUsageCommand(args, io.out, env.cwd),
+  },
+  { inject: PIPELINE_SERVICES },
+);

@@ -5,7 +5,7 @@ import { StepcastError } from '../src/core/errors.js';
 import { applyRowOnRoot, builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { availableNames, contributionOwner, predicateNames, registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
-import { isNativeStepKind, type PredicateContribution, type PipelinePlugin, type StepKindContribution } from '../src/core/plugins/pipeline-contract.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS, isNativeStepKind, type PredicateContribution, type PipelinePlugin, type StepKindContribution } from '../src/core/plugins/pipeline-contract.js';
 import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
 import { ExitCode } from '../src/core/errors.js';
 import { resolveWithPlugins } from '../src/parts/resolve.js';
@@ -47,7 +47,7 @@ describe('plugin-contributions: реестр вкладов', () => {
 
   it('заводится заново на каждый вызов: вклад одного реестра не течёт в другой', async () => {
     const kernel = createBuiltinKernel();
-    await applyDeclarativePlugin(kernel, { name: 'a', predicates: [predicate('http_ok')] }, '/модуль/a.js');
+    await applyDeclarativePlugin(kernel, { name: 'a', predicates: [predicate('http_ok')] }, '/модуль/a.js', DECLARATIVE_CONTRIBUTION_FIELDS);
 
     assert.deepEqual(predicateNames(builtinRegistry()), [...DEFAULT_NATIVE_PREDICATES].sort());
   });
@@ -69,7 +69,7 @@ describe('plugin-contributions: реестр вкладов', () => {
       ],
     };
 
-    await applyDeclarativePlugin(kernel, plugin, '/модуль/пример.js');
+    await applyDeclarativePlugin(kernel, plugin, '/модуль/пример.js', DECLARATIVE_CONTRIBUTION_FIELDS);
 
     assert.deepEqual(availableNames(registry, 'backends'), ['claude', 'codex']);
     assert.deepEqual(availableNames(registry, 'commands'), ['hello']);
@@ -88,6 +88,7 @@ describe('plugin-contributions: реестр вкладов', () => {
           kernel,
           { name: 'самозванец', backends: { claude: { create: () => ({}) as never } } },
           '/м.js',
+          DECLARATIVE_CONTRIBUTION_FIELDS,
         ),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
@@ -103,7 +104,7 @@ describe('plugin-contributions: реестр вкладов', () => {
     const kernel = createBuiltinKernel();
 
     await assert.rejects(
-      () => applyDeclarativePlugin(kernel, { name: 'самозванец', predicates: [predicate('exit_code')] }, '/м.js'),
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец', predicates: [predicate('exit_code')] }, '/м.js', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) =>
         error instanceof StepcastError &&
         /предиката exit_code/.test(error.message) &&
@@ -119,7 +120,7 @@ describe('plugin-contributions: реестр вкладов', () => {
     const kernel = createBuiltinKernel();
 
     await assert.rejects(
-      () => applyDeclarativePlugin(kernel, { name: 'самозванец', predicates: [predicate('script')] }, '/м.js'),
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец', predicates: [predicate('script')] }, '/м.js', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) =>
         error instanceof StepcastError &&
         /предиката script/.test(error.message) &&
@@ -140,10 +141,10 @@ describe('plugin-contributions: реестр вкладов', () => {
 
   it('два плагина не могут спорить за одно имя', async () => {
     const kernel = createBuiltinKernel();
-    await applyDeclarativePlugin(kernel, { name: 'первый', predicates: [predicate('http_ok')] }, '/первый.js');
+    await applyDeclarativePlugin(kernel, { name: 'первый', predicates: [predicate('http_ok')] }, '/первый.js', DECLARATIVE_CONTRIBUTION_FIELDS);
 
     await assert.rejects(
-      () => applyDeclarativePlugin(kernel, { name: 'второй', predicates: [predicate('http_ok')] }, '/второй.js'),
+      () => applyDeclarativePlugin(kernel, { name: 'второй', predicates: [predicate('http_ok')] }, '/второй.js', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.match(error.message, /плагин первый/);
@@ -165,6 +166,7 @@ describe('plugin-contributions: реестр вкладов', () => {
         commands: [{ name: 'codex', spec: { description: 'о бэкенде' }, run: () => ExitCode.ok }],
       },
       '/модуль.js',
+      DECLARATIVE_CONTRIBUTION_FIELDS,
     );
 
     assert.ok(registry.backends.has('codex'));
@@ -181,7 +183,7 @@ describe('plugin-registry: имя вида шага занято ключом д
     const kernel = createBuiltinKernel();
 
     await assert.rejects(
-      () => applyDeclarativePlugin(kernel, { name: 'самозванец', steps: [fakeStepKind('expect')] }, '/м.js'),
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец', steps: [fakeStepKind('expect')] }, '/м.js', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.equal(error.message, 'Имя вида шага expect занято ключом общей части шага');
@@ -198,7 +200,7 @@ describe('plugin-registry: имя вида шага занято ключом д
     const kernel = createBuiltinKernel();
 
     await assert.rejects(
-      () => applyDeclarativePlugin(kernel, { name: 'самозванец', steps: [fakeStepKind('prompt')] }, '/м.js'),
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец', steps: [fakeStepKind('prompt')] }, '/м.js', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.equal(error.message, 'Имя вида шага prompt занято ключом встроенного вида шага agent');
@@ -211,7 +213,7 @@ describe('plugin-registry: имя вида шага занято ключом д
     );
 
     await assert.rejects(
-      () => applyDeclarativePlugin(kernel, { name: 'самозванец2', steps: [fakeStepKind('on_fail')] }, '/м2.js'),
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец2', steps: [fakeStepKind('on_fail')] }, '/м2.js', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.equal(error.message, 'Имя вида шага on_fail занято ключом встроенного вида шага run, script, uses');
@@ -232,7 +234,7 @@ describe('plugin-registry: имя вида шага занято ключом д
     assert.equal(registryFromKernel(kernel).steps.has('run'), false, 'строка снята составом');
 
     await assert.rejects(
-      () => applyDeclarativePlugin(kernel, { name: 'самозванец', steps: [fakeStepKind('run')] }, '/м.js'),
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец', steps: [fakeStepKind('run')] }, '/м.js', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.equal(error.message, 'Имя вида шага run занято ключом встроенного вида шага run');
@@ -246,7 +248,7 @@ describe('plugin-registry: имя вида шага занято ключом д
 
     // И ключ документа того же вида — тем же отказом, не только имя.
     await assert.rejects(
-      () => applyDeclarativePlugin(kernel, { name: 'самозванец2', steps: [fakeStepKind('on_fail')] }, '/м2.js'),
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец2', steps: [fakeStepKind('on_fail')] }, '/м2.js', DECLARATIVE_CONTRIBUTION_FIELDS),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.equal(error.message, 'Имя вида шага on_fail занято ключом встроенного вида шага run, script, uses');

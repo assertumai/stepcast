@@ -1,4 +1,4 @@
-import type { Context, Fiber } from 'cordis';
+import type { Context } from 'cordis';
 
 import type { BackendContribution, PipelineContext, PredicateKind, StepKind } from '../../core/plugins/pipeline-contract.js';
 import type { ContributionService, Kernel } from '../../core/plugins/kernel.js';
@@ -15,28 +15,6 @@ import { rowScope, type BuiltinRow } from '../../core/plugins/load.js';
  * ядро (`src/core/plugins/kernel.ts`) их типов не знает вовсе — они заводятся
  * строкой `pipeline` (`./row.ts`), не сборкой ядра.
  */
-
-/**
- * Области строк этого каталога — строки `pipeline` и её потребителей
- * (`backend-claude`, `predicates`, пять строк видов шага). Модульное
- * множество, не поле сервиса и не параметр `register`: признак встроенности
- * обязан быть неподделываемым — тем же приёмом и по той же причине, что
- * `builtinFibers` витрины (`src/ui/screens/registry.ts`). Область помечается
- * изнутри применения строки, до первой регистрации (`partRow` ниже).
- *
- * В синхронной сборке умолчания (`src/parts/builtin.ts`, `createBuiltinKernel`)
- * тела строк зовутся прямо на корневом контексте — фибер, попавший сюда в
- * этом случае, окажется корневым, и это не портит признак: `register`
- * (`ContributionService`, `kernel.ts`) проверяет принадлежность этому
- * множеству, а корневой фибер, единожды помеченный, остаётся во множестве на
- * весь срок жизни этого ядра (design.md, Решение 4).
- */
-const builtinFibers = new WeakSet<Fiber>();
-
-/** Признак «эта область — область строки этого каталога», подаётся конструктору `ContributionService`. */
-export function isBuiltinFiber(fiber: Fiber): boolean {
-  return builtinFibers.has(fiber);
-}
 
 declare module 'cordis' {
   interface Context {
@@ -76,22 +54,20 @@ export interface PartRow extends BuiltinRow {
 
 /**
  * Строка-поставщик или строка-потребитель служебных сервисов пайплайна:
- * `rowScope` (`src/core/plugins/load.ts`) плюс пометка области, до первой
+ * `rowScope` (`src/core/plugins/load.ts`) — сама ставит пометку области
+ * (design.md изменения `cli-commands-as-rows`, Решение 7), до первой
  * регистрации (design.md, Решение 2, Решение 3). Форма дерева (`apply`)
  * заводит собственную область строки с объявленным `inject`; синхронное
  * умолчание (`register`) зовёт то же тело прямо на переданном контексте —
  * `createBuiltinKernel` подаёт ей корневой контекст, предварительно сверив
- * `inject` (design.md, Решение 4).
+ * `inject` (design.md, Решение 4). Пометка синхронному пути не нужна: корневой
+ * фибер уже признан встроенным по идентичности (`kernel.ts`, `createKernel`).
  */
 export function partRow(id: string, inject: readonly string[], register: (ctx: Context) => void): PartRow {
-  const marked = (ctx: Context): void => {
-    builtinFibers.add(ctx.fiber);
-    register(ctx);
-  };
   return {
     id,
     inject,
-    register: marked,
-    apply: (kernel: Kernel) => rowScope(kernel, id, inject, marked),
+    register,
+    apply: (kernel: Kernel) => rowScope(kernel, id, inject, register),
   };
 }

@@ -15,6 +15,7 @@ import { nativeStepKindNames, registryFromKernel, type Registry } from '../src/c
 import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../src/core/pipeline/published-schema.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../src/core/lint.js';
 import type { StepKindContribution } from '../src/core/plugins/pipeline-contract.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
 import { gitCommit, gitInit, makeProject, withHome, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
@@ -1504,7 +1505,7 @@ jobs:
     };
     const kernel = createBuiltinKernel();
     const registry = registryFromKernel(kernel);
-    await applyDeclarativePlugin(kernel, { name: 'codex-adapter', backends: { codex: { create: () => ({}) as never } } }, '/м.js');
+    await applyDeclarativePlugin(kernel, { name: 'codex-adapter', backends: { codex: { create: () => ({}) as never } } }, '/м.js', DECLARATIVE_CONTRIBUTION_FIELDS);
 
     const diagnostics = lintPipeline(
       expandPipeline({ pipelinePath: project.path('stepcast.yml'), config }),
@@ -2864,6 +2865,7 @@ jobs:
         ],
       },
       '/модуль/example.js',
+      DECLARATIVE_CONTRIBUTION_FIELDS,
     );
     return registry;
   }
@@ -3515,7 +3517,7 @@ describe('step-kind-document-form: адрес места и правило waits
   async function registryWith(contribution: StepKindContribution): Promise<Registry> {
     const kernel = createBuiltinKernel();
     const registry = registryFromKernel(kernel);
-    await applyDeclarativePlugin(kernel, { name: 'deploy-steps', steps: [contribution] }, '/модуль/deploy-steps.js');
+    await applyDeclarativePlugin(kernel, { name: 'deploy-steps', steps: [contribution] }, '/модуль/deploy-steps.js', DECLARATIVE_CONTRIBUTION_FIELDS);
     return registry;
   }
 

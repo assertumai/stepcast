@@ -8,7 +8,6 @@
 // разбора (шаг 10 плана `docs/microkernel-target.md`) либо снятие умолчания
 // `registry` у `expandPipeline` — не этот пункт (design.md, «Risks»).
 import { StepcastError } from '../core/errors.js';
-import type { CommandContribution } from '../core/plugins/contract.js';
 import { createKernel, type Kernel } from '../core/plugins/kernel.js';
 import { registryFromKernel, type Registry } from '../core/plugins/registry.js';
 import type { PartRow } from './pipeline/services.js';
@@ -54,20 +53,20 @@ import { BUILTIN_ROWS } from './rows.js';
 // пути разрешения — мимо строк вызывающего и мимо замены строки патчем.
 
 /**
- * Ядро без применённых строк встроенного слоя: команды внесены, но ни одна
- * фабрика `BUILTIN_ROWS` не вызвана — сборка ядра не занимает ни одного
- * имени предиката сама (`builtin-predicates-as-row`, design.md, Решение 1).
- * Ядро (`createKernel()`) не принимает опций вовсе: проверка имени вида шага —
- * доменное знание, которое сегодня несёт строка `pipeline`
- * (`src/parts/pipeline/row.ts`), а не сборка ядра (`pipeline-owns-services`,
- * design.md, Решение 1). Загрузчик (`src/parts/load.ts`) применяет строки
- * сам, построчно, по дереву — иначе строка, заменённая патчем, всё равно
- * получила бы своё встроенное умолчание.
+ * Ядро без применённых строк встроенного слоя: ни одна фабрика
+ * `BUILTIN_ROWS` не вызвана — сборка ядра не занимает ни одного имени
+ * предиката сама (`builtin-predicates-as-row`, design.md, Решение 1) и ни
+ * одного имени команды (`cli-commands-as-rows`, Решение 1): команды —
+ * строки того же встроенного слоя, вносимые точкой входа (`src/cli/rows.ts`),
+ * а не параметр сборки. Ядро (`createKernel()`) не принимает опций вовсе:
+ * проверка имени вида шага — доменное знание, которое сегодня несёт строка
+ * `pipeline` (`src/parts/pipeline/row.ts`), а не сборка ядра
+ * (`pipeline-owns-services`, design.md, Решение 1). Загрузчик
+ * (`src/parts/load.ts`) применяет строки сам, построчно, по дереву — иначе
+ * строка, заменённая патчем, всё равно получила бы своё встроенное умолчание.
  */
-export function createKernelShell(commands: readonly CommandContribution[] = []): Kernel {
-  const kernel = createKernel();
-  for (const command of commands) kernel.ctx.commands.register(command.name, command);
-  return kernel;
+export function createKernelShell(): Kernel {
+  return createKernel();
 }
 
 /**
@@ -104,9 +103,11 @@ export function applyRowOnRoot(kernel: Kernel, row: PartRow): void {
 }
 
 /**
- * Ядро со всеми встроенными вкладами. Команды приходят параметром, а не
- * объявлены здесь: они живут в `src/cli`, а ядру запрещено зависеть от
- * поверхности.
+ * Ядро со всеми встроенными вкладами движка — без команд: они живут в
+ * `src/cli/rows.ts`, а ядру запрещено зависеть от поверхности
+ * (`cli-commands-as-rows`, Решение 2). Вызывающий, которому нужны и команды
+ * (`src/parts/load.ts`, `defaultComposition`), подаёт их строками обхода
+ * дерева, а не параметром этой функции.
  *
  * Библиотечное умолчание (design.md `pipeline-owns-services`, Решение 4):
  * `expand.ts`, `lint.ts`, `backend/registry.ts`, `runner.ts` и тесты зовут его
@@ -121,17 +122,17 @@ export function applyRowOnRoot(kernel: Kernel, row: PartRow): void {
  * обоих случаях «встроенный» (на корне — по идентичности корня, в дереве —
  * по пометке, `src/parts/pipeline/services.ts`).
  */
-export function createBuiltinKernel(commands: readonly CommandContribution[] = []): Kernel {
-  const kernel = createKernelShell(commands);
+export function createBuiltinKernel(): Kernel {
+  const kernel = createKernelShell();
   for (const row of BUILTIN_ROWS) applyRowOnRoot(kernel, row);
   return kernel;
 }
 
 /**
- * Реестр из одних встроенных вкладов. Заводится заново на каждый вызов:
- * реестр живёт ровно столько, сколько команда, и общий изменяемый экземпляр
- * протёк бы между тестами.
+ * Реестр из одних встроенных вкладов движка, без команд. Заводится заново на
+ * каждый вызов: реестр живёт ровно столько, сколько команда, и общий
+ * изменяемый экземпляр протёк бы между тестами.
  */
-export function builtinRegistry(commands: readonly CommandContribution[] = []): Registry {
-  return registryFromKernel(createBuiltinKernel(commands));
+export function builtinRegistry(): Registry {
+  return registryFromKernel(createBuiltinKernel());
 }

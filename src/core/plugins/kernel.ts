@@ -4,6 +4,7 @@ import { StepcastError } from '../errors.js';
 import type { Context as PluginContext, ContributionRegistrar } from './context.js';
 import type { CommandContribution, LoadedPlugin } from './contract.js';
 import { settle, topLevelFibers, unresolvedFibers, type UnresolvedFiber } from './fibers.js';
+import { isBuiltinRowFiber } from './load.js';
 import { declaredServices } from './services.js';
 
 export { unresolvedFibers, type UnresolvedFiber };
@@ -27,9 +28,11 @@ export { unresolvedFibers, type UnresolvedFiber };
  * сервиса (`isBuiltinFiber`, ниже): для `commands` это идентичность корневой,
  * изначально активной области ядра (её `ctx.effect` исполняется синхронно, в
  * отличие от `ctx.plugin()`, всегда проходящего через микрозадачу, — поэтому
- * `createKernel()` остаётся синхронной функцией), для сервисов строки
- * `pipeline` — принадлежность фибера множеству помеченных областей встроенного
- * слоя (design.md, Решение 3).
+ * `createKernel()` остаётся синхронной функцией) ИЛИ пометка области строкой
+ * встроенного слоя (`isBuiltinRowFiber`, `core/plugins/load.ts`, design.md
+ * изменения `cli-commands-as-rows`, Решение 7) — тот же признак, которым
+ * пользуются сервисы строки `pipeline` (design.md `pipeline-owns-services`,
+ * Решение 3).
  *
  * Успокоение контекста и поиск зависших областей (`settle`, `unresolvedFibers`)
  * живут в `./fibers.js` — модуле без зависимостей, общем с браузерным ядром
@@ -269,7 +272,12 @@ export function createKernel(): Kernel {
   const ctx = new Context();
   const rootFiber = ctx.fiber;
 
-  new ContributionService<CommandContribution>(ctx, 'commands', 'команды', (fiber) => fiber === rootFiber);
+  new ContributionService<CommandContribution>(
+    ctx,
+    'commands',
+    'команды',
+    (fiber) => fiber === rootFiber || isBuiltinRowFiber(fiber),
+  );
 
   const plugins: LoadedPlugin[] = [];
   /** Запись, сделанная областью: нужна `forgetPlugin` — см. её объяснение. */
