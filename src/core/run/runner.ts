@@ -51,7 +51,7 @@ import { locateEngine, isEditableEngine, pinEngine, type EngineInfo, type Engine
 import { HaltCause, type HaltCauseValue } from './halt.js';
 import { resolveInheritSource, type CompletedJob } from './inherit.js';
 import { builtinRegistry } from '../../parts/builtin.js';
-import { DecisionHalt, isBuiltinStepKind, type StepKindDecisionRequest, type StepKindDecisionResult } from '../plugins/contract.js';
+import { DecisionHalt, hasStepExecutor, type StepKindDecisionRequest, type StepKindDecisionResult } from '../plugins/contract.js';
 import { contributionOwner, formerStepKindOwner, stepKindNames, type Registry } from '../plugins/registry.js';
 import { preflight } from './preflight.js';
 import { createScope, type ResourceScope } from './scope.js';
@@ -1172,7 +1172,7 @@ async function runJob(
         scratch: jobScratchDir(journal.paths, job.id),
       },
       env: declared.env,
-    });
+    }, context.registry);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     return {
@@ -2467,7 +2467,7 @@ async function runPluginStepDispatch(
   iteration?: number,
 ): Promise<StepOutcome> {
   const contribution = context.registry.steps.get(step.name);
-  if (contribution === undefined || isBuiltinStepKind(contribution)) {
+  if (contribution === undefined || !hasStepExecutor(contribution)) {
     const former = formerStepKindOwner(context.registry, step.name);
     const reason =
       former === undefined
@@ -3178,7 +3178,7 @@ export function describeStepTask(step: Step, registry: Registry): string {
   if (step.kind === 'script') return (step.resolved?.argv ?? [step.path, ...step.args]).join(' ');
   if (step.kind === 'plugin') {
     const contribution = registry.steps.get(step.name);
-    const title = contribution !== undefined && !isBuiltinStepKind(contribution) ? contribution.title : step.name;
+    const title = contribution !== undefined && hasStepExecutor(contribution) ? contribution.title : step.name;
     return `${title}: ${JSON.stringify(step.fields)}`;
   }
   return typeof step.command === 'string' ? step.command : step.command.join(' ');

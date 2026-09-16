@@ -1,4 +1,4 @@
-import { isBuiltinStepKind, type BackendContribution, type CommandContribution, type LoadedPlugin, type PredicateContribution, type StepKind } from './contract.js';
+import { hasStepExecutor, type BackendContribution, type CommandContribution, type LoadedPlugin, type PredicateContribution, type StepKind, type StepKindContribution } from './contract.js';
 import { BUILTIN_OWNER, type Kernel } from './kernel.js';
 
 /**
@@ -23,8 +23,8 @@ export interface Registry {
    * Виды шага — встроенные (`agent`, `run`, `script`, `uses`) и плагинные
    * вместе, тем же вкладом в сервис `steps` (design.md, решение 1, решение 2).
    * В отличие от `builtinPredicates`, встроенные виды — настоящие вклады, а не
-   * резерв без содержания: у них есть форма `document`, которую отличает
-   * `isBuiltinStepKind`.
+   * резерв без содержания: у них есть внутренняя форма `native`, которую
+   * отличает `isNativeStepKind`.
    */
   readonly steps: ReadonlyMap<string, StepKind>;
   /**
@@ -134,6 +134,12 @@ export function stepKindNames(registry: Registry): string[] {
   return [...registry.steps.keys()].sort();
 }
 
+/** Дескриптор вида шага, приносящего свою ветвь схемы документа: имя и занятые им ключи. */
+export interface PluginStepKindDescriptor {
+  readonly name: string;
+  readonly keys: readonly string[];
+}
+
 /**
  * Плагин, вместе с которым снято имя вида шага, — пока живо ядро, помнящее
  * прежнего владельца (`ContributionService.formerOwner`). `undefined`, если
@@ -145,10 +151,15 @@ export function formerStepKindOwner(registry: Registry, name: string): string | 
   return kernels.get(registry)?.ctx.steps.formerOwner(name);
 }
 
-/** Имена плагинных (не встроенных) видов шага — для ветви `fields` схемы документа. */
-export function pluginStepKindNames(registry: Registry): string[] {
+/**
+ * Виды шага, приносящие свою ветвь схемы документа, — их занятые ключи, без
+ * вопроса о происхождении (design.md изменения `step-kind-document-contract`,
+ * Решение 4): вид собирается из объявленного, будь он внесён плагином или
+ * встроенной строкой дерева (`decision`).
+ */
+export function pluginStepKindDescriptors(registry: Registry): PluginStepKindDescriptor[] {
   return [...registry.steps.entries()]
-    .filter(([, kind]) => !isBuiltinStepKind(kind))
-    .map(([name]) => name)
-    .sort();
+    .filter((entry): entry is [string, StepKindContribution] => hasStepExecutor(entry[1]))
+    .map(([name, kind]) => ({ name, keys: kind.document?.keys ?? [name] }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }

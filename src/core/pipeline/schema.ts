@@ -213,32 +213,92 @@ export const BUILTIN_STEP_KIND_KEY_OWNERS: Readonly<Record<string, readonly stri
   with: ['uses'],
 };
 
+/** Ключи, занятые вкладом вида шага в документе: объявленные `document.keys`, иначе — одно имя. */
+function occupiedKeys(contribution: { readonly name: string; readonly document?: { readonly keys?: readonly string[] } }): readonly string[] {
+  return contribution.document?.keys ?? [contribution.name];
+}
+
 /**
- * Отказ регистрации вида шага плагином на имени, занятом ключом документа
- * (design.md, решение 3): ключом общей части шага либо ключом встроенного
- * вида. Проверка — при регистрации, а не при первом разборе документа: имя
- * `expect` не должно дожить до первого пайплайна, который его использует.
- * Ядро (`plugins/kernel.ts`) зовёт эту функцию параметром сборки
- * (`KernelOptions.nameGuards`), а не читает перечни выше импортом.
+ * Проверить один ключ против общей части шага и ключей встроенных видов.
+ * `owner` отличает проверяемое: `undefined` — проверяется имя вида, иначе —
+ * один из объявленных им `document.keys`, и отказ называет вид, которому этот
+ * ключ принадлежит. Переименовывать в двух случаях нужно разное, и сказать
+ * отказ обязан именно это.
  */
-export function assertStepKindNameAvailable(name: string): void {
-  if (STEP_COMMON_KEYS.includes(name)) {
-    throw new StepcastError(`Имя вида шага ${name} занято ключом общей части шага`, {
-      hint: 'Ключи общей части (id, env, context, timeout, expect, attempts, …) не могут стать именем вида шага',
+function assertKeyAvailable(key: string, owner: string | undefined): void {
+  const isName = owner === undefined;
+  const subject = isName ? `Имя вида шага ${key} занято` : `Ключ ${key} вида шага ${owner} занят`;
+  if (STEP_COMMON_KEYS.includes(key)) {
+    throw new StepcastError(`${subject} ключом общей части шага`, {
+      hint: isName
+        ? 'Ключи общей части (id, env, context, timeout, expect, attempts, …) не могут стать именем вида шага'
+        : 'Ключи общей части (id, env, context, timeout, expect, attempts, …) вид шага занять не вправе',
     });
   }
-  const owningKinds = BUILTIN_STEP_KIND_KEY_OWNERS[name];
+  const owningKinds = BUILTIN_STEP_KIND_KEY_OWNERS[key];
   if (owningKinds !== undefined) {
-    throw new StepcastError(
-      `Имя вида шага ${name} занято ключом встроенного вида шага ${owningKinds.join(', ')}`,
-      { hint: 'Выберите другое имя: ключи встроенных видов не могут стать именем плагинного вида шага' },
-    );
+    throw new StepcastError(`${subject} ключом встроенного вида шага ${owningKinds.join(', ')}`, {
+      hint: isName
+        ? 'Выберите другое имя: ключи встроенных видов не могут стать именем плагинного вида шага'
+        : 'Выберите другой ключ: ключи встроенных видов шага плагинному виду недоступны',
+    });
   }
+}
+
+/**
+ * Отказ регистрации вида шага плагином на имени или занятом ключе документа
+ * (design.md, решение 3; design.md изменения `step-kind-document-contract`,
+ * Решение 2, Решение 7): ключом общей части шага, ключом встроенного вида либо
+ * ключом, уже занятым другим видом. Проверка — при регистрации, а не при
+ * первом разборе документа: имя `expect` не должно дожить до первого
+ * пайплайна, который его использует. Ядро (`plugins/kernel.ts`) зовёт эту
+ * функцию параметром сборки (`KernelOptions.nameGuards`), передавая вклад и
+ * уже занятые вклады непрозрачными значениями, — доменного типа ядро при этом
+ * не узнаёт (`kernel-domain-free-imports`).
+ */
+export function assertStepKindNameAvailable(
+  name: string,
+  contribution: unknown,
+  taken: ReadonlyMap<string, unknown>,
+): void {
+  const candidate = contribution as { readonly name: string; readonly document?: { readonly keys?: readonly string[] } };
+  // Имя проверяется наравне с занятыми ключами, а не вместо них: вид,
+  // объявивший свою форму записи, ключом-именем в документе ничего не
+  // занимает, но именем `expect` или `prompt` он всё равно звался бы в
+  // реестре, диагностике и витрине именем чужого ключа — а спека требует
+  // отвергать при регистрации «имя вида шага **и** всякий объявленный им
+  // занятый ключ». В занятые ключи ветви схемы документа имя при этом не
+  // попадает: там его нет (`occupiedKeys`).
+  const keys = occupiedKeys(candidate);
+  const checked = keys.includes(name) ? keys : [name, ...keys];
+
+  for (const key of checked) {
+    assertKeyAvailable(key, key === name ? undefined : name);
+
+    for (const [otherName, otherValue] of taken) {
+      // Совпадение имени — не это правило: тот же ключ у той же строки не
+      // столкновение, а отказ регистрации на занятом имени, который
+      // `ContributionService.register` даёт своим текстом, называющим обоих
+      // владельцев по имени плагина, — здесь его повторять нечем.
+      if (otherName === name) continue;
+      const other = otherValue as { readonly name: string; readonly document?: { readonly keys?: readonly string[] } };
+      if (!occupiedKeys(other).includes(key)) continue;
+      throw new StepcastError(`Ключ ${key} занят: его объявляют вид шага ${otherName} и вид шага ${name}`, {
+        hint: 'Ключ вида шага не вправе совпасть с ключом, уже занятым другим видом — переименуйте один из них',
+      });
+    }
+  }
+}
+
+/** Вид шага, приносящий свою ветвь схемы документа: имя и занятые им ключи (design.md, Решение 1). */
+export interface PluginStepKindKeys {
+  readonly name: string;
+  readonly keys: readonly string[];
 }
 
 export function buildDocumentSchemas(
   pluginPredicates: readonly string[] = [],
-  pluginStepKinds: readonly string[] = [],
+  pluginStepKinds: readonly PluginStepKindKeys[] = [],
 ) {
   const PredicateSchema =
     pluginPredicates.length === 0
@@ -432,19 +492,38 @@ export function buildDocumentSchemas(
     .strict();
 
   /**
-   * Плагинный вид шага занимает один ключ — своё имя (design.md, решение 3) —
-   * рядом с общей частью шага: `id`, `expect`, `timeout` и прочие ключи
+   * Плагинный вид шага занимает перечень ключей — своё имя, если не объявил
+   * собственную форму записи, либо объявленные `document.keys` (design.md
+   * изменения `step-kind-document-contract`, Решение 1, Решение 3) — рядом с
+   * общей частью шага: `id`, `expect`, `timeout` и прочие ключи
    * `StepCommonShape` остаются доступны наравне со встроенными видами, а
-   * форму значения под ключом вида проверяет JSON Schema вклада при
+   * форму значения под занятыми ключами проверяет JSON Schema вклада при
    * раскрытии (`expand.ts`), а не эта схема — как и у плагинного предиката.
    */
-  const PluginStepSchema = (name: string) =>
-    z
-      .object({
-        ...StepCommonShape,
-        [name]: z.unknown(),
-      })
-      .strict();
+  const PluginStepSchema = (keys: readonly string[]) => {
+    // Обязателен ровно один из занятых ключей, остальные — необязательны, и
+    // ветвь поэтому собирается объединением по каждому ключу. Всем сразу
+    // обязательными их сделала бы одна `z.unknown()` (в zod 4 это
+    // обязательный ключ) — и вид, объявивший ключ-спутник, то есть ровно форму
+    // `uses:` + `with:`, отклонял бы всякий шаг без него, да ещё дампом
+    // объединения ветвей, а не своими словами. Какие из занятых ключей
+    // обязательны на самом деле, знает только `document.schema` вклада, и
+    // отказ даёт она (design.md изменения `step-kind-document-contract`,
+    // Решение 6); шаг, не назвавший ни одного занятого ключа, этим видом не
+    // узнан вовсе — его отклоняет `rejectUnknownStepKinds` до схемы.
+    const branch = (required: string) =>
+      z
+        .object({
+          ...StepCommonShape,
+          ...Object.fromEntries(
+            keys.map((key) => [key, key === required ? z.unknown() : z.unknown().optional()]),
+          ),
+        })
+        .strict();
+    const [first, ...rest] = keys;
+    if (first === undefined) return z.object({ ...StepCommonShape }).strict();
+    return rest.length === 0 ? branch(first) : z.union([branch(first), ...rest.map(branch)]);
+  };
 
   const StepSchema =
     pluginStepKinds.length === 0
@@ -454,7 +533,7 @@ export function buildDocumentSchemas(
           RunStepSchema,
           ScriptStepSchema,
           UsesStepSchema,
-          ...pluginStepKinds.map((name) => PluginStepSchema(name)),
+          ...pluginStepKinds.map((kind) => PluginStepSchema(kind.keys)),
         ]);
 
   const ParamSchema = z

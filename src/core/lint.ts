@@ -10,7 +10,7 @@ import { isStepcastError } from './errors.js';
 import { describeScriptUnresolved } from './pipeline/expand.js';
 import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from './pipeline/published-schema.js';
 import { builtinRegistry } from '../parts/builtin.js';
-import { isBuiltinStepKind } from './plugins/contract.js';
+import { hasStepExecutor } from './plugins/contract.js';
 import { availableNames, type Registry } from './plugins/registry.js';
 import { isGitWorktree } from './anchor/git.js';
 import { workspaceInheritanceDiagnostics } from './run/inherit.js';
@@ -508,6 +508,10 @@ function lintPluginPredicate(
  * Статическая проверка шага плагинного вида — тот же путь, что у плагинного
  * предиката (`lintPluginPredicate` выше): хук вклада зовётся с полями и
  * адресом, диагностики печатаются с файлом и путём поля наравне со своими.
+ * Адрес места — адрес ключа для формы `fields`, адрес самого шага для формы
+ * `document`: у разобранных полей вклада с собственной формой записи пути в
+ * документе нет (design.md изменения `step-kind-document-contract`, Решение
+ * 6) — вопрос решает объявленное вкладом, а не происхождение (Решение 4).
  */
 function lintPluginStepKind(
   step: Extract<Step, { kind: 'plugin' }>,
@@ -518,8 +522,8 @@ function lintPluginStepKind(
   push: (diagnostic: Diagnostic) => void,
 ): void {
   const contribution = options.registry.steps.get(step.name);
-  const site = { file, at: `${at}.${step.name}`, cwd };
-  if (contribution === undefined || isBuiltinStepKind(contribution)) return;
+  if (contribution === undefined || !hasStepExecutor(contribution)) return;
+  const site = { file, at: contribution.document !== undefined ? at : `${at}.${step.name}`, cwd };
 
   for (const diagnostic of contribution.lint?.(step.fields, site) ?? []) {
     push({
@@ -551,7 +555,7 @@ function checkWaitingStepKind(
   push: (diagnostic: Diagnostic) => void,
 ): void {
   const contribution = options.registry.steps.get(step.name);
-  if (contribution === undefined || isBuiltinStepKind(contribution) || contribution.waits !== true) return;
+  if (contribution === undefined || !hasStepExecutor(contribution) || contribution.waits !== true) return;
 
   if (step.timeoutMs !== options.config.defaults.stepTimeoutMs) {
     push({

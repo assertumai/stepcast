@@ -147,8 +147,12 @@ export async function runPluginStep(
       // Поля шага проверяются схемой вклада ещё раз, по окончательным
       // значениям (design.md, решение 5, тот же образец, что у
       // `uses.paramsSchema`, `runner.ts`): до позднего раскрытия поле могло
-      // нести подстановку, непроверимую статически при разборе.
-      const at = `jobs.${job.id}.steps.${step.index - 1}.${step.name}`;
+      // нести подстановку, непроверимую статически при разборе. Адрес — адрес
+      // ключа для формы `fields`, адрес самого шага для формы `document`: у
+      // разобранных полей вклада с собственной формой записи пути в документе
+      // нет (design.md изменения `step-kind-document-contract`, Решение 6).
+      const stepAt = `jobs.${job.id}.steps.${step.index - 1}`;
+      const at = contribution.document !== undefined ? stepAt : `${stepAt}.${step.name}`;
       try {
         validateStepKindFields(contribution, step.fields, at, context.registry);
       } catch (error) {

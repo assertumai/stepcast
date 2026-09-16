@@ -92,6 +92,14 @@ export interface TypedStepKindContribution<F> extends Omit<StepKindContribution,
  * Приведение возвращаемого значения — единственное в хелпере, той же причиной,
  * что и у `definePredicate`: значение полей к моменту вызова `execute` уже
  * проверено схемой вклада, после позднего раскрытия (`exec/pluginStep.ts`).
+ *
+ * `F` описывает именно результат `document.parse` (design.md изменения
+ * `step-kind-document-contract`, Решение 1) — вклад без `document` разбирается
+ * синтезированным `parse`, отдающим значение под ключом-именем, и в этом
+ * случае `F` описывает как раз его. Хелпер не проверяет соответствие типов
+ * `document.parse` и `F` — контракт объявляет `parse` возвращающим `unknown`
+ * ровно потому, что связь между формой записи и формой полей знает только сам
+ * автор вклада.
  */
 export function defineStepKind<F>(contribution: TypedStepKindContribution<F>): StepKindContribution {
   return contribution as StepKindContribution;

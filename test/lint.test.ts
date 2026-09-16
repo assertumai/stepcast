@@ -12,6 +12,7 @@ import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import { buildPublishedSchemas, pluginStepKindEntries } from '../src/core/pipeline/published-schema.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../src/core/lint.js';
+import type { StepKindContribution } from '../src/core/plugins/contract.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
 import { gitCommit, gitInit, makeProject, withHome, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
@@ -3418,5 +3419,149 @@ jobs:
       errors(diagnostics).filter((text) => /greet/.test(text)),
       [],
     );
+  });
+});
+
+describe('step-kind-document-form: адрес места и правило waits для обеих форм', () => {
+  function deployKind(overrides: Partial<StepKindContribution> = {}): StepKindContribution {
+    return {
+      name: 'deploy-kind',
+      title: 'Деплой',
+      fields: {
+        type: 'object',
+        properties: { target: { type: 'string' }, to: {} },
+        required: ['target', 'to'],
+        additionalProperties: false,
+      },
+      document: {
+        test: (raw) => 'deploy' in raw,
+        keys: ['deploy', 'to'],
+        schema: {
+          type: 'object',
+          properties: { deploy: { type: 'string' }, to: {} },
+          required: ['deploy', 'to'],
+          additionalProperties: false,
+        },
+        parse: (raw) => ({ target: (raw as Record<string, unknown>).deploy, to: (raw as Record<string, unknown>).to }),
+      },
+      execute: () => ({ exitCode: 0 }),
+      ...overrides,
+    };
+  }
+
+  async function registryWith(contribution: StepKindContribution): Promise<Registry> {
+    const kernel = createBuiltinKernel();
+    const registry = registryFromKernel(kernel);
+    await applyDeclarativePlugin(kernel, { name: 'deploy-steps', steps: [contribution] }, '/модуль/deploy-steps.js');
+    return registry;
+  }
+
+  it('lint вклада с формой document адресует место самого шага, а не ключ', async () => {
+    const registry = await registryWith(
+      deployKind({ lint: (fields) => [{ severity: 'warning', message: `поля: ${JSON.stringify(fields)}` }] }),
+    );
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: probe
+        deploy: prod
+        to: staging
+`,
+    });
+    const diagnostics = lintPipeline(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }),
+      { config: project.config, registry },
+    );
+
+    const own = diagnostics.find((item) => item.message.startsWith('поля:'));
+    assert.ok(own !== undefined, JSON.stringify(diagnostics));
+    assert.equal(own.at, 'jobs.build.steps.0');
+  });
+
+  it('lint вклада без формы document по-прежнему адресует ключ вида', async () => {
+    const registry = await registryWith({
+      name: 'http-probe',
+      title: 'Проба',
+      fields: { type: 'object', properties: { url: { type: 'string' } }, required: ['url'] },
+      lint: (fields) => [{ severity: 'warning', message: `поля: ${JSON.stringify(fields)}` }],
+      execute: () => ({ exitCode: 0 }),
+    });
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: probe
+        http-probe: { url: https://example.org }
+`,
+    });
+    const diagnostics = lintPipeline(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }),
+      { config: project.config, registry },
+    );
+
+    const own = diagnostics.find((item) => item.message.startsWith('поля:'));
+    assert.ok(own !== undefined, JSON.stringify(diagnostics));
+    assert.equal(own.at, 'jobs.build.steps.0.http-probe');
+  });
+
+  it('правило waits действует для вида с формой document так же, как для вида с fields', async () => {
+    const registry = await registryWith(deployKind({ waits: true }));
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: probe
+        deploy: prod
+        to: staging
+        attempts: { max: 2 }
+`,
+    });
+    const diagnostics = lintPipeline(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }),
+      { config: project.config, registry },
+    );
+
+    assert.ok(
+      errors(diagnostics).some((message) => /attempts/.test(message)),
+      JSON.stringify(diagnostics),
+    );
+  });
+
+  it('правило waits предупреждает о timeout и на виде с формой document', async () => {
+    const registry = await registryWith(deployKind({ waits: true }));
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+budget: { tokens: 100k }
+jobs:
+  build:
+    steps:
+      - id: probe
+        deploy: prod
+        to: staging
+        timeout: 5m
+`,
+    });
+    const diagnostics = lintPipeline(
+      expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }),
+      { config: project.config, registry },
+    );
+
+    const warning = diagnostics.find(
+      (item) => item.severity === 'warning' && /timeout, но он не применяется/.test(item.message),
+    );
+    assert.ok(warning !== undefined, JSON.stringify(diagnostics));
+    assert.match(warning.message, /deploy-kind/);
+    assert.equal(warning.at, 'jobs.build.steps.0.timeout');
   });
 });

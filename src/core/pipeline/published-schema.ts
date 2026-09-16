@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
 import { buildDocumentSchemas, STEP_COMMON_KEYS } from './schema.js';
-import { isBuiltinStepKind, type StepKindContribution } from '../plugins/contract.js';
+import { hasStepExecutor, type StepKindContribution } from '../plugins/contract.js';
 import { BUILTIN_OWNER } from '../plugins/kernel.js';
 import { contributionOwner, type Registry } from '../plugins/registry.js';
 
@@ -27,10 +27,16 @@ export interface PluginPredicateEntry {
   readonly owner: string;
 }
 
-/** Плагинный вид шага для печати: имя, JSON Schema полей и внёсший его плагин. */
+/**
+ * Вид шага для печати: имя, занятые им ключи документа и схема документа —
+ * объявленная (`document.schema`) либо синтезированная из имени и `fields`
+ * (design.md изменения `step-kind-document-contract`, Решение 1) — и внёсший
+ * его плагин.
+ */
 export interface PluginStepKindEntry {
   readonly name: string;
-  readonly fields: Readonly<Record<string, unknown>>;
+  readonly keys: readonly string[];
+  readonly schema: Readonly<Record<string, unknown>>;
   readonly owner: string;
   /**
    * Вид, внесённый встроенной строкой дерева (`decision`): печатается он так
@@ -144,29 +150,37 @@ function predicateLabelName(node: unknown, names: ReadonlySet<string>): string |
 }
 
 /**
- * Узел-метка плагинного вида шага (`user-decision-steps`, design.md решение
- * 12): в отличие от предиката, вид шага делит объект с общей частью шага
- * (`id`, `expect`, `timeout`, …) — узел опознаётся не единственным свойством,
- * а ровно одним свойством *сверх* общей части, чьё имя — из перечня видов
- * шага и чья схема пуста.
+ * Узел-метка вида шага (`user-decision-steps`, design.md решение 12;
+ * design.md изменения `step-kind-document-contract`, Решение 3): в отличие от
+ * предиката, вид шага делит объект с общей частью шага (`id`, `expect`,
+ * `timeout`, …) — узел опознаётся не единственным лишним свойством, а набором
+ * свойств *сверх* общей части, совпадающим (без учёта порядка) с занятыми
+ * ключами ровно одного вида из перечня, — каждое такое свойство несёт пустую
+ * схему.
  */
-function stepKindLabelName(node: unknown, names: ReadonlySet<string>): string | undefined {
+function stepKindLabelName(node: unknown, keysByName: ReadonlyMap<string, readonly string[]>): string | undefined {
   if (node === null || typeof node !== 'object' || Array.isArray(node)) return undefined;
   const obj = node as Record<string, unknown>;
   if (obj['type'] !== 'object' || obj['additionalProperties'] !== false) return undefined;
 
   const properties = obj['properties'];
   if (properties === null || typeof properties !== 'object' || Array.isArray(properties)) return undefined;
+  const propsRecord = properties as Record<string, unknown>;
   const commonKeys = new Set<string>(STEP_COMMON_KEYS);
-  const extra = Object.keys(properties as Record<string, unknown>).filter((key) => !commonKeys.has(key));
-  const name = extra.length === 1 ? extra[0] : undefined;
-  if (name === undefined || !names.has(name)) return undefined;
+  const extra = new Set(Object.keys(propsRecord).filter((key) => !commonKeys.has(key)));
+  if (extra.size === 0) return undefined;
 
-  const value = (properties as Record<string, unknown>)[name];
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined;
-  if (Object.keys(value).length !== 0) return undefined;
+  const isEmptySchema = (key: string): boolean => {
+    const value = propsRecord[key];
+    return value !== null && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0;
+  };
 
-  return name;
+  for (const [name, keys] of keysByName) {
+    if (keys.length !== extra.size || !keys.every((key) => extra.has(key))) continue;
+    if (!keys.every(isEmptySchema)) continue;
+    return name;
+  }
+  return undefined;
 }
 
 /** Заменить узлы-метки схемами значений и полей — рекурсивно, во всех точках сразу. */
@@ -174,11 +188,11 @@ function inlineValues(
   node: unknown,
   predicateNames: ReadonlySet<string>,
   predicateValues: ReadonlyMap<string, unknown>,
-  stepKindNames: ReadonlySet<string>,
-  stepKindValues: ReadonlyMap<string, unknown>,
+  stepKindKeysByName: ReadonlyMap<string, readonly string[]>,
+  stepKindValues: ReadonlyMap<string, StepKindOverlay>,
 ): void {
   if (Array.isArray(node)) {
-    for (const item of node) inlineValues(item, predicateNames, predicateValues, stepKindNames, stepKindValues);
+    for (const item of node) inlineValues(item, predicateNames, predicateValues, stepKindKeysByName, stepKindValues);
     return;
   }
   if (node === null || typeof node !== 'object') return;
@@ -192,15 +206,31 @@ function inlineValues(
     return;
   }
 
-  const stepName = stepKindLabelName(node, stepKindNames);
+  const stepName = stepKindLabelName(node, stepKindKeysByName);
   if (stepName !== undefined) {
-    const obj = node as { properties: Record<string, unknown> };
-    obj.properties = { ...obj.properties, [stepName]: stepKindValues.get(stepName) ?? {} };
+    // Имени нет в карте — все ключи вида остаются неограниченными, тем же
+    // правилом, что и у непригодной схемы предиката.
+    const overlay = stepKindValues.get(stepName);
+    if (overlay === undefined) return;
+
+    const obj = node as { properties: Record<string, unknown>; required?: unknown; allOf?: unknown };
+    obj.properties = { ...obj.properties, ...overlay.properties };
+    if (overlay.required.length > 0) {
+      // Узел уже требует один из занятых ключей — тот, которым собрана эта
+      // ветвь объединения (`PluginStepSchema`); схема документа добавляет к
+      // нему остальные обязательные, не трогая общую часть шага.
+      const current = Array.isArray(obj.required) ? (obj.required as readonly unknown[]) : [];
+      obj.required = [...current, ...overlay.required.filter((key) => !current.includes(key))];
+    }
+    if (overlay.rest !== undefined) {
+      const current = Array.isArray(obj.allOf) ? (obj.allOf as readonly unknown[]) : [];
+      obj.allOf = [...current, overlay.rest];
+    }
     return;
   }
 
   for (const value of Object.values(node as Record<string, unknown>)) {
-    inlineValues(value, predicateNames, predicateValues, stepKindNames, stepKindValues);
+    inlineValues(value, predicateNames, predicateValues, stepKindKeysByName, stepKindValues);
   }
 }
 
@@ -291,17 +321,17 @@ interface Documents {
 function assemble(
   predicateNames: readonly string[],
   predicateValues: ReadonlyMap<string, unknown>,
-  stepKindNames: readonly string[],
-  stepKindValues: ReadonlyMap<string, unknown>,
+  stepKinds: readonly { readonly name: string; readonly keys: readonly string[] }[],
+  stepKindValues: ReadonlyMap<string, StepKindOverlay>,
 ): Documents {
-  const { PipelineDocumentSchema, JobDocumentSchema } = buildDocumentSchemas(predicateNames, stepKindNames);
+  const { PipelineDocumentSchema, JobDocumentSchema } = buildDocumentSchemas(predicateNames, stepKinds);
   const pipeline = printDocument(PipelineDocumentSchema, 'stepcast pipeline');
   const job = printDocument(JobDocumentSchema, 'stepcast job');
-  if (predicateNames.length > 0 || stepKindNames.length > 0) {
+  if (predicateNames.length > 0 || stepKinds.length > 0) {
     const predicateNameSet = new Set(predicateNames);
-    const stepKindNameSet = new Set(stepKindNames);
-    inlineValues(pipeline, predicateNameSet, predicateValues, stepKindNameSet, stepKindValues);
-    inlineValues(job, predicateNameSet, predicateValues, stepKindNameSet, stepKindValues);
+    const stepKindKeysByName = new Map(stepKinds.map((kind) => [kind.name, kind.keys]));
+    inlineValues(pipeline, predicateNameSet, predicateValues, stepKindKeysByName, stepKindValues);
+    inlineValues(job, predicateNameSet, predicateValues, stepKindKeysByName, stepKindValues);
   }
   return { pipeline, job };
 }
@@ -344,24 +374,29 @@ export function pluginPredicateEntries(registry: Registry): PluginPredicateEntry
 }
 
 /**
- * Перечень плагинных (не встроенных) видов шага действующего реестра — общий
- * для команды `stepcast schema` и для сверки линта, тем же образцом, что и
- * `pluginPredicateEntries`. Встроенные виды (`agent`, `run`, `script`,
- * `uses`, `decision`) уже описаны публикуемой схемой напрямую и сюда не
- * попадают — `isBuiltinStepKind` отличает форму `document` от настоящего
- * вклада, но не отличает встроенную СТРОКУ от плагинной: `decision` формой
- * `document` не обладает и потому виден здесь как обычный плагинный вид.
- * Печать это не портит — вложенная схема его полей ровно то, что нужно
- * поставляемой схеме пакета (design.md, решение 12).
+ * Перечень видов шага действующего реестра, приносящих свою ветвь схемы
+ * документа, — общий для команды `stepcast schema` и для сверки линта, тем же
+ * образцом, что и `pluginPredicateEntries`. Виды с внутренней формой (`agent`,
+ * `run`, `script`, `uses`) уже описаны публикуемой схемой напрямую и сюда не
+ * попадают — `hasStepExecutor` спрашивает именно это, а не происхождение
+ * вклада (design.md изменения `step-kind-document-contract`, Решение 4):
+ * `decision`, внесённый встроенной строкой дерева, виден здесь наравне с
+ * плагинным, потому что у него есть `execute`, — печать это не портит,
+ * вложенная схема его формы ровно то, что нужно поставляемой схеме пакета
+ * (design.md, решение 12).
  */
 export function pluginStepKindEntries(registry: Registry): PluginStepKindEntry[] {
   return [...registry.steps.entries()]
-    .filter((entry): entry is [string, StepKindContribution] => !isBuiltinStepKind(entry[1]))
+    .filter((entry): entry is [string, StepKindContribution] => hasStepExecutor(entry[1]))
     .map(([name, contribution]) => {
       const owner = contributionOwner(registry, 'steps', name) ?? name;
+      const keys = contribution.document?.keys ?? [name];
+      const schema =
+        contribution.document?.schema ?? { properties: { [name]: contribution.fields }, required: [name] };
       return {
         name,
-        fields: contribution.fields,
+        keys,
+        schema,
         owner,
         // Вклад встроенной строки дерева внесён на корневой области ядра и
         // потому числится за «встроенным» владельцем (`kernel.ts`): печатается
@@ -370,6 +405,80 @@ export function pluginStepKindEntries(registry: Registry): PluginStepKindEntry[]
         ...(owner === BUILTIN_OWNER ? { builtin: true } : {}),
       };
     });
+}
+
+/**
+ * Ключи схемы документа, описывающие **состав** ключей объекта. В узле-метке
+ * они значили бы другое: узел — это весь шаг, и рядом с ключами вида в нём
+ * лежит общая часть (`id`, `expect`, `timeout`, …), которой схема вклада не
+ * знает и знать не обязана. `patternProperties`, `propertyNames` и счётчики
+ * свойств поэтому отбрасываются с названной причиной (`notes`).
+ */
+const KEY_SET_KEYWORDS = ['patternProperties', 'propertyNames', 'minProperties', 'maxProperties'] as const;
+
+/**
+ * Что вкладывается в узел-метку вида шага: подсхемы занятых ключей, их
+ * обязательность и остаток схемы документа целиком.
+ */
+interface StepKindOverlay {
+  /** Подсхема каждого занятого ключа из `document.schema.properties`. */
+  readonly properties: Readonly<Record<string, unknown>>;
+  /** Занятые ключи, объявленные схемой документа обязательными. */
+  readonly required: readonly string[];
+  /** Остаток схемы документа — уходит в узел отдельным членом `allOf`. */
+  readonly rest?: Readonly<Record<string, unknown>>;
+}
+
+function plainObject(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+/**
+ * Разложить схему документа вклада на вложимое в узел-метку и отброшенное.
+ *
+ * `properties` и `required` переносятся в сам узел — по занятым ключам: так
+ * ветвь синтезированной формы (`fields`) печатается ровно тем же, чем
+ * печаталась всегда. Всё остальное содержание схемы — `oneOf`, `if`/`then`,
+ * `dependentRequired` и любые другие применители — переносится целиком одним
+ * членом `allOf`: терять его молча значило бы печатать схему, которая не
+ * ограничивает ничего, не назвав ни одной причины.
+ *
+ * Отбрасываются двое: `type: object` и `additionalProperties` /
+ * `unevaluatedProperties` — узел и так объект, чей состав ключей закрыт
+ * строже (общая часть шага плюс занятые ключи, `additionalProperties: false`),
+ * так что вместе с ними не теряется ничего, — и ключи состава
+ * (`KEY_SET_KEYWORDS`), которые в узле увидели бы общую часть шага; вот они
+ * называются причиной в `notes`.
+ */
+function stepKindOverlay(entry: PluginStepKindEntry): {
+  readonly overlay: StepKindOverlay;
+  readonly dropped: readonly string[];
+} {
+  const schema = entry.schema as Record<string, unknown>;
+  const declared = new Set(entry.keys);
+  const propsRecord = plainObject(schema['properties']) ?? {};
+  const properties = Object.fromEntries(entry.keys.map((key) => [key, propsRecord[key] ?? {}]));
+  const required = Array.isArray(schema['required'])
+    ? (schema['required'] as readonly unknown[]).filter(
+        (key): key is string => typeof key === 'string' && declared.has(key),
+      )
+    : [];
+  const dropped = KEY_SET_KEYWORDS.filter((keyword) => keyword in schema);
+  const silent = new Set<string>(['properties', 'required', 'additionalProperties', 'unevaluatedProperties']);
+  const rest = Object.fromEntries(
+    Object.entries(schema).filter(
+      ([key, value]) =>
+        !silent.has(key) &&
+        !(dropped as readonly string[]).includes(key) &&
+        !(key === 'type' && value === 'object'),
+    ),
+  );
+  return {
+    overlay: { properties, required, ...(Object.keys(rest).length === 0 ? {} : { rest }) },
+    dropped,
+  };
 }
 
 /**
@@ -384,7 +493,7 @@ export function buildPublishedSchemas(
   stepKinds: readonly PluginStepKindEntry[] = [],
 ): PublishedSchemas {
   const predicateNames = predicates.map((entry) => entry.name);
-  const stepKindNames = stepKinds.map((entry) => entry.name);
+  const stepKindDescriptors = stepKinds.map((entry) => ({ name: entry.name, keys: entry.keys }));
 
   if (predicates.length === 0 && stepKinds.length === 0) {
     const { pipeline, job } = assemble([], new Map(), [], new Map());
@@ -392,10 +501,10 @@ export function buildPublishedSchemas(
   }
 
   // Вложена только пригодная схема; имени в карте нет — значение остаётся
-  // неограниченным. Невложимая схема не отменяет генерации: ключ предиката
-  // или вида шага всё равно признан (design.md, решение 3).
+  // неограниченным. Невложимая схема не отменяет генерации: ключи вида шага
+  // всё равно признаны (design.md, решение 3).
   const predicateValues = new Map<string, unknown>();
-  const stepKindValues = new Map<string, unknown>();
+  const stepKindValues = new Map<string, StepKindOverlay>();
   const notes: PublishedSchemaNote[] = [];
   const predicateOwner = (name: string): string => predicates.find((entry) => entry.name === name)?.owner ?? name;
   const stepKindOwner = (name: string): string => stepKinds.find((entry) => entry.name === name)?.owner ?? name;
@@ -406,13 +515,27 @@ export function buildPublishedSchemas(
     else notes.push({ kind: 'predicate', name: entry.name, plugin: entry.owner, reason });
   }
   for (const entry of stepKinds) {
-    const reason = unusableReason(entry.fields);
-    if (reason === undefined) stepKindValues.set(entry.name, entry.fields);
-    else notes.push({ kind: 'step_kind', name: entry.name, plugin: entry.owner, reason });
+    const reason = unusableReason(entry.schema);
+    if (reason !== undefined) {
+      notes.push({ kind: 'step_kind', name: entry.name, plugin: entry.owner, reason });
+      continue;
+    }
+    const { overlay, dropped } = stepKindOverlay(entry);
+    stepKindValues.set(entry.name, overlay);
+    if (dropped.length > 0) {
+      notes.push({
+        kind: 'step_kind',
+        name: entry.name,
+        plugin: entry.owner,
+        reason: `схема документа вложена без ${dropped.join(', ')}: рядом с ключами вида в шаге лежит общая часть (id, expect, timeout, …), и там эти ключи значили бы другое`,
+      });
+    }
   }
 
-  const assembleWith = (predicateSet: ReadonlyMap<string, unknown>, stepKindSet: ReadonlyMap<string, unknown>): Documents =>
-    assemble(predicateNames, predicateSet, stepKindNames, stepKindSet);
+  const assembleWith = (
+    predicateSet: ReadonlyMap<string, unknown>,
+    stepKindSet: ReadonlyMap<string, StepKindOverlay>,
+  ): Documents => assemble(predicateNames, predicateSet, stepKindDescriptors, stepKindSet);
 
   let documents = assembleWith(predicateValues, stepKindValues);
   if (documentReason(documents) !== undefined) {
@@ -431,7 +554,7 @@ export function buildPublishedSchemas(
       });
     }
     for (const name of [...stepKindValues.keys()]) {
-      const alone = new Map([[name, stepKindValues.get(name)]]);
+      const alone = new Map([[name, stepKindValues.get(name)!]]);
       const reason = documentReason(assembleWith(new Map(), alone));
       if (reason === undefined) continue;
       stepKindValues.delete(name);

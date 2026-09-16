@@ -62,8 +62,18 @@ function describeOwner(owner: string): string {
  * живёт знание о занятых именах (`pipeline/schema.ts`), а не приходят в ядро
  * доменными строками. Отказывает исключением; имя, которое проверка приняла,
  * ничем не подтверждается.
+ *
+ * Вклад и уже занятые вклады переданы непрозрачными значениями (design.md
+ * изменения `step-kind-document-contract`, Решение 7): проверке вида шага
+ * нужно прочесть объявленные вкладом ключи (`StepKindContribution.document`) и
+ * сверить их с ключами, занятыми другими вкладами того же вида, — а ядро
+ * доменного типа по-прежнему не узнаёт (`kernel-domain-free-imports`).
  */
-export type ContributionNameGuard = (name: string) => void;
+export type ContributionNameGuard = (
+  name: string,
+  contribution: unknown,
+  taken: ReadonlyMap<string, unknown>,
+) => void;
 
 export interface KernelOptions {
   /**
@@ -163,8 +173,11 @@ export class ContributionService<T> extends Service implements ContributionRegis
     // Проверка имени (`KernelOptions.nameGuards`) касается только плагина:
     // встроенные вклады регистрируют себя на корневой области ровно под теми
     // же именами (`run`, `script`, …), и это не конфликт, а определение
-    // (design.md, Решение 1).
-    if (owner !== BUILTIN_OWNER) this.nameGuard?.(name);
+    // (design.md, Решение 1). Уже занятые вклады переданы тем же неявным
+    // видом, что и регистрируемый (design.md изменения
+    // `step-kind-document-contract`, Решение 7) — проверке нужен доступ к их
+    // содержанию (например, к занятым ключам), а не только к перечню имён.
+    if (owner !== BUILTIN_OWNER) this.nameGuard?.(name, contribution, this.contributions);
 
     const existingOwner = this.owner(name);
     if (existingOwner !== undefined) {

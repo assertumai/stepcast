@@ -24,6 +24,7 @@ export type {
   StepKindDecisionRequest,
   StepKindDecisionResult,
   StepKindDecisions,
+  StepKindDocumentForm,
   StepKindInput,
   StepKindLog,
   StepKindOutcome,

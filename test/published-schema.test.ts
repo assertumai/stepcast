@@ -358,7 +358,14 @@ describe('published-schema: ветвь вида шага', () => {
   });
 
   it('невложимая схема полей вида шага не отменяет печати ключа, а называет причину', () => {
-    const stepKinds = [{ name: 'http_probe', fields: { $ref: '#/$defs/чужое' }, owner: 'http-checks' }];
+    const stepKinds = [
+      {
+        name: 'http_probe',
+        keys: ['http_probe'],
+        schema: { properties: { http_probe: { $ref: '#/$defs/чужое' } }, required: ['http_probe'] },
+        owner: 'http-checks',
+      },
+    ];
 
     const schemas = buildPublishedSchemas([], stepKinds);
 
@@ -373,6 +380,158 @@ describe('published-schema: ветвь вида шага', () => {
       validateJob({ version: 1, kind: 'job', steps: [{ id: 's', http_probe: { что: 'угодно' } }] }),
       true,
     );
+  });
+
+  it('вид со своей формой записи попал в схему проекта: оба ключа приняты, вложена document.schema, чужой ключ отклонён', () => {
+    const stepKinds = [
+      {
+        name: 'deploy-kind',
+        keys: ['deploy', 'to'],
+        schema: {
+          type: 'object',
+          properties: { deploy: { type: 'string' }, to: { type: 'string' } },
+          required: ['deploy', 'to'],
+          additionalProperties: false,
+        },
+        owner: 'deploy-steps',
+      },
+    ];
+
+    const { job } = buildPublishedSchemas([], stepKinds);
+    const validateJob = compileAny(job);
+
+    assert.equal(
+      validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 'prod', to: 'staging' }] }),
+      true,
+    );
+    // Форма document.schema вложена: значение не по ней отклонено.
+    assert.equal(
+      validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 42, to: 'staging' }] }),
+      false,
+    );
+    // Ключ, которого вид не объявлял, — отказ строгого объекта ветви.
+    assert.equal(
+      validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 'prod', to: 'staging', extra: 1 }] }),
+      false,
+    );
+  });
+
+  it('обязательность занятых ключей схемы документа доезжает до схемы проекта', () => {
+    // Ветвь шага требует один занятый ключ (тот, которым она собрана); какие
+    // из них обязательны на самом деле, объявляет `document.schema`, и её
+    // `required` обязан попасть в напечатанную схему — иначе редактор молчал
+    // бы о пропущенном ключе-спутнике.
+    const stepKinds = [
+      {
+        name: 'deploy-kind',
+        keys: ['deploy', 'to'],
+        schema: {
+          type: 'object',
+          properties: { deploy: { type: 'string' }, to: { type: 'string' } },
+          required: ['deploy', 'to'],
+        },
+        owner: 'deploy-steps',
+      },
+    ];
+
+    const { job, notes } = buildPublishedSchemas([], stepKinds);
+    const validateJob = compileAny(job);
+
+    assert.deepEqual(notes, []);
+    assert.equal(validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 'prod' }] }), false);
+    assert.equal(
+      validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 'prod', to: 'staging' }] }),
+      true,
+    );
+  });
+
+  it('ключ-спутник, не объявленный обязательным, схемой проекта принимается и без него', () => {
+    const stepKinds = [
+      {
+        name: 'deploy-kind',
+        keys: ['deploy', 'to'],
+        schema: {
+          type: 'object',
+          properties: { deploy: { type: 'string' }, to: { type: 'string' } },
+          required: ['deploy'],
+        },
+        owner: 'deploy-steps',
+      },
+    ];
+
+    const validateJob = compileAny(buildPublishedSchemas([], stepKinds).job);
+
+    assert.equal(validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 'prod' }] }), true);
+    assert.equal(
+      validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 'prod', to: 'staging' }] }),
+      true,
+    );
+    // Главный ключ схема документа объявила обязательным — шаг из одного
+    // спутника отклонён её словами, а не принят «потому что ключ занятый».
+    assert.equal(validateJob({ version: 1, kind: 'job', steps: [{ id: 's', to: 'staging' }] }), false);
+    assert.equal(validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 42 }] }), false);
+  });
+
+  it('схема документа без верхнеуровневого properties вкладывается целиком, а не теряется молча', () => {
+    // `{ oneOf: [...] }` — законная JSON Schema, которую `unusableReason`
+    // признаёт пригодной. Вложение только по `properties` оставило бы пустые
+    // схемы по всем ключам и ни одной названной причины.
+    const stepKinds = [
+      {
+        name: 'deploy-kind',
+        keys: ['deploy', 'to'],
+        schema: {
+          oneOf: [
+            { required: ['deploy'], properties: { deploy: { type: 'string' } } },
+            { required: ['to'], properties: { to: { type: 'string' } } },
+          ],
+        },
+        owner: 'deploy-steps',
+      },
+    ];
+
+    const { job, notes } = buildPublishedSchemas([], stepKinds);
+    const validateJob = compileAny(job);
+
+    assert.deepEqual(notes, []);
+    assert.equal(validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 'prod' }] }), true);
+    assert.equal(validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 42 }] }), false);
+    // Оба ключа сразу — `oneOf` не выполнен ровно одной ветвью.
+    assert.equal(
+      validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 'prod', to: 'staging' }] }),
+      false,
+    );
+  });
+
+  it('ключ состава, который в узле увидел бы общую часть шага, отброшен с названной причиной', () => {
+    const stepKinds = [
+      {
+        name: 'deploy-kind',
+        keys: ['deploy'],
+        schema: {
+          type: 'object',
+          properties: { deploy: { type: 'string' } },
+          required: ['deploy'],
+          // В узле-метке это увидело бы `id`, `expect`, `timeout` и прочую
+          // общую часть шага — вложить нельзя, а промолчать нечестно.
+          propertyNames: { pattern: '^deploy$' },
+        },
+        owner: 'deploy-steps',
+      },
+    ];
+
+    const { job, notes } = buildPublishedSchemas([], stepKinds);
+
+    assert.equal(notes.length, 1);
+    assert.equal(notes[0]?.kind, 'step_kind');
+    assert.equal(notes[0]?.name, 'deploy-kind');
+    assert.equal(notes[0]?.plugin, 'deploy-steps');
+    assert.match(notes[0]?.reason ?? '', /propertyNames/);
+
+    // Печать не отменена: ключ признан, форма его значения проверяется.
+    const validateJob = compileAny(job);
+    assert.equal(validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 'prod' }] }), true);
+    assert.equal(validateJob({ version: 1, kind: 'job', steps: [{ id: 's', deploy: 42 }] }), false);
   });
 
   it('схема проекта знает плагинный вид шага действующего реестра', async () => {

@@ -13,7 +13,7 @@ import type { Kernel } from '../core/plugins/kernel.js';
 import { kernelFromRegistry, registryFromKernel, type Registry } from '../core/plugins/registry.js';
 import type { TreeRow } from '../core/plugins/tree.js';
 import type { Job, ModelOrigin, Pipeline } from '../core/pipeline/model.js';
-import { isBuiltinStepKind } from '../core/plugins/contract.js';
+import { hasStepExecutor } from '../core/plugins/contract.js';
 import { layoutJobs, type JobGraph } from './graph.js';
 import { paramViews, type StepParamView } from './steps.js';
 
@@ -251,7 +251,7 @@ function pluginStepView(
   'pluginKindName' | 'pluginKindTitle' | 'pluginFields' | 'pluginHasOutput' | 'pluginUnknownReason'
 > {
   const contribution = registry.steps.get(step.name);
-  if (contribution === undefined || isBuiltinStepKind(contribution)) {
+  if (contribution === undefined || !hasStepExecutor(contribution)) {
     return {
       pluginKindName: step.name,
       pluginUnknownReason: `вид шага ${step.name} действующему реестру неизвестен`,

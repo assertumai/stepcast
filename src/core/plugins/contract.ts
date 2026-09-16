@@ -276,6 +276,29 @@ export interface StepKindOutcome {
 }
 
 /**
+ * Форма записи вклада в документе (design.md, Решение 1) — вторая, полная
+ * форма объявления, рядом с одноключевой `fields`. Даёт вкладу то, что
+ * движок сегодня выводит из имени и не позволяет переопределить: узнавание
+ * шага (`test`), перечень занятых ключей документа (`keys`), форму записи
+ * (`schema`) и разбор сырого шага в поля (`parse`).
+ *
+ * `fields` контракта остаётся обязательной и при объявленном `document`: она
+ * описывает вход `execute`, а не запись документа, — и именно её движок
+ * проверяет второй раз, по окончательным значениям, перед попыткой
+ * (`exec/pluginStep.ts`). `parse` — превращение одной формы в другую.
+ */
+export interface StepKindDocumentForm {
+  /** Узнать свой шаг среди сырых — замена «ключ равен имени вида». */
+  test(raw: Readonly<Record<string, unknown>>): boolean;
+  /** Ключи документа, которые вид занимает помимо общей части шага. */
+  readonly keys: readonly string[];
+  /** JSON Schema шага в этой форме — без ключей общей части. */
+  readonly schema: Readonly<Record<string, unknown>>;
+  /** Разобрать сырой шаг (уже после раскрытия подстановок) в поля вклада — вход `execute`. */
+  parse(raw: Readonly<Record<string, unknown>>): unknown;
+}
+
+/**
  * Вклад вида шага — публикуемая форма (design.md, решение 1, решение 2).
  * Единственная, которую видит автор плагина: `stepcast/plugin` экспортирует
  * ровно этот тип. Форма полей — JSON Schema, той же причиной, что и у формы
@@ -283,7 +306,7 @@ export interface StepKindOutcome {
  * объединении схем документа даёт неотлаживаемые отказы.
  */
 export interface StepKindContribution {
-  /** Имя вида — оно же единственный ключ шага в документе (design.md, решение 3). */
+  /** Имя вида — оно же единственный ключ шага в документе, если вклад не объявил `document` (design.md, решение 3). */
   readonly name: string;
   /** Название для витрины и диагностики. */
   readonly title: string;
@@ -300,6 +323,12 @@ export interface StepKindContribution {
    * входе способность `StepKindInput.decision`.
    */
   readonly waits?: true;
+  /**
+   * Собственная форма записи в документе (design.md, Решение 1) — необязательна:
+   * вклад без неё узнаётся ключом-именем, и движок сам синтезирует ту же
+   * четвёрку из имени и `fields` (`pipeline/expand.ts`).
+   */
+  readonly document?: StepKindDocumentForm;
   /** Статическая проверка полей — то, что видно до первого токена. */
   lint?(fields: unknown, site: LintSite): readonly PluginDiagnostic[];
   /** Исполнить попытку. Исключение — непройденная попытка, а не крушение шага. */
@@ -308,13 +337,13 @@ export interface StepKindContribution {
 
 /**
  * Внутренняя форма вклада вида шага — только для встроенных `agent`, `run`,
- * `script` и `uses` (design.md, решение 2). В публикуемой поверхности плагина
- * её нет: у встроенных видов есть типизированная модель и типизированный
- * разбор, а `fields`/`execute` заставили бы их пройти через JSON Schema и
- * общий исполнитель ради симметрии, которой никто не пользуется, — вид,
- * которого автор плагина никогда не напишет своими руками.
+ * `script` и `uses` (design.md, решение 2, решение 4). В публикуемой
+ * поверхности плагина её нет: у встроенных видов есть типизированная модель и
+ * типизированный разбор, а `fields`/`execute` заставили бы их пройти через
+ * JSON Schema и общий исполнитель ради симметрии, которой никто не
+ * пользуется, — вид, которого автор плагина никогда не напишет своими руками.
  */
-export interface BuiltinStepKindDocument {
+export interface NativeStepKindForm {
   /**
    * Узнать шаг этого вида среди уже провалидированных документом: замена
    * дискриминанта размеченного объединения, которого у `RawStep` нет
@@ -326,30 +355,42 @@ export interface BuiltinStepKindDocument {
 }
 
 /** Встроенный вид шага в реестре: имя, название и внутренняя форма разбора. */
-export interface BuiltinStepKind {
+export interface NativeStepKind {
   readonly name: string;
   readonly title: string;
-  readonly document: BuiltinStepKindDocument;
+  readonly native: NativeStepKindForm;
 }
 
 /**
  * Вид шага в реестре — плагинный либо встроенный (design.md, решение 2). Тип
  * внутренний: `stepcast/plugin` публикует только `StepKindContribution` —
- * автор плагина форму `document` не видит и завести её не может.
+ * автор плагина внутреннюю форму `native` не видит и завести её не может.
  */
-export type StepKind = StepKindContribution | BuiltinStepKind;
+export type StepKind = StepKindContribution | NativeStepKind;
 
 /**
- * Встроенный вид (форма `document`) отличается от плагинного наличием этого
- * поля. Проверяется само содержание поля, а не одно его имя: вклад, случайно
- * назвавший поле `document`, иначе был бы принят за встроенный, и разбор звал
- * бы `document.test` на объекте без такого метода. Декларативному вкладу это
- * имя запрещено схемой (`StepKindContributionSchema`), плагину контекста —
- * ничем: он зовёт `ctx.steps.register` напрямую.
+ * Встроенный вид (внутренняя форма `native`) отличается от плагинного
+ * наличием этого поля. Проверяется само содержание поля, а не одно его имя:
+ * вклад, случайно назвавший поле `native`, иначе был бы принят за встроенный,
+ * и разбор звал бы `native.test` на объекте без такого метода. Декларативному
+ * вкладу это имя запрещено схемой (`StepKindContributionSchema`), плагину
+ * контекста — ничем: он зовёт `ctx.steps.register` напрямую.
  */
-export function isBuiltinStepKind(kind: StepKind): kind is BuiltinStepKind {
-  const document = (kind as BuiltinStepKind).document as BuiltinStepKindDocument | undefined;
-  return typeof document?.test === 'function' && typeof document.parse === 'function';
+export function isNativeStepKind(kind: StepKind): kind is NativeStepKind {
+  const native = (kind as NativeStepKind).native as NativeStepKindForm | undefined;
+  return typeof native?.test === 'function' && typeof native.parse === 'function';
+}
+
+/**
+ * Вклад умеет исполняться сам — то, что отличает `StepKindContribution` от
+ * внутренней формы встроенных видов, не спрашивая о происхождении (design.md,
+ * Решение 4): узнавание, ветвь схемы документа, статическая проверка, выбор
+ * исполнителя, печать схемы проекта и карточка витрины решают именно этим
+ * вопросом, а не `isNativeStepKind`, — вид, внесённый строкой дерева
+ * (`decision`), проходит через них наравне с плагинным.
+ */
+export function hasStepExecutor(kind: StepKind): kind is StepKindContribution {
+  return typeof (kind as StepKindContribution).execute === 'function';
 }
 
 export interface StepcastPlugin {
@@ -454,6 +495,26 @@ const CommandContributionSchema = z
   })
   .loose();
 
+/**
+ * Форма `StepKindDocumentForm` при загрузке: перечень занятых ключей —
+ * непустой список строк (design.md, Решение 2 — перечень объявляется, а не
+ * выводится из схемы, и пустой список нечего было бы объявлять), `schema` —
+ * объект, `test`/`parse` — функции. Формулировки отказов — тем же образцом,
+ * что у соседних полей вклада.
+ */
+const StepKindDocumentFormSchema = z
+  .object({
+    test: z.custom<StepKindDocumentForm['test']>((value) => typeof value === 'function', {
+      message: 'должна быть функцией',
+    }),
+    keys: z.array(z.string()).min(1, 'перечень занятых ключей не может быть пустым'),
+    schema: z.record(z.string(), z.unknown()),
+    parse: z.custom<StepKindDocumentForm['parse']>((value) => typeof value === 'function', {
+      message: 'должна быть функцией',
+    }),
+  })
+  .loose();
+
 const StepKindContributionSchema = z
   .object({
     name: z.string().regex(SLUG, 'имя вида шага — слаг в kebab-case или snake_case'),
@@ -466,6 +527,8 @@ const StepKindContributionSchema = z
     waits: z
       .literal(true, 'вид либо распоряжается сроком сам (waits: true), либо не объявляет waits вовсе')
       .optional(),
+    /** Собственная форма записи в документе (design.md, Решение 1) — необязательна. */
+    document: StepKindDocumentFormSchema.optional(),
     lint: z
       .custom<NonNullable<StepKindContribution['lint']>>((value) => typeof value === 'function', {
         message: 'должна быть функцией',
@@ -475,15 +538,15 @@ const StepKindContributionSchema = z
       message: 'должна быть функцией',
     }),
     /**
-     * Поле внутренней формы встроенного вида (`BuiltinStepKindDocument`): по
-     * его наличию `isBuiltinStepKind` отличает встроенный вид от плагинного.
+     * Поле внутренней формы встроенного вида (`NativeStepKindForm`): по его
+     * наличию `isNativeStepKind` отличает встроенный вид от плагинного.
      * Плагинный вклад, случайно несущий это имя, был бы принят за встроенный,
-     * и разбор позвал бы `document.test` на объекте без него. Объект здесь
+     * и разбор позвал бы `native.test` на объекте без него. Объект здесь
      * `.loose()` — остальные лишние поля вклада безобидны, — поэтому запрет
      * именной: он один и нужен.
      */
-    document: z
-      .undefined('поле document принадлежит внутренней форме встроенного вида шага и вкладу недоступно')
+    native: z
+      .undefined('поле native принадлежит внутренней форме встроенного вида шага и вкладу недоступно')
       .optional(),
   })
   .loose();

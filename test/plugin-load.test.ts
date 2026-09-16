@@ -236,11 +236,15 @@ describe('plugin-contributions: загрузка плагинов', () => {
     );
   });
 
-  it('вклад вида шага не вправе нести поле внутренней формы document', async () => {
+  it('вклад вида шага не вправе нести поле внутренней формы native', async () => {
+    // Поле `document` вкладу теперь разрешено — это его собственная форма
+    // записи. Внутренней формой встроенных видов осталась `native`, и запрет
+    // переехал на неё: вклад, случайно назвавший это поле, был бы принят за
+    // встроенный вид, чей разбор отдаёт типизированную модель шага.
     const place = bed();
     writeModule(
       join(place.root, '.stepcast', 'plugins', 'самозванец.mjs'),
-      'export default { name: "steps-impostor", steps: [{ name: "http", title: "HTTP", fields: { type: "object" }, execute: () => ({}), document: {} }] };\n',
+      'export default { name: "steps-impostor", steps: [{ name: "http", title: "HTTP", fields: { type: "object" }, execute: () => ({}), native: { test: () => true, parse: () => ({}) } }] };\n',
     );
     const config = resolved(place, { project: 'plugins: ["./plugins/самозванец.mjs"]\n' });
 
@@ -248,10 +252,47 @@ describe('plugin-contributions: загрузка плагинов', () => {
       () => loadPlugins(config, { projectRoot: place.root }),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
-        assert.match(error.message, /steps\.0\.document/);
+        assert.match(error.message, /steps\.0\.native/);
         return true;
       },
     );
+  });
+
+  it('форма document вклада проверяется при загрузке, называя промахнувшееся поле', async () => {
+    const place = bed();
+    const kind = (document: string): string =>
+      `export default { name: "steps-broken", steps: [{ name: "deploy-kind", title: "Деплой", fields: { type: "object" }, execute: () => ({}), document: ${document} }] };\n`;
+
+    // Без `parse`, с пустым перечнем ключей, со схемой, не являющейся объектом.
+    const cases: readonly (readonly [string, string, RegExp])[] = [
+      ['без-parse', kind('{ test: () => true, keys: ["deploy"], schema: { type: "object" } }'), /steps\.0\.document\.parse/],
+      [
+        'пустые-ключи',
+        kind('{ test: () => true, keys: [], schema: { type: "object" }, parse: (raw) => raw }'),
+        /steps\.0\.document\.keys/,
+      ],
+      [
+        'схема-строкой',
+        kind('{ test: () => true, keys: ["deploy"], schema: "объект", parse: (raw) => raw }'),
+        /steps\.0\.document\.schema/,
+      ],
+    ];
+
+    for (const [name, source, expected] of cases) {
+      writeModule(join(place.root, '.stepcast', 'plugins', `${name}.mjs`), source);
+      const config = resolved(place, { project: `plugins: ["./plugins/${name}.mjs"]\n` });
+
+      await assert.rejects(
+        () => loadPlugins(config, { projectRoot: place.root }),
+        (error: unknown) => {
+          assert.ok(error instanceof StepcastError, name);
+          assert.match(error.message, expected, name);
+          // Отказ называет и плагин — модулем, которым он объявлен.
+          assert.match(error.message, new RegExp(`Плагин \\./plugins/${name}\\.mjs`), name);
+          return true;
+        },
+      );
+    }
   });
 
   it('waits не значением true отказывает при загрузке с названной причиной', async () => {

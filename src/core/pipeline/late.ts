@@ -1,4 +1,6 @@
 import { StepcastError } from '../errors.js';
+import { hasStepExecutor } from '../plugins/contract.js';
+import type { Registry } from '../plugins/registry.js';
 import { interpolateTree, interpolateTypedTree, type Scope } from './interpolate.js';
 import type { Job, Step } from './model.js';
 
@@ -124,8 +126,17 @@ function omitLateSkipped(step: Step): Step {
  * (`omitLateSkipped`) и возвращается с тем же раскрытым значением: `params`
  * там — та же величина, что и `input` шага, и разъехаться им нельзя, иначе
  * замок и витрина показали бы параметры, отличные от уехавших в `input.json`.
+ *
+ * Реестр нужен здесь одному — адресу непроходимой подстановки в полях шага
+ * плагинного вида: у вклада с собственной формой записи имя вида в документе
+ * не звучит вовсе, и `jobs.build.steps.0.deploy-kind` назвал бы путь, которого
+ * в файле нет. Адрес поэтому тот же, что у всех прочих отказов этого вида, —
+ * адрес самого шага (design.md изменения `step-kind-document-contract`,
+ * Решение 6). Реестр необязателен: раскрытие вызывают и там, где плагинных
+ * видов нет вовсе, а вклад без собственной формы записи адресуется своим
+ * ключом и без него.
  */
-export function resolveLate(job: Job, scope: LateScope): Job {
+export function resolveLate(job: Job, scope: LateScope, registry?: Registry): Job {
   const { display, ...resolvable } = job;
   const lateScope: Scope = {
     values: { jobs: scope.jobs, run: scope.run, env: scope.env },
@@ -144,7 +155,11 @@ export function resolveLate(job: Job, scope: LateScope): Job {
       const original = resolvable.steps[index];
       if (original === undefined) return step;
       if (original.kind === 'plugin' && step.kind === 'plugin') {
-        const at = `jobs.${job.id}.steps.${index}.${original.name}`;
+        const contribution = registry?.steps.get(original.name);
+        const ownDocument =
+          contribution !== undefined && hasStepExecutor(contribution) && contribution.document !== undefined;
+        const base = `jobs.${job.id}.steps.${index}`;
+        const at = ownDocument ? base : `${base}.${original.name}`;
         return { ...step, fields: interpolateTypedTree(original.fields, lateScope, at).value };
       }
       if (original.kind !== 'script' || step.kind !== 'script') return step;

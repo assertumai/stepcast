@@ -14,13 +14,13 @@ import { assertDataKey } from '../journal/data.js';
 import { findProjectRoot } from '../journal/paths.js';
 import { findPackageRoot, packagedSchemaPath, packagedWrapperPath } from '../package-schema.js';
 import { builtinRegistry } from '../../parts/builtin.js';
-import { isBuiltinStepKind, type BuiltinStepKindDocument, type StepKind, type StepKindContribution } from '../plugins/contract.js';
+import { hasStepExecutor, isNativeStepKind, type NativeStepKindForm, type StepKind, type StepKindContribution, type StepKindDocumentForm } from '../plugins/contract.js';
 import type { Kernel } from '../plugins/kernel.js';
 import {
   contributionOwner,
   formerStepKindOwner,
   predicateNames,
-  pluginStepKindNames,
+  pluginStepKindDescriptors,
   stepKindNames,
   type Registry,
 } from '../plugins/registry.js';
@@ -706,7 +706,7 @@ function recordPromptSubstitutions(
  * общего обхода уже вынесен `display` работы.
  */
 function typedStepKeys(registry: Registry): readonly string[] {
-  return ['input', 'with', ...pluginStepKindNames(registry)];
+  return ['input', 'with', ...pluginStepKindDescriptors(registry).flatMap((descriptor) => descriptor.keys)];
 }
 
 function omitStepInputs(rawSteps: unknown, registry: Registry): unknown {
@@ -1282,44 +1282,141 @@ export function validateStepKindFields(kind: StepKindContribution, value: unknow
 }
 
 /**
- * Шаг плагинного вида: один ключ — имя вклада, — все поля под ним
- * (design.md, решение 3). Поля раскрываются типизированным проходом, тем же,
- * каким раскрывается `input` шага `script` (design.md, решение 5): подстановка
- * на объект или список не должна превращаться в строку.
+ * Форма документа вклада — объявленная либо синтезированная из имени и
+ * `fields` (design.md, Решение 1): `test` = «ключ с именем вида присутствует»,
+ * `keys` = `[имя]`, `schema` = `{ properties: { имя: fields }, required:
+ * [имя] }`, `parse` = «значение под ключом». Одна функция, которой пользуются
+ * и узнавание (`matchStepKind`), и разбор (`toPluginStep`), и сборка ветви
+ * схемы (`registry.pluginStepKindDescriptors`, `published-schema.ts`) — ни
+ * один из них не ветвится по тому, объявил вклад `document` сам или нет.
+ */
+function documentFormOf(kind: StepKindContribution): StepKindDocumentForm {
+  if (kind.document !== undefined) return kind.document;
+  const { name, fields } = kind;
+  return {
+    test: (raw) => name in raw,
+    keys: [name],
+    schema: { properties: { [name]: fields }, required: [name] },
+    parse: (raw) => (raw as Record<string, unknown>)[name],
+  };
+}
+
+/**
+ * Узнавание шага любого вида — тест, независимо от происхождения (design.md,
+ * Решение 4): вклад со своим исполнителем узнаётся объявленным либо
+ * синтезированным `documentFormOf(kind).test`, внутренняя форма встроенных —
+ * `native.test`. Вопрос — `hasStepExecutor`, а не `isNativeStepKind`: о
+ * происхождении вклада узнавание не спрашивает вовсе, и вклад, случайно
+ * несущий поле `native` (декларативному это имя запрещено схемой загрузки, а
+ * плагину контекста — ничем), узнаётся своей формой, а не падает на чтении
+ * документа голым TypeError. `matchStepKind` и `rejectUnknownStepKinds`
+ * спрашивают только эту функцию, без своей ветви «встроенный / плагинный».
+ */
+function stepKindTest(kind: StepKind): (raw: Readonly<Record<string, unknown>>) => boolean {
+  return hasStepExecutor(kind) ? documentFormOf(kind).test : kind.native.test;
+}
+
+/**
+ * Проверить сырую запись шага, узнанного видом с собственной формой
+ * документа, его `document.schema` — тем же `ajv` и той же формой отказа, что
+ * и у `validateStepKindFields` ниже, только на записи документа, а не на
+ * разобранных полях (design.md, Решение 6). Не зовётся для вклада без
+ * `document`: его синтезированная форма всегда проходит собственную же схему,
+ * и вторая проверка была бы дублированием `validateStepKindFields` под другим
+ * текстом отказа.
+ */
+function validateStepKindDocument(
+  kind: StepKindContribution & { readonly document: StepKindDocumentForm },
+  value: unknown,
+  at: string,
+  registry: Registry,
+): void {
+  const validate = ajv.compile(kind.document.schema as object);
+  if (!validate(value)) {
+    const detail = (validate.errors ?? [])
+      .map((error) => `${error.instancePath === '' ? 'значение' : error.instancePath} ${error.message ?? ''}`.trim())
+      .join('; ');
+    const owner = contributionOwner(registry, 'steps', kind.name) ?? 'неизвестный';
+    throw new StepcastError(`Шаг вида ${kind.name} не соответствует его форме: ${detail}`, {
+      at,
+      hint: `Форму объявляет плагин ${owner}, внёсший вид шага ${kind.name}`,
+    });
+  }
+}
+
+/**
+ * Шаг плагинного вида: занятые ключи вклада — объявленные `document.keys`
+ * либо единственное имя (design.md, Решение 1). Каждый раскрывается
+ * типизированным проходом, тем же, каким раскрывается `input` шага `script`
+ * (design.md, решение 5): подстановка на объект или список не должна
+ * превращаться в строку. Дальше — `document.schema` (только если форма
+ * объявлена вкладом — иначе это была бы вторая проверка той же `fields`
+ * схемой под новым текстом отказа), `parse` в обёртке отказа разбора
+ * (design.md, Решение 6) и `fields` — как и раньше.
  */
 function toPluginStep(
   rawRecord: Record<string, unknown>,
   kind: StepKindContribution,
   ctx: BuiltinStepParseContext,
 ): Step {
-  const at = `${ctx.at}.${kind.name}`;
-  const result = interpolateTypedTree(rawRecord[kind.name], ctx.scope, at);
-  for (const [path, list] of result.substitutions) ctx.substitutions.set(path, list);
+  const form = documentFormOf(kind);
+  const hasOwnDocument = kind.document !== undefined;
+  // Адрес отказа для формы документа — адрес самого шага: разобранные поля
+  // пути в документе не имеют. Для формы `fields` — прежний адрес ключа.
+  const at = hasOwnDocument ? ctx.at : `${ctx.at}.${kind.name}`;
+
+  const values: Record<string, unknown> = {};
+  let hasDeferred = false;
+  for (const key of form.keys) {
+    const keyAt = `${ctx.at}.${key}`;
+    const result = interpolateTypedTree(rawRecord[key], ctx.scope, keyAt);
+    for (const [path, list] of result.substitutions) ctx.substitutions.set(path, list);
+    if ([...result.substitutions.values()].some((list) => list.some((sub) => sub.deferred))) {
+      hasDeferred = true;
+    }
+    values[key] = result.value;
+  }
 
   // Схема проверяется по тому, что известно статически: поле, несущее
   // отложенную подстановку (`${jobs.*}`), ещё не раскрыто и почти наверняка не
   // пройдёт схему как строка-плейсхолдер. Вторая проверка — перед исполнением,
   // по окончательным значениям (`runner.ts`, тот же образец, что у
   // `uses.paramsSchema`).
-  const hasDeferred = [...result.substitutions.values()].some((list) => list.some((sub) => sub.deferred));
+  if (hasOwnDocument && !hasDeferred) {
+    validateStepKindDocument(kind as StepKindContribution & { document: StepKindDocumentForm }, values, at, ctx.registry);
+  }
+
+  let fields: unknown;
+  try {
+    fields = form.parse(values);
+  } catch (error) {
+    const owner = contributionOwner(ctx.registry, 'steps', kind.name) ?? 'неизвестный';
+    throw new StepcastError(
+      `Разбор шага вида ${kind.name} отказал: ${error instanceof Error ? error.message : String(error)}`,
+      { at, hint: `Разбор объявляет плагин ${owner}, внёсший вид шага ${kind.name}`, cause: error },
+    );
+  }
+
   if (!hasDeferred) {
-    validateStepKindFields(kind, result.value, at, ctx.registry);
+    validateStepKindFields(kind, fields, at, ctx.registry);
   }
 
   return {
     ...ctx.common,
     kind: 'plugin',
     name: kind.name,
-    fields: result.value,
+    fields,
   };
 }
 
 /**
  * Вид шага, узнавший себя в сыром шаге, — обход реестра вместо перечисления
- * (design.md, решение 1, решение 2): встроенные узнают себя формой
- * `document.test`, плагинные — присутствием своего имени-ключа. Порядок обхода
- * — порядок регистрации в `createKernelShell` (`src/parts/builtin.ts`): `run`,
- * `uses`, `script`, `agent`, затем плагинные в порядке их загрузки.
+ * (design.md, решение 1, решение 2): каждый вид узнаётся своей формой
+ * (`stepKindTest`), без ветви «встроенный / плагинный» в самом обходе. Порядок
+ * обхода — порядок регистрации в `createKernelShell` (`src/parts/builtin.ts`):
+ * `run`, `uses`, `script`, `agent`, затем плагинные в порядке их загрузки.
+ * Побеждает первый по порядку регистрации (design.md, Решение 8) — два вида,
+ * узнавшие один и тот же сырой шаг, не различаются иначе.
  *
  * Отдельной функцией, потому что вопрос «какого вида этот шаг» задаётся
  * дважды: при разборе (`toStep`) и раньше него — проверкой документа
@@ -1327,8 +1424,8 @@ function toPluginStep(
  * вид шага, а не разваливался дампом объединения схем.
  */
 function matchStepKind(rawRecord: Record<string, unknown>, registry: Registry): StepKind | undefined {
-  for (const [name, kind] of registry.steps) {
-    if (isBuiltinStepKind(kind) ? kind.document.test(rawRecord) : name in rawRecord) return kind;
+  for (const [, kind] of registry.steps) {
+    if (stepKindTest(kind)(rawRecord)) return kind;
   }
   return undefined;
 }
@@ -1421,8 +1518,11 @@ function toStep(
 
   const matched = matchStepKind(rawRecord, registry);
   if (matched !== undefined) {
-    return isBuiltinStepKind(matched)
-      ? (matched.document.parse(raw, ctx) as StepParseResult)
+    // Единственная оставшаяся ветвь по происхождению (design.md, Решение 4):
+    // встроенный разбор отдаёт типизированный вариант модели `Step` движка,
+    // плагинный — поля, которые движок сам кладёт в `PluginStep`.
+    return isNativeStepKind(matched)
+      ? (matched.native.parse(raw, ctx) as StepParseResult)
       : { step: toPluginStep(rawRecord, matched, ctx) };
   }
 
@@ -1438,19 +1538,19 @@ function toStep(
 
 /**
  * Зарегистрировать четыре встроенных вида шага в сервисе `steps` ядра —
- * вкладом внутренней формы `document` (design.md, решение 2), тем же вызовом,
- * каким регистрируется плагинный. Вызывается `createKernelShell`
+ * вкладом внутренней формы `native` (design.md, решение 2, решение 4), тем же
+ * вызовом, каким регистрируется плагинный. Вызывается `createKernelShell`
  * (`src/parts/builtin.ts`), а не отсюда: ядро — модуль `plugins`, а разбор —
  * модуль `pipeline`, и порядок регистрации здесь же фиксирует порядок обхода
  * `toStep` — `run`, `uses`, `script` раньше `agent` (см. комментарий у
  * `parseUsesStep`).
  */
 export function registerBuiltinStepKinds(kernel: Kernel): void {
-  const entries: readonly { readonly name: string; readonly title: string; readonly document: BuiltinStepKindDocument }[] = [
-    { name: 'run', title: 'Команда', document: { test: isRunStepRaw, parse: parseRunStep } },
-    { name: 'uses', title: 'Переиспользуемый шаг', document: { test: isUsesStepRaw, parse: parseUsesStep } },
-    { name: 'script', title: 'Скрипт', document: { test: isScriptStepRaw, parse: parseScriptStep } },
-    { name: 'agent', title: 'Агент', document: { test: isAgentStepRaw, parse: parseAgentStep } },
+  const entries: readonly { readonly name: string; readonly title: string; readonly native: NativeStepKindForm }[] = [
+    { name: 'run', title: 'Команда', native: { test: isRunStepRaw, parse: parseRunStep } },
+    { name: 'uses', title: 'Переиспользуемый шаг', native: { test: isUsesStepRaw, parse: parseUsesStep } },
+    { name: 'script', title: 'Скрипт', native: { test: isScriptStepRaw, parse: parseScriptStep } },
+    { name: 'agent', title: 'Агент', native: { test: isAgentStepRaw, parse: parseAgentStep } },
   ];
   for (const entry of entries) kernel.ctx.steps.register(entry.name, entry);
 }
@@ -1480,7 +1580,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   // Схемы документа зависят от загруженных плагинов: ключ предиката и ключ
   // плагинного вида шага — закрытые объединения, и без их ветвей предикат или
   // шаг отклонялись бы как опечатка.
-  const pluginKinds = pluginStepKindNames(registry);
+  const pluginKinds = pluginStepKindDescriptors(registry);
   const schemas =
     registry.predicates.size === 0 && pluginKinds.length === 0
       ? { PipelineDocumentSchema, JobDocumentSchema }

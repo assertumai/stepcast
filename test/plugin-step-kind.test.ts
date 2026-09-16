@@ -166,6 +166,143 @@ describe('step-kinds-registry: реестр видов шага', () => {
     );
   });
 
+  it('занятый ключ вида шага не вправе совпасть с ключом встроенного вида (prompt)', async () => {
+    const kernel = createBuiltinKernel();
+    await assert.rejects(
+      () =>
+        applyDeclarativePlugin(
+          kernel,
+          {
+            name: 'greedy',
+            steps: [
+              fakeStepKind({
+                name: 'deploy-kind',
+                document: {
+                  test: (raw) => 'deploy' in raw,
+                  keys: ['deploy', 'prompt'],
+                  schema: { type: 'object', properties: {}, required: [] },
+                  parse: (raw) => raw,
+                },
+              }),
+            ],
+          },
+          '<synthetic>',
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /prompt/);
+        assert.match(error.message, /agent/);
+        return true;
+      },
+    );
+  });
+
+  it('имя вида с объявленной формой документа проверяется наравне с занятыми ключами', async () => {
+    // Занятые ключи вида с собственной формой записи имени не содержат, но
+    // спека требует отвергать при регистрации «имя вида шага **и** всякий
+    // объявленный им занятый ключ»: именем `expect` или `prompt` вид звался бы
+    // в реестре, диагностике и витрине именем чужого ключа.
+    const documentOf = (key: string) => ({
+      test: (raw: Record<string, unknown>) => key in raw,
+      keys: [key],
+      schema: { type: 'object', properties: {}, required: [] },
+      parse: (raw: unknown) => raw,
+    });
+
+    await assert.rejects(
+      () =>
+        applyDeclarativePlugin(
+          createBuiltinKernel(),
+          { name: 'greedy', steps: [fakeStepKind({ name: 'expect', document: documentOf('deploy') })] },
+          '<synthetic>',
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.message, 'Имя вида шага expect занято ключом общей части шага');
+        return true;
+      },
+    );
+
+    await assert.rejects(
+      () =>
+        applyDeclarativePlugin(
+          createBuiltinKernel(),
+          { name: 'greedy', steps: [fakeStepKind({ name: 'prompt', document: documentOf('deploy') })] },
+          '<synthetic>',
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.equal(error.message, 'Имя вида шага prompt занято ключом встроенного вида шага agent');
+        return true;
+      },
+    );
+  });
+
+  it('имя вида с формой документа не вправе совпасть с ключом, занятым другим видом', async () => {
+    const kernel = createBuiltinKernel();
+    await applyDeclarativePlugin(
+      kernel,
+      {
+        name: 'first',
+        steps: [
+          fakeStepKind({
+            name: 'first-kind',
+            document: {
+              test: (raw) => 'shared' in raw,
+              keys: ['shared'],
+              schema: { type: 'object', properties: {}, required: [] },
+              parse: (raw) => raw,
+            },
+          }),
+        ],
+      },
+      '<first>',
+    );
+
+    // Вид без собственной формы записи занимает ключ-имя: `shared` уже занят
+    // соседом, и в документе два вида боролись бы за один ключ.
+    await assert.rejects(
+      () =>
+        applyDeclarativePlugin(kernel, { name: 'second', steps: [fakeStepKind({ name: 'shared' })] }, '<second>'),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /shared/);
+        assert.match(error.message, /first-kind/);
+        return true;
+      },
+    );
+  });
+
+  it('два вида шага на один занятый ключ — отказ называет ключ и обоих претендентов', async () => {
+    const kernel = createBuiltinKernel();
+    const documentOf = (key: string) => ({
+      test: (raw: Record<string, unknown>) => key in raw,
+      keys: [key],
+      schema: { type: 'object', properties: {}, required: [] },
+      parse: (raw: unknown) => raw,
+    });
+    await applyDeclarativePlugin(
+      kernel,
+      { name: 'first', steps: [fakeStepKind({ name: 'first-kind', document: documentOf('shared') })] },
+      '<first>',
+    );
+    await assert.rejects(
+      () =>
+        applyDeclarativePlugin(
+          kernel,
+          { name: 'second', steps: [fakeStepKind({ name: 'second-kind', document: documentOf('shared') })] },
+          '<second>',
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /shared/);
+        assert.match(error.message, /first-kind/);
+        assert.match(error.message, /second-kind/);
+        return true;
+      },
+    );
+  });
+
   it('сервис steps нельзя завести плагином', async () => {
     const kernel = createBuiltinKernel();
     await assert.rejects(

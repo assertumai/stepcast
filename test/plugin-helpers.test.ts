@@ -176,6 +176,57 @@ describe('plugin-helpers: zod-модель через границу не про
   });
 });
 
+describe('plugin-helpers: форма document публикуется наравне с прочими вкладами', () => {
+  it('вклад с document собирается хелпером без приведений и проходит StepcastPluginSchema', () => {
+    const contribution = defineStepKind<{ readonly target: string; readonly to: unknown }>({
+      name: 'deploy-kind',
+      title: 'Деплой',
+      fields: {
+        type: 'object',
+        properties: { target: { type: 'string' }, to: {} },
+        required: ['target', 'to'],
+        additionalProperties: false,
+      },
+      document: {
+        test: (raw) => 'deploy' in raw,
+        keys: ['deploy', 'to'],
+        schema: {
+          type: 'object',
+          properties: { deploy: { type: 'string' }, to: {} },
+          required: ['deploy', 'to'],
+          additionalProperties: false,
+        },
+        parse: (raw) => ({ target: (raw as Record<string, unknown>).deploy, to: (raw as Record<string, unknown>).to }),
+      },
+      execute: (input) => ({ exitCode: 0, structured: input.fields }),
+    });
+
+    assert.equal(
+      StepcastPluginSchema.safeParse({ name: 'deploy-steps', steps: [contribution] }).success,
+      true,
+    );
+  });
+
+  it('поле внутренней формы встроенного вида (native) отклоняется проверкой формы при загрузке, называя поле', () => {
+    const plugin = {
+      name: 'zod-boundary',
+      steps: [
+        {
+          name: 'sneaky',
+          title: 'Подделка',
+          fields: { type: 'object' },
+          native: { test: () => true, parse: () => ({}) },
+          execute: () => ({ exitCode: 0 }),
+        },
+      ],
+    };
+
+    const parsed = StepcastPluginSchema.safeParse(plugin);
+    assert.equal(parsed.success, false);
+    assert.equal(parsed.error?.issues[0]?.path.join('.'), 'steps.0.native');
+  });
+});
+
 /**
  * Типовая проверка. Функции ниже не вызываются — тело значимо только для
  * компилятора (`npm run typecheck`), поэтому каждая ссылается на себя через
