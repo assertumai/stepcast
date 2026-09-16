@@ -100,6 +100,8 @@ const handlePost: ApiHandler = async (req, res, env) => {
 
   env.launchRun({
     cwd: project.path,
+    runsRoot: env.runsRoot,
+    projectKey: parsed.data.project,
     pipeline: parsed.data.pipeline,
     ...(parsed.data.inputs === undefined ? {} : { inputs: parsed.data.inputs }),
   });

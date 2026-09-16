@@ -4631,6 +4631,8 @@ const MINIMAL_PIPELINE_YAML = 'version: 1\nkind: pipeline\nname: minimal\njobs:\
 describe('ui-daemon: POST /api/run', () => {
   interface Launched {
     readonly cwd: string;
+    readonly runsRoot: string;
+    readonly projectKey: string;
     readonly pipeline: string;
   }
 
@@ -4656,6 +4658,8 @@ describe('ui-daemon: POST /api/run', () => {
     assert.equal(written.code, 202);
     assert.equal(calls.length, 1);
     assert.equal(calls[0]?.cwd, projectRoot);
+    assert.equal(calls[0]?.runsRoot, runsRoot);
+    assert.equal(calls[0]?.projectKey, key);
     assert.equal(calls[0]?.pipeline, 'stepcast.yml');
   });
 
@@ -4765,13 +4769,15 @@ describe('ui-daemon: POST /api/run', () => {
   });
 
   it('настоящий пуск: отказ порождения процесса назван, а не роняет демон', async () => {
-    const { projectRoot } = makeJournalBed();
+    const { runsRoot, projectRoot } = makeJournalBed();
     const errors: Error[] = [];
     // Отказ `spawn` приходит событием после возврата — то есть после 202. Без
     // слушателя 'error' это необработанное исключение процесса демона, и оно
     // погасило бы витрину; проверка падала бы вместе с ним, а не ассертом.
     launchRun({
       cwd: projectRoot,
+      runsRoot,
+      projectKey: projectKey(projectRoot),
       pipeline: 'stepcast.yml',
       execPath: join(projectRoot, 'нет-такого-узла'),
       onError: (error) => errors.push(error),

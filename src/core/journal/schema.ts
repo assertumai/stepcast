@@ -697,6 +697,18 @@ export const EventSchema = z.discriminatedUnion('kind', [
   // пишется, если движок правимым не распознан: обычной установке объявлять
   // нечего.
   z.object({ ...eventBase, kind: z.literal('engine.pinned'), root: z.string(), path: z.string() }).strict(),
+  // Runner, запущенный демоном витрины, завершился, не успев записать
+  // терминальный исход. Отдельное событие сохраняет наблюдённые демоном код
+  // и сигнал: один `run.finished: failed` не объяснил бы, что отказал не
+  // пайплайн, а ведущий его процесс.
+  z.object({
+    ...eventBase,
+    kind: z.literal('run.interrupted'),
+    pid: z.number().int().positive(),
+    exit_code: z.number().nullable(),
+    signal: z.string().nullable(),
+    detail: z.string(),
+  }).strict(),
   z.object({ ...eventBase, kind: z.literal('run.finished'), status: StatusValueSchema, exit_code: z.number() }).strict(),
   z.object({ ...eventBase, kind: z.literal('job.started'), job: z.string() }).strict(),
   z.object({ ...eventBase, kind: z.literal('job.errored'), job: z.string(), detail: z.string() }).strict(),

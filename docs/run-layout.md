@@ -1430,7 +1430,9 @@ $ stepcast usage a50755
 (неустранимый отказ бэкенда — работа, шаг, номер попытки, класс отказа
 (`rate_limit` или `unauthenticated`), код состояния, если бэкенд его назвал,
 сообщение бэкенда и разобранный момент сброса, если он разобран — виден без
-чтения `stdout.log` шага).
+чтения `stdout.log` шага), `run.interrupted` (отсоединённый runner завершился,
+оставив состояние `running`; запись несёт его pid, код выхода, сигнал и
+диагноз, после неё всегда следует терминальный `run.finished: failed`).
 
 Витрина показывает вывод шага, а не отдаёт его файлом на откуп читателю.
 Агентский шаг раскрывается разобранным ходом: `src/ui/transcript.ts` читает
@@ -1467,7 +1469,8 @@ stepcast logs <run-id> [<job>/<step>] [--follow]
 `backend.unparsed`, `backend.degraded`, `bookkeeping.failed`, `step.reused`,
 `session.continued` (шаг продолжил сессию, оборванную отменой, — работа, шаг,
 идентификатор сессии и прогон-источник), `tree.restored`, `workspace.inherited`,
-`run_dir.carried`, `budget.cost_unreported`, `resume.note_undelivered` —
+`run_dir.carried`, `budget.cost_unreported`, `resume.note_undelivered`,
+`run.interrupted` —
 разбор постфактум, а не ход, и в ленту не идут ни при каком режиме вывода.
 
 **Манифест называет загруженные плагины.** Поле `plugins` несёт имя, версию и
