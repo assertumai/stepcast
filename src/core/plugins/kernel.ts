@@ -6,7 +6,7 @@ import type {
   BackendContribution,
   CommandContribution,
   LoadedPlugin,
-  PredicateContribution,
+  PredicateKind,
   StepKind,
 } from './contract.js';
 import { settle, topLevelFibers, unresolvedFibers, type UnresolvedFiber } from './fibers.js';
@@ -85,20 +85,8 @@ export interface KernelOptions {
 }
 
 /**
- * Резерв имени без вклада — встроенные предикаты (Решение 11). Ключ метода —
- * символ, не экспортируемый ни из этого модуля, ни тем более из
- * `stepcast/plugin`: сервис доступен плагину как `ctx.predicates`, и публичный
- * метод `reserve` дал бы любому плагину занять произвольное имя навсегда —
- * резерв не эффект, disposer не возвращает и снятием области не снимается.
- * Символ делает «доступен только ядру при сборке» свойством устройства, а не
- * соглашения: назвать этот ключ снаружи нечем.
- */
-const reserveName = Symbol('kernel.reserve');
-
-/**
  * Сервис вида вклада: `register` — эффект вызывающей области, конфликт имён —
- * именованный отказ. Резерв имени (см. `reserveName` выше) ядро делает через
- * `Kernel.reservePredicate`, плагину он недоступен.
+ * именованный отказ.
  */
 export class ContributionService<T> extends Service implements ContributionRegistrar<T> {
   /**
@@ -108,7 +96,6 @@ export class ContributionService<T> extends Service implements ContributionRegis
    * не расширяется: его читает `stepcast config`, которому фибер не нужен.
    */
   private readonly entries = new Map<string, { readonly value: T; readonly owner: string; readonly ownerFiber: Fiber }>();
-  private readonly reservedNames = new Set<string>();
   private readonly kind: ContributionKind;
   private readonly builtinFiber: Fiber;
   /**
@@ -146,7 +133,7 @@ export class ContributionService<T> extends Service implements ContributionRegis
 
   /** Кто внёс вклад с этим именем — имя плагина либо `BUILTIN_OWNER`. */
   owner(name: string): string | undefined {
-    return this.entries.get(name)?.owner ?? (this.reservedNames.has(name) ? BUILTIN_OWNER : undefined);
+    return this.entries.get(name)?.owner;
   }
 
   /**
@@ -156,15 +143,6 @@ export class ContributionService<T> extends Service implements ContributionRegis
    */
   formerOwner(name: string): string | undefined {
     return this.owner(name) === undefined ? this.formerOwners.get(name) : undefined;
-  }
-
-  /** Имена, занятые без вклада (встроенные предикаты). */
-  get reserved(): readonly string[] {
-    return [...this.reservedNames];
-  }
-
-  [reserveName](name: string): void {
-    this.reservedNames.add(name);
   }
 
   register(name: string, contribution: T): () => void {
@@ -203,7 +181,7 @@ export class ContributionService<T> extends Service implements ContributionRegis
 declare module 'cordis' {
   interface Context {
     backends: ContributionService<BackendContribution>;
-    predicates: ContributionService<PredicateContribution>;
+    predicates: ContributionService<PredicateKind>;
     commands: ContributionService<CommandContribution>;
     steps: ContributionService<StepKind>;
   }
@@ -223,11 +201,6 @@ export function pluginContext(ctx: Context): PluginContext {
 
 export interface Kernel {
   readonly ctx: Context;
-  /**
-   * Занять имя встроенного предиката без вклада (Решение 11). Живёт на ядре, а
-   * не на сервисе: сервис виден плагину, ядро — нет.
-   */
-  reservePredicate(name: string): void;
   /**
    * Дождаться, пока контекст перестанет применять области: повторный обход
    * `ctx.registry` (сервис на весь контекст, не на область — видит и вложенные
@@ -300,7 +273,7 @@ export function createKernel(options?: KernelOptions): Kernel {
   const nameGuards = options?.nameGuards;
 
   new ContributionService<BackendContribution>(ctx, 'backends', builtinFiber, nameGuards?.backends);
-  const predicates = new ContributionService<PredicateContribution>(ctx, 'predicates', builtinFiber, nameGuards?.predicates);
+  new ContributionService<PredicateKind>(ctx, 'predicates', builtinFiber, nameGuards?.predicates);
   new ContributionService<CommandContribution>(ctx, 'commands', builtinFiber, nameGuards?.commands);
   new ContributionService<StepKind>(ctx, 'steps', builtinFiber, nameGuards?.steps);
 
@@ -315,7 +288,6 @@ export function createKernel(options?: KernelOptions): Kernel {
 
   return {
     ctx,
-    reservePredicate: (name) => predicates[reserveName](name),
     settle: () => settle(ctx),
     plugins,
     async dispose() {

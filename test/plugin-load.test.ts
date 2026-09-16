@@ -113,7 +113,7 @@ describe('plugin-contributions: загрузка плагинов', () => {
     // Решение 4).
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './plugins/местный', './plugins/local.mjs'],
+      ['backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './plugins/местный', './plugins/local.mjs'],
     );
     // `Config.plugins` — модули: псевдоспецификатора встроенной строки в нём нет.
     assert.deepEqual(config.config.plugins, ['./plugins/местный', './plugins/local.mjs']);
@@ -196,6 +196,29 @@ describe('plugin-contributions: загрузка плагинов', () => {
     await assert.rejects(
       () => loadPlugins(config, { projectRoot: place.root }),
       (error: unknown) => error instanceof StepcastError && /predicates\.0\.evaluate/.test(error.message),
+    );
+  });
+
+  // Сценарий `plugin-contributions`: «Плагин пытается объявить внутреннюю
+  // форму». Запрет тот же, что у вида шага, и проверяется он тем же образцом:
+  // вклад, назвавший `native`, был бы принят за встроенный предикат, чей
+  // разбор отдаёт типизированную модель, а не значение под JSON Schema.
+  it('вклад предиката не вправе нести поле внутренней формы native', async () => {
+    const place = bed();
+    writeModule(
+      join(place.root, '.stepcast', 'plugins', 'предикат-самозванец.mjs'),
+      'export default { name: "checks-impostor", predicates: [{ name: "http_ok", schema: {}, evaluate: () => ({ predicate: "http_ok", passed: true, hard: true }), native: { test: () => true, parse: () => ({}) } }] };\n',
+    );
+    const config = resolved(place, { project: 'plugins: ["./plugins/предикат-самозванец.mjs"]\n' });
+
+    await assert.rejects(
+      () => loadPlugins(config, { projectRoot: place.root }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /predicates\.0\.native/);
+        assert.match(error.message, /внутренней форме встроенного предиката/);
+        return true;
+      },
     );
   });
 

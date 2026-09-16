@@ -1,4 +1,5 @@
 import { row as backendClaude } from './backends/claude/row.js';
+import { row as predicates } from './expect/row.js';
 import { row as stepRun } from './steps/run/row.js';
 import { row as stepUses } from './steps/uses/row.js';
 import { row as stepScript } from './steps/script/row.js';
@@ -20,9 +21,21 @@ import type { BuiltinRow } from '../core/plugins/load.js';
  * `step-script`, `step-agent`) он же и порядок их узнавания в документе
  * (`builtin-step-kinds-as-rows`, design.md, Решение 2) — `step-uses` стоит
  * раньше `step-script` ровно поэтому (комментарий у `parseUsesStep`,
- * `src/core/pipeline/expand.ts`).
+ * `src/core/pipeline/expand.ts`). У строки встроенных предикатов своего
+ * ограничения порядка нет: ключи предикатов не пересекаются, и место строки
+ * `predicates` в перечне не влияет ни на разбор документа, ни на вычисление
+ * (`builtin-predicates-as-row`, design.md, Решение 8) — она стоит сразу после
+ * `backend-claude` просто по соседству с `src/core/expect`, откуда берёт формы.
  */
-export const BUILTIN_ROWS: readonly BuiltinRow[] = [backendClaude, stepRun, stepUses, stepScript, stepAgent, stepDecision];
+export const BUILTIN_ROWS: readonly BuiltinRow[] = [
+  backendClaude,
+  predicates,
+  stepRun,
+  stepUses,
+  stepScript,
+  stepAgent,
+  stepDecision,
+];
 
 /** Id встроенных строк — то, чем `config/resolve.ts` заводит семя дерева (design.md, Решение 3). */
 export const BUILTIN_ROW_IDS: readonly string[] = BUILTIN_ROWS.map((row) => row.id);

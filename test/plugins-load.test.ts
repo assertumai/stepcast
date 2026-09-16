@@ -8,6 +8,7 @@ import { StepcastError } from '../src/core/errors.js';
 import { toContextPlugin } from '../src/core/plugins/load.js';
 import { loadPlugins } from '../src/parts/load.js';
 import { availableNames } from '../src/core/plugins/registry.js';
+import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
 import { tempDir } from './tmp.js';
 
 /**
@@ -120,7 +121,9 @@ describe('plugins-load: мягкий отказ каталожной строк�
     // а не одним текстом причины.
     assert.deepEqual(waiting?.requestedServices, [{ name: 'нет-такого-сервиса', resolved: false }]);
     assert.deepEqual(registry.plugins.map((plugin) => plugin.name), ['good']);
-    assert.deepEqual(availableNames(registry, 'predicates'), ['good_one']);
+    // Встроенные предикаты — вклады строки `predicates` (`builtin-predicates-as-row`),
+    // всегда в составе рядом с плагинным `good_one`.
+    assert.deepEqual(availableNames(registry, 'predicates'), [...DEFAULT_NATIVE_PREDICATES, 'good_one'].sort());
   });
 
   it('отказ вклада вызывающего на каталожной строке не оставляет её регистраций', async () => {
@@ -142,7 +145,8 @@ describe('plugins-load: мягкий отказ каталожной строк�
 
     assert.equal(outcomes.find((outcome) => outcome.row.id === 'clock')?.status, 'failed');
     assert.deepEqual(registry.plugins, []);
-    assert.deepEqual(availableNames(registry, 'predicates'), []);
+    // Только встроенные — вклад строки `clock` снят вместе с её областью.
+    assert.deepEqual(availableNames(registry, 'predicates'), [...DEFAULT_NATIVE_PREDICATES].sort());
   });
 
   it('несколько сломанных каталожных строк все получают состояние failed, ни одна не прерывает соседей', async () => {
@@ -158,7 +162,7 @@ describe('plugins-load: мягкий отказ каталожной строк�
 
     assert.deepEqual(registry.plugins.map((plugin) => plugin.name), ['good']);
     assert.equal(outcomes.filter((outcome) => outcome.status === 'failed').length, 2);
-    assert.deepEqual(availableNames(registry, 'predicates'), []);
+    assert.deepEqual(availableNames(registry, 'predicates'), [...DEFAULT_NATIVE_PREDICATES].sort());
   });
 });
 

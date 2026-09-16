@@ -1,4 +1,4 @@
-import { hasStepExecutor, isNativeStepKind, type BackendContribution, type CommandContribution, type LoadedPlugin, type PredicateContribution, type StepKind, type StepKindContribution } from './contract.js';
+import { hasPredicateEvaluator, hasStepExecutor, isNativePredicate, isNativeStepKind, type BackendContribution, type CommandContribution, type LoadedPlugin, type PredicateContribution, type PredicateKind, type StepKind, type StepKindContribution } from './contract.js';
 import { BUILTIN_OWNER, type Kernel } from './kernel.js';
 
 /**
@@ -17,22 +17,22 @@ import { BUILTIN_OWNER, type Kernel } from './kernel.js';
  */
 export interface Registry {
   readonly backends: ReadonlyMap<string, BackendContribution>;
-  readonly predicates: ReadonlyMap<string, PredicateContribution>;
+  /**
+   * Предикаты — встроенные и плагинные вместе, тем же вкладом в сервис
+   * `predicates` (`builtin-predicates-as-row`, design.md, решение 1, решение
+   * 2): встроенные — настоящие вклады, внесённые строкой встроенного слоя, а
+   * не резерв без содержания, и у них есть внутренняя форма `native`, которую
+   * отличает `isNativePredicate`.
+   */
+  readonly predicates: ReadonlyMap<string, PredicateKind>;
   readonly commands: ReadonlyMap<string, CommandContribution>;
   /**
    * Виды шага — встроенные (`agent`, `run`, `script`, `uses`) и плагинные
    * вместе, тем же вкладом в сервис `steps` (design.md, решение 1, решение 2).
-   * В отличие от `builtinPredicates`, встроенные виды — настоящие вклады, а не
-   * резерв без содержания: у них есть внутренняя форма `native`, которую
-   * отличает `isNativeStepKind`.
+   * Встроенные виды — настоящие вклады, а не резерв без содержания: у них
+   * есть внутренняя форма `native`, которую отличает `isNativeStepKind`.
    */
   readonly steps: ReadonlyMap<string, StepKind>;
-  /**
-   * Имена встроенных предикатов. Вкладов у них нет (см. `builtin.ts`), но имя
-   * занято: предикат плагина под знакомым именем — та же подмена, что и
-   * бэкенд `claude` от плагина.
-   */
-  readonly builtinPredicates: readonly string[];
   /** Загруженные плагины в порядке загрузки. Пустой список — только встроенное. */
   readonly plugins: readonly LoadedPlugin[];
   /**
@@ -71,9 +71,6 @@ export function registryFromKernel(kernel: Kernel): Registry {
     get steps() {
       return ctx.steps.contributions;
     },
-    get builtinPredicates() {
-      return ctx.predicates.reserved;
-    },
     get plugins() {
       return kernel.plugins;
     },
@@ -81,7 +78,7 @@ export function registryFromKernel(kernel: Kernel): Registry {
       const out = new Map<string, string>();
       for (const kind of KINDS) {
         const service = ctx[kind];
-        for (const name of [...service.contributions.keys(), ...service.reserved]) {
+        for (const name of service.contributions.keys()) {
           const owner = service.owner(name);
           if (owner !== undefined) out.set(`${kind}:${name}`, owner);
         }
@@ -117,21 +114,44 @@ export function availableNames(registry: Registry, kind: ContributionKind): stri
 
 /**
  * Все имена предикатов, которые примет разбор документа: встроенные и
- * плагинные вместе. Перечень доступного в диагностике обязан называть оба —
- * пользователь не обязан знать, что из этого чем предоставлено.
+ * плагинные вместе, одним списком, без деления по происхождению
+ * (`builtin-predicates-as-row`, design.md, решение 1) — оба уже вклады
+ * одного сервиса `predicates`, второго перечня не нужно.
  */
 export function predicateNames(registry: Registry): string[] {
-  return [...registry.builtinPredicates, ...registry.predicates.keys()].sort();
+  return [...registry.predicates.keys()].sort();
 }
 
 /**
  * Все имена видов шага — встроенных и плагинных вместе, отсортированные.
- * В отличие от `predicateNames`, второй список (аналог `builtinPredicates`) не
- * нужен: встроенные виды шага — настоящие вклады сервиса `steps`, уже в
- * `registry.steps` (design.md, решение 1, решение 2).
  */
 export function stepKindNames(registry: Registry): string[] {
   return [...registry.steps.keys()].sort();
+}
+
+/**
+ * Имена предикатов внутренней формы `native` действующего реестра, в порядке
+ * регистрации (`builtin-predicates-as-row`, design.md, Решение 4; тот же
+ * приём, что и `nativeStepKindNames`): подаются `buildDocumentSchemas`/
+ * `buildPublishedSchemas` четвёртым параметром — ветвь схемы документа
+ * собирается только по предикатам, которых состав не снял. Порядок — порядок
+ * вставки `Map`, то есть порядок регистрации строки встроенных предикатов
+ * (`src/parts/expect/row.ts`).
+ */
+export function nativePredicateNames(registry: Registry): string[] {
+  return [...registry.predicates.entries()].filter(([, kind]) => isNativePredicate(kind)).map(([name]) => name);
+}
+
+/**
+ * Имена плагинных предикатов — вкладов с вычислителем, без встроенных
+ * (`builtin-predicates-as-row`, design.md, решение 4): подаются
+ * `buildDocumentSchemas` первым параметром — ветвь их ключа в схеме
+ * документа собирается сверх ветвей внутренней формы, а не вместо них.
+ */
+export function pluginPredicateNames(registry: Registry): string[] {
+  return [...registry.predicates.entries()]
+    .filter((entry): entry is [string, PredicateContribution] => hasPredicateEvaluator(entry[1]))
+    .map(([name]) => name);
 }
 
 /** Дескриптор вида шага, приносящего свою ветвь схемы документа: имя и занятые им ключи. */

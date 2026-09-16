@@ -14,12 +14,24 @@ import { assertDataKey } from '../journal/data.js';
 import { findProjectRoot } from '../journal/paths.js';
 import { findPackageRoot, packagedSchemaPath, packagedWrapperPath } from '../package-schema.js';
 import { builtinRegistry } from '../../parts/builtin.js';
-import { hasStepExecutor, isNativeStepKind, type NativeStepKind, type StepKind, type StepKindContribution, type StepKindDocumentForm } from '../plugins/contract.js';
+import {
+  hasPredicateEvaluator,
+  hasStepExecutor,
+  isNativePredicate,
+  isNativeStepKind,
+  type NativePredicate,
+  type NativeStepKind,
+  type StepKind,
+  type StepKindContribution,
+  type StepKindDocumentForm,
+} from '../plugins/contract.js';
 import {
   contributionOwner,
   formerStepKindOwner,
+  nativePredicateNames,
   nativeStepKindNames,
   predicateNames,
+  pluginPredicateNames,
   pluginStepKindDescriptors,
   stepKindNames,
   type Registry,
@@ -31,6 +43,7 @@ import { resolveParams, type ParamValue } from './params.js';
 import { resolveUsesStep } from './steps.js';
 import {
   buildDocumentSchemas,
+  isDefaultNativePredicates,
   isDefaultNativeStepKinds,
   JobDocumentSchema,
   PipelineDocumentSchema,
@@ -471,6 +484,204 @@ function toContext(raw: readonly RawContextEntry[] | undefined, at = 'context'):
  */
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 
+/**
+ * Всё, чем располагает типизированный разбор встроенного предиката
+ * (design.md, Решение 3) — те же параметры, что раньше принимал `toPredicate`
+ * целиком. Один и тот же набор для всех десяти встроенных предикатов, даже
+ * когда конкретному не нужна часть полей.
+ */
+interface BuiltinPredicateParseContext {
+  readonly declaringFile: string;
+  readonly substitutions: SubstitutionMap;
+  readonly at: string;
+  readonly registry: Registry;
+  readonly config: Config;
+  readonly scriptRoots: ScriptRoots;
+}
+
+/**
+ * Собрать внутреннюю форму встроенного предиката единственным приведением
+ * `raw`/`ctx` (design.md, Решение 3): `test` — предикат типа над
+ * `RawBuiltinPredicate`, сужающий её оператором `in`, как сегодня в цепочке
+ * `toPredicate`; `parse` получает уже сужённую ветвь и типизированный
+ * контекст, и в его теле приведений типа больше нет.
+ */
+function nativePredicateForm<R extends RawBuiltinPredicate & Record<string, unknown>>(
+  name: string,
+  test: (raw: Record<string, unknown>) => raw is R,
+  parse: (raw: R, ctx: BuiltinPredicateParseContext) => Predicate,
+): NativePredicate {
+  return {
+    name,
+    native: {
+      test,
+      parse: (raw, ctx) => parse(raw as R, ctx as BuiltinPredicateParseContext),
+    },
+  };
+}
+
+function isExitCodePredicateRaw(raw: Record<string, unknown>): raw is Extract<RawBuiltinPredicate, { exit_code: unknown }> {
+  return 'exit_code' in raw;
+}
+function parseExitCodePredicate(
+  raw: Extract<RawBuiltinPredicate, { exit_code: unknown }>,
+  ctx: BuiltinPredicateParseContext,
+): Predicate {
+  return {
+    kind: 'exit_code',
+    value: toCount(raw.exit_code, `${ctx.at}.exit_code`, ctx.substitutions, parseExitCode, `${ctx.at}.exit_code`),
+  };
+}
+
+function isFileExistsPredicateRaw(raw: Record<string, unknown>): raw is Extract<RawBuiltinPredicate, { file_exists: unknown }> {
+  return 'file_exists' in raw;
+}
+function parseFileExistsPredicate(raw: Extract<RawBuiltinPredicate, { file_exists: unknown }>): Predicate {
+  return { kind: 'file_exists', path: raw.file_exists };
+}
+
+function isSchemaPredicateRaw(raw: Record<string, unknown>): raw is Extract<RawBuiltinPredicate, { schema: unknown }> {
+  return 'schema' in raw;
+}
+function parseSchemaPredicate(
+  raw: Extract<RawBuiltinPredicate, { schema: unknown }>,
+  ctx: BuiltinPredicateParseContext,
+): Predicate {
+  return { kind: 'schema', path: resolveSchemaPath(raw.schema, ctx.declaringFile, `${ctx.at}.schema`) };
+}
+
+function isMatchesPredicateRaw(raw: Record<string, unknown>): raw is Extract<RawBuiltinPredicate, { matches: unknown }> {
+  return 'matches' in raw;
+}
+function parseMatchesPredicate(raw: Extract<RawBuiltinPredicate, { matches: unknown }>): Predicate {
+  return { kind: 'matches', pattern: raw.matches };
+}
+
+function isNotMatchesPredicateRaw(raw: Record<string, unknown>): raw is Extract<RawBuiltinPredicate, { not_matches: unknown }> {
+  return 'not_matches' in raw;
+}
+function parseNotMatchesPredicate(raw: Extract<RawBuiltinPredicate, { not_matches: unknown }>): Predicate {
+  return { kind: 'not_matches', pattern: raw.not_matches };
+}
+
+function isChangedOnlyPredicateRaw(raw: Record<string, unknown>): raw is Extract<RawBuiltinPredicate, { changed_only: unknown }> {
+  return 'changed_only' in raw;
+}
+function parseChangedOnlyPredicate(raw: Extract<RawBuiltinPredicate, { changed_only: unknown }>): Predicate {
+  return { kind: 'changed_only', globs: raw.changed_only };
+}
+
+function isKnowledgeValidPredicateRaw(raw: Record<string, unknown>): raw is Extract<RawBuiltinPredicate, { knowledge_valid: unknown }> {
+  return 'knowledge_valid' in raw;
+}
+function parseKnowledgeValidPredicate(
+  raw: Extract<RawBuiltinPredicate, { knowledge_valid: unknown }>,
+  ctx: BuiltinPredicateParseContext,
+): Predicate {
+  // `knowledge_valid: false` не значит «проверять на несоответствие»: у
+  // предиката нет отрицания, и молча читать его как «не проверять» значило
+  // бы отличать выключенную проверку от отсутствующей ничем.
+  if (raw.knowledge_valid !== true) {
+    throw new StepcastError('Предикат knowledge_valid принимает только true', {
+      at: `${ctx.at}.knowledge_valid`,
+      hint: 'Уберите предикат, если проверять память не нужно',
+    });
+  }
+  return { kind: 'knowledge_valid' };
+}
+
+function isCmdPredicateRaw(raw: Record<string, unknown>): raw is Extract<RawBuiltinPredicate, { cmd: unknown }> {
+  return 'cmd' in raw;
+}
+function parseCmdPredicate(raw: Extract<RawBuiltinPredicate, { cmd: unknown }>): Predicate {
+  return { kind: 'cmd', command: raw.cmd };
+}
+
+function isScriptPredicateRaw(raw: Record<string, unknown>): raw is Extract<RawBuiltinPredicate, { script: unknown }> {
+  return 'script' in raw;
+}
+function parseScriptPredicate(
+  raw: Extract<RawBuiltinPredicate, { script: unknown }>,
+  ctx: BuiltinPredicateParseContext,
+): Predicate {
+  // Путь и раннер разрешаются тем же правилом, что и у шага `script`, без
+  // `args` и без явного `runner`: у предиката этих ключей нет вовсе
+  // (`docs/pipeline-format.md`, раздел «Предикат script»).
+  const outcome = resolveScript(raw.script, [], undefined, ctx.declaringFile, ctx.config, ctx.scriptRoots, `${ctx.at}.script`);
+  return {
+    kind: 'script',
+    path: raw.script,
+    ...('resolved' in outcome ? { resolved: outcome.resolved } : { unresolved: outcome.unresolved }),
+  };
+}
+
+function isJudgePredicateRaw(raw: Record<string, unknown>): raw is Extract<RawBuiltinPredicate, { judge: unknown }> {
+  return 'judge' in raw;
+}
+function parseJudgePredicate(raw: Extract<RawBuiltinPredicate, { judge: unknown }>): Predicate {
+  return {
+    kind: 'judge',
+    claim: raw.judge,
+    hard: raw.hard ?? false,
+    ...(raw.agent === undefined ? {} : { agent: raw.agent }),
+    ...(raw.model === undefined ? {} : { model: raw.model }),
+  };
+}
+
+/**
+ * Десять внутренних форм встроенных предикатов — вкладом того же вида, каким
+ * сервис `predicates` ядра принимает плагинный (`native`, design.md, Решение
+ * 2). Экспортированы поимённо, а не собраны в одну функцию регистрации:
+ * регистрирует их строка встроенного слоя (`src/parts/expect/row.ts`).
+ * Порядок регистрации фиксирует перечень строк (`src/parts/rows.ts`), а не
+ * порядок этих объявлений.
+ */
+export const EXIT_CODE_PREDICATE = nativePredicateForm('exit_code', isExitCodePredicateRaw, parseExitCodePredicate);
+export const FILE_EXISTS_PREDICATE = nativePredicateForm('file_exists', isFileExistsPredicateRaw, parseFileExistsPredicate);
+export const SCHEMA_PREDICATE = nativePredicateForm('schema', isSchemaPredicateRaw, parseSchemaPredicate);
+export const MATCHES_PREDICATE = nativePredicateForm('matches', isMatchesPredicateRaw, parseMatchesPredicate);
+export const NOT_MATCHES_PREDICATE = nativePredicateForm('not_matches', isNotMatchesPredicateRaw, parseNotMatchesPredicate);
+export const CHANGED_ONLY_PREDICATE = nativePredicateForm('changed_only', isChangedOnlyPredicateRaw, parseChangedOnlyPredicate);
+export const KNOWLEDGE_VALID_PREDICATE = nativePredicateForm('knowledge_valid', isKnowledgeValidPredicateRaw, parseKnowledgeValidPredicate);
+export const CMD_PREDICATE = nativePredicateForm('cmd', isCmdPredicateRaw, parseCmdPredicate);
+export const SCRIPT_PREDICATE = nativePredicateForm('script', isScriptPredicateRaw, parseScriptPredicate);
+export const JUDGE_PREDICATE = nativePredicateForm('judge', isJudgePredicateRaw, parseJudgePredicate);
+
+/**
+ * Те же десять форм в каноническом порядке строки предикатов
+ * (`src/parts/expect/row.ts`) — для единственного вопроса, который задаётся о
+ * предикате **вне** действующего состава: узнал бы он этот ключ, будь его
+ * строка включена (`rejectUnknownPredicates` ниже). Обход реестра
+ * (`matchNativePredicate`) на него ответить не может — снятого предиката в
+ * реестре нет, — а перечень не задаёт ни порядка регистрации, ни порядка
+ * разбора: и то и другое по-прежнему записано только в перечне строк.
+ */
+const BUILTIN_PREDICATES_IN_ROW_ORDER: readonly NativePredicate[] = [
+  EXIT_CODE_PREDICATE,
+  FILE_EXISTS_PREDICATE,
+  SCHEMA_PREDICATE,
+  MATCHES_PREDICATE,
+  NOT_MATCHES_PREDICATE,
+  CHANGED_ONLY_PREDICATE,
+  KNOWLEDGE_VALID_PREDICATE,
+  CMD_PREDICATE,
+  SCRIPT_PREDICATE,
+  JUDGE_PREDICATE,
+];
+
+/**
+ * Встроенный предикат, узнавший себя в сырой записи, — обход реестра
+ * (design.md, Решение 3), тем же приёмом, что `matchStepKind`: спрашивается
+ * действующий состав (`isNativePredicate` + `native.test`), а не
+ * фиксированная цепочка `in`.
+ */
+function matchNativePredicate(rawRecord: Record<string, unknown>, registry: Registry): NativePredicate | undefined {
+  for (const [, kind] of registry.predicates) {
+    if (isNativePredicate(kind) && kind.native.test(rawRecord)) return kind;
+  }
+  return undefined;
+}
+
 function toPredicate(
   raw: RawPredicate,
   declaringFile: string,
@@ -480,56 +691,11 @@ function toPredicate(
   config: Config,
   scriptRoots: ScriptRoots,
 ): Predicate {
-  // Объединение включает и ветви плагинов, поэтому разбор встроенных ведётся
-  // по их собственному типу: проверка ключа идёт по настоящему объекту, а
-  // сужение — по размеченному объединению встроенных ветвей.
-  const builtin = raw as RawBuiltinPredicate;
-
-  if ('exit_code' in builtin) {
-    return {
-      kind: 'exit_code',
-      value: toCount(builtin.exit_code, `${at}.exit_code`, substitutions, parseExitCode, `${at}.exit_code`),
-    };
-  }
-  if ('file_exists' in builtin) return { kind: 'file_exists', path: builtin.file_exists };
-  if ('schema' in builtin) {
-    return { kind: 'schema', path: resolveSchemaPath(builtin.schema, declaringFile, `${at}.schema`) };
-  }
-  if ('matches' in builtin) return { kind: 'matches', pattern: builtin.matches };
-  if ('not_matches' in builtin) return { kind: 'not_matches', pattern: builtin.not_matches };
-  if ('changed_only' in builtin) return { kind: 'changed_only', globs: builtin.changed_only };
-  if ('knowledge_valid' in builtin) {
-    // `knowledge_valid: false` не значит «проверять на несоответствие»: у
-    // предиката нет отрицания, и молча читать его как «не проверять» значило
-    // бы отличать выключенную проверку от отсутствующей ничем.
-    if (builtin.knowledge_valid !== true) {
-      throw new StepcastError('Предикат knowledge_valid принимает только true', {
-        at: `${at}.knowledge_valid`,
-        hint: 'Уберите предикат, если проверять память не нужно',
-      });
-    }
-    return { kind: 'knowledge_valid' };
-  }
-  if ('cmd' in builtin) return { kind: 'cmd', command: builtin.cmd };
-  if ('script' in builtin) {
-    // Путь и раннер разрешаются тем же правилом, что и у шага `script`, без
-    // `args` и без явного `runner`: у предиката этих ключей нет вовсе
-    // (`docs/pipeline-format.md`, раздел «Предикат script»).
-    const outcome = resolveScript(builtin.script, [], undefined, declaringFile, config, scriptRoots, `${at}.script`);
-    return {
-      kind: 'script',
-      path: builtin.script,
-      ...('resolved' in outcome ? { resolved: outcome.resolved } : { unresolved: outcome.unresolved }),
-    };
-  }
-  if ('judge' in builtin) {
-    return {
-      kind: 'judge',
-      claim: builtin.judge,
-      hard: builtin.hard ?? false,
-      ...(builtin.agent === undefined ? {} : { agent: builtin.agent }),
-      ...(builtin.model === undefined ? {} : { model: builtin.model }),
-    };
+  const rawRecord = raw as unknown as Record<string, unknown>;
+  const matched = matchNativePredicate(rawRecord, registry);
+  if (matched !== undefined) {
+    const ctx: BuiltinPredicateParseContext = { declaringFile, substitutions, at, registry, config, scriptRoots };
+    return matched.native.parse(raw, ctx) as Predicate;
   }
 
   return toPluginPredicate(raw, at, registry);
@@ -546,7 +712,7 @@ function toPluginPredicate(raw: RawPredicate, at: string, registry: Registry): P
   const name = keys[0];
   const contribution = name === undefined ? undefined : registry.predicates.get(name);
 
-  if (name === undefined || contribution === undefined) {
+  if (name === undefined || contribution === undefined || !hasPredicateEvaluator(contribution)) {
     throw new StepcastError(`Неизвестный предикат ${name ?? '(без ключа)'}`, {
       at,
       hint: `Доступны: ${predicateNames(registry).join(', ')}`,
@@ -1513,6 +1679,70 @@ function checkRawSteps(rawSteps: unknown, file: string, at: string, registry: Re
 }
 
 /**
+ * Отказать записи `expect`/`until.check`, чей предикат известен формату, но
+ * состав его снял, — до проверки схемой документа, тем же приёмом, что
+ * `rejectUnknownStepKinds` (design.md, Решение 5). Обходит `steps[].expect`
+ * рядом с `checkRawSteps` и `jobs.*.until.check` — на обоих вызовах
+ * (файл пайплайна и подключённый файл работы), до `validateDocument`.
+ */
+function rejectUnknownPredicates(document: unknown, file: string, registry: Registry): void {
+  if (typeof document !== 'object' || document === null) return;
+  const record = document as Record<string, unknown>;
+
+  // Файл работы несёт шаги и `until` прямо в документе, пайплайн — в теле
+  // каждой работы, объявленной на месте: тот же приём, каким `rejectUnknownStepKinds`
+  // обходит оба документа одной функцией.
+  checkStepExpectPredicates(record.steps, file, 'steps', registry);
+  checkUntilCheckPredicates(record.until, file, 'until', registry);
+  const jobs = record.jobs;
+  if (typeof jobs !== 'object' || jobs === null) return;
+  for (const [id, entry] of Object.entries(jobs as Record<string, unknown>)) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const jobRecord = entry as Record<string, unknown>;
+    checkStepExpectPredicates(jobRecord.steps, file, `jobs.${id}.steps`, registry);
+    checkUntilCheckPredicates(jobRecord.until, file, `jobs.${id}.until`, registry);
+  }
+}
+
+function checkStepExpectPredicates(rawSteps: unknown, file: string, at: string, registry: Registry): void {
+  if (!Array.isArray(rawSteps)) return;
+  for (const [index, raw] of rawSteps.entries()) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
+    checkPredicateList((raw as Record<string, unknown>).expect, file, `${at}.${index}.expect`, registry);
+  }
+}
+
+function checkUntilCheckPredicates(rawUntil: unknown, file: string, at: string, registry: Registry): void {
+  if (typeof rawUntil !== 'object' || rawUntil === null) return;
+  checkPredicateList((rawUntil as Record<string, unknown>).check, file, `${at}.check`, registry);
+}
+
+/**
+ * Проверить список сырых записей предиката — спрашивается форма узнавания из
+ * `BUILTIN_PREDICATES_IN_ROW_ORDER` (design.md, Решение 5): реестр без
+ * снятой строки на этот вопрос ответить не может, а форма отвечает всегда.
+ * Запись, узнанная активным вкладом или не узнанная вовсе (настоящая
+ * опечатка), сюда не попадает — прежний отказ о неизвестном предикате её
+ * называет своими словами, дампом ветвей.
+ */
+function checkPredicateList(rawList: unknown, file: string, at: string, registry: Registry): void {
+  if (!Array.isArray(rawList)) return;
+  for (const [index, raw] of rawList.entries()) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) continue;
+    const record = raw as Record<string, unknown>;
+    for (const form of BUILTIN_PREDICATES_IN_ROW_ORDER) {
+      if (registry.predicates.has(form.name)) continue;
+      if (!form.native.test(record)) continue;
+      throw new StepcastError(`Предикат ${form.name} отключён составом: строки, вносящей его, в дереве нет`, {
+        file,
+        at: `${at}.${index}`,
+        hint: 'Предикат приносит строка дерева; действующий состав показывает stepcast plugins',
+      });
+    }
+  }
+}
+
+/**
  * Разобрать шаг раскрытием ветви вида — обход реестра (`matchStepKind`):
  * каждый вид шага сам знает, узнаёт ли он себя в `raw`, и как себя разобрать.
  */
@@ -1643,13 +1873,19 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   // в отказ `checkRawSteps`.
   const pluginKinds = pluginStepKindDescriptors(registry);
   const activeNativeKinds = nativeStepKindNames(registry);
+  const pluginPredicates = pluginPredicateNames(registry);
+  const activeNativePredicates = nativePredicateNames(registry);
   const schemas =
-    registry.predicates.size === 0 && pluginKinds.length === 0 && isDefaultNativeStepKinds(activeNativeKinds)
+    pluginPredicates.length === 0 &&
+    pluginKinds.length === 0 &&
+    isDefaultNativeStepKinds(activeNativeKinds) &&
+    isDefaultNativePredicates(activeNativePredicates)
       ? { PipelineDocumentSchema, JobDocumentSchema }
-      : buildDocumentSchemas([...registry.predicates.keys()], pluginKinds, activeNativeKinds);
+      : buildDocumentSchemas(pluginPredicates, pluginKinds, activeNativeKinds, activeNativePredicates);
 
   const rawPipeline = readYamlDocument(pipelinePath);
   rejectUnknownStepKinds(rawPipeline, pipelinePath, registry);
+  rejectUnknownPredicates(rawPipeline, pipelinePath, registry);
   rejectProposalsKeyInPipeline(rawPipeline, pipelinePath);
   const document = validateDocument(
     schemas.PipelineDocumentSchema,
@@ -1795,6 +2031,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       const rawDocument = readYamlDocument(usesPath);
       rejectWiringKeys(rawDocument, usesPath);
       rejectUnknownStepKinds(rawDocument, usesPath, registry);
+      rejectUnknownPredicates(rawDocument, usesPath, registry);
       const jobDocument = validateDocument(schemas.JobDocumentSchema, rawDocument, usesPath);
 
       const withValues = interpolateTree(entry.with ?? {}, pipelineScope, `${at}.with`);

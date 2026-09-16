@@ -10,8 +10,8 @@ import { isStepcastError } from './errors.js';
 import { describeScriptUnresolved } from './pipeline/expand.js';
 import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from './pipeline/published-schema.js';
 import { builtinRegistry } from '../parts/builtin.js';
-import { hasStepExecutor } from './plugins/contract.js';
-import { availableNames, nativeStepKindNames, type Registry } from './plugins/registry.js';
+import { hasPredicateEvaluator, hasStepExecutor } from './plugins/contract.js';
+import { availableNames, nativePredicateNames, nativeStepKindNames, type Registry } from './plugins/registry.js';
 import { isGitWorktree } from './anchor/git.js';
 import { workspaceInheritanceDiagnostics } from './run/inherit.js';
 import {
@@ -455,6 +455,7 @@ function checkPublishedSchema(base: string, registry: Registry, push: (diagnosti
     pluginPredicateEntries(registry),
     pluginStepKindEntries(registry),
     nativeStepKindNames(registry),
+    nativePredicateNames(registry),
   );
 
   for (const target of targets) {
@@ -499,7 +500,14 @@ function lintPluginPredicate(
   const contribution = options.registry.predicates.get(predicate.name);
   const site = { file, at: `${at}.${predicate.name}`, cwd };
 
-  for (const diagnostic of contribution?.lint?.(predicate.value, site) ?? []) {
+  // Вклад сужается признаком вычислителя, а не именем сервиса (design.md,
+  // решение 4): запись `kind: 'plugin'` в модели приходит только от предиката
+  // без встроенной формы, но реестр между разбором и линтом мог смениться
+  // (`resolveWithPlugins` перечитывает состав) — тогда имя предиката вправе
+  // занять встроенная форма, и хук `lint` у неё нет вовсе.
+  if (contribution === undefined || !hasPredicateEvaluator(contribution)) return;
+
+  for (const diagnostic of contribution.lint?.(predicate.value, site) ?? []) {
     push({
       severity: diagnostic.severity,
       message: diagnostic.message,

@@ -2,8 +2,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join, resolve as resolvePath } from 'node:path';
 
 import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../../core/pipeline/published-schema.js';
-import { nativeStepKindNames, type Registry } from '../../core/plugins/registry.js';
-import { isDefaultNativeStepKinds } from '../../core/pipeline/schema.js';
+import { nativePredicateNames, nativeStepKindNames, type Registry } from '../../core/plugins/registry.js';
+import { isDefaultNativePredicates, isDefaultNativeStepKinds } from '../../core/pipeline/schema.js';
 import { ExitCode, type ExitCodeValue } from '../../core/errors.js';
 import type { ParsedArgs } from '../args.js';
 
@@ -27,8 +27,9 @@ export function runSchemaCommand(
   const predicates = pluginPredicateEntries(registry);
   const stepKinds = pluginStepKindEntries(registry);
   const nativeStepKinds = nativeStepKindNames(registry);
+  const nativePredicates = nativePredicateNames(registry);
 
-  const { pipeline, job, notes } = buildPublishedSchemas(predicates, stepKinds, nativeStepKinds);
+  const { pipeline, job, notes } = buildPublishedSchemas(predicates, stepKinds, nativeStepKinds, nativePredicates);
 
   mkdirSync(outDir, { recursive: true });
   const pipelinePath = join(outDir, 'pipeline.schema.json');
@@ -46,7 +47,12 @@ export function runSchemaCommand(
   // вид шага (`builtin-step-kinds-as-rows`) снимает эту схожесть тоже: схема
   // проекта тогда не признаёт его ключей, и печатать «совпадает» значило бы
   // соврать.
-  if (predicates.length === 0 && stepKinds.every((entry) => entry.builtin === true) && isDefaultNativeStepKinds(nativeStepKinds)) {
+  if (
+    predicates.length === 0 &&
+    stepKinds.every((entry) => entry.builtin === true) &&
+    isDefaultNativeStepKinds(nativeStepKinds) &&
+    isDefaultNativePredicates(nativePredicates)
+  ) {
     write('плагинных предикатов и видов шага нет: схема совпадает с поставляемой пакетом');
   }
 

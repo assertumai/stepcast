@@ -85,30 +85,91 @@ const ContextUpstreamSchema = z.union([
  * фабрики и строится один раз.
  */
 /**
- * Ветви встроенных предикатов. Объявлены снаружи фабрики, чтобы тип
- * `RawPredicate` оставался точным размеченным объединением: разбор каждой
- * ветви в `expand.ts` опирается именно на него.
+ * Ветви встроенных предикатов, по одной именованной константе — тем же
+ * приёмом, что ветви встроенных видов шага (`AgentStepSchema` и соседи):
+ * извлечены из фабрики, чтобы `BuiltinPredicateSchema` и объединение ветвей
+ * внутри фабрики (`builtin-predicates-as-row`, design.md, Решение 4)
+ * ссылались на одни и те же объекты, а не строили их заново с риском
+ * разойтись.
+ */
+const ExitCodePredicateSchema = z.object({ exit_code: count }).strict();
+const FileExistsPredicateSchema = z.object({ file_exists: z.string() }).strict();
+const SchemaPredicateSchema = z.object({ schema: z.string() }).strict();
+const MatchesPredicateSchema = z.object({ matches: z.string() }).strict();
+const NotMatchesPredicateSchema = z.object({ not_matches: z.string() }).strict();
+const ChangedOnlyPredicateSchema = z.object({ changed_only: z.array(z.string()) }).strict();
+const KnowledgeValidPredicateSchema = z.object({ knowledge_valid: z.boolean() }).strict();
+const CmdPredicateSchema = z.object({ cmd: z.string() }).strict();
+// Тот же образец, что у `script` шага: пустая строка внутри слоя дала бы сам
+// каталог слоя (см. комментарий у ScriptStepSchema).
+const ScriptPredicateSchema = z.object({ script: z.string().min(1).regex(/\S/) }).strict();
+const JudgePredicateSchema = z
+  .object({
+    judge: z.string(),
+    hard: z.boolean().optional(),
+    agent: z.string().optional(),
+    model: z.string().optional(),
+  })
+  .strict();
+
+/**
+ * Ветви встроенных предикатов в каноническом порядке — том же, в котором
+ * форма разбора каждого объявлена в `pipeline/expand.ts` (`toPredicate`) и в
+ * котором строка встроенных предикатов их регистрирует
+ * (`src/parts/expect/row.ts`). Умолчание четвёртого параметра
+ * `buildDocumentSchemas`: с ним константа `BuiltinPredicateSchema` и схема,
+ * поставляемая пакетом, остаются byte-в-byte прежними.
+ */
+export const DEFAULT_NATIVE_PREDICATES: readonly string[] = [
+  'exit_code',
+  'file_exists',
+  'schema',
+  'matches',
+  'not_matches',
+  'changed_only',
+  'knowledge_valid',
+  'cmd',
+  'script',
+  'judge',
+];
+
+/**
+ * Совпал ли поданный состав предикатов внутренней формы с дефолтным — по
+ * составу, а не по длине и не по порядку, тем же приёмом и по той же
+ * причине, что и `isDefaultNativeStepKinds`: спрашивают об этом быстрый путь
+ * готовых схем (`expandPipeline`), ранний путь печати
+ * (`buildPublishedSchemas`) и сообщение команды `stepcast schema`.
+ *
+ * Порядок не сверяется намеренно — и это не упрощение: десять позиций
+ * объединения `PredicateSchema` фиксированы каноническим порядком всегда
+ * (`buildDocumentSchemas`), поэтому перестановка поданного перечня печатает
+ * ту же схему, и «входит ли предикат в состав» — единственный вопрос, на
+ * который перечень отвечает.
+ */
+export function isDefaultNativePredicates(nativePredicates: readonly string[]): boolean {
+  return (
+    nativePredicates.length === DEFAULT_NATIVE_PREDICATES.length &&
+    DEFAULT_NATIVE_PREDICATES.every((name) => nativePredicates.includes(name))
+  );
+}
+
+/**
+ * Объявлена перечислением тех же десяти констант в каноническом порядке:
+ * `RawPredicate`/`RawBuiltinPredicate` держатся на точном размеченном
+ * объединении ровно этих десяти форм, и разбор каждой ветви в `expand.ts`
+ * (сужение оператором `in`) опирается именно на него.
  */
 export const BuiltinPredicateSchema = z.union([
-  z.object({ exit_code: count }).strict(),
-  z.object({ file_exists: z.string() }).strict(),
-  z.object({ schema: z.string() }).strict(),
-  z.object({ matches: z.string() }).strict(),
-  z.object({ not_matches: z.string() }).strict(),
-  z.object({ changed_only: z.array(z.string()) }).strict(),
-  z.object({ knowledge_valid: z.boolean() }).strict(),
-  z.object({ cmd: z.string() }).strict(),
-  // Тот же образец, что у `script` шага: пустая строка внутри слоя дала бы сам
-  // каталог слоя (см. комментарий у ScriptStepSchema).
-  z.object({ script: z.string().min(1).regex(/\S/) }).strict(),
-  z
-    .object({
-      judge: z.string(),
-      hard: z.boolean().optional(),
-      agent: z.string().optional(),
-      model: z.string().optional(),
-    })
-    .strict(),
+  ExitCodePredicateSchema,
+  FileExistsPredicateSchema,
+  SchemaPredicateSchema,
+  MatchesPredicateSchema,
+  NotMatchesPredicateSchema,
+  ChangedOnlyPredicateSchema,
+  KnowledgeValidPredicateSchema,
+  CmdPredicateSchema,
+  ScriptPredicateSchema,
+  JudgePredicateSchema,
 ]);
 
 /**
@@ -329,19 +390,48 @@ export function buildDocumentSchemas(
   pluginPredicates: readonly string[] = [],
   pluginStepKinds: readonly PluginStepKindKeys[] = [],
   nativeStepKinds: readonly string[] = DEFAULT_NATIVE_STEP_KINDS,
+  nativePredicates: readonly string[] = DEFAULT_NATIVE_PREDICATES,
 ) {
-  const PredicateSchema =
-    pluginPredicates.length === 0
-      ? BuiltinPredicateSchema
-      : z.union([
-          BuiltinPredicateSchema,
-          ...pluginPredicates.map((name) =>
-            // Ветвь плагинного предиката: ключ известен, а форму значения
-            // проверяет JSON Schema вклада при раскрытии (`expand.ts`), потому
-            // что zod-модель чужой версии в это объединение не положить.
-            z.object({ [name]: z.unknown() }).strict(),
-          ),
-        ]);
+  // Имя без ветви — именованный отказ сборки (design.md, Решение 4), тем же
+  // приёмом, что и у `nativeStepKinds` ниже: опечатка в имени, поданном
+  // `buildDocumentSchemas`, обязана назвать предикат сразу, а не тихо сузить
+  // объединение и разбиться о документ много позже, дампом ветвей.
+  for (const name of nativePredicates) {
+    if (!DEFAULT_NATIVE_PREDICATES.includes(name)) {
+      throw new StepcastError(`Предикат ${name} не имеет ветви схемы документа: неизвестный внутренний предикат`, {
+        hint: `Внутренние предикаты: ${DEFAULT_NATIVE_PREDICATES.join(', ')}; проверьте имя, поданное buildDocumentSchemas`,
+      });
+    }
+  }
+
+  /**
+   * Объединение ветвей предиката — десять позиций встроенных предикатов
+   * фиксированы всегда, а не отданы порядку и длине `nativePredicates`, тем
+   * же приёмом и по той же причине, что у `StepSchema` ниже (design.md,
+   * Решение 4): предикат вне состава занимает позицию `z.never()`, а не
+   * пропадает из массива. Так `PredicateSchema` остаётся размеченным
+   * объединением ровно этих десяти форм (`z.infer` отбрасывает `never` из
+   * объединения сам), а `RawStep['expect']` и `UntilSchema.check` —
+   * `RawPredicate`, на котором стоит сужение оператором `in` в `expand.ts`,
+   * а не `unknown`, закрытым приведением на каждом месте разбора.
+   *
+   * Ветвь плагинного предиката: ключ известен, а форму значения проверяет
+   * JSON Schema вклада при раскрытии (`expand.ts`), потому что zod-модель
+   * чужой версии в это объединение не положить.
+   */
+  const PredicateSchema = z.union([
+    nativePredicates.includes('exit_code') ? ExitCodePredicateSchema : z.never(),
+    nativePredicates.includes('file_exists') ? FileExistsPredicateSchema : z.never(),
+    nativePredicates.includes('schema') ? SchemaPredicateSchema : z.never(),
+    nativePredicates.includes('matches') ? MatchesPredicateSchema : z.never(),
+    nativePredicates.includes('not_matches') ? NotMatchesPredicateSchema : z.never(),
+    nativePredicates.includes('changed_only') ? ChangedOnlyPredicateSchema : z.never(),
+    nativePredicates.includes('knowledge_valid') ? KnowledgeValidPredicateSchema : z.never(),
+    nativePredicates.includes('cmd') ? CmdPredicateSchema : z.never(),
+    nativePredicates.includes('script') ? ScriptPredicateSchema : z.never(),
+    nativePredicates.includes('judge') ? JudgePredicateSchema : z.never(),
+    ...pluginPredicates.map((name) => z.object({ [name]: z.unknown() }).strict()),
+  ]);
 
   const BudgetSchema = z
     .object({

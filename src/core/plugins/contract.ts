@@ -393,6 +393,61 @@ export function hasStepExecutor(kind: StepKind): kind is StepKindContribution {
   return typeof (kind as StepKindContribution).execute === 'function';
 }
 
+/**
+ * Внутренняя форма вклада предиката — только для встроенных (`builtin-predicates-as-row`,
+ * design.md, решение 2, решение 3): пара «узнать свою запись, разобрать в
+ * типизированную модель `Predicate` движка», по образцу `NativeStepKindForm`.
+ * В публикуемой поверхности плагина её нет: у встроенных предикатов есть
+ * типизированная модель и типизированное вычисление (`switch` по `kind`),
+ * которые `evaluate(value: unknown, …)` заставили бы пройти через `unknown`
+ * ради симметрии, которой автор плагина никогда не напишет своими руками.
+ */
+export interface NativePredicateForm {
+  /**
+   * Узнать запись этого предиката среди сырых записей `expect`/`until.check`:
+   * замена сужения `'exit_code' in builtin`, которым раньше велась цепочка
+   * `toPredicate` (`pipeline/expand.ts`).
+   */
+  test(raw: Record<string, unknown>): boolean;
+  /** Типизированный разбор — тело прежней ветви `toPredicate`, перенесённое без изменений в содержании. */
+  parse(raw: unknown, ctx: unknown): unknown;
+}
+
+/** Встроенный предикат в реестре: имя и внутренняя форма разбора. */
+export interface NativePredicate {
+  readonly name: string;
+  readonly native: NativePredicateForm;
+}
+
+/**
+ * Предикат в реестре — плагинный либо встроенный (design.md, решение 2).
+ * Тип внутренний: `stepcast/plugin` публикует только `PredicateContribution` —
+ * автор плагина внутреннюю форму `native` не видит и завести её не может.
+ */
+export type PredicateKind = PredicateContribution | NativePredicate;
+
+/**
+ * Встроенный предикат (внутренняя форма `native`) отличается от плагинного
+ * наличием этого поля — тем же приёмом, что и `isNativeStepKind`: проверяется
+ * содержание поля, а не одно его имя. Декларативному вкладу это имя запрещено
+ * схемой (`PredicateContributionSchema`), плагину контекста — ничем: он зовёт
+ * `ctx.predicates.register` напрямую.
+ */
+export function isNativePredicate(kind: PredicateKind): kind is NativePredicate {
+  const native = (kind as NativePredicate).native as NativePredicateForm | undefined;
+  return typeof native?.test === 'function' && typeof native.parse === 'function';
+}
+
+/**
+ * Вклад умеет вычисляться сам — то, что отличает `PredicateContribution` от
+ * внутренней формы встроенных предикатов, не спрашивая о происхождении, по
+ * образцу `hasStepExecutor`: узнавание вне состава, отбор для печати схемы
+ * проекта и сверки её устаревания решают именно этим вопросом.
+ */
+export function hasPredicateEvaluator(kind: PredicateKind): kind is PredicateContribution {
+  return typeof (kind as PredicateContribution).evaluate === 'function';
+}
+
 export interface StepcastPlugin {
   /** Имя плагина: слаг в kebab-case, уникальный среди загруженных. */
   readonly name: string;
@@ -481,6 +536,15 @@ const PredicateContributionSchema = z
       .custom<NonNullable<PredicateContribution['lint']>>((value) => typeof value === 'function', {
         message: 'должна быть функцией',
       })
+      .optional(),
+    /**
+     * Поле внутренней формы встроенного предиката (`NativePredicateForm`): по
+     * его наличию `isNativePredicate` отличает встроенный предикат от
+     * плагинного — тем же приёмом, что и `native` вида шага
+     * (`StepKindContributionSchema`).
+     */
+    native: z
+      .undefined('поле native принадлежит внутренней форме встроенного предиката и вкладу недоступно')
       .optional(),
   })
   .loose();

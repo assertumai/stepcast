@@ -8,6 +8,7 @@ import { StepcastError } from '../src/core/errors.js';
 import { createKernel } from '../src/core/plugins/kernel.js';
 import { walkPluginTree } from '../src/core/plugins/load.js';
 import { availableNames, contributionOwner } from '../src/core/plugins/registry.js';
+import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
 import { loadPlugins } from '../src/parts/load.js';
 import { BUILTIN_ROWS, BUILTIN_ROW_IDS } from '../src/parts/rows.js';
 import { tempDir } from './tmp.js';
@@ -98,6 +99,7 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
       config.pluginTree.map((row) => [row.id, row.use, row.enabled]),
       [
         ['backend-claude', 'stepcast:backend-claude', true],
+        ['predicates', 'stepcast:predicates', true],
         ['step-run', 'stepcast:step-run', true],
         ['step-uses', 'stepcast:step-uses', true],
         ['step-script', 'stepcast:step-script', true],
@@ -108,8 +110,8 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
       ],
     );
     assert.deepEqual(config.pluginTree[0]?.source, { kind: 'builtin' });
-    assert.deepEqual(config.pluginTree[6]?.source, { kind: 'file', path: place.homePatchPath });
-    assert.deepEqual(config.pluginTree[7]?.source, { kind: 'file', path: place.projectPatchPath });
+    assert.deepEqual(config.pluginTree[7]?.source, { kind: 'file', path: place.homePatchPath });
+    assert.deepEqual(config.pluginTree[8]?.source, { kind: 'file', path: place.projectPatchPath });
   });
 
   it('конфигурация без единого plugins.patch.yml сворачивается в прежний состав и порядок', () => {
@@ -123,7 +125,7 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
 
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './g.mjs', './p.mjs'],
+      ['backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './g.mjs', './p.mjs'],
     );
     // `Config.plugins` — модули, и только они: `stepcast:backend-claude`
     // модулем не является и `resolveModulePath` не разрешается, поэтому в
@@ -141,7 +143,7 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
 
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', 'home-only'],
+      ['backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', 'home-only'],
     );
   });
 });
@@ -195,6 +197,7 @@ describe('plugin-tree: строки поставки вызывающего', ()
 
     assert.deepEqual(config.pluginTree.map((row) => [row.id, row.use, row.enabled]), [
       ['backend-claude', 'stepcast:backend-claude', true],
+      ['predicates', 'stepcast:predicates', true],
       ['step-run', 'stepcast:step-run', true],
       ['step-uses', 'stepcast:step-uses', true],
       ['step-script', 'stepcast:step-script', true],
@@ -214,7 +217,7 @@ describe('plugin-tree: строки поставки вызывающего', ()
     assert.deepEqual(config.pluginTree, withoutRows.pluginTree);
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision'],
+      ['backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision'],
     );
   });
 });
@@ -239,7 +242,7 @@ describe('plugin-tree: замена строки патчем', () => {
     // Порядок остался прежним — b стоит на своём месте, между a и c.
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', 'a', 'b', 'c'],
+      ['backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', 'a', 'b', 'c'],
     );
     const b = config.pluginTree.find((row) => row.id === 'b');
     assert.equal(b?.use, './b2.mjs');
@@ -279,7 +282,7 @@ describe('plugin-tree: вставка строки по позиции', () => {
     });
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'a', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision'],
+      ['backend-claude', 'a', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision'],
     );
   });
 
@@ -291,7 +294,7 @@ describe('plugin-tree: вставка строки по позиции', () => {
     });
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['my-backends', 'backend-claude', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision'],
+      ['my-backends', 'backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision'],
     );
   });
 
@@ -446,7 +449,26 @@ describe('plugin-tree: замена встроенной строки', () => {
     );
   });
 
-  it('строка патча с id встроенного предиката — обычная новая строка, имя предиката остаётся зарезервированным', async () => {
+  // Задача 6.5 (builtin-predicates-as-row): замена строки `predicates` по её
+  // `id` — та же граница, что и у `backend-claude` выше: заменяющая строка не
+  // наследует ни одного вклада заменённой (design.md, Решение 6).
+  it('проектный патч заменяет predicates модулем пользователя: ни один встроенный предикат не появляется сам собой', async () => {
+    const place = bed();
+    writeModule(
+      join(place.root, '.stepcast', 'own-predicates.mjs'),
+      'export default { name: "own-predicates", predicates: [{ name: "always_true", schema: { type: "boolean" }, evaluate: () => ({ predicate: "always_true", passed: true, hard: true }) }] };\n',
+    );
+    const config = resolved(place, {
+      projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: predicates\n    use: ./own-predicates.mjs\n',
+    });
+
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
+
+    assert.deepEqual(availableNames(registry, 'predicates'), ['always_true']);
+    assert.equal(contributionOwner(registry, 'predicates', 'always_true'), 'own-predicates');
+  });
+
+  it('строка патча с id встроенного предиката — обычная новая строка, а имя предиката занято вкладом строки predicates', async () => {
     const place = bed();
     writeModule(
       join(place.root, '.stepcast', 'exit-code.mjs'),
@@ -456,8 +478,10 @@ describe('plugin-tree: замена встроенной строки', () => {
       projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: exit_code\n    use: ./exit-code.mjs\n',
     });
 
-    // Строка дерева — обычная, с id exit_code; проверяется, что имя предиката
-    // exit_code всё равно зарезервировано движком и попытка занять его отказывает.
+    // Совпадение `id` строки с именем предиката ничего не значит: строка
+    // дерева — обычная, а имя `exit_code` занято вкладом строки `predicates`,
+    // применённой раньше (резерва в ядре больше нет), и попытка занять его
+    // отказывает тем же отказом, что и на любом занятом имени.
     await assert.rejects(
       () => loadPlugins(config, { projectRoot: place.root }),
       (error: unknown) =>
@@ -465,6 +489,34 @@ describe('plugin-tree: замена встроенной строки', () => {
         /Имя предиката exit_code занято/.test(error.message) &&
         /встроенный вклад/.test(error.message),
     );
+  });
+
+  // Сценарий `plugin-tree` «Строка отключена патчем состава» и сценарий
+  // `plugin-contributions` «Отключённая строка освобождает имя» — тем путём,
+  // каким состав снимает строку на самом деле: `enabled: false` в проектном
+  // патче, пройденный `resolveConfig` и `loadPlugins`, а не сборкой ядра
+  // вручную (находка ревью).
+  it('enabled: false на строке predicates убирает все встроенные предикаты и освобождает их имена', async () => {
+    const place = bed();
+    writeModule(
+      join(place.root, '.stepcast', 'свой-exit-code.mjs'),
+      'export default { name: "own-exit-code", predicates: [{ name: "exit_code", schema: { type: "string" }, evaluate: () => ({ predicate: "exit_code", passed: true, hard: true }) }] };\n',
+    );
+    const config = resolved(place, {
+      projectPatch:
+        'version: 1\nkind: plugins-patch\nplugins:\n' +
+        '  - id: predicates\n    use: stepcast:predicates\n    enabled: false\n' +
+        '  - id: own-exit-code\n    use: ./свой-exit-code.mjs\n',
+    });
+
+    assert.equal(config.pluginTree.find((row) => row.id === 'predicates')?.enabled, false);
+
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
+
+    // Ни одного встроенного предиката, а освободившееся имя занял плагин —
+    // своей схемой и своим вычислителем.
+    assert.deepEqual(availableNames(registry, 'predicates'), ['exit_code']);
+    assert.equal(contributionOwner(registry, 'predicates', 'exit_code'), 'own-exit-code');
   });
 });
 
@@ -506,7 +558,7 @@ describe('plugin-tree: фабрики строк поставки при заг�
         // `src/parts/load.ts`.
         assert.equal(
           hint,
-          'Пакет поставляет: stepcast:backend-claude, stepcast:step-run, stepcast:step-uses, stepcast:step-script, stepcast:step-agent, stepcast:step-decision, stepcast:ui-shell',
+          'Пакет поставляет: stepcast:backend-claude, stepcast:predicates, stepcast:step-run, stepcast:step-uses, stepcast:step-script, stepcast:step-agent, stepcast:step-decision, stepcast:ui-shell',
         );
         return true;
       },
@@ -643,9 +695,9 @@ describe('plugin-tree: ключ plugins как сокращённая форма
 
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './shared.mjs'],
+      ['backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './shared.mjs'],
     );
-    assert.deepEqual(config.pluginTree[6]?.source, { kind: 'file', path: place.globalPath });
+    assert.deepEqual(config.pluginTree[7]?.source, { kind: 'file', path: place.globalPath });
 
     const { registry } = await loadPlugins(config, { projectRoot: place.root });
     assert.equal(registry.plugins.length, 1);
@@ -785,7 +837,7 @@ describe('plugin-tree: каталожные строки (user-plugins)', () => 
     assert.deepEqual(rows[0]?.source, { kind: 'directory', dir: projectDir, layer: 'project' });
 
     const { registry } = await loadPlugins(config, { projectRoot: place.root });
-    assert.deepEqual(availableNames(registry, 'predicates').sort(), ['project_only']);
+    assert.deepEqual(availableNames(registry, 'predicates').sort(), [...DEFAULT_NATIVE_PREDICATES, 'project_only'].sort());
   });
 
   it('строка патча, назвавшая в use каталог с манифестом, даёт тот же плагин, что и обход', async () => {

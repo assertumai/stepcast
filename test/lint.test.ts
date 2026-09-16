@@ -2998,6 +2998,25 @@ jobs:
     const message = warnings(diagnostics).find((text) => /Схема проекта устарела/.test(text));
     assert.ok(message !== undefined, warnings(diagnostics).join('\n'));
   });
+
+  // Сценарий pipeline-definition «Схема проекта следует составу»
+  // (`builtin-predicates-as-row`, находка ревью): сверка устаревания читает
+  // состав предикатов тем же правилом, что и печать, — файл, напечатанный
+  // дефолтным составом, при снятой строке `predicates` устарел.
+  it('при отключённой строке predicates прежде напечатанная схема проекта — устарела', async () => {
+    const project = makeProject({ 'stepcast.yml': PIPELINE });
+    project.write(
+      join('.stepcast', 'schema', 'pipeline.schema.json'),
+      `${JSON.stringify(buildPublishedSchemas().pipeline, null, 2)}\n`,
+    );
+    project.write(join('.stepcast', 'schema', 'job.schema.json'), `${JSON.stringify(buildPublishedSchemas().job, null, 2)}\n`);
+
+    const registryWithoutPredicates = registryWithoutRow('predicates');
+
+    const diagnostics = lintWithRegistry(project, registryWithoutPredicates);
+    const message = warnings(diagnostics).find((text) => /Схема проекта устарела/.test(text));
+    assert.ok(message !== undefined, warnings(diagnostics).join('\n'));
+  });
 });
 
 describe('pipeline-definition: статическая проверка шага script', () => {

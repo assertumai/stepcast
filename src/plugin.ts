@@ -64,7 +64,7 @@ export type { TreeRow, TreeRowSource } from './core/plugins/tree.js';
  * не следует — два экземпляра означают два разных хранилища сервисов, не
  * видящих друг друга (docs/plugins.md, граница единственного экземпляра).
  */
-export type { Context, ContributionRegistrar, Inject, StepKindRegistrar } from './core/plugins/context.js';
+export type { Context, ContributionRegistrar, Inject, PredicateRegistrar, StepKindRegistrar } from './core/plugins/context.js';
 
 export type { CliIo, CommandSpec, FlagKind, FlagSpec, ParsedArgs } from './core/plugins/cli-types.js';
 

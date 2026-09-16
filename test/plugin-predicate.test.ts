@@ -7,9 +7,10 @@ import { StepcastError } from '../src/core/errors.js';
 import { evaluatePredicates } from '../src/core/expect/evaluate.js';
 import { findStepDir, readStatus } from '../src/core/journal/reader.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
+import { builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
+import { BUILTIN_ROWS } from '../src/parts/rows.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
-import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
+import { contributionOwner, registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import type { PredicateContribution } from '../src/core/plugins/contract.js';
 import { planResume, readSourceRun } from '../src/core/run/resumePlan.js';
 import { runPipeline } from '../src/core/run/runner.js';
@@ -395,5 +396,52 @@ describe('plugin-contributions: возобновление прогона с п�
         return true;
       },
     );
+  });
+});
+
+// Задача 6.4 (builtin-predicates-as-row): при отключённой строке предикатов
+// имя `exit_code` свободно — плагин вправе внести под ним свой предикат со
+// своей формой значения и своим вычислителем, и документ разбирается и
+// вычисляется именно им (design.md, Решение 6).
+describe('plugin-contributions: плагин занимает имя exit_code при отключённой строке predicates', () => {
+  it('документ разбирается схемой плагина и вычисляется его вычислителем', async () => {
+    const kernel = createKernelShell();
+    for (const row of BUILTIN_ROWS) {
+      if (row.id === 'predicates') continue;
+      row.apply(kernel);
+    }
+    await applyDeclarativePlugin(
+      kernel,
+      {
+        name: 'own-exit-code',
+        predicates: [
+          {
+            name: 'exit_code',
+            // Форма плагина — строковый enum, а не число, каким был бы
+            // встроенный `exit_code`: значение, которое отклонила бы
+            // встроенная схема, здесь законно.
+            schema: { type: 'string', enum: ['ok'] },
+            evaluate: (value) => ({ predicate: 'exit_code', passed: value === 'ok', hard: true }),
+          },
+        ],
+      },
+      '/модуль/own-exit-code.js',
+    );
+    const registry = registryFromKernel(kernel);
+
+    const project = makeProject({ 'stepcast.yml': pipelineWith('[{ exit_code: "ok" }]') });
+    const result = await run(project, registry);
+
+    assert.equal(result.status, 'success');
+    const stepDir = findStepDir(result.journal.paths, 'build', 'say');
+    const report = JSON.parse(readFileSync(join(stepDir as string, 'expect.json'), 'utf8')) as {
+      results: { predicate: string; passed: boolean }[];
+    };
+    assert.deepEqual(
+      report.results.map((item) => item.predicate),
+      ['exit_code'],
+    );
+    assert.equal(report.results[0]?.passed, true);
+    assert.equal(contributionOwner(registry, 'predicates', 'exit_code'), 'own-exit-code');
   });
 });

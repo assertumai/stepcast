@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { FiberState, Service } from 'cordis';
 
 import { ExitCode, StepcastError } from '../src/core/errors.js';
-import { BUILTIN_PREDICATE_NAMES, createBuiltinKernel } from '../src/parts/builtin.js';
+import { createBuiltinKernel } from '../src/parts/builtin.js';
 import type {
   BackendContribution,
   CommandContribution,
@@ -20,6 +20,7 @@ import {
 import { loadPlugins } from '../src/parts/load.js';
 import { ContributionService, createKernel } from '../src/core/plugins/kernel.js';
 import { availableNames, predicateNames, registryFromKernel } from '../src/core/plugins/registry.js';
+import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
 import { resolveWithPlugins } from '../src/parts/resolve.js';
 import { resolveConfig, type ResolvedConfig } from '../src/core/config/resolve.js';
 import { run as runCli } from '../src/cli/main.js';
@@ -90,15 +91,16 @@ function writeModule(path: string, body: string): void {
 }
 
 describe('plugin-kernel: свежее ядро', () => {
-  it('несёт три служебных сервиса, встроенный бэкенд зарегистрирован, встроенные предикаты зарезервированы', () => {
+  it('несёт три служебных сервиса, встроенный бэкенд и встроенные предикаты зарегистрированы вкладами', () => {
     const kernel = createBuiltinKernel();
 
     assert.ok(kernel.ctx.backends instanceof ContributionService);
     assert.ok(kernel.ctx.predicates instanceof ContributionService);
     assert.ok(kernel.ctx.commands instanceof ContributionService);
     assert.deepEqual([...kernel.ctx.backends.contributions.keys()], ['claude']);
-    assert.deepEqual([...kernel.ctx.predicates.reserved].sort(), [...BUILTIN_PREDICATE_NAMES].sort());
-    assert.deepEqual([...kernel.ctx.predicates.contributions.keys()], []);
+    // Встроенные предикаты — настоящие вклады строки `predicates`
+    // (`builtin-predicates-as-row`), а не резерв имени без содержания.
+    assert.deepEqual([...kernel.ctx.predicates.contributions.keys()].sort(), [...DEFAULT_NATIVE_PREDICATES].sort());
   });
 });
 
@@ -215,26 +217,20 @@ describe('plugin-kernel: имена ядра заняты', () => {
   }
 });
 
-describe('plugin-kernel: резерв встроенных имён принадлежит ядру', () => {
-  it('сервис предикатов не даёт плагину занять имя несъёмным резервом', async () => {
+// Задача 7.1 (builtin-predicates-as-row): резерв ушёл из ядра целиком —
+// встроенные предикаты такие же обычные вклады, как встроенный бэкенд, и
+// занимают имя тем же вызовом `register`, а не отдельным механизмом. Плагин,
+// заведший сервис не своим, а любым другим именем, регистрирует предикат тем
+// же путём, что и свой собственный, — второго способа дотянуться до имени
+// нет вовсе.
+describe('plugin-kernel: встроенные предикаты — обычные вклады, не резерв', () => {
+  it('плагин заводит свой предикат тем же вызовом register, каким внесены встроенные', async () => {
     const kernel = createBuiltinKernel();
 
-    // Резерв — не метод сервиса: сервис виден плагину как `ctx.predicates`, и
-    // публичный `reserve` дал бы занять любое имя навсегда (резерв не эффект и
-    // снятием области не снимается). Дотянуться до него плагину нечем.
-    const service: Record<string, unknown> = kernel.ctx.predicates as unknown as Record<string, unknown>;
-    assert.equal(service.reserve, undefined);
-    assert.equal(
-      Object.getOwnPropertyNames(Object.getPrototypeOf(service) as object).includes('reserve'),
-      false,
-    );
-
-    // Всё, что плагину доступно, — регистрация вклада; она обратима, и снятие
-    // области возвращает имя.
     const fiber = await applyContextPlugin(
       kernel,
       {
-        name: 'reserver',
+        name: 'own-predicate',
         inject: ['predicates'],
         apply(ctx) {
           ctx.predicates.register('своё_имя', predicate('своё_имя'));
@@ -242,10 +238,14 @@ describe('plugin-kernel: резерв встроенных имён принад
       },
       '<synthetic>',
     );
-    assert.deepEqual([...kernel.ctx.predicates.reserved].sort(), [...BUILTIN_PREDICATE_NAMES].sort());
+    assert.ok(kernel.ctx.predicates.contributions.has('своё_имя'));
+    assert.ok(kernel.ctx.predicates.contributions.has('exit_code'));
 
     await fiber.dispose();
     assert.equal(kernel.ctx.predicates.contributions.has('своё_имя'), false);
+    // Встроенный предикат — вклад строки, а не плагина: снятие области
+    // плагина его не трогает.
+    assert.ok(kernel.ctx.predicates.contributions.has('exit_code'));
   });
 });
 
@@ -475,6 +475,40 @@ broken.inject = ['backends', 'predicates', 'commands'];
     assert.equal(caught.file, place.projectPath);
     assert.equal(caught.at, 'plugins');
     assert.ok(caught.hint !== undefined);
+  });
+});
+
+// Задача 7.1 (builtin-predicates-as-row): «имя занято посреди применения» —
+// тот же сценарий, что у встроенного бэкенда (`наполовину загруженный
+// плагин` выше), но на встроенном предикате: конфликт случается на втором
+// вкладе, и отказ снимает область целиком, включая уже внесённый первый вклад.
+describe('plugin-kernel: конфликт имени встроенного предиката посреди применения', () => {
+  it('отказ на предикате exit_code снимает и уже внесённый вклад той же области', async () => {
+    const kernel = createBuiltinKernel();
+    const registry = registryFromKernel(kernel);
+
+    await assert.rejects(() =>
+      applyContextPlugin(
+        kernel,
+        {
+          name: 'broken-predicate',
+          inject: ['commands', 'predicates'],
+          apply(ctx) {
+            ctx.commands.register('half-cmd', command('half-cmd'));
+            // Имя занято встроенным предикатом — отказ посреди применения.
+            ctx.predicates.register('exit_code', predicate('exit_code'));
+          },
+        },
+        '<synthetic>',
+      ),
+    );
+
+    assert.equal(registry.commands.has('half-cmd'), false);
+    assert.deepEqual([...registry.plugins], []);
+    assert.equal(registry.owners.get('commands:half-cmd'), undefined);
+    // Встроенный предикат остался на месте — отказ не снял чужого вклада.
+    assert.ok(registry.predicates.has('exit_code'));
+    assert.equal(registry.owners.get('predicates:exit_code'), 'встроенный');
   });
 });
 

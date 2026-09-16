@@ -3,8 +3,8 @@ import { z } from 'zod';
 // (`expand.ts`): «пригодна» здесь значит именно «примет ajv при разборе».
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
-import { buildDocumentSchemas, DEFAULT_NATIVE_STEP_KINDS, isDefaultNativeStepKinds, STEP_COMMON_KEYS } from './schema.js';
-import { hasStepExecutor, type StepKindContribution } from '../plugins/contract.js';
+import { buildDocumentSchemas, DEFAULT_NATIVE_PREDICATES, DEFAULT_NATIVE_STEP_KINDS, isDefaultNativePredicates, isDefaultNativeStepKinds, STEP_COMMON_KEYS } from './schema.js';
+import { hasPredicateEvaluator, hasStepExecutor, type PredicateContribution, type StepKindContribution } from '../plugins/contract.js';
 import { BUILTIN_OWNER } from '../plugins/kernel.js';
 import { contributionOwner, type Registry } from '../plugins/registry.js';
 
@@ -324,8 +324,9 @@ function assemble(
   stepKinds: readonly { readonly name: string; readonly keys: readonly string[] }[],
   stepKindValues: ReadonlyMap<string, StepKindOverlay>,
   nativeStepKinds: readonly string[],
+  nativePredicates: readonly string[],
 ): Documents {
-  const { PipelineDocumentSchema, JobDocumentSchema } = buildDocumentSchemas(predicateNames, stepKinds, nativeStepKinds);
+  const { PipelineDocumentSchema, JobDocumentSchema } = buildDocumentSchemas(predicateNames, stepKinds, nativeStepKinds, nativePredicates);
   const pipeline = printDocument(PipelineDocumentSchema, 'stepcast pipeline');
   const job = printDocument(JobDocumentSchema, 'stepcast job');
   if (predicateNames.length > 0 || stepKinds.length > 0) {
@@ -367,11 +368,13 @@ function documentReason(documents: Documents): string | undefined {
  * молчал бы о настоящем устаревании.
  */
 export function pluginPredicateEntries(registry: Registry): PluginPredicateEntry[] {
-  return [...registry.predicates.entries()].map(([name, contribution]) => ({
-    name,
-    schema: contribution.schema,
-    owner: contributionOwner(registry, 'predicates', name) ?? name,
-  }));
+  return [...registry.predicates.entries()]
+    .filter((entry): entry is [string, PredicateContribution] => hasPredicateEvaluator(entry[1]))
+    .map(([name, contribution]) => ({
+      name,
+      schema: contribution.schema,
+      owner: contributionOwner(registry, 'predicates', name) ?? name,
+    }));
 }
 
 /**
@@ -484,24 +487,32 @@ function stepKindOverlay(entry: PluginStepKindEntry): {
 
 /**
  * Печатает JSON Schema документов пайплайна и работы по перечню плагинных
- * предикатов и видов шага, а также по составу видов внутренней формы
- * (`builtin-step-kinds-as-rows`, design.md, Решение 7) — тем же третьим
- * параметром, что и `buildDocumentSchemas`, с тем же умолчанием: все четыре в
- * каноническом порядке. Три пустых/дефолтных аргумента дают в точности то,
- * что поставляет пакет (design.md, решение 4): фабрика `buildDocumentSchemas`
- * без имён возвращает встроенный набор без объединения, и подставлять нечего
- * — `description` при этом не заводится вовсе.
+ * предикатов и видов шага, а также по составу видов и предикатов внутренней
+ * формы (`builtin-step-kinds-as-rows`, design.md, Решение 7;
+ * `builtin-predicates-as-row`, design.md, Решение 4) — тем же третьим и
+ * четвёртым параметром, что и `buildDocumentSchemas`, с теми же умолчаниями:
+ * оба в каноническом порядке. Четыре пустых/дефолтных аргумента дают в
+ * точности то, что поставляет пакет (design.md, решение 4): фабрика
+ * `buildDocumentSchemas` без имён возвращает встроенный набор без
+ * объединения, и подставлять нечего — `description` при этом не заводится
+ * вовсе.
  */
 export function buildPublishedSchemas(
   predicates: readonly PluginPredicateEntry[] = [],
   stepKinds: readonly PluginStepKindEntry[] = [],
   nativeStepKinds: readonly string[] = DEFAULT_NATIVE_STEP_KINDS,
+  nativePredicates: readonly string[] = DEFAULT_NATIVE_PREDICATES,
 ): PublishedSchemas {
   const predicateNames = predicates.map((entry) => entry.name);
   const stepKindDescriptors = stepKinds.map((entry) => ({ name: entry.name, keys: entry.keys }));
 
-  if (predicates.length === 0 && stepKinds.length === 0 && isDefaultNativeStepKinds(nativeStepKinds)) {
-    const { pipeline, job } = assemble([], new Map(), [], new Map(), nativeStepKinds);
+  if (
+    predicates.length === 0 &&
+    stepKinds.length === 0 &&
+    isDefaultNativeStepKinds(nativeStepKinds) &&
+    isDefaultNativePredicates(nativePredicates)
+  ) {
+    const { pipeline, job } = assemble([], new Map(), [], new Map(), nativeStepKinds, nativePredicates);
     return { pipeline, job, notes: [] };
   }
 
@@ -540,7 +551,7 @@ export function buildPublishedSchemas(
   const assembleWith = (
     predicateSet: ReadonlyMap<string, unknown>,
     stepKindSet: ReadonlyMap<string, StepKindOverlay>,
-  ): Documents => assemble(predicateNames, predicateSet, stepKindDescriptors, stepKindSet, nativeStepKinds);
+  ): Documents => assemble(predicateNames, predicateSet, stepKindDescriptors, stepKindSet, nativeStepKinds, nativePredicates);
 
   let documents = assembleWith(predicateValues, stepKindValues);
   if (documentReason(documents) !== undefined) {

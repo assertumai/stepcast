@@ -32,8 +32,6 @@ export type Inject = string[] | Record<string, unknown>;
 export interface ContributionRegistrar<T> {
   /** Вклады вида по имени — то же, что читает `Registry`. */
   readonly contributions: ReadonlyMap<string, T>;
-  /** Имена, занятые без вкладов (встроенные предикаты). */
-  readonly reserved: readonly string[];
   /** Кто внёс вклад с этим именем: имя плагина либо «встроенный». */
   owner(name: string): string | undefined;
   /** Внести вклад. Отказывает на занятом имени; возвращает disposer. */
@@ -57,10 +55,22 @@ export interface StepKindRegistrar {
   register(name: string, contribution: StepKindContribution): () => void;
 }
 
+/**
+ * Регистратор предикатов — то немногое из `ContributionRegistrar`, что видит
+ * автор плагина, тем же приёмом, что и `StepKindRegistrar` (`builtin-predicates-as-row`,
+ * design.md, решение 2). Не переиспользует сам `ContributionRegistrar<T>`:
+ * реестр ядра хранит предикаты одним общим типом, включающим внутреннюю форму
+ * `native` (`kernel.ts`), а плагину эта форма недоступна вовсе.
+ */
+export interface PredicateRegistrar {
+  /** Внести предикат. Отказывает на занятом имени; возвращает disposer. */
+  register(name: string, contribution: PredicateContribution): () => void;
+}
+
 /** Контекст ядра: то, чем располагает плагин контекста и команда плагина. */
 export interface Context {
   readonly backends: ContributionRegistrar<BackendContribution>;
-  readonly predicates: ContributionRegistrar<PredicateContribution>;
+  readonly predicates: PredicateRegistrar;
   readonly commands: ContributionRegistrar<CommandContribution>;
   readonly steps: StepKindRegistrar;
   /**

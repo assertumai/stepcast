@@ -2,11 +2,12 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { StepcastError } from '../src/core/errors.js';
-import { BUILTIN_PREDICATE_NAMES, builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
+import { builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { createKernel } from '../src/core/plugins/kernel.js';
 import { availableNames, contributionOwner, predicateNames, registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import { isNativeStepKind, type PredicateContribution, type StepcastPlugin, type StepKindContribution } from '../src/core/plugins/contract.js';
+import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
 import { ExitCode } from '../src/core/errors.js';
 import { BUILTIN_ROWS } from '../src/parts/rows.js';
 import { row as stepRun } from '../src/parts/steps/run/row.js';
@@ -31,16 +32,21 @@ describe('plugin-contributions: реестр вкладов', () => {
     const registry = builtinRegistry();
 
     assert.deepEqual(availableNames(registry, 'backends'), ['claude']);
-    assert.deepEqual(predicateNames(registry), [...BUILTIN_PREDICATE_NAMES].sort());
-    // Вкладов у встроенных предикатов нет — только занятые имена.
-    assert.deepEqual(availableNames(registry, 'predicates'), []);
+    assert.deepEqual(predicateNames(registry), [...DEFAULT_NATIVE_PREDICATES].sort());
+    // Встроенные предикаты — настоящие вклады строки `predicates`, а не резерв
+    // без содержания (`builtin-predicates-as-row`): все десять числятся среди
+    // вкладов, и владелец каждого — «встроенный».
+    assert.deepEqual(availableNames(registry, 'predicates'), [...DEFAULT_NATIVE_PREDICATES].sort());
+    for (const name of DEFAULT_NATIVE_PREDICATES) {
+      assert.equal(contributionOwner(registry, 'predicates', name), 'встроенный');
+    }
   });
 
   it('заводится заново на каждый вызов: вклад одного реестра не течёт в другой', async () => {
     const kernel = createBuiltinKernel();
     await applyDeclarativePlugin(kernel, { name: 'a', predicates: [predicate('http_ok')] }, '/модуль/a.js');
 
-    assert.deepEqual(predicateNames(builtinRegistry()), [...BUILTIN_PREDICATE_NAMES].sort());
+    assert.deepEqual(predicateNames(builtinRegistry()), [...DEFAULT_NATIVE_PREDICATES].sort());
   });
 
   it('плагин добавляет вклады трёх видов', async () => {
@@ -100,6 +106,33 @@ describe('plugin-contributions: реестр вкладов', () => {
         /предиката exit_code/.test(error.message) &&
         /встроенный вклад/.test(error.message),
     );
+  });
+
+  // Задача 6.2 (builtin-predicates-as-row): `script` — десятый встроенный
+  // предикат, который до этого пункта в резерв не попадал и тихо не работал
+  // за плагином (design.md, Решение 7). Строка вносит все десять форм разом,
+  // и дыра закрывается сама: тот же отказ, что и на `exit_code`.
+  it('плагин не может занять имя встроенного предиката script — дыра резерва закрыта', async () => {
+    const kernel = createBuiltinKernel();
+
+    await assert.rejects(
+      () => applyDeclarativePlugin(kernel, { name: 'самозванец', predicates: [predicate('script')] }, '/м.js'),
+      (error: unknown) =>
+        error instanceof StepcastError &&
+        /предиката script/.test(error.message) &&
+        /встроенный вклад/.test(error.message),
+    );
+  });
+
+  // Задача 6.3 (builtin-predicates-as-row): `predicateNames` — источник
+  // перечня «Доступны: …» в отказе на неизвестном предикате (`expand.ts`,
+  // `toPluginPredicate`); `script` называется в нём наравне с остальными
+  // девятью, а не остаётся дырой резерва.
+  it('перечень доступного называет script наравне с остальными встроенными предикатами', () => {
+    const registry = builtinRegistry();
+
+    assert.deepEqual(predicateNames(registry), [...DEFAULT_NATIVE_PREDICATES].sort());
+    assert.ok(predicateNames(registry).includes('script'));
   });
 
   it('два плагина не могут спорить за одно имя', async () => {
@@ -238,7 +271,7 @@ describe('plugin-registry: ядро без проверки имени', () => {
 // Задача 1.3: снимок дефолтного дерева — чтобы переезд встроенного слоя
 // (src/parts/**) было чем сверить.
 describe('plugin-registry: снимок дефолтного дерева', () => {
-  it('бэкенды, порядок регистрации видов шага и зарезервированные предикаты не меняются переездом', () => {
+  it('бэкенды, порядок регистрации видов шага и вклады встроенных предикатов не меняются переездом', () => {
     const kernel = createBuiltinKernel();
 
     assert.deepEqual([...kernel.ctx.backends.contributions.keys()], ['claude']);
@@ -246,7 +279,11 @@ describe('plugin-registry: снимок дефолтного дерева', () =
     // перечне строк (`src/parts/rows.ts`, `BUILTIN_ROWS`): строки видов шага
     // идут в нём после `backend-claude` — run, uses, script, agent, decision.
     assert.deepEqual([...kernel.ctx.steps.contributions.keys()], ['run', 'uses', 'script', 'agent', 'decision']);
-    assert.deepEqual([...kernel.ctx.predicates.reserved].sort(), [...BUILTIN_PREDICATE_NAMES].sort());
+    // Встроенные предикаты — вклады сервиса `predicates`, внесённые строкой
+    // (`builtin-predicates-as-row`), а не зарезервированные без содержания
+    // имена: порядок — порядок их перечисления в `src/parts/expect/row.ts`,
+    // те же десять форм, что `DEFAULT_NATIVE_PREDICATES`.
+    assert.deepEqual([...kernel.ctx.predicates.contributions.keys()].sort(), [...DEFAULT_NATIVE_PREDICATES].sort());
   });
 
   // Задача 1 (row-module-convention): переезд строк движка в модули
@@ -270,6 +307,16 @@ describe('plugin-registry: снимок дефолтного дерева', () =
 
     for (const name of ['run', 'uses', 'script', 'agent', 'decision']) {
       assert.equal(contributionOwner(registry, 'steps', name), 'встроенный');
+    }
+  });
+
+  // Задача 7.2 (builtin-predicates-as-row): владелец каждого встроенного
+  // предиката — «встроенный», тем же приёмом, что и у видов шага.
+  it('владелец каждого встроенного предиката — «встроенный»', () => {
+    const registry = builtinRegistry();
+
+    for (const name of DEFAULT_NATIVE_PREDICATES) {
+      assert.equal(contributionOwner(registry, 'predicates', name), 'встроенный');
     }
   });
 });
@@ -314,5 +361,30 @@ describe('plugin-registry: порядок узнавания — свойств�
     const registry = registryFromKernel(kernel);
 
     assert.equal(firstNativeMatch(AMBIGUOUS_RECORD, registry), 'uses');
+  });
+});
+
+// Задача 7.5 (builtin-predicates-as-row): у строки предикатов своего
+// ограничения порядка нет — ключи предикатов не пересекаются, и место
+// `predicates` в перечне не решает ничего, кроме порядка печати состава
+// (design.md, Решение 8). В отличие от строк видов шага, перестановка
+// `predicates` относительно `backend-claude`/`step-*` не меняет ни состава
+// вкладов, ни того, какой предикат узнает запись.
+describe('plugin-registry: место строки предикатов в перечне ничего не решает', () => {
+  it('predicates первой или последней в перечне — реестр содержит один и тот же состав предикатов', () => {
+    const orderedKernel = createKernelShell();
+    for (const row of BUILTIN_ROWS) row.apply(orderedKernel);
+    const orderedRegistry = registryFromKernel(orderedKernel);
+
+    // Строка предикатов переставлена в самый конец перечня — единственная
+    // правка порядка вызова, состав строк тот же.
+    const reorderedRows = [...BUILTIN_ROWS.filter((row) => row.id !== 'predicates'), ...BUILTIN_ROWS.filter((row) => row.id === 'predicates')];
+    const reorderedKernel = createKernelShell();
+    for (const row of reorderedRows) row.apply(reorderedKernel);
+    const reorderedRegistry = registryFromKernel(reorderedKernel);
+
+    assert.deepEqual(predicateNames(reorderedRegistry), predicateNames(orderedRegistry));
+    assert.deepEqual([...reorderedRegistry.predicates.keys()].sort(), [...orderedRegistry.predicates.keys()].sort());
+    assert.deepEqual([...reorderedRegistry.steps.keys()], [...orderedRegistry.steps.keys()]);
   });
 });

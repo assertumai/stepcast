@@ -154,6 +154,22 @@ describe('introspect: приписывание вклада строке дер�
     assert.deepEqual(stepRow?.contributions.steps, ['decision']);
   });
 
+  // Задача 7.4 (builtin-predicates-as-row): все десять встроенных предикатов
+  // числятся за строкой `predicates`, а не за встроенным вне строк.
+  it('строка predicates названа всеми десятью встроенными предикатами', async () => {
+    const place = bed();
+    const config = resolved(place, '');
+
+    const { registry, outcomes } = await loadPlugins(config, { projectRoot: place.root });
+    const model = introspect(outcomes, kernelFromRegistry(registry), 'cli');
+
+    const predicatesRow = model.rows.find((row) => row.id === 'predicates');
+    assert.deepEqual(
+      [...(predicatesRow?.contributions.predicates ?? [])].sort(),
+      ['changed_only', 'cmd', 'exit_code', 'file_exists', 'judge', 'knowledge_valid', 'matches', 'not_matches', 'schema', 'script'],
+    );
+  });
+
   it('замена встроенной строки патчем меняет автора вклада', async () => {
     const place = bed();
     writeFileSync(
@@ -235,6 +251,9 @@ describe('introspect: встроенное вне строк дерева', () =
     );
     // `claude` и виды шага — вклады своих строк, и во встроенном вне строк их нет.
     assert.deepEqual(model.builtin.contributions.backends, []);
+    // Встроенные предикаты — вклад строки `predicates` (`builtin-predicates-as-row`),
+    // и во встроенном вне строк дерева их тоже не осталось.
+    assert.deepEqual(model.builtin.contributions.predicates, []);
     for (const name of ['run', 'uses', 'script', 'agent', 'decision']) {
       const row = model.rows.find((candidate) => candidate.id === `step-${name}`);
       assert.deepEqual(row?.contributions.steps, [name]);

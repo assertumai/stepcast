@@ -13,6 +13,7 @@ import { describeScriptUnresolved } from '../pipeline/expand.js';
 import type { Predicate, ScriptUnresolved } from '../pipeline/model.js';
 import type { PredicateResult } from '../journal/schema.js';
 import type { KnowledgeSource } from '../knowledge/types.js';
+import { hasPredicateEvaluator } from '../plugins/contract.js';
 import type { Registry } from '../plugins/registry.js';
 
 /**
@@ -354,7 +355,7 @@ async function evaluatePlugin(
   registry?: Registry,
 ): Promise<PredicateResult> {
   const contribution = registry?.predicates.get(name);
-  if (contribution === undefined) {
+  if (contribution === undefined || !hasPredicateEvaluator(contribution)) {
     return {
       predicate: name,
       passed: false,

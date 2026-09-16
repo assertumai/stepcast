@@ -10,9 +10,20 @@ import {
   pluginStepKindEntries,
   type PluginPredicateEntry,
 } from '../src/core/pipeline/published-schema.js';
-import { builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
+import { builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
+import { BUILTIN_ROWS } from '../src/parts/rows.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
-import { registryFromKernel } from '../src/core/plugins/registry.js';
+import {
+  nativePredicateNames,
+  nativeStepKindNames,
+  registryFromKernel,
+  type Registry,
+} from '../src/core/plugins/registry.js';
+import {
+  DEFAULT_NATIVE_STEP_KINDS,
+  isDefaultNativePredicates,
+} from '../src/core/pipeline/schema.js';
+import { StepcastError } from '../src/core/errors.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -121,6 +132,44 @@ describe('published-schema: печать встроенного дерева', (
     // И ранний путь «плагинных вкладов нет» — он единственный смотрит на
     // перечень до сборки, и именно он раньше сверял перечень по ссылке.
     assert.deepEqual(buildPublishedSchemas([], [], shuffled), buildPublishedSchemas());
+  });
+
+  // Тот же вопрос для предикатов (`builtin-predicates-as-row`, находка
+  // ревью): десять позиций объединения ветвей фиксированы каноническим
+  // порядком, и перечень отвечает лишь «входит ли предикат в состав».
+  it('дефолтный состав предикатов, поданный перемешанным, печатает то же побайтово', () => {
+    const registry = builtinRegistry();
+    const predicates = pluginPredicateEntries(registry);
+    const stepKinds = pluginStepKindEntries(registry);
+
+    const shuffled = [
+      'judge',
+      'exit_code',
+      'script',
+      'cmd',
+      'matches',
+      'knowledge_valid',
+      'file_exists',
+      'changed_only',
+      'schema',
+      'not_matches',
+    ];
+    const { pipeline, job, notes } = buildPublishedSchemas(predicates, stepKinds, DEFAULT_NATIVE_STEP_KINDS, shuffled);
+
+    assert.deepEqual(notes, []);
+    assert.equal(`${JSON.stringify(pipeline, null, 2)}\n`, readSchemaFile('schema/pipeline.schema.json'));
+    assert.equal(`${JSON.stringify(job, null, 2)}\n`, readSchemaFile('schema/job.schema.json'));
+
+    // И ранний путь «плагинных вкладов нет»: он единственный смотрит на
+    // перечень до сборки.
+    assert.deepEqual(buildPublishedSchemas([], [], DEFAULT_NATIVE_STEP_KINDS, shuffled), buildPublishedSchemas());
+  });
+
+  it('имя без ветви отказывает сборке, называя предикат', () => {
+    assert.throws(
+      () => buildPublishedSchemas([], [], DEFAULT_NATIVE_STEP_KINDS, ['exit_code', 'exit_cod']),
+      (error: unknown) => error instanceof StepcastError && /exit_cod /.test(error.message),
+    );
   });
 
   it('не называет отличием от себя вид шага встроенной строки', () => {
@@ -609,5 +658,101 @@ describe('published-schema: ветвь шага uses', () => {
       }),
       true,
     );
+  });
+});
+
+// Сценарий pipeline-definition: «Схема проекта следует составу»
+// (`builtin-predicates-as-row`, находка ревью). Печать документа без единой
+// ветви встроенного предиката — единственный путь, на котором исполняется
+// объединение из одних `z.never()`: вложение узлов-меток и компиляция ajv на
+// нём не проверялись ни разу.
+describe('published-schema: состав предикатов', () => {
+  /**
+   * Реестр дефолтного состава без одной названной строки — тем же приёмом,
+   * каким состав снимает строку патчем `enabled: false`; сам путь патча через
+   * `resolveConfig`/`loadPlugins` проверен в `test/plugin-tree.test.ts`.
+   */
+  function registryWithoutPredicates(): Registry {
+    const kernel = createKernelShell();
+    for (const row of BUILTIN_ROWS) {
+      if (row.id === 'predicates') continue;
+      row.apply(kernel);
+    }
+    return registryFromKernel(kernel);
+  }
+
+  function schemasFor(registry: Registry) {
+    return buildPublishedSchemas(
+      pluginPredicateEntries(registry),
+      pluginStepKindEntries(registry),
+      nativeStepKindNames(registry),
+      nativePredicateNames(registry),
+    );
+  }
+
+  it('при снятой строке напечатанная схема не признаёт ни одного ключа встроенного предиката', () => {
+    const registry = registryWithoutPredicates();
+    assert.deepEqual(nativePredicateNames(registry), []);
+
+    const schemas = schemasFor(registry);
+    assert.deepEqual(schemas.notes, []);
+
+    for (const predicate of [
+      { exit_code: 0 },
+      { file_exists: 'out.txt' },
+      { schema: 'out.json' },
+      { matches: 'готово' },
+      { not_matches: 'ошибка' },
+      { changed_only: ['src/**'] },
+      { knowledge_valid: true },
+      { cmd: 'test -f out.txt' },
+      { script: 'check.py' },
+      { judge: 'готово' },
+    ]) {
+      expectBoth(schemas, predicate, false);
+    }
+
+    // Документ без единого предиката схемой по-прежнему принимается: пустой
+    // `expect` — неявная проверка кода возврата, и составом она не снимается.
+    const validateJob = compileAny(schemas.job);
+    assert.equal(
+      validateJob({ version: 1, kind: 'job', steps: [{ id: 'say', run: ['echo', 'ok'] }] }),
+      true,
+      JSON.stringify(validateJob.errors),
+    );
+
+    // «Совпадает с поставляемой пакетом» на этом составе неверно — и ранний
+    // путь печати это знает.
+    assert.equal(isDefaultNativePredicates(nativePredicateNames(registry)), false);
+    assert.notDeepEqual(schemas.pipeline, buildPublishedSchemas().pipeline);
+  });
+
+  it('при снятой строке ключ плагинного предиката в схеме есть и его значение проверяется', async () => {
+    const kernel = createKernelShell();
+    for (const row of BUILTIN_ROWS) {
+      if (row.id === 'predicates') continue;
+      row.apply(kernel);
+    }
+    const registry = registryFromKernel(kernel);
+    await applyDeclarativePlugin(
+      kernel,
+      {
+        name: 'text-checks',
+        predicates: [
+          {
+            name: 'text_has',
+            schema: { type: 'string', minLength: 1 },
+            evaluate: () => ({ predicate: 'text_has', passed: true, hard: true }),
+          },
+        ],
+      },
+      '<synthetic>',
+    );
+
+    const schemas = schemasFor(registry);
+
+    expectBoth(schemas, { text_has: 'ok' }, true);
+    expectBoth(schemas, { text_has: 42 }, false);
+    expectBoth(schemas, { exit_code: 0 }, false);
   });
 });

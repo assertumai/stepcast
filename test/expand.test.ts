@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { parse as parseYaml } from 'yaml';
 
+import { evaluatePredicates } from '../src/core/expect/evaluate.js';
+import { lintPipeline } from '../src/core/lint.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { interpolate, interpolateTree, type Scope } from '../src/core/pipeline/interpolate.js';
 import { jobLockHash, serializeLock } from '../src/core/pipeline/lock.js';
@@ -4999,6 +5001,176 @@ jobs:
     const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
 
     assert.match(error.message, /Вид шага frobnicate неизвестен: такого вклада в реестре нет/);
+  });
+});
+
+// Задача 5.5 (builtin-predicates-as-row): отказ разбора на предикате, снятом
+// составом, — тем же приёмом, что и у видов шага (design.md, Решение 5):
+// имя предиката и адрес записи, подсказка о строке дерева и о `stepcast
+// plugins`, имени строки в тексте нет.
+describe('pipeline-definition: предикат вне действующего состава', () => {
+  it('патч состава отключает predicates — предикат шага exit_code: отказывает, называя предикат и состав', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, hi]
+        expect: [{ exit_code: 0 }]
+`,
+    });
+
+    const registry = registryWithoutRow('predicates');
+    const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
+
+    assert.match(error.message, /Предикат exit_code отключён составом/);
+    assert.match(error.at ?? '', /jobs\.build\.steps\.0\.expect\.0/);
+    assert.match(error.hint ?? '', /строка дерева/);
+    assert.match(error.hint ?? '', /stepcast plugins/);
+    // Имя строки (`predicates`) в тексте отказа не звучит.
+    assert.doesNotMatch(error.message, /predicates/);
+    assert.doesNotMatch(error.hint ?? '', /predicates/);
+  });
+
+  it('тот же пайплайн при дефолтном составе разбирается как прежде', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, hi]
+        expect: [{ exit_code: 0 }]
+`,
+    });
+
+    assert.doesNotThrow(() => expand(project));
+  });
+
+  it('патч состава отключает predicates — предикат until.check: отказывает тем же текстом', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    until:
+      max_iterations: 2
+      check: [{ exit_code: 0 }]
+    budget: { tokens: 100k }
+    steps:
+      - id: c
+        run: [echo, hi]
+`,
+    });
+
+    const registry = registryWithoutRow('predicates');
+    const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
+
+    assert.match(error.message, /Предикат exit_code отключён составом/);
+    assert.match(error.at ?? '', /jobs\.build\.until\.check\.0/);
+  });
+
+  it('предикат в подключённом файле работы отказывает тем же текстом', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    uses: ./jobs/build.yml
+`,
+      'jobs/build.yml': `
+kind: job
+steps:
+  - id: c
+    run: [echo, hi]
+    expect: [{ exit_code: 0 }]
+`,
+    });
+
+    const registry = registryWithoutRow('predicates');
+    const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
+
+    assert.match(error.message, /Предикат exit_code отключён составом/);
+    assert.equal(error.file, project.path('jobs/build.yml'));
+  });
+
+  // `judge` — многоключевая запись (`judge`, `hard`, `agent`, `model`):
+  // форма узнаёт себя по одному присутствию ключа `judge`, остальные ключи
+  // не мешают.
+  it('многоключевая запись judge отказывает тем же текстом', () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, hi]
+        expect: [{ judge: "готово", hard: true, agent: claude }]
+`,
+    });
+
+    const registry = registryWithoutRow('predicates');
+    const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
+
+    assert.match(error.message, /Предикат judge отключён составом/);
+  });
+
+  // При снятой строке предикатов документ с плагинным предикатом разбирается,
+  // вычисляется и не роняет линт — ветвей `kind` встроенных предикатов в
+  // модели нет вовсе, и линту нечего проверять (design.md, «Risks»). Риск
+  // ради которого пункт заведён, — падение `evaluateOne`/`lintPipeline` на
+  // отсутствии встроенных ветвей, — поэтому проверяется исполнением обоих, а
+  // не одним лишь `kind` разобранной модели (находка ревью).
+  it('при снятой строке документ с плагинным предикатом разбирается, вычисляется и проходит линт', async () => {
+    const kernel = createKernelShell();
+    for (const row of BUILTIN_ROWS) {
+      if (row.id === 'predicates') continue;
+      row.apply(kernel);
+    }
+    kernel.ctx.predicates.register('always_ok', {
+      name: 'always_ok',
+      schema: {},
+      evaluate: () => ({ predicate: 'always_ok', passed: true, hard: true }),
+    });
+    const registry = registryFromKernel(kernel);
+
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+jobs:
+  build:
+    steps:
+      - id: c
+        run: [echo, hi]
+        expect: [{ always_ok: true }]
+`,
+    });
+
+    const expanded = expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry });
+    const predicate = expanded.pipeline.jobs[0]!.steps[0]!.expect[0] as Predicate;
+    assert.equal(predicate.kind, 'plugin');
+
+    // Вычисление: вклад плагина найден признаком вычислителя и отработал.
+    const [result] = await evaluatePredicates(
+      [predicate],
+      { exitCode: 0, text: 'всё готово', structured: undefined, cwd: project.root, env: {} },
+      registry,
+    );
+    assert.equal(result?.passed, true);
+    assert.equal(result?.predicate, 'always_ok');
+
+    // Линт: ни одной ошибки о предикате — проверять форму значения берётся
+    // схема вклада, а ветвей встроенных `kind` в модели нет вовсе.
+    const diagnostics = lintPipeline(expanded, { config: project.config, cwd: project.root, registry });
+    assert.deepEqual(
+      diagnostics.filter((item) => item.severity === 'error'),
+      [],
+      JSON.stringify(diagnostics),
+    );
   });
 });
 
