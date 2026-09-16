@@ -11,9 +11,9 @@ import { discoverModels } from '../src/core/backend/models.js';
 import { resolveConfig } from '../src/core/config/resolve.js';
 import { createSessionRegistry, executeAgentStep } from '../src/core/exec/agentStep.js';
 import { StepcastError } from '../src/core/errors.js';
-import { createKernel } from '../src/core/plugins/kernel.js';
 import { registryFromKernel } from '../src/core/plugins/registry.js';
 import type { AgentStep } from '../src/core/pipeline/model.js';
+import { createPipelineKernel } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 /**
@@ -411,7 +411,7 @@ describe('codex-backend: возможности и манифест плагин
     writeFileSync(globalPath, 'backends:\n  codex:\n    command: codex\n');
     const { config } = resolveConfig({ cwd: home, home, globalPath, projectPath: null });
 
-    const kernel = createKernel();
+    const kernel = createPipelineKernel();
     kernel.ctx.backends.register('codex', codexPlugin.backends!.codex!);
     const registry = registryFromKernel(kernel);
     assert.deepEqual(await discoverModels('codex', config, registry), { status: 'unsupported' });

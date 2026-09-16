@@ -91,6 +91,11 @@ describe('run-decision: остановка прогона на решении ч
     assert.equal(finalStatus.awaiting, undefined);
     const step = finalStatus.jobs[0]?.steps[0];
     assert.deepEqual(step?.decision, { outcome: 'approve', effect: 'continue', by: 'user' });
+    // Сторожевой тест (pipeline-owns-services, задача 1.3): `decision` —
+    // вид плагинного контракта (`kind: plugin` в журнале), и его владелец
+    // обязан остаться «встроенный» и после переезда служебных сервисов в
+    // строку `pipeline` — переезд не вправе сменить подпись записи журнала.
+    assert.deepEqual(step?.plugin_step, { name: 'decision', plugin: 'встроенный' });
 
     // Ожидание не тратит бюджет: proспанные ~120мс не должны отразиться в
     // wallclock тем же порядком величины.

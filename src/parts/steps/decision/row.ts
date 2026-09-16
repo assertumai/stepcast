@@ -1,5 +1,5 @@
 import { stepDecisionContribution } from './index.js';
-import type { BuiltinRow } from '../../../core/plugins/load.js';
+import { partRow } from '../../pipeline/services.js';
 
 /**
  * Строка встроенного слоя: вид шага `decision`. Реализация переехала соседом
@@ -15,13 +15,11 @@ import type { BuiltinRow } from '../../../core/plugins/load.js';
  * остановка прогона на решении человека. Строка, а не вид ядра, — её
  * отключение патчем снимает вид `decision`, освобождая имя.
  *
- * Вклад вносится на корневой области ядра, а не через `kernel.ctx.plugin`:
- * владелец встроенного вклада — признак области ядра (`BUILTIN_OWNER`), а не
- * имя строки (`plugin-tree`, design.md, Решение 1).
+ * Строка-потребитель сервиса `steps` (design.md `pipeline-owns-services`,
+ * Решение 2): применяется собственной областью с объявленным `inject`.
+ * Владелец вклада остаётся «встроенным»: признак — не корневая область, а
+ * пометка области строки этого каталога (Решение 3).
  */
-export const row: BuiltinRow = {
-  id: 'step-decision',
-  apply(kernel) {
-    kernel.ctx.steps.register('decision', stepDecisionContribution);
-  },
-};
+export const row = partRow('step-decision', ['steps'], (ctx) => {
+  ctx.steps.register('decision', stepDecisionContribution);
+});

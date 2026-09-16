@@ -7,10 +7,11 @@
 // внутренние формы разбора из `expand.ts`. Разрывает его физический переезд
 // разбора (шаг 10 плана `docs/microkernel-target.md`) либо снятие умолчания
 // `registry` у `expandPipeline` — не этот пункт (design.md, «Risks»).
-import { assertStepKindNameAvailable } from '../core/pipeline/schema.js';
+import { StepcastError } from '../core/errors.js';
 import type { CommandContribution } from '../core/plugins/contract.js';
 import { createKernel, type Kernel } from '../core/plugins/kernel.js';
 import { registryFromKernel, type Registry } from '../core/plugins/registry.js';
+import type { PartRow } from './pipeline/services.js';
 import { BUILTIN_ROWS } from './rows.js';
 
 /**
@@ -56,14 +57,50 @@ import { BUILTIN_ROWS } from './rows.js';
  * Ядро без применённых строк встроенного слоя: команды внесены, но ни одна
  * фабрика `BUILTIN_ROWS` не вызвана — сборка ядра не занимает ни одного
  * имени предиката сама (`builtin-predicates-as-row`, design.md, Решение 1).
- * Загрузчик (`src/parts/load.ts`) применяет строки сам, построчно, по дереву —
- * иначе строка, заменённая патчем, всё равно получила бы своё встроенное
- * умолчание.
+ * Ядро (`createKernel()`) не принимает опций вовсе: проверка имени вида шага —
+ * доменное знание, которое сегодня несёт строка `pipeline`
+ * (`src/parts/pipeline/row.ts`), а не сборка ядра (`pipeline-owns-services`,
+ * design.md, Решение 1). Загрузчик (`src/parts/load.ts`) применяет строки
+ * сам, построчно, по дереву — иначе строка, заменённая патчем, всё равно
+ * получила бы своё встроенное умолчание.
  */
 export function createKernelShell(commands: readonly CommandContribution[] = []): Kernel {
-  const kernel = createKernel({ nameGuards: { steps: assertStepKindNameAvailable } });
+  const kernel = createKernel();
   for (const command of commands) kernel.ctx.commands.register(command.name, command);
   return kernel;
+}
+
+/**
+ * Отказ синхронного умолчания на строке, чей `inject` не разрешился в
+ * порядке перечня (design.md `pipeline-owns-services`, Решение 4): в отличие
+ * от формы дерева (`applyTreeRow`), здесь нет отложенного разрешения — тело
+ * строки зовётся сразу, и поставщик обязан стоять в `BUILTIN_ROWS` раньше
+ * своих потребителей. Названный отказ вместо `TypeError` на обращении к
+ * `ctx.<имя>.register`.
+ */
+function synchronousInjectFailure(row: PartRow, name: string): StepcastError {
+  return new StepcastError(
+    `Строка ${row.id} ждёт сервис ${name}: в синхронной сборке умолчания строки применяются в порядке перечня — поставщик обязан стоять раньше`,
+    { at: 'plugins', hint: 'Проверьте порядок строк в src/parts/rows.ts: строка-поставщик обязана предшествовать своим потребителям' },
+  );
+}
+
+/**
+ * Применить тело строки прямо на корневом контексте, в обход дерева (design.md,
+ * Решение 4): та же функция `register`, что и форма дерева (`row.apply`)
+ * зовёт внутри собственной области строки, — здесь она зовётся на области
+ * ядра. Синхронное применение не умеет ждать: `inject` строки проверяется
+ * заранее, по тому, что уже зарегистрировано предыдущими строками перечня.
+ *
+ * Экспортирована ради теста порядка (design.md, задача 5.4): `createBuiltinKernel`
+ * зовёт её только перечнем `BUILTIN_ROWS` как есть, а тест обязан провести
+ * переставленный перечень через ту же проверку, а не копировать её логику.
+ */
+export function applyRowOnRoot(kernel: Kernel, row: PartRow): void {
+  for (const name of row.inject) {
+    if (kernel.ctx.get(name) === undefined) throw synchronousInjectFailure(row, name);
+  }
+  row.register(kernel.ctx);
 }
 
 /**
@@ -71,13 +108,22 @@ export function createKernelShell(commands: readonly CommandContribution[] = [])
  * объявлены здесь: они живут в `src/cli`, а ядру запрещено зависеть от
  * поверхности.
  *
- * Библиотечное умолчание (задача 3.4): `expand.ts`, `lint.ts`,
- * `backend/registry.ts`, `runner.ts` и тесты зовут его без чтения файлов и
- * получают полное встроенное дерево, как и до появления патчей.
+ * Библиотечное умолчание (design.md `pipeline-owns-services`, Решение 4):
+ * `expand.ts`, `lint.ts`, `backend/registry.ts`, `runner.ts` и тесты зовут его
+ * без чтения файлов и без дерева, и получают полное встроенное дерево, как и
+ * до появления патчей. Остаётся синхронной функцией именно поэтому:
+ * `expandPipeline` синхронна и берёт реестр умолчанием параметра, а сделать
+ * её асинхронной значило бы переписать раскрытие, линт, прогон, реестр
+ * бэкендов, генератор схемы и десятки тестов — чужую работу за пределами
+ * этого пункта. Тела строк применяются здесь прямо на корне, в порядке
+ * перечня `BUILTIN_ROWS`, где `pipeline` стоит первой, — то же тело, что
+ * применяет форма дерева на собственной области строки, владелец вклада в
+ * обоих случаях «встроенный» (на корне — по идентичности корня, в дереве —
+ * по пометке, `src/parts/pipeline/services.ts`).
  */
 export function createBuiltinKernel(commands: readonly CommandContribution[] = []): Kernel {
   const kernel = createKernelShell(commands);
-  for (const row of BUILTIN_ROWS) row.apply(kernel);
+  for (const row of BUILTIN_ROWS) applyRowOnRoot(kernel, row);
   return kernel;
 }
 

@@ -98,6 +98,7 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
     assert.deepEqual(
       config.pluginTree.map((row) => [row.id, row.use, row.enabled]),
       [
+        ['pipeline', 'stepcast:pipeline', true],
         ['backend-claude', 'stepcast:backend-claude', true],
         ['predicates', 'stepcast:predicates', true],
         ['step-run', 'stepcast:step-run', true],
@@ -110,8 +111,8 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
       ],
     );
     assert.deepEqual(config.pluginTree[0]?.source, { kind: 'builtin' });
-    assert.deepEqual(config.pluginTree[7]?.source, { kind: 'file', path: place.homePatchPath });
-    assert.deepEqual(config.pluginTree[8]?.source, { kind: 'file', path: place.projectPatchPath });
+    assert.deepEqual(config.pluginTree[8]?.source, { kind: 'file', path: place.homePatchPath });
+    assert.deepEqual(config.pluginTree[9]?.source, { kind: 'file', path: place.projectPatchPath });
   });
 
   it('конфигурация без единого plugins.patch.yml сворачивается в прежний состав и порядок', () => {
@@ -125,7 +126,7 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
 
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './g.mjs', './p.mjs'],
+      ['pipeline', 'backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './g.mjs', './p.mjs'],
     );
     // `Config.plugins` — модули, и только они: `stepcast:backend-claude`
     // модулем не является и `resolveModulePath` не разрешается, поэтому в
@@ -143,7 +144,7 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
 
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', 'home-only'],
+      ['pipeline', 'backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', 'home-only'],
     );
   });
 });
@@ -196,6 +197,7 @@ describe('plugin-tree: строки поставки вызывающего', ()
     );
 
     assert.deepEqual(config.pluginTree.map((row) => [row.id, row.use, row.enabled]), [
+      ['pipeline', 'stepcast:pipeline', true],
       ['backend-claude', 'stepcast:backend-claude', true],
       ['predicates', 'stepcast:predicates', true],
       ['step-run', 'stepcast:step-run', true],
@@ -217,7 +219,7 @@ describe('plugin-tree: строки поставки вызывающего', ()
     assert.deepEqual(config.pluginTree, withoutRows.pluginTree);
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision'],
+      ['pipeline', 'backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision'],
     );
   });
 });
@@ -242,7 +244,7 @@ describe('plugin-tree: замена строки патчем', () => {
     // Порядок остался прежним — b стоит на своём месте, между a и c.
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', 'a', 'b', 'c'],
+      ['pipeline', 'backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', 'a', 'b', 'c'],
     );
     const b = config.pluginTree.find((row) => row.id === 'b');
     assert.equal(b?.use, './b2.mjs');
@@ -282,7 +284,7 @@ describe('plugin-tree: вставка строки по позиции', () => {
     });
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'a', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision'],
+      ['pipeline', 'backend-claude', 'a', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision'],
     );
   });
 
@@ -294,7 +296,7 @@ describe('plugin-tree: вставка строки по позиции', () => {
     });
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['my-backends', 'backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision'],
+      ['pipeline', 'my-backends', 'backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision'],
     );
   });
 
@@ -413,7 +415,7 @@ describe('plugin-tree: замена встроенной строки', () => {
     writeModule(join(place.root, '.stepcast', 'impostor.mjs'), REPLACEMENT_CLAUDE.replace('user-claude', 'impostor'));
     const config = resolved(place, { project: 'plugins: ["./impostor.mjs"]\n' });
 
-    assert.equal(config.pluginTree[0]?.id, 'backend-claude');
+    assert.equal(config.pluginTree[1]?.id, 'backend-claude');
 
     await assert.rejects(
       () => loadPlugins(config, { projectRoot: place.root }),
@@ -558,7 +560,7 @@ describe('plugin-tree: фабрики строк поставки при заг�
         // `src/parts/load.ts`.
         assert.equal(
           hint,
-          'Пакет поставляет: stepcast:backend-claude, stepcast:predicates, stepcast:step-run, stepcast:step-uses, stepcast:step-script, stepcast:step-agent, stepcast:step-decision, stepcast:ui-shell',
+          'Пакет поставляет: stepcast:pipeline, stepcast:backend-claude, stepcast:predicates, stepcast:step-run, stepcast:step-uses, stepcast:step-script, stepcast:step-agent, stepcast:step-decision, stepcast:ui-shell',
         );
         return true;
       },
@@ -567,23 +569,30 @@ describe('plugin-tree: фабрики строк поставки при заг�
 
   // Задача 3.7: ядро не несёт собственной таблицы строк поставки — обходу,
   // которому не подано ни одной, строка `stepcast:<имя>` отказывает как
-  // несуществующая, даже когда речь о встроенной строке движка.
-  it('walkPluginTree без единой поданной строки поставки отказывает на stepcast:backend-claude как на несуществующей', async () => {
+  // несуществующая, даже когда речь о встроенной строке движка. `pipeline`
+  // стоит в перечне дефолта первой (`pipeline-owns-services`), поэтому именно
+  // она — первая строка, до которой доходит обход без поданных builtinRows, и
+  // именно её отказ останавливает применение прочих (строка не каталожная).
+  it('walkPluginTree без единой поданной строки поставки отказывает на stepcast:pipeline как на несуществующей', async () => {
     const place = bed();
     const config = resolved(place);
 
     const { outcomes } = await walkPluginTree(createKernel(), config, { projectRoot: place.root });
 
-    const backendClaude = outcomes.find((outcome) => outcome.row.id === 'backend-claude');
-    assert.equal(backendClaude?.status, 'failed');
-    assert.match(backendClaude?.error?.message ?? '', /несуществующую встроенную строку stepcast:backend-claude/);
+    const pipelineRow = outcomes.find((outcome) => outcome.row.id === 'pipeline');
+    assert.equal(pipelineRow?.status, 'failed');
+    assert.match(pipelineRow?.error?.message ?? '', /несуществующую встроенную строку stepcast:pipeline/);
     // Подсказка на этом пути называет причину, а не вырождается в перечень
     // «Пакет поставляет: » с пустым хвостом: поставки не «нет вовсе» —
     // обходу её не подали.
     assert.equal(
-      backendClaude?.error?.hint,
+      pipelineRow?.error?.hint,
       'Обходу не подано ни одной строки поставки: форму stepcast:<имя> разрешают только строки параметра builtinRows',
     );
+    // Строка-виновница не каталожная — применение остановлено ею целиком, и
+    // прочие строки движка помечены «не загружалась».
+    const backendClaude = outcomes.find((outcome) => outcome.row.id === 'backend-claude');
+    assert.equal(backendClaude?.status, 'not-attempted');
   });
 
   it('строка витрины, отключённая патчем, фабрику не зовёт', async () => {
@@ -695,9 +704,9 @@ describe('plugin-tree: ключ plugins как сокращённая форма
 
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './shared.mjs'],
+      ['pipeline', 'backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './shared.mjs'],
     );
-    assert.deepEqual(config.pluginTree[7]?.source, { kind: 'file', path: place.globalPath });
+    assert.deepEqual(config.pluginTree[8]?.source, { kind: 'file', path: place.globalPath });
 
     const { registry } = await loadPlugins(config, { projectRoot: place.root });
     assert.equal(registry.plugins.length, 1);
@@ -956,5 +965,154 @@ describe('plugin-tree: каталожные строки (user-plugins)', () => 
 
     const { registry } = await loadPlugins(config, { projectRoot: place.root });
     assert.deepEqual(registry.plugins.map((plugin) => plugin.name), ['clock']);
+  });
+});
+
+// Задача 8.1/8.5 (pipeline-owns-services): отключение строки-поставщика
+// служебных сервисов пайплайна при включённых потребителях — отказ загрузки,
+// называющий ждущую строку и недостающее имя сервиса (design.md, Решение 2,
+// «Требование: Состав описывается поставщиком и потребителем»). Осмотр дерева
+// переживает тот же отказ и печатает состав целиком.
+describe('plugin-tree: отключение строки pipeline при включённых потребителях', () => {
+  it('загрузка отказывает, называя первую ждущую строку и недостающее имя сервиса', async () => {
+    const place = bed();
+    const config = resolved(place, {
+      projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: pipeline\n    use: stepcast:pipeline\n    enabled: false\n',
+    });
+
+    await assert.rejects(
+      () => loadPlugins(config, { projectRoot: place.root }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /backend-claude/);
+        assert.match(error.message, /backends/);
+        return true;
+      },
+    );
+  });
+
+  it('осмотр дерева переживает отказ и печатает состав целиком, показывая отключённую строку-поставщика', async () => {
+    const place = bed();
+    const config = resolved(place, {
+      projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: pipeline\n    use: stepcast:pipeline\n    enabled: false\n',
+    });
+
+    const { outcomes } = await walkPluginTree(createKernel(), config, { projectRoot: place.root, builtinRows: BUILTIN_ROWS });
+
+    const pipelineRow = outcomes.find((outcome) => outcome.row.id === 'pipeline');
+    assert.equal(pipelineRow?.status, 'disabled');
+    const backendClaude = outcomes.find((outcome) => outcome.row.id === 'backend-claude');
+    assert.equal(backendClaude?.status, 'failed');
+    assert.match(backendClaude?.error?.message ?? '', /backends/);
+  });
+});
+
+// Задача 8.2 (pipeline-owns-services, design.md Решение 11 и Решение 2):
+// строка-потребитель и пользовательский плагин, ждущий сервис `steps`, стоят
+// в дереве впереди строки-поставщика `pipeline` — состав, владельцы вкладов и
+// порядок узнавания шага те же, что и в дереве дефолта, где `pipeline` стоит
+// первой.
+describe('plugin-tree: потребитель и пользовательский плагин впереди pipeline', () => {
+  it('пользовательская строка-потребитель предикатов, вставленная перед pipeline, получает сервис и вносит вклад', async () => {
+    const place = bed();
+    writeModule(
+      join(place.root, '.stepcast', 'own-predicate.mjs'),
+      "export default function ownPredicate(ctx) { ctx.predicates.register('always_ok', { name: 'always_ok', schema: {}, evaluate: () => ({ predicate: 'always_ok', passed: true, hard: true }) }); }\nownPredicate.inject = ['predicates'];\n",
+    );
+    const config = resolved(place, {
+      projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: own-predicate\n    use: ./own-predicate.mjs\n    before: pipeline\n',
+    });
+
+    // Строка-потребитель стоит в дереве раньше строки-поставщика — состав и
+    // порядок узнавания шага (Решение 11) от этого не зависят: cordis
+    // дожидается появления сервиса, а не решает по порядку строк.
+    assert.equal(config.pluginTree[0]?.id, 'own-predicate');
+    assert.ok(config.pluginTree.some((row) => row.id === 'pipeline'));
+
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
+
+    assert.ok(registry.predicates.has('always_ok'));
+    // Владелец вклада — имя функции плагина контекста (`Function.name`), а не
+    // id строки, назначенный ей патчем (`plugin-tree`, «Плагин контекста
+    // опознаётся по форме экспорта»).
+    assert.equal(contributionOwner(registry, 'predicates', 'always_ok'), 'ownPredicate');
+    // Встроенные предикаты и виды шага — тот же состав, что и в дереве
+    // дефолта, плюс собственный вклад плагина: строка-потребитель, поставленная
+    // впереди поставщика, чужого состава не меняет.
+    assert.deepEqual(
+      [...registry.predicates.keys()].filter((name) => name !== 'always_ok').sort(),
+      [...DEFAULT_NATIVE_PREDICATES].sort(),
+    );
+    assert.deepEqual([...registry.steps.keys()], ['run', 'uses', 'script', 'agent', 'decision']);
+  });
+
+  it('пользовательский плагин, ждущий steps, применённый впереди pipeline, получает сервис и вносит вклад', async () => {
+    const place = bed();
+    writeModule(
+      join(place.root, '.stepcast', 'waiter.mjs'),
+      "export default function waiter(ctx) { ctx.steps.register('custom', { name: 'custom', title: 'Свой', fields: {}, execute: () => ({}) }); }\nwaiter.inject = ['steps'];\n",
+    );
+    const config = resolved(place, {
+      projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: waiter\n    use: ./waiter.mjs\n    before: pipeline\n',
+    });
+
+    assert.equal(config.pluginTree[0]?.id, 'waiter');
+
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
+
+    assert.ok(registry.steps.has('custom'));
+    assert.equal(contributionOwner(registry, 'steps', 'custom'), 'waiter');
+  });
+});
+
+// Сценарий дельты `plugin-tree` «Пользовательская строка заменяет
+// поставщика» (находка ревью: сценарий был описан, но проверялась только
+// замена `backend-claude`). Замена по `id` ничего не наследует от заменённой
+// строки — и сервисы здесь не исключение: строка пользователя, вставшая на
+// место `pipeline`, заводит ровно то, что заводит сама.
+describe('plugin-tree: замена строки pipeline строкой пользователя', () => {
+  it('действуют только сервисы пользовательской строки; ни один сервис заменённой не появляется сам собой', async () => {
+    const place = bed();
+    writeModule(
+      join(place.root, '.stepcast', 'my-pipeline.mjs'),
+      "export default function myPipeline(ctx) { ctx.provide('own-pipeline'); ctx.set('own-pipeline', { своё: true }); }\n",
+    );
+    const config = resolved(place, {
+      projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: pipeline\n    use: ./my-pipeline.mjs\n',
+    });
+
+    // Строка осталась на своём месте и под своим `id` — заменился модуль.
+    assert.equal(config.pluginTree[0]?.id, 'pipeline');
+    assert.equal(config.pluginTree[0]?.use, './my-pipeline.mjs');
+
+    // Обход дерева, а не `loadPlugins`: потребители остаются ждать сервисов,
+    // которых никто не завёл, и загрузка прекратилась бы отказом раньше, чем
+    // состав удалось бы прочесть целиком. Состояние читается осмотром, снятым
+    // до `kernel.dispose()` внутри обхода, — после него ни сервисов, ни
+    // областей не осталось бы.
+    const { outcomes, introspection } = await walkPluginTree(createKernel(), config, {
+      projectRoot: place.root,
+      builtinRows: BUILTIN_ROWS,
+    });
+
+    const replaced = introspection.rows.find((row) => row.id === 'pipeline');
+    assert.equal(replaced?.plugin?.name, 'myPipeline');
+    assert.deepEqual(replaced?.state, { kind: 'active' });
+    assert.deepEqual(replaced?.declaredServices.map((service) => service.name), ['own-pipeline']);
+
+    // Ни одно из трёх имён заменённой строки не объявлено никем: замена
+    // наследует только место в дереве.
+    const declaredAnywhere = [
+      ...introspection.rows.flatMap((row) => row.declaredServices.map((service) => service.name)),
+      ...introspection.builtin.declaredServices.map((service) => service.name),
+    ];
+    for (const name of ['backends', 'predicates', 'steps']) {
+      assert.equal(declaredAnywhere.includes(name), false, `сервис ${name} появился сам собой`);
+    }
+
+    assert.equal(outcomes.find((outcome) => outcome.row.id === 'pipeline')?.status, 'active');
+    const backendClaude = outcomes.find((outcome) => outcome.row.id === 'backend-claude');
+    assert.equal(backendClaude?.status, 'failed');
+    assert.match(backendClaude?.error?.message ?? '', /backends/);
   });
 });

@@ -4,7 +4,7 @@ import { Service, type Context, type Fiber } from 'cordis';
 
 import type { Config } from '../../core/config/resolve.js';
 import { StepcastError } from '../../core/errors.js';
-import type { BuiltinRow } from '../../core/plugins/load.js';
+import { rowScope, type BuiltinRow } from '../../core/plugins/load.js';
 import type { Kernel } from '../../core/plugins/kernel.js';
 import type { KernelCache } from '../pipelines.js';
 import type { PluginsOverview } from '../plugins.js';
@@ -258,30 +258,19 @@ declare module 'cordis' {
 export function screenRow(id: string, inject: readonly string[], apply: (ctx: Context) => void): BuiltinRow {
   return {
     id,
-    async apply(kernel: Kernel) {
-      const fiber = kernel.ctx.plugin({
-        name: id,
-        inject: [...inject],
-        // Пометка происхождения — первым делом применения, до любой
-        // регистрации: `ctx.fiber` здесь и есть область строки, и по ней
-        // `ScreensService.register` отличает строку поставки от чужого модуля
-        // (см. `builtinFibers` выше).
-        apply(ctx) {
-          builtinFibers.add(ctx.fiber);
-          apply(ctx);
-        },
-      });
-      try {
-        await fiber;
-      } catch (error) {
-        await fiber.dispose().catch(() => undefined);
-        throw error;
-      }
+    apply(kernel: Kernel) {
       // Область строки — не окно применения (`BuiltinRow.apply`, design.md
       // `plugin-introspection`, Решение 2, первое правило): осмотр приписывает
       // её вклады этой строке напрямую, по фиберу, а не по тому, что появилось
       // на корне за время вызова.
-      return fiber;
+      return rowScope(kernel, id, inject, (ctx) => {
+        // Пометка происхождения — первым делом применения, до любой
+        // регистрации: `ctx.fiber` здесь и есть область строки, и по ней
+        // `ScreensService.register` отличает строку поставки от чужого модуля
+        // (см. `builtinFibers` выше).
+        builtinFibers.add(ctx.fiber);
+        apply(ctx);
+      });
     },
   };
 }

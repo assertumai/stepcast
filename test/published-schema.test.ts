@@ -672,12 +672,9 @@ describe('published-schema: состав предикатов', () => {
    * каким состав снимает строку патчем `enabled: false`; сам путь патча через
    * `resolveConfig`/`loadPlugins` проверен в `test/plugin-tree.test.ts`.
    */
-  function registryWithoutPredicates(): Registry {
+  async function registryWithoutPredicates(): Promise<Registry> {
     const kernel = createKernelShell();
-    for (const row of BUILTIN_ROWS) {
-      if (row.id === 'predicates') continue;
-      row.apply(kernel);
-    }
+    await Promise.all(BUILTIN_ROWS.filter((row) => row.id !== 'predicates').map((row) => row.apply(kernel)));
     return registryFromKernel(kernel);
   }
 
@@ -690,8 +687,8 @@ describe('published-schema: состав предикатов', () => {
     );
   }
 
-  it('при снятой строке напечатанная схема не признаёт ни одного ключа встроенного предиката', () => {
-    const registry = registryWithoutPredicates();
+  it('при снятой строке напечатанная схема не признаёт ни одного ключа встроенного предиката', async () => {
+    const registry = await registryWithoutPredicates();
     assert.deepEqual(nativePredicateNames(registry), []);
 
     const schemas = schemasFor(registry);
@@ -729,10 +726,7 @@ describe('published-schema: состав предикатов', () => {
 
   it('при снятой строке ключ плагинного предиката в схеме есть и его значение проверяется', async () => {
     const kernel = createKernelShell();
-    for (const row of BUILTIN_ROWS) {
-      if (row.id === 'predicates') continue;
-      row.apply(kernel);
-    }
+    await Promise.all(BUILTIN_ROWS.filter((row) => row.id !== 'predicates').map((row) => row.apply(kernel)));
     const registry = registryFromKernel(kernel);
     await applyDeclarativePlugin(
       kernel,

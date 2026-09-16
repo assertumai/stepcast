@@ -4,8 +4,11 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { resolveConfig } from '../src/core/config/resolve.js';
-import { StepcastError } from '../src/core/errors.js';
+import { ExitCode, StepcastError } from '../src/core/errors.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS, StepcastPluginSchema } from '../src/core/plugins/contract.js';
 import { toContextPlugin } from '../src/core/plugins/load.js';
+import { declaredServices } from '../src/core/plugins/services.js';
+import { createKernelShell } from '../src/parts/builtin.js';
 import { loadPlugins } from '../src/parts/load.js';
 import { availableNames } from '../src/core/plugins/registry.js';
 import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
@@ -191,5 +194,53 @@ describe('plugins-load: адаптер декларативной формы о�
 
   it('пустой перечень вкладов зависимостью не считается', () => {
     assert.deepEqual(toContextPlugin({ name: 'пустые перечни', backends: {}, predicates: [], commands: [], steps: [] }).inject, []);
+  });
+
+  /**
+   * Сценарий дельты `plugin-contributions` «Ключ формы и сервис не
+   * расходятся» (задача 8, находка ревью: таблица не читалась ни одним
+   * тестом). Ключи схемы декларативной формы и имена сервисов, в которые их
+   * вносит загрузчик, обязаны совпадать — иначе ключ, добавленный в схему без
+   * таблицы, молча ни во что не регистрировался бы, а имя, оставшееся в
+   * таблице после правки схемы, вело бы в никуда.
+   */
+  it('ключи схемы декларативной формы и таблица сервисов не расходятся', () => {
+    const schemaKeys = Object.keys(StepcastPluginSchema.shape).filter((key) => key !== 'name' && key !== 'version');
+    assert.deepEqual(Object.keys(DECLARATIVE_CONTRIBUTION_FIELDS).sort(), schemaKeys.sort());
+
+    // Каждому ключу отвечает ровно одно имя сервиса: двух ключей, ведущих в
+    // один сервис, таблица не знает.
+    const services = Object.values(DECLARATIVE_CONTRIBUTION_FIELDS).map((field) => field.service);
+    assert.equal(new Set(services).size, services.length);
+
+    // И тот же перечень — ровно то, что адаптер объявляет зависимостями
+    // плагина, назвавшего все ключи формы: второго перечня в его теле нет.
+    assert.deepEqual(
+      toContextPlugin({
+        name: 'все-ключи',
+        backends: { own: { create: () => ({}) as never } },
+        predicates: [{ name: 'own_p', schema: {}, evaluate: () => ({ predicate: 'own_p', passed: true, hard: true }) }],
+        commands: [{ name: 'own-cmd', spec: { description: 'своя' }, run: () => ExitCode.ok }],
+        steps: [{ name: 'own', title: 'Свой', fields: {}, execute: () => ({}) as never }],
+      }).inject,
+      services,
+    );
+  });
+});
+
+/**
+ * Задача 6.5 (`pipeline-owns-services`): граница ядра — одно имя. Проверяется
+ * не перечислением модулей, а самим составом объявленных сервисов: ядро без
+ * единой применённой строки не держит ни одного доменного имени (design.md,
+ * Решение 5). Находка ревью: задача была отмечена выполненной без этого теста.
+ */
+describe('plugins-load: ядро без строк объявляет один сервис', () => {
+  it('на корневой области объявлен только commands; доменных имён нет и они свободны', () => {
+    const kernel = createKernelShell();
+
+    assert.deepEqual(declaredServices(kernel.ctx).map((service) => service.name), ['commands']);
+    for (const name of ['backends', 'predicates', 'steps']) {
+      assert.equal(kernel.ctx.get(name), undefined, `имя ${name} занято ядром`);
+    }
   });
 });

@@ -8,17 +8,18 @@ import { findPackageRoot } from '../package-schema.js';
 import type { ResolvedConfig } from '../config/resolve.js';
 import { isStepcastError, StepcastError } from '../errors.js';
 import {
+  DECLARATIVE_CONTRIBUTION_FIELDS,
   isContextPlugin,
   StepcastPluginSchema,
   type ContextPlugin,
   type ContextPluginObject,
   type StepcastPlugin,
 } from './contract.js';
-import { translateReservedNameConflict, unresolvedFibers, type Fiber, type Kernel } from './kernel.js';
+import { translateReservedNameConflict, unresolvedFibers, type Context, type Fiber, type Kernel } from './kernel.js';
 import { readPluginManifest, type PluginManifest } from './manifest.js';
 import { registryFromKernel, type Registry } from './registry.js';
 import { introspect, type Introspection } from './introspect.js';
-import { declaredServices, requestedServices, type RequestedService } from './services.js';
+import { contributionServices, declaredServices, requestedServices, type RequestedService } from './services.js';
 import { BUILTIN_USE_PREFIX, isBuiltinUse, type TreeRow } from './tree.js';
 
 /**
@@ -81,6 +82,38 @@ function fileOption(row: TreeRow): { readonly file: string } | Record<string, ne
 export interface BuiltinRow {
   readonly id: string;
   apply(kernel: Kernel): Fiber | void | Promise<Fiber | void>;
+}
+
+/**
+ * Область строки-потребителя: `kernel.ctx.plugin({ name: id, inject, apply })`,
+ * дождаться её, снять при отказе, вернуть фибер (`plugin-tree`, design.md,
+ * Решение 2). Доменно пуст — ни `id`, ни `inject`, ни тело `apply` строка не
+ * навязывает, — и это единственное место, где живут оба правила приписывания
+ * вклада строке: (1) строка со своей областью приписывается по фиберу этой
+ * области, а не по имени или порядку дерева; (2) отказ применения не должен
+ * оставить ни вклада, ни занятого им имени — область снимается целиком, а
+ * наружу идёт исходный отказ, а не отказ снятия. Общий для строки экрана
+ * витрины (`screenRow`, `src/ui/screens/registry.ts`) и строк движка
+ * (`partRow`, `src/parts/pipeline/services.ts`): две копии этого кода
+ * разошлись бы в обработке отказа — именно там, где расхождение видно позже
+ * всего.
+ */
+export function rowScope(
+  kernel: Kernel,
+  id: string,
+  inject: readonly string[],
+  apply: (ctx: Context) => void,
+): Promise<Fiber> {
+  const fiber = kernel.ctx.plugin({ name: id, inject: [...inject], apply });
+  return (async () => {
+    try {
+      await fiber;
+    } catch (error) {
+      await fiber.dispose().catch(() => undefined);
+      throw error;
+    }
+    return fiber;
+  })();
 }
 
 /**
@@ -235,37 +268,29 @@ function toPlugin(module: unknown, row: TreeRow, path: string): Recognized {
  * же области — области этого плагина.
  */
 export function toContextPlugin(plugin: StepcastPlugin): ContextPluginObject {
-  // Инъекция называет только те служебные сервисы, которыми плагин
-  // действительно пользуется, — все четыре готовы на корне синхронно
-  // (`createKernel`), так что список не меняет момента применения, а
-  // становится честным именно там, где на него смотрит осмотр
-  // (`introspect.ts`, `services.ts`): плагин без предикатов не должен
-  // казаться «ждущим» сервис предикатов (design.md `plugin-introspection`,
-  // Решение 5, второй абзац). Состав закреплён тестом
-  // (`test/plugins-load.test.ts`, «адаптер объявляет inject по вкладам»):
-  // иначе он менялся бы молча вместе с печатью осмотра.
-  const inject: string[] = [];
-  if (plugin.backends !== undefined && Object.keys(plugin.backends).length > 0) inject.push('backends');
-  if (plugin.predicates !== undefined && plugin.predicates.length > 0) inject.push('predicates');
-  if (plugin.commands !== undefined && plugin.commands.length > 0) inject.push('commands');
-  if (plugin.steps !== undefined && plugin.steps.length > 0) inject.push('steps');
+  // Инъекция и регистрация идут по одной и той же таблице
+  // (`DECLARATIVE_CONTRIBUTION_FIELDS`, `contract.ts`, design.md, Решение 10):
+  // перечень имён, по которым плагин ждёт сервисы, и перечень ключей, которые
+  // он объявил, — не два независимых списка. Инъекция называет только те
+  // сервисы, которыми плагин действительно пользуется: плагин без предикатов
+  // не должен казаться «ждущим» сервис предикатов (design.md
+  // `plugin-introspection`, Решение 5, второй абзац). Ключ, которого таблица
+  // не знает, остаётся безобидным полем объекта — тем же молчанием, каким
+  // `.loose()` уже встречает лишний ключ схемы.
+  const registrations = (Object.keys(DECLARATIVE_CONTRIBUTION_FIELDS) as (keyof typeof DECLARATIVE_CONTRIBUTION_FIELDS)[])
+    .map((key) => ({ service: DECLARATIVE_CONTRIBUTION_FIELDS[key].service, entries: DECLARATIVE_CONTRIBUTION_FIELDS[key].entries(plugin) }))
+    .filter((item) => item.entries.length > 0);
 
   return {
     name: plugin.name,
     ...(plugin.version === undefined ? {} : { version: plugin.version }),
-    inject,
+    inject: registrations.map((item) => item.service),
     apply(ctx) {
-      for (const [name, contribution] of Object.entries(plugin.backends ?? {})) {
-        ctx.backends.register(name, contribution);
-      }
-      for (const contribution of plugin.predicates ?? []) {
-        ctx.predicates.register(contribution.name, contribution);
-      }
-      for (const contribution of plugin.commands ?? []) {
-        ctx.commands.register(contribution.name, contribution);
-      }
-      for (const contribution of plugin.steps ?? []) {
-        ctx.steps.register(contribution.name, contribution);
+      for (const { service, entries } of registrations) {
+        // `inject` (выше) уже назвал этот сервис зависимостью строки — к
+        // моменту, когда тело применилось, он гарантированно на контексте.
+        const registrar = (ctx as unknown as Record<string, { register(name: string, contribution: unknown): unknown }>)[service]!;
+        for (const { name, contribution } of entries) registrar.register(name, contribution);
       }
     },
   };
@@ -329,7 +354,7 @@ export async function applyPlugin(kernel: Kernel, recognized: Recognized, source
     // идемпотентно — область, уже снятую самой библиотекой, оно не портит, —
     // и его отказ не заслоняет исходный: наружу идёт тот, из-за которого всё.
     await fiber.dispose().catch(() => undefined);
-    throw translateReservedNameConflict(error);
+    throw translateReservedNameConflict(error, kernel.ctx);
   }
   kernel.recordPlugin(fiber.ctx, { name, ...(version === undefined ? {} : { version }), source });
   return fiber;
@@ -443,35 +468,40 @@ async function applyDirectoryTreeRow(
   return fiber;
 }
 
-/** Виды вклада, которые обходит окно корневых регистраций (`snapshotRoot`/`diffRoot` ниже). */
-type ContribKind = 'backends' | 'predicates' | 'commands' | 'steps';
-const CONTRIB_KINDS: readonly ContribKind[] = ['backends', 'predicates', 'commands', 'steps'];
-
 /**
  * Вклады и сервисы, появившиеся на корневой области за время применения
  * встроенной строки движка без собственной области (design.md, Решение 2,
  * второе правило): диагностируется разницей снимков «до» и «после», а не
  * перехватом регистрации — перехватить `ctx.provide`/`register` плагина нечем.
+ * Окно обходит объявленные сервисы вклада, умеющие перечислить свои вклады по
+ * областям (`contributionServices`, `services.ts`), а не перечень доменных
+ * имён (design.md `pipeline-owns-services`, Решение 6): служебные сервисы
+ * движка пайплайнов заводит строка `pipeline`, а не ядро, и окно про их имена
+ * ничего не знает заранее — оно ловит регистрацию на корне у любой строки
+ * поставки, чьи сервисы объявлены к моменту снимка.
  */
 export interface RootWindow {
-  readonly contributions: readonly { readonly kind: ContribKind; readonly name: string }[];
+  readonly contributions: readonly { readonly service: string; readonly name: string }[];
   readonly services: readonly string[];
 }
 
 interface RootSnapshot {
-  readonly contributions: Readonly<Record<ContribKind, ReadonlySet<string>>>;
+  readonly contributions: ReadonlyMap<string, ReadonlySet<string>>;
   readonly services: ReadonlySet<string>;
 }
 
 function snapshotRoot(kernel: Kernel): RootSnapshot {
   const root = kernel.ctx.fiber;
-  const contributions = {} as Record<ContribKind, ReadonlySet<string>>;
-  for (const kind of CONTRIB_KINDS) {
-    contributions[kind] = new Set(
-      kernel.ctx[kind]
-        .entriesWithFiber()
-        .filter((entry) => entry.ownerFiber === root)
-        .map((entry) => entry.name),
+  const contributions = new Map<string, ReadonlySet<string>>();
+  for (const [service, registrar] of contributionServices(kernel.ctx)) {
+    contributions.set(
+      service,
+      new Set(
+        registrar
+          .entriesWithFiber()
+          .filter((entry) => entry.ownerFiber === root)
+          .map((entry) => entry.name),
+      ),
     );
   }
   const services = new Set(
@@ -483,10 +513,11 @@ function snapshotRoot(kernel: Kernel): RootSnapshot {
 }
 
 function diffRoot(before: RootSnapshot, after: RootSnapshot): RootWindow {
-  const contributions: { kind: ContribKind; name: string }[] = [];
-  for (const kind of CONTRIB_KINDS) {
-    for (const name of after.contributions[kind]) {
-      if (!before.contributions[kind].has(name)) contributions.push({ kind, name });
+  const contributions: { service: string; name: string }[] = [];
+  for (const [service, names] of after.contributions) {
+    const beforeNames = before.contributions.get(service);
+    for (const name of names) {
+      if (!(beforeNames?.has(name) ?? false)) contributions.push({ service, name });
     }
   }
   return { contributions, services: [...after.services].filter((name) => !before.services.has(name)) };
@@ -545,7 +576,7 @@ async function applyTreeRow(
       // дерева назвали одну и ту же), обязан прийти тем же составом полей,
       // что и отказы обычных строк: файлом строки и `at: 'plugins'`
       // (`plugin-contributions`).
-      withRowLocation(translateReservedNameConflict(error), row);
+      withRowLocation(translateReservedNameConflict(error, kernel.ctx), row);
     }
     // Строка со своей областью (`screenRow`) приписывается ей напрямую — окно
     // в этом случае не нужно и было бы неверно: оно бы решило, что строка

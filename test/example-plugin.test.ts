@@ -13,9 +13,9 @@ import {
   pluginStepKindEntries,
 } from '../src/core/pipeline/published-schema.js';
 import type { PredicateContribution, StepcastPlugin, StepKindContribution } from '../src/core/plugins/contract.js';
-import { createKernel } from '../src/core/plugins/kernel.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
+import { createPipelineKernel } from './helpers.js';
 
 /**
  * Образец `examples/plugins/typed` (design.md изменения `plugin-typed-helpers`,
@@ -71,7 +71,7 @@ function onlyStepKind(plugin: StepcastPlugin): StepKindContribution {
 
 /** Реестр с одним применённым образцом — тем же путём, каким его применяет загрузка. */
 async function exampleRegistry(): Promise<Registry> {
-  const kernel = createKernel();
+  const kernel = createPipelineKernel();
   await applyDeclarativePlugin(kernel, await loadExample(), '<examples/plugins/typed>');
   return registryFromKernel(kernel);
 }

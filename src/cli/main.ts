@@ -304,6 +304,16 @@ export type { CliIo } from './args.js';
 export const CONFIG_INDEPENDENT_COMMANDS: ReadonlySet<string> = new Set(['data', 'down', 'init']);
 
 /**
+ * Сервисы, которые заводит строка `pipeline`, — объявляют команды, читающие
+ * вклады пайплайна (design.md изменения `pipeline-owns-services`, Решение 9).
+ * Команда, не читающая реестра вовсе, и команда, обязанная работать именно
+ * тогда, когда состав сломан (`plugins`, `config` и подобные), этот перечень
+ * не объявляют: для них состав без `pipeline` — не отказ, а то самое
+ * состояние, которое они обязаны показать.
+ */
+const PIPELINE_SERVICES: readonly string[] = ['backends', 'predicates', 'steps'];
+
+/**
  * Встроенные команды как вклады: тот же контракт, что у команд плагина.
  * Описание аргументов остаётся в `COMMANDS`, исполнение — здесь; всё вместе
  * складывается в реестр, и диспетчеризация не знает, встроенная команда или
@@ -313,11 +323,18 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
   {
     name: 'run',
     spec: COMMANDS['run'] as CommandSpec,
+    // Команды пайплайна объявляют сервисы, без которых их не исполнить
+    // (design.md изменения `pipeline-owns-services`, Решение 9): состав без
+    // строки `pipeline` — законное состояние ядра, и диспетчер обязан
+    // отказать до вызова, а не дать команде упасть на первом обращении к
+    // отсутствующему вкладу.
+    inject: PIPELINE_SERVICES,
     run: (args, io, env) => runRunCommand(args, io.out, env.cwd, env.registry, env.config),
   },
   {
     name: 'resume',
     spec: COMMANDS['resume'] as CommandSpec,
+    inject: PIPELINE_SERVICES,
     run: (args, io, env) => runResumeCommand(args, io.out, env.cwd, env.registry, env.config),
   },
   {
@@ -332,6 +349,7 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
     // их ради одной команды значило бы обещать плагинам формат журнала.
     name: 'decide',
     spec: COMMANDS['decide'] as CommandSpec,
+    inject: PIPELINE_SERVICES,
     run: (args, io, env) => runDecideCommand(args, io.out, env.cwd, env.registry, env.config),
   },
   {
@@ -357,6 +375,7 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
   {
     name: 'lint',
     spec: COMMANDS['lint'] as CommandSpec,
+    inject: PIPELINE_SERVICES,
     run: (args, io, env) => runLintCommand(args, io.out, env.cwd, env.registry, env.config),
   },
   {
@@ -377,6 +396,7 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
   {
     name: 'schema',
     spec: COMMANDS['schema'] as CommandSpec,
+    inject: PIPELINE_SERVICES,
     run: (args, io, env) => runSchemaCommand(args, io.out, env.cwd, env.registry),
   },
   {
@@ -414,6 +434,7 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
   {
     name: 'context',
     spec: COMMANDS['context'] as CommandSpec,
+    inject: PIPELINE_SERVICES,
     run: (args, io, env) => runContextCommand(args, io.out, env.cwd, env.registry),
   },
   {
@@ -546,6 +567,26 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
     const args = parseArgs(argv, specs);
     const contribution = registry.commands.get(args.command);
     if (contribution === undefined) return ExitCode.configError;
+
+    // Отказ до вызова тела команды (design.md изменения `pipeline-owns-services`,
+    // Решение 9): состав без строки-поставщика — законное состояние ядра, и
+    // команда, объявившая `inject`, обязана сказать об этом внятно, а не
+    // упасть на первом обращении к отсутствующему сервису реестра или
+    // напечатать пустой перечень, будто пайплайнов не существует вовсе.
+    //
+    // Имена проверяются по действующему контексту (`ctx.get`), а не по
+    // перечню недостающих сервисов реестра (`Registry.missingServices`):
+    // реестр знает лишь свои четыре доменных имени, и команда плагина,
+    // объявившая зависимость от сервиса другого плагина, осталась бы без
+    // проверки вовсе — падая в собственном теле там, где обещан названный
+    // отказ (находка ревью).
+    const missingInject = (contribution.inject ?? []).filter((name) => ctx.get(name) === undefined);
+    if (missingInject.length > 0) {
+      throw new StepcastError(
+        `Команда ${args.command} ждёт сервис ${missingInject.join(', ')}: в действующем составе его не заводит ни одна строка`,
+        { at: 'plugins', hint: 'Действующий состав покажет stepcast plugins — строку-поставщика отключил патч либо она снята из перечня' },
+      );
+    }
 
     return await contribution.run(args, io, {
       cwd: io.cwd,

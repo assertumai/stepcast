@@ -9,7 +9,27 @@ import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { RunJournal } from '../src/core/journal/writer.js';
 import type { RunManifest, RunStatus, StatusValue, UsageReport } from '../src/core/journal/schema.js';
 import type { AgentStep, RunStep, ScriptStep, Step } from '../src/core/pipeline/model.js';
+import { createKernel, type Kernel } from '../src/core/plugins/kernel.js';
+import { row as pipelineRow } from '../src/parts/pipeline/row.js';
 import { tempDir } from './tmp.js';
+
+/**
+ * Ядро с применённой строкой `pipeline` на корневой области (design.md
+ * изменения `pipeline-owns-services`): голый `createKernel()` после переезда
+ * служебных сервисов в строку заводит только `commands` — тестам, которым
+ * нужны `ctx.backends`/`ctx.predicates`/`ctx.steps` без полного встроенного
+ * дерева (`createBuiltinKernel`), нужен этот помощник вместо голого
+ * `createKernel()`. `register` зовётся напрямую на корне, а не `apply`
+ * (форма дерева): тем же синхронным приёмом, каким пользуется
+ * `createBuiltinKernel`, — без него тест не смог бы обойтись без `await`, а
+ * владелец вкладов, внесённых прямо на `kernel.ctx`, остался бы именем
+ * строки, а не «встроенным».
+ */
+export function createPipelineKernel(): Kernel {
+  const kernel = createKernel();
+  pipelineRow.register(kernel.ctx);
+  return kernel;
+}
 
 export interface Project {
   readonly root: string;

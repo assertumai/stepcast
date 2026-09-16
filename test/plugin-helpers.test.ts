@@ -10,9 +10,9 @@ import {
   type StepKindInput,
 } from '../src/plugin.js';
 import { StepcastPluginSchema, type StepcastPlugin } from '../src/core/plugins/contract.js';
-import { createKernel } from '../src/core/plugins/kernel.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { availableNames, predicateNames, registryFromKernel, stepKindNames } from '../src/core/plugins/registry.js';
+import { createPipelineKernel } from './helpers.js';
 
 /**
  * Хелперы объявления вклада (`plugin-typed-helpers`, design.md Решение 1):
@@ -113,11 +113,11 @@ describe('plugin-helpers: вклад из хелпера принимается 
   });
 
   it('плагин из хелперов собирается в реестр — те же имена вкладов и те же умолчания бэкенда, что у эквивалента из литералов', async () => {
-    const helperKernel = createKernel();
+    const helperKernel = createPipelineKernel();
     await applyDeclarativePlugin(helperKernel, pluginFromHelpers(), '<synthetic-helpers>');
     const helperRegistry = registryFromKernel(helperKernel);
 
-    const literalKernel = createKernel();
+    const literalKernel = createPipelineKernel();
     await applyDeclarativePlugin(literalKernel, pluginFromLiterals(), '<synthetic-literals>');
     const literalRegistry = registryFromKernel(literalKernel);
 

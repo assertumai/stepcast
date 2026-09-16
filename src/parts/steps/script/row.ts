@@ -1,5 +1,5 @@
 import { SCRIPT_STEP_KIND } from '../../../core/pipeline/expand.js';
-import type { BuiltinRow } from '../../../core/plugins/load.js';
+import { partRow } from '../../pipeline/services.js';
 
 /**
  * Строка встроенного слоя: вид шага `script` (`builtin-step-kinds-as-rows`,
@@ -15,13 +15,11 @@ import type { BuiltinRow } from '../../../core/plugins/load.js';
  * Импорт верхнего уровня, обращение к `SCRIPT_STEP_KIND` — внутри тела
  * `apply`: тот же приём разводки цикла модулей, что у строки `step-run`.
  *
- * Вклад вносится на корневой области ядра, а не через `kernel.ctx.plugin`:
- * владелец встроенного вклада — признак области ядра (`BUILTIN_OWNER`), а не
- * имя строки (`plugin-tree`, design.md, Решение 1).
+ * Строка-потребитель сервиса `steps` (design.md `pipeline-owns-services`,
+ * Решение 2): применяется собственной областью с объявленным `inject`.
+ * Владелец вклада остаётся «встроенным»: признак — не корневая область, а
+ * пометка области строки этого каталога (Решение 3).
  */
-export const row: BuiltinRow = {
-  id: 'step-script',
-  apply(kernel) {
-    kernel.ctx.steps.register('script', SCRIPT_STEP_KIND);
-  },
-};
+export const row = partRow('step-script', ['steps'], (ctx) => {
+  ctx.steps.register('script', SCRIPT_STEP_KIND);
+});

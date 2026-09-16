@@ -1,5 +1,5 @@
 import { hasPredicateEvaluator, hasStepExecutor, isNativePredicate, isNativeStepKind, type BackendContribution, type CommandContribution, type LoadedPlugin, type PredicateContribution, type PredicateKind, type StepKind, type StepKindContribution } from './contract.js';
-import { BUILTIN_OWNER, type Kernel } from './kernel.js';
+import { BUILTIN_OWNER, type ContributionService, type Kernel } from './kernel.js';
 
 /**
  * Реестр вкладов: то, чем движок расширяется.
@@ -41,11 +41,23 @@ export interface Registry {
    * картой (design.md, Решение 5).
    */
   readonly owners: ReadonlyMap<string, string>;
+  /**
+   * Служебные сервисы, которых в составе нет вовсе (design.md
+   * `pipeline-owns-services`, Решение 8): состав без строки-поставщика —
+   * законное состояние ядра, а не крушение. Отличает «сервиса нет» от
+   * «вкладов нет» — второе не выдаётся за первое: сервис без единого вклада
+   * (свежая строка, снятые плагины) здесь не числится, а вот сервис, которого
+   * ядро вовсе не объявило (`pipeline` отключена патчем), — числится.
+   */
+  readonly missingServices: readonly string[];
 }
 
 type ContributionKind = 'backends' | 'predicates' | 'commands' | 'steps';
 
 const KINDS: readonly ContributionKind[] = ['backends', 'predicates', 'commands', 'steps'];
+
+/** Пустая карта, разделяемая всеми отсутствующими сервисами — читать пустоту незачем заводить заново на каждое обращение. */
+const EMPTY_CONTRIBUTIONS: ReadonlyMap<string, never> = new Map<string, never>();
 
 /**
  * Ядро, из которого выведен реестр, — на случай, если код вне `Registry`
@@ -55,21 +67,29 @@ const KINDS: readonly ContributionKind[] = ['backends', 'predicates', 'commands'
  */
 const kernels = new WeakMap<Registry, Kernel>();
 
+/**
+ * Сервис вклада по имени — `ctx.get`, а не поле контекста (design.md,
+ * Решение 8): поле предполагало бы сервис объявленным всегда, а состав без
+ * строки `pipeline` его не объявляет вовсе. `undefined`, если сервиса нет.
+ */
+function contributionService<T>(kernel: Kernel, kind: ContributionKind): ContributionService<T> | undefined {
+  return kernel.ctx.get(kind) as ContributionService<T> | undefined;
+}
+
 /** Реестр как вид поверх ядра — то, что раньше строил `createRegistry`/`addPlugin`. */
 export function registryFromKernel(kernel: Kernel): Registry {
-  const { ctx } = kernel;
   const registry: Registry = {
     get backends() {
-      return ctx.backends.contributions;
+      return contributionService<BackendContribution>(kernel, 'backends')?.contributions ?? EMPTY_CONTRIBUTIONS;
     },
     get predicates() {
-      return ctx.predicates.contributions;
+      return contributionService<PredicateKind>(kernel, 'predicates')?.contributions ?? EMPTY_CONTRIBUTIONS;
     },
     get commands() {
-      return ctx.commands.contributions;
+      return contributionService<CommandContribution>(kernel, 'commands')?.contributions ?? EMPTY_CONTRIBUTIONS;
     },
     get steps() {
-      return ctx.steps.contributions;
+      return contributionService<StepKind>(kernel, 'steps')?.contributions ?? EMPTY_CONTRIBUTIONS;
     },
     get plugins() {
       return kernel.plugins;
@@ -77,13 +97,17 @@ export function registryFromKernel(kernel: Kernel): Registry {
     get owners() {
       const out = new Map<string, string>();
       for (const kind of KINDS) {
-        const service = ctx[kind];
+        const service = contributionService(kernel, kind);
+        if (service === undefined) continue;
         for (const name of service.contributions.keys()) {
           const owner = service.owner(name);
           if (owner !== undefined) out.set(`${kind}:${name}`, owner);
         }
       }
       return out;
+    },
+    get missingServices() {
+      return KINDS.filter((kind) => contributionService(kernel, kind) === undefined);
     },
   };
   kernels.set(registry, kernel);
@@ -168,7 +192,9 @@ export interface PluginStepKindDescriptor {
  * где памяти нет, — просто без имени плагина.
  */
 export function formerStepKindOwner(registry: Registry, name: string): string | undefined {
-  return kernels.get(registry)?.ctx.steps.formerOwner(name);
+  const kernel = kernels.get(registry);
+  if (kernel === undefined) return undefined;
+  return contributionService<StepKind>(kernel, 'steps')?.formerOwner(name);
 }
 
 /**

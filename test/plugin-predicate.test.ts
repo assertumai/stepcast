@@ -406,10 +406,7 @@ describe('plugin-contributions: возобновление прогона с п�
 describe('plugin-contributions: плагин занимает имя exit_code при отключённой строке predicates', () => {
   it('документ разбирается схемой плагина и вычисляется его вычислителем', async () => {
     const kernel = createKernelShell();
-    for (const row of BUILTIN_ROWS) {
-      if (row.id === 'predicates') continue;
-      row.apply(kernel);
-    }
+    await Promise.all(BUILTIN_ROWS.filter((row) => row.id !== 'predicates').map((row) => row.apply(kernel)));
     await applyDeclarativePlugin(
       kernel,
       {

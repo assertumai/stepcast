@@ -137,6 +137,19 @@ export interface CommandContribution {
   readonly name: string;
   /** Описание позиционных аргументов и флагов — то же, что у встроенных. */
   readonly spec: CommandSpec;
+  /**
+   * Сервисы, без которых команду не исполнить (design.md изменения
+   * `pipeline-owns-services`, Решение 9). Диспетчер (`src/cli/main.ts`)
+   * проверяет каждое имя по действующему контексту до вызова `run` и
+   * отказывает названно, не доходя до тела команды, если состав его не
+   * несёт, — вместо того чтобы команда упала на первом обращении к
+   * отсутствующему вкладу или напечатала пустой перечень, будто пайплайнов не
+   * существует вовсе. Не объявляют команды, которые реестра не читают, и
+   * команды, обязанные работать именно тогда, когда состав сломан (`plugins`,
+   * `config` и подобные): для них молчаливое поле — не пропуск, а осознанный
+   * выбор.
+   */
+  readonly inject?: readonly string[];
   run(args: ParsedArgs, io: CliIo, env: CommandEnv): Promise<ExitCodeValue> | ExitCodeValue;
 }
 
@@ -630,3 +643,49 @@ export const StepcastPluginSchema = z
     steps: z.array(StepKindContributionSchema).optional(),
   })
   .loose();
+
+/**
+ * Один вклад декларативной формы, приведённый к паре «имя, значение» —
+ * общему виду, каким его примет `register` любого из четырёх сервисов.
+ */
+export interface DeclarativeContributionEntry {
+  readonly name: string;
+  readonly contribution: unknown;
+}
+
+/**
+ * Ключ декларативной формы → служебный сервис → как достать из него имя
+ * вклада (design.md изменения `pipeline-owns-services`, Решение 10). Живёт
+ * рядом со `StepcastPluginSchema`, чьи ключи описывает: загрузчик
+ * (`toContextPlugin`, `core/plugins/load.ts`) идёт по этой таблице и только
+ * по ней — и регистрирует вклады, и объявляет `inject`, — а не по двум
+ * независимым перечням имён в своём теле. Ключ, которого таблица не знает,
+ * остаётся полем объекта плагина, ни к какой регистрации не приводящим: то
+ * же самое молчание, каким `.loose()` уже встречает лишний ключ схемы.
+ */
+export const DECLARATIVE_CONTRIBUTION_FIELDS: {
+  readonly [K in 'backends' | 'predicates' | 'commands' | 'steps']: {
+    /** Имя сервиса, в который идёт этот ключ формы. */
+    readonly service: string;
+    /** Вклады ключа, приведённые к паре «имя, значение» — пусто, если плагин ключ не объявил или объявил его пустым. */
+    entries(plugin: StepcastPlugin): readonly DeclarativeContributionEntry[];
+  };
+} = {
+  backends: {
+    service: 'backends',
+    entries: (plugin) =>
+      Object.entries(plugin.backends ?? {}).map(([name, contribution]) => ({ name, contribution })),
+  },
+  predicates: {
+    service: 'predicates',
+    entries: (plugin) => (plugin.predicates ?? []).map((contribution) => ({ name: contribution.name, contribution })),
+  },
+  commands: {
+    service: 'commands',
+    entries: (plugin) => (plugin.commands ?? []).map((contribution) => ({ name: contribution.name, contribution })),
+  },
+  steps: {
+    service: 'steps',
+    entries: (plugin) => (plugin.steps ?? []).map((contribution) => ({ name: contribution.name, contribution })),
+  },
+};

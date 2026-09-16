@@ -10,7 +10,7 @@ import {
   SCHEMA_PREDICATE,
   SCRIPT_PREDICATE,
 } from '../../core/pipeline/expand.js';
-import type { BuiltinRow } from '../../core/plugins/load.js';
+import { partRow } from '../pipeline/services.js';
 
 /**
  * Строка встроенного слоя: все десять встроенных предикатов
@@ -29,26 +29,25 @@ import type { BuiltinRow } from '../../core/plugins/load.js';
  * обращений, происходящих после инициализации всех модулей (тот же приём,
  * что у строк видов шага, `builtin-step-kinds-as-rows`, design.md, Решение 1).
  *
- * Вклад вносится на корневой области ядра, а не через `kernel.ctx.plugin`:
- * владелец встроенного вклада — признак области ядра (`BUILTIN_OWNER`), а не
- * имя строки (`plugin-tree`, design.md, Решение 1).
+ * Строка-потребитель сервиса `predicates` (design.md `pipeline-owns-services`,
+ * Решение 2): применяется собственной областью с объявленным `inject`, а не
+ * прямо на корне, — порядок относительно строки-поставщика (`pipeline`) её
+ * применения не решает. Владелец вклада остаётся «встроенным»: признак — не
+ * корневая область, а пометка области строки этого каталога (Решение 3).
  */
-export const row: BuiltinRow = {
-  id: 'predicates',
-  apply(kernel) {
-    for (const form of [
-      EXIT_CODE_PREDICATE,
-      FILE_EXISTS_PREDICATE,
-      SCHEMA_PREDICATE,
-      MATCHES_PREDICATE,
-      NOT_MATCHES_PREDICATE,
-      CHANGED_ONLY_PREDICATE,
-      KNOWLEDGE_VALID_PREDICATE,
-      CMD_PREDICATE,
-      SCRIPT_PREDICATE,
-      JUDGE_PREDICATE,
-    ]) {
-      kernel.ctx.predicates.register(form.name, form);
-    }
-  },
-};
+export const row = partRow('predicates', ['predicates'], (ctx) => {
+  for (const form of [
+    EXIT_CODE_PREDICATE,
+    FILE_EXISTS_PREDICATE,
+    SCHEMA_PREDICATE,
+    MATCHES_PREDICATE,
+    NOT_MATCHES_PREDICATE,
+    CHANGED_ONLY_PREDICATE,
+    KNOWLEDGE_VALID_PREDICATE,
+    CMD_PREDICATE,
+    SCRIPT_PREDICATE,
+    JUDGE_PREDICATE,
+  ]) {
+    ctx.predicates.register(form.name, form);
+  }
+});

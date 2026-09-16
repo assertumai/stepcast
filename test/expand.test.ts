@@ -26,13 +26,15 @@ import { registryFromKernel, type Registry } from '../src/core/plugins/registry.
  * (`builtin-step-kinds-as-rows`): применены все строки `BUILTIN_ROWS`, кроме
  * той, чей `id` назван, так что реестр воспроизводит именно то, что видит
  * `checkRawSteps`/`buildDocumentSchemas`, когда патч состава отключил строку.
+ *
+ * `await Promise.all(...)`, а не синхронный цикл (pipeline-owns-services):
+ * строки-потребители (design.md, Решение 2) применяются собственной областью
+ * через `ctx.plugin`, которая всегда проходит через микрозадачу, — без
+ * ожидания реестр читался бы до того, как хоть одна регистрация случилась.
  */
-function registryWithoutRow(excludedRowId: string): Registry {
+async function registryWithoutRow(excludedRowId: string): Promise<Registry> {
   const kernel = createKernelShell();
-  for (const row of BUILTIN_ROWS) {
-    if (row.id === excludedRowId) continue;
-    row.apply(kernel);
-  }
+  await Promise.all(BUILTIN_ROWS.filter((row) => row.id !== excludedRowId).map((row) => row.apply(kernel)));
   return registryFromKernel(kernel);
 }
 
@@ -4877,7 +4879,7 @@ jobs:
 // снятом составом, — третья ветвь `checkRawSteps` между «снят вместе с
 // плагином» и «неизвестен» (design.md, Решение 5).
 describe('pipeline-definition: вид шага вне действующего состава', () => {
-  it('патч состава отключает step-run — пайплайн с шагом run: отказывает, называя вид и состав', () => {
+  it('патч состава отключает step-run — пайплайн с шагом run: отказывает, называя вид и состав', async () => {
     const project = makeProject({
       'stepcast.yml': `
 kind: pipeline
@@ -4889,7 +4891,7 @@ jobs:
 `,
     });
 
-    const registry = registryWithoutRow('step-run');
+    const registry = await registryWithoutRow('step-run');
     const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
 
     assert.match(error.message, /Вид шага run отключён составом/);
@@ -4921,7 +4923,7 @@ jobs:
   // `script`, `args`, `runner`, `input` он делит с `uses`, `on_fail` — ещё
   // шире. Отказ обязан назвать вид всё равно: спрашивается форма узнавания
   // самого вида, а не таблица «ключ → владельцы» резерва формата.
-  it('патч состава отключает step-script — шаг script: отказывает тем же текстом, а не как опечатка', () => {
+  it('патч состава отключает step-script — шаг script: отказывает тем же текстом, а не как опечатка', async () => {
     const project = makeProject({
       'stepcast.yml': `
 kind: pipeline
@@ -4934,7 +4936,7 @@ jobs:
     });
     project.write('main.cjs', 'process.exit(0);\n');
 
-    const registry = registryWithoutRow('step-script');
+    const registry = await registryWithoutRow('step-script');
     const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
 
     assert.match(error.message, /Вид шага script отключён составом/);
@@ -4944,7 +4946,7 @@ jobs:
 
   // Тот же ключ `script` при живом `step-script`, но снятом `step-uses`:
   // отказ называет вид `uses` только тогда, когда шаг назвал его ключ.
-  it('шаг script: при отключённом step-uses разбирается как прежде', () => {
+  it('шаг script: при отключённом step-uses разбирается как прежде', async () => {
     const project = makeProject({
       'stepcast.yml': `
 kind: pipeline
@@ -4957,13 +4959,13 @@ jobs:
     });
     project.write('main.cjs', 'process.exit(0);\n');
 
-    const registry = registryWithoutRow('step-uses');
+    const registry = await registryWithoutRow('step-uses');
     assert.doesNotThrow(() =>
       expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }),
     );
   });
 
-  it('патч состава отключает step-agent — шаг prompt: называет вид agent', () => {
+  it('патч состава отключает step-agent — шаг prompt: называет вид agent', async () => {
     const project = makeProject({
       'stepcast.yml': `
 kind: pipeline
@@ -4975,7 +4977,7 @@ jobs:
 `,
     });
 
-    const registry = registryWithoutRow('step-agent');
+    const registry = await registryWithoutRow('step-agent');
     const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
 
     assert.match(error.message, /Вид шага agent отключён составом/);
@@ -4985,7 +4987,7 @@ jobs:
   // и при неполном составе: третья ветвь отвечает только за виды, которые
   // узнали бы шаг, будь их строка включена (спека, «Неизвестный ключ
   // остаётся опечаткой»).
-  it('незнакомый ключ при отключённой строке остаётся прежним отказом о неизвестном виде', () => {
+  it('незнакомый ключ при отключённой строке остаётся прежним отказом о неизвестном виде', async () => {
     const project = makeProject({
       'stepcast.yml': `
 kind: pipeline
@@ -4997,7 +4999,7 @@ jobs:
 `,
     });
 
-    const registry = registryWithoutRow('step-run');
+    const registry = await registryWithoutRow('step-run');
     const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
 
     assert.match(error.message, /Вид шага frobnicate неизвестен: такого вклада в реестре нет/);
@@ -5009,7 +5011,7 @@ jobs:
 // имя предиката и адрес записи, подсказка о строке дерева и о `stepcast
 // plugins`, имени строки в тексте нет.
 describe('pipeline-definition: предикат вне действующего состава', () => {
-  it('патч состава отключает predicates — предикат шага exit_code: отказывает, называя предикат и состав', () => {
+  it('патч состава отключает predicates — предикат шага exit_code: отказывает, называя предикат и состав', async () => {
     const project = makeProject({
       'stepcast.yml': `
 kind: pipeline
@@ -5022,7 +5024,7 @@ jobs:
 `,
     });
 
-    const registry = registryWithoutRow('predicates');
+    const registry = await registryWithoutRow('predicates');
     const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
 
     assert.match(error.message, /Предикат exit_code отключён составом/);
@@ -5050,7 +5052,7 @@ jobs:
     assert.doesNotThrow(() => expand(project));
   });
 
-  it('патч состава отключает predicates — предикат until.check: отказывает тем же текстом', () => {
+  it('патч состава отключает predicates — предикат until.check: отказывает тем же текстом', async () => {
     const project = makeProject({
       'stepcast.yml': `
 kind: pipeline
@@ -5066,14 +5068,14 @@ jobs:
 `,
     });
 
-    const registry = registryWithoutRow('predicates');
+    const registry = await registryWithoutRow('predicates');
     const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
 
     assert.match(error.message, /Предикат exit_code отключён составом/);
     assert.match(error.at ?? '', /jobs\.build\.until\.check\.0/);
   });
 
-  it('предикат в подключённом файле работы отказывает тем же текстом', () => {
+  it('предикат в подключённом файле работы отказывает тем же текстом', async () => {
     const project = makeProject({
       'stepcast.yml': `
 kind: pipeline
@@ -5090,7 +5092,7 @@ steps:
 `,
     });
 
-    const registry = registryWithoutRow('predicates');
+    const registry = await registryWithoutRow('predicates');
     const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
 
     assert.match(error.message, /Предикат exit_code отключён составом/);
@@ -5100,7 +5102,7 @@ steps:
   // `judge` — многоключевая запись (`judge`, `hard`, `agent`, `model`):
   // форма узнаёт себя по одному присутствию ключа `judge`, остальные ключи
   // не мешают.
-  it('многоключевая запись judge отказывает тем же текстом', () => {
+  it('многоключевая запись judge отказывает тем же текстом', async () => {
     const project = makeProject({
       'stepcast.yml': `
 kind: pipeline
@@ -5113,7 +5115,7 @@ jobs:
 `,
     });
 
-    const registry = registryWithoutRow('predicates');
+    const registry = await registryWithoutRow('predicates');
     const error = thrown(() => expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config, registry }));
 
     assert.match(error.message, /Предикат judge отключён составом/);
@@ -5127,10 +5129,7 @@ jobs:
   // не одним лишь `kind` разобранной модели (находка ревью).
   it('при снятой строке документ с плагинным предикатом разбирается, вычисляется и проходит линт', async () => {
     const kernel = createKernelShell();
-    for (const row of BUILTIN_ROWS) {
-      if (row.id === 'predicates') continue;
-      row.apply(kernel);
-    }
+    await Promise.all(BUILTIN_ROWS.filter((row) => row.id !== 'predicates').map((row) => row.apply(kernel)));
     kernel.ctx.predicates.register('always_ok', {
       name: 'always_ok',
       schema: {},

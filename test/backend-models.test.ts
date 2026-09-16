@@ -9,10 +9,9 @@ import type { ModelDiscovery, ProbeOutput } from '../src/core/backend/types.js';
 import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { lintPipeline } from '../src/core/lint.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { createKernel } from '../src/core/plugins/kernel.js';
 import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import type { BackendContribution } from '../src/core/plugins/contract.js';
-import { asAgent, makeProject } from './helpers.js';
+import { asAgent, createPipelineKernel, makeProject } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 /** Config настоящим разбором YAML — те же слои, что видит демон витрины. */
@@ -27,7 +26,7 @@ function configFrom(yaml: string): Config {
 
 /** Реестр из одних заданных бэкендов, зарегистрированных на корне ядра — синоним прежнего `createRegistry`. */
 function registryOf(backends: Record<string, BackendContribution>): Registry {
-  const kernel = createKernel();
+  const kernel = createPipelineKernel();
   for (const [name, contribution] of Object.entries(backends)) kernel.ctx.backends.register(name, contribution);
   return registryFromKernel(kernel);
 }

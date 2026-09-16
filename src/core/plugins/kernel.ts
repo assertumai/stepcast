@@ -2,34 +2,34 @@ import { Context, Service, type Fiber } from 'cordis';
 
 import { StepcastError } from '../errors.js';
 import type { Context as PluginContext, ContributionRegistrar } from './context.js';
-import type {
-  BackendContribution,
-  CommandContribution,
-  LoadedPlugin,
-  PredicateKind,
-  StepKind,
-} from './contract.js';
+import type { CommandContribution, LoadedPlugin } from './contract.js';
 import { settle, topLevelFibers, unresolvedFibers, type UnresolvedFiber } from './fibers.js';
+import { declaredServices } from './services.js';
 
 export { unresolvedFibers, type UnresolvedFiber };
 
 /**
  * Ядро движка — корневой контекст cordis.
  *
- * Три служебных сервиса — `backends`, `predicates`, `commands` — те самые три
- * вида вклада контракта плагина; `register(имя, вклад)` оформлен `ctx.effect`
- * вызывающей области, так что снятие области плагина снимает вклад без
- * единой строки учёта здесь (design.md, Решение 2). Эти три имени сервисов
- * объявлены занятыми: плагин, попытавшийся завести сервис с любым из них,
- * получает отказ, называющий имя и его принадлежность ядру (Решение 3).
+ * Единственный служебный сервис, который заводит сама сборка ядра, —
+ * `commands`: каркас CLI, разбор аргументов и диспетчер команд — собственная
+ * работа ядра, а не домен (design.md, Решение 5). Служебные сервисы движка
+ * пайплайнов (`backends`, `predicates`, `steps`) заводит строка состава
+ * `pipeline` (`src/parts/pipeline/services.ts`), а не ядро, — ядро ни одного
+ * их имени не знает и не объявляет занятым.
+ *
+ * `register(имя, вклад)` оформлен `ctx.effect` вызывающей области, так что
+ * снятие области плагина снимает вклад без единой строки учёта здесь
+ * (design.md, Решение 2).
  *
  * Встроенные вклады (`builtin.ts`) регистрируются тем же вызовом, что и
- * плагинные, но на самом корневом контексте, а не внутри `ctx.plugin()`:
- * `ctx.effect` корневой, изначально активной области исполняется синхронно
- * (в отличие от `ctx.plugin()`, всегда проходящего через микрозадачу), так что
- * `createKernel()` остаётся синхронной функцией, как была `createRegistry()`.
- * Область самого ядра — фиксированная область корня, и признак «это она»
- * несёт идентичность её `Fiber`, а не имя (Решение 5).
+ * плагинные. Признак «это вклад встроенного слоя» — параметр конструктора
+ * сервиса (`isBuiltinFiber`, ниже): для `commands` это идентичность корневой,
+ * изначально активной области ядра (её `ctx.effect` исполняется синхронно, в
+ * отличие от `ctx.plugin()`, всегда проходящего через микрозадачу, — поэтому
+ * `createKernel()` остаётся синхронной функцией), для сервисов строки
+ * `pipeline` — принадлежность фибера множеству помеченных областей встроенного
+ * слоя (design.md, Решение 3).
  *
  * Успокоение контекста и поиск зависших областей (`settle`, `unresolvedFibers`)
  * живут в `./fibers.js` — модуле без зависимостей, общем с браузерным ядром
@@ -37,20 +37,8 @@ export { unresolvedFibers, type UnresolvedFiber };
  * реэкспорт и использование.
  */
 
-/** Имена служебных сервисов ядра. Плагину заводить сервис с этим именем нельзя. */
-export const KERNEL_RESERVED_NAMES: readonly string[] = ['backends', 'predicates', 'commands', 'steps'];
-
-/** Владелец встроенного вклада в тексте отказа — не имя строки, а признак области ядра. */
+/** Владелец встроенного вклада в тексте отказа — не имя строки, а признак области встроенного слоя. */
 export const BUILTIN_OWNER = 'встроенный';
-
-const KIND_NAMES = {
-  backends: 'бэкенда',
-  predicates: 'предиката',
-  commands: 'команды',
-  steps: 'вида шага',
-} as const;
-
-type ContributionKind = keyof typeof KIND_NAMES;
 
 function describeOwner(owner: string): string {
   return owner === BUILTIN_OWNER ? 'встроенный вклад' : `плагин ${owner}`;
@@ -75,18 +63,14 @@ export type ContributionNameGuard = (
   taken: ReadonlyMap<string, unknown>,
 ) => void;
 
-export interface KernelOptions {
-  /**
-   * Проверка имени вклада по виду — только для вклада, поданного не областью
-   * ядра (design.md, Решение 1). Ядро, собранное без неё, принимает любое имя:
-   * перечня занятых имён в нём нет вовсе, только вызов того, что подано.
-   */
-  readonly nameGuards?: Partial<Record<ContributionKind, ContributionNameGuard>>;
-}
-
 /**
  * Сервис вида вклада: `register` — эффект вызывающей области, конфликт имён —
- * именованный отказ.
+ * именованный отказ. Механизм без доменных имён (design.md `pipeline-owns-services`,
+ * Решение 5): имя сервиса, слово для текстов отказа («бэкенда», «вида шага») и
+ * признак встроенной области — параметры конструктора, а не перечень,
+ * зашитый в ядро. Ядро заводит им единственный сервис — `commands`; служебные
+ * сервисы движка пайплайнов заводит строка `pipeline`
+ * (`src/parts/pipeline/services.ts`), передавая свои слово и признак.
  */
 export class ContributionService<T> extends Service implements ContributionRegistrar<T> {
   /**
@@ -96,8 +80,10 @@ export class ContributionService<T> extends Service implements ContributionRegis
    * не расширяется: его читает `stepcast config`, которому фибер не нужен.
    */
   private readonly entries = new Map<string, { readonly value: T; readonly owner: string; readonly ownerFiber: Fiber }>();
-  private readonly kind: ContributionKind;
-  private readonly builtinFiber: Fiber;
+  /** Слово для текстов отказа («бэкенда», «вида шага», …) — не имя сервиса, которое ушло бы в текст сырым. */
+  private readonly word: string;
+  /** Признак «эта область — область встроенного слоя»: идентичность корня для `commands`, пометка фибера для сервисов строки `pipeline` (design.md, Решение 3). */
+  private readonly isBuiltinFiber: (fiber: Fiber) => boolean;
   /**
    * Владелец имени, снятого вместе с областью, — на время жизни этого ядра
    * (design.md, решение 8). Заведена ровно ради одного сообщения: пайплайн,
@@ -108,11 +94,14 @@ export class ContributionService<T> extends Service implements ContributionRegis
    */
   private readonly formerOwners = new Map<string, string>();
   private readonly nameGuard: ContributionNameGuard | undefined;
+  /** Имя сервиса — для метки эффекта регистрации (`ctx.effect`), а не для текстов отказа: те несут `word`. */
+  private readonly serviceName: string;
 
-  constructor(ctx: Context, kind: ContributionKind, builtinFiber: Fiber, nameGuard?: ContributionNameGuard) {
-    super(ctx, kind);
-    this.kind = kind;
-    this.builtinFiber = builtinFiber;
+  constructor(ctx: Context, name: string, word: string, isBuiltinFiber: (fiber: Fiber) => boolean, nameGuard?: ContributionNameGuard) {
+    super(ctx, name);
+    this.serviceName = name;
+    this.word = word;
+    this.isBuiltinFiber = isBuiltinFiber;
     this.nameGuard = nameGuard;
   }
 
@@ -146,15 +135,15 @@ export class ContributionService<T> extends Service implements ContributionRegis
   }
 
   register(name: string, contribution: T): () => void {
-    const owner = this.ctx.fiber === this.builtinFiber ? BUILTIN_OWNER : this.ctx.fiber.name;
+    const owner = this.isBuiltinFiber(this.ctx.fiber) ? BUILTIN_OWNER : this.ctx.fiber.name;
 
-    // Проверка имени (`KernelOptions.nameGuards`) касается только плагина:
-    // встроенные вклады регистрируют себя на корневой области ровно под теми
-    // же именами (`run`, `script`, …), и это не конфликт, а определение
-    // (design.md, Решение 1). Уже занятые вклады переданы тем же неявным
-    // видом, что и регистрируемый (design.md изменения
-    // `step-kind-document-contract`, Решение 7) — проверке нужен доступ к их
-    // содержанию (например, к занятым ключам), а не только к перечню имён.
+    // Проверка имени касается только плагина: встроенные вклады регистрируют
+    // себя на области встроенного слоя ровно под теми же именами (`run`,
+    // `script`, …), и это не конфликт, а определение (design.md, Решение 1).
+    // Уже занятые вклады переданы тем же неявным видом, что и регистрируемый
+    // (design.md изменения `step-kind-document-contract`, Решение 7) —
+    // проверке нужен доступ к их содержанию (например, к занятым ключам), а
+    // не только к перечню имён.
     if (owner !== BUILTIN_OWNER) this.nameGuard?.(name, contribution, this.contributions);
 
     const existingOwner = this.owner(name);
@@ -162,7 +151,7 @@ export class ContributionService<T> extends Service implements ContributionRegis
       // Тихая подмена `claude` или `exit_code` сделала бы лжецом и `stepcast
       // config`, и журнал прогона: и тот и другой называют имя, а не источник.
       throw new StepcastError(
-        `Имя ${KIND_NAMES[this.kind]} ${name} занято: его объявляют ${describeOwner(existingOwner)} и ${describeOwner(owner)}`,
+        `Имя ${this.word} ${name} занято: его объявляют ${describeOwner(existingOwner)} и ${describeOwner(owner)}`,
         {
           hint: 'Переопределение вклада не предусмотрено: снимите один из плагинов либо попросите автора переименовать вклад',
         },
@@ -174,16 +163,13 @@ export class ContributionService<T> extends Service implements ContributionRegis
         this.entries.delete(name);
         this.formerOwners.set(name, owner);
       };
-    }, `${this.kind}.register(${name})`);
+    }, `${this.serviceName}.register(${name})`);
   }
 }
 
 declare module 'cordis' {
   interface Context {
-    backends: ContributionService<BackendContribution>;
-    predicates: ContributionService<PredicateKind>;
     commands: ContributionService<CommandContribution>;
-    steps: ContributionService<StepKind>;
   }
 }
 
@@ -211,11 +197,11 @@ export interface Kernel {
    * не дождавшись ничего.
    */
   settle(): Promise<readonly Fiber[]>;
-  /** Загруженные плагины в порядке загрузки — живой список, как и три сервиса. */
+  /** Загруженные плагины в порядке загрузки — живой список, как и сервисы вкладов. */
   readonly plugins: readonly LoadedPlugin[];
   /**
    * Записать плагин в перечень загруженных эффектом области `ctx`: снятие
-   * этой области снимает и запись — тем же приёмом, что и три вида вкладов.
+   * этой области снимает и запись — тем же приёмом, что и всякий вклад.
    */
   recordPlugin(ctx: Context, meta: LoadedPlugin): void;
   /**
@@ -248,34 +234,42 @@ export interface Kernel {
 
 /**
  * Отказ cordis на попытке занять уже поданное имя сервиса — тем же вызовом,
- * которым плагин попытался бы завести сервис `backends`, `predicates` или
- * `commands` напрямую (`ctx.provide`/`ctx.set`), минуя вклад. Сообщение —
- * внутренний формат cordis (`service "<имя>" has been registered at <…>`);
- * распознаётся по нему и переводится в именованный отказ ядра. Форма, не
- * подошедшая под этот разбор, возвращается как есть — переводить нечего.
+ * которым плагин попытался бы завести сервис `commands` или любой из
+ * сервисов строки `pipeline` напрямую (`ctx.provide`/`ctx.set`), минуя вклад.
+ * Сообщение — внутренний формат cordis (`service "<имя>" has been registered
+ * at <…>`); распознаётся по нему. Владелец имени выводится из действующего
+ * состава (`declaredServices`), а не из перечня, зашитого в ядро (design.md,
+ * Решение 7): корневая область — «ядро», любая другая — строка, чьё имя несёт
+ * её фибер (`ctx.plugin({ name: id, … })`). Имя, не найденное среди
+ * объявленных сервисов (гонка снятия области), и форма, не подошедшая под
+ * разбор, возвращаются как есть — переводить нечего.
  */
 const RESERVED_SERVICE_RE = /^service "([^"]+)" has been registered/;
 
-export function translateReservedNameConflict(error: unknown): unknown {
+export function translateReservedNameConflict(error: unknown, ctx: Context): unknown {
   if (!(error instanceof Error)) return error;
   const match = RESERVED_SERVICE_RE.exec(error.message);
   const name = match?.[1];
-  if (name === undefined || !KERNEL_RESERVED_NAMES.includes(name)) return error;
-  return new StepcastError(`Имя сервиса ${name} занято: оно принадлежит ядру`, {
-    hint: `Имена ${KERNEL_RESERVED_NAMES.join(', ')} зарезервированы ядром — заведите сервис под другим именем`,
+  if (name === undefined) return error;
+  const owner = declaredServices(ctx).find((service) => service.name === name);
+  if (owner === undefined) return error;
+  const isKernel = owner.fiber === ctx.fiber;
+  const message = isKernel
+    ? `Имя сервиса ${name} занято: оно принадлежит ядру`
+    : `Имя сервиса ${name} занято: его объявляет строка ${owner.fiber.name}`;
+  return new StepcastError(message, {
+    hint: isKernel
+      ? `Имя ${name} принадлежит ядру — заведите сервис под другим именем`
+      : `Имя ${name} объявляет строка ${owner.fiber.name} — заведите сервис под другим именем либо отключите эту строку составом`,
     cause: error,
   });
 }
 
-export function createKernel(options?: KernelOptions): Kernel {
+export function createKernel(): Kernel {
   const ctx = new Context();
-  const builtinFiber = ctx.fiber;
-  const nameGuards = options?.nameGuards;
+  const rootFiber = ctx.fiber;
 
-  new ContributionService<BackendContribution>(ctx, 'backends', builtinFiber, nameGuards?.backends);
-  new ContributionService<PredicateKind>(ctx, 'predicates', builtinFiber, nameGuards?.predicates);
-  new ContributionService<CommandContribution>(ctx, 'commands', builtinFiber, nameGuards?.commands);
-  new ContributionService<StepKind>(ctx, 'steps', builtinFiber, nameGuards?.steps);
+  new ContributionService<CommandContribution>(ctx, 'commands', 'команды', (fiber) => fiber === rootFiber);
 
   const plugins: LoadedPlugin[] = [];
   /** Запись, сделанная областью: нужна `forgetPlugin` — см. её объяснение. */

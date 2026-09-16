@@ -2960,12 +2960,9 @@ jobs:
    * шага патчем `enabled: false`: применены все строки `BUILTIN_ROWS`, кроме
    * названной.
    */
-  function registryWithoutRow(excludedRowId: string): Registry {
+  async function registryWithoutRow(excludedRowId: string): Promise<Registry> {
     const kernel = createKernelShell();
-    for (const row of BUILTIN_ROWS) {
-      if (row.id === excludedRowId) continue;
-      row.apply(kernel);
-    }
+    await Promise.all(BUILTIN_ROWS.filter((row) => row.id !== excludedRowId).map((row) => row.apply(kernel)));
     return registryFromKernel(kernel);
   }
 
@@ -2981,7 +2978,7 @@ jobs:
     );
     project.write(join('.stepcast', 'schema', 'job.schema.json'), `${JSON.stringify(buildPublishedSchemas().job, null, 2)}\n`);
 
-    const registryWithoutAgent = registryWithoutRow('step-agent');
+    const registryWithoutAgent = await registryWithoutRow('step-agent');
     const fresh = buildPublishedSchemas(
       pluginPredicateEntries(registryWithoutAgent),
       pluginStepKindEntries(registryWithoutAgent),
@@ -3011,7 +3008,7 @@ jobs:
     );
     project.write(join('.stepcast', 'schema', 'job.schema.json'), `${JSON.stringify(buildPublishedSchemas().job, null, 2)}\n`);
 
-    const registryWithoutPredicates = registryWithoutRow('predicates');
+    const registryWithoutPredicates = await registryWithoutRow('predicates');
 
     const diagnostics = lintWithRegistry(project, registryWithoutPredicates);
     const message = warnings(diagnostics).find((text) => /Схема проекта устарела/.test(text));

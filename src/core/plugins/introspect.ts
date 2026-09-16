@@ -1,7 +1,7 @@
 import type { StepcastError } from '../errors.js';
 import { BUILTIN_OWNER, type Fiber, type Kernel } from './kernel.js';
 import type { RootWindow, RowOutcome } from './load.js';
-import { declaredServices, requestedServices } from './services.js';
+import { contributionServices, declaredServices, requestedServices } from './services.js';
 import type { TreeRowSource } from './tree.js';
 
 /**
@@ -37,15 +37,16 @@ export interface IntrospectionRequestedService {
   readonly resolved: boolean;
 }
 
-/** Вклады строки по видам — те же четыре, что несёт `Registry` (`registry.ts`). */
-export interface IntrospectionContributions {
-  readonly backends: readonly string[];
-  readonly predicates: readonly string[];
-  readonly commands: readonly string[];
-  readonly steps: readonly string[];
-}
+/**
+ * Вклады строки — карта «имя сервиса → имена вкладов» (design.md
+ * `pipeline-owns-services`, Решение 6): сервис без вкладов строки в карте не
+ * числится, а сервис, которого в составе нет вовсе, здесь не появится —
+ * вместо постоянного перечня из четырёх видов вклад называется именем
+ * сервиса, который его принёс, каким бы он ни был.
+ */
+export type IntrospectionContributions = Readonly<Record<string, readonly string[]>>;
 
-const EMPTY_CONTRIBUTIONS: IntrospectionContributions = { backends: [], predicates: [], commands: [], steps: [] };
+const EMPTY_CONTRIBUTIONS: IntrospectionContributions = {};
 
 /** Одна строка дерева, глазами осмотра. */
 export interface IntrospectionRow {
@@ -85,9 +86,11 @@ export type BrowserIntrospection =
  * строки, — граница правила приписывания, названная честно (design.md,
  * Решение 2, «Граница правила названа честно»). Сюда попадает всё, что ядро
  * завело до первой строки (`createKernelShell`: встроенные команды CLI и
- * четыре служебных сервиса — виды шага с `builtin-step-kinds-as-rows` вносят
- * строки, и каждый числится за своей) и всякая поздняя регистрация на корне. Такой вклад не приписывается строке наугад и не
- * исчезает из осмотра: он показан владельцем «встроенный».
+ * единственный служебный сервис ядра `commands` — служебные сервисы движка
+ * пайплайнов заводит строка `pipeline`, а вклады в них вносят строки-потребители,
+ * и каждый числится за своей) и всякая поздняя регистрация на корне. Такой
+ * вклад не приписывается строке наугад и не исчезает из осмотра: он показан
+ * владельцем «встроенный».
  */
 export interface IntrospectionBuiltin {
   /** Имя владельца — то же `BUILTIN_OWNER`, которым его называет `Registry.owners`. */
@@ -109,7 +112,14 @@ export type IntrospectionAttribution =
   | { readonly available: false; readonly reason: string };
 
 export interface Introspection {
-  readonly version: 1;
+  /**
+   * Форма 2 (design.md `pipeline-owns-services`, Решение 6): вклады несёт
+   * карта «имя сервиса → имена вкладов», а не постоянный перечень из четырёх
+   * видов формы 1. Смена номера — по существу: читатель прежней формы обязан
+   * назвать расхождение причиной (`isIntrospection`), а не разобрать половину
+   * модели.
+   */
+  readonly version: 2;
   readonly surface: 'cli' | 'daemon';
   readonly rows: readonly IntrospectionRow[];
   readonly builtin: IntrospectionBuiltin;
@@ -134,23 +144,25 @@ function reasonOf(error: StepcastError | undefined): string {
   return error?.message ?? 'неизвестная причина';
 }
 
-const CONTRIB_KINDS = ['backends', 'predicates', 'commands', 'steps'] as const;
-
-/** Вклады строки со своей областью — по фиберу, во всех четырёх сервисах вкладов (design.md, Решение 2). */
+/**
+ * Вклады строки со своей областью — по фиберу, во всех объявленных сервисах
+ * вклада (design.md, Решение 2, Решение 6): сервисы обходятся составом, а не
+ * постоянным перечнем из четырёх имён — сервис без вклада этой строки в
+ * карту не попадает.
+ */
 function contributionsOf(kernel: Kernel, fiber: Fiber): IntrospectionContributions {
-  const out: Record<(typeof CONTRIB_KINDS)[number], string[]> = { backends: [], predicates: [], commands: [], steps: [] };
-  for (const kind of CONTRIB_KINDS) {
-    for (const entry of kernel.ctx[kind].entriesWithFiber()) {
-      if (entry.ownerFiber === fiber) out[kind].push(entry.name);
-    }
+  const out: Record<string, string[]> = {};
+  for (const [service, registrar] of contributionServices(kernel.ctx)) {
+    const names = registrar.entriesWithFiber().filter((entry) => entry.ownerFiber === fiber).map((entry) => entry.name);
+    if (names.length > 0) out[service] = names;
   }
   return out;
 }
 
 /** Вклады окна корневых регистраций — то, что появилось за время применения встроенной строки без своей области. */
 function contributionsFromWindow(window: RootWindow): IntrospectionContributions {
-  const out: Record<(typeof CONTRIB_KINDS)[number], string[]> = { backends: [], predicates: [], commands: [], steps: [] };
-  for (const { kind, name } of window.contributions) out[kind].push(name);
+  const out: Record<string, string[]> = {};
+  for (const { service, name } of window.contributions) (out[service] ??= []).push(name);
   return out;
 }
 
@@ -212,16 +224,18 @@ function builtinOf(kernel: Kernel, outcomes: readonly RowOutcome[]): Introspecti
   const claimedServices = new Set<string>();
   for (const outcome of outcomes) {
     if (outcome.rootWindow === undefined) continue;
-    for (const entry of outcome.rootWindow.contributions) claimedContributions.add(`${entry.kind}:${entry.name}`);
+    for (const entry of outcome.rootWindow.contributions) claimedContributions.add(`${entry.service}:${entry.name}`);
     for (const name of outcome.rootWindow.services) claimedServices.add(name);
   }
 
   const root = kernel.ctx.fiber;
-  const contributions: Record<(typeof CONTRIB_KINDS)[number], string[]> = { backends: [], predicates: [], commands: [], steps: [] };
-  for (const kind of CONTRIB_KINDS) {
-    for (const entry of kernel.ctx[kind].entriesWithFiber()) {
-      if (entry.ownerFiber === root && !claimedContributions.has(`${kind}:${entry.name}`)) contributions[kind].push(entry.name);
-    }
+  const contributions: Record<string, string[]> = {};
+  for (const [service, registrar] of contributionServices(kernel.ctx)) {
+    const names = registrar
+      .entriesWithFiber()
+      .filter((entry) => entry.ownerFiber === root && !claimedContributions.has(`${service}:${entry.name}`))
+      .map((entry) => entry.name);
+    if (names.length > 0) contributions[service] = names;
   }
 
   return {
@@ -257,7 +271,7 @@ export function introspect(
   } = {},
 ): Introspection {
   return {
-    version: 1,
+    version: 2,
     surface,
     rows: outcomes.map((outcome, index) => rowOf(kernel, outcome, index + 1)),
     builtin: builtinOf(kernel, outcomes),
@@ -281,7 +295,7 @@ export function introspect(
 export function isIntrospection(value: unknown): value is Introspection {
   if (!isRecord(value)) return false;
   return (
-    value.version === 1 &&
+    value.version === 2 &&
     (value.surface === 'cli' || value.surface === 'daemon') &&
     Array.isArray(value.rows) &&
     value.rows.every((row: unknown) => isIntrospectionRowShaped(row)) &&
@@ -299,8 +313,9 @@ function isStringArray(value: unknown): boolean {
   return Array.isArray(value) && value.every((item: unknown) => typeof item === 'string');
 }
 
+/** Карта «имя сервиса → имена вкладов» — любые ключи, значения все строковые массивы (design.md, Решение 6). */
 function isContributionsShaped(value: unknown): boolean {
-  return isRecord(value) && CONTRIB_KINDS.every((kind) => isStringArray(value[kind]));
+  return isRecord(value) && Object.values(value).every((names) => isStringArray(names));
 }
 
 function isDeclaredServiceShaped(value: unknown): boolean {

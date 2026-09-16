@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { FiberState, Service } from 'cordis';
+import { FiberState, Service, type Fiber } from 'cordis';
 
 import { ExitCode, StepcastError } from '../src/core/errors.js';
 import { createBuiltinKernel } from '../src/parts/builtin.js';
@@ -18,14 +18,18 @@ import {
   applyDeclarativePlugin,
 } from '../src/core/plugins/load.js';
 import { loadPlugins } from '../src/parts/load.js';
+import { row as pipelineRow } from '../src/parts/pipeline/row.js';
+import { row as backendClaudeRow } from '../src/parts/backends/claude/row.js';
+import { row as predicatesRow } from '../src/parts/expect/row.js';
 import { ContributionService, createKernel } from '../src/core/plugins/kernel.js';
+import { declaredServices } from '../src/core/plugins/services.js';
 import { availableNames, predicateNames, registryFromKernel } from '../src/core/plugins/registry.js';
 import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
 import { resolveWithPlugins } from '../src/parts/resolve.js';
 import { resolveConfig, type ResolvedConfig } from '../src/core/config/resolve.js';
 import { run as runCli } from '../src/cli/main.js';
 import type { CliIo } from '../src/cli/args.js';
-import { makeProject, withHome } from './helpers.js';
+import { createPipelineKernel, makeProject, withHome } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 /**
@@ -106,7 +110,7 @@ describe('plugin-kernel: свежее ядро', () => {
 
 describe('plugin-kernel: обратимость регистрации', () => {
   it('disposer, возвращённый register, снимает один вклад, не трогая соседей', () => {
-    const kernel = createKernel();
+    const kernel = createPipelineKernel();
     const disposeA = kernel.ctx.backends.register('a', backend());
     kernel.ctx.backends.register('b', backend());
 
@@ -116,7 +120,7 @@ describe('plugin-kernel: обратимость регистрации', () => {
   });
 
   it('снятие области плагина снимает все три вида его вкладов разом', async () => {
-    const kernel = createKernel();
+    const kernel = createPipelineKernel();
     const fiber = await applyContextPlugin(
       kernel,
       {
@@ -187,10 +191,49 @@ describe('plugin-kernel: загрузить, выгрузить — следов
   });
 });
 
-describe('plugin-kernel: имена ядра заняты', () => {
-  for (const name of ['backends', 'predicates', 'commands']) {
-    it(`плагин, объявляющий сервис ${name}, получает отказ, называющий имя и принадлежность ядру`, async () => {
+// Задача 6.1 (pipeline-owns-services): `commands` остаётся единственным
+// именем, которое объявляет само ядро (design.md, Решение 5) — отказ на его
+// занятии по-прежнему называет ядро.
+describe('plugin-kernel: имя ядра занято', () => {
+  it('плагин, объявляющий сервис commands, получает отказ, называющий имя и принадлежность ядру', async () => {
+    const kernel = createKernel();
+
+    await assert.rejects(
+      () =>
+        applyContextPlugin(
+          kernel,
+          {
+            name: 'greedy',
+            apply(ctx) {
+              const dispose = ctx.provide('commands');
+              ctx.set('commands', {});
+              return dispose;
+            },
+          },
+          '<synthetic>',
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /commands/);
+        assert.match(error.message, /ядру/);
+        return true;
+      },
+    );
+  });
+});
+
+// Задача 6.1/8.4 (pipeline-owns-services): `backends`/`predicates`/`steps`
+// больше не имена, зарезервированные ядром, — их объявляет строка `pipeline`,
+// и отказ на их занятии называет строку, а не ядро (design.md, Решение 7).
+// Строка применена формой дерева (`row.apply`, своя область), а не
+// синхронным умолчанием (`createPipelineKernel`, прямой вызов `register` на
+// корне): владелец имени выводится из фибера, объявившего сервис, и только у
+// формы дерева этот фибер несёт имя строки, а не корня.
+describe('plugin-kernel: имя, занятое строкой pipeline', () => {
+  for (const name of ['backends', 'predicates', 'steps']) {
+    it(`плагин, объявляющий сервис ${name}, получает отказ, называющий имя и строку pipeline`, async () => {
       const kernel = createKernel();
+      await pipelineRow.apply(kernel);
 
       await assert.rejects(
         () =>
@@ -209,10 +252,47 @@ describe('plugin-kernel: имена ядра заняты', () => {
         (error: unknown) => {
           assert.ok(error instanceof StepcastError);
           assert.match(error.message, new RegExp(name));
-          assert.match(error.message, /ядру/);
+          assert.match(error.message, /pipeline/);
+          assert.doesNotMatch(error.message, /ядру/);
           return true;
         },
       );
+    });
+  }
+});
+
+// Задача 8.4 (pipeline-owns-services), сценарий дельты `plugin-kernel` «Имя
+// свободно, когда строки-поставщика в составе нет»: обратный случай к
+// предыдущему блоку и его прямая пара — тот же вызов `ctx.provide` на том же
+// ядре, разница только в том, применена ли строка `pipeline`. Занятость имени
+// следует из действующего состава (`declaredServices`), а не из перечня,
+// зашитого в ядро: состава без строки-поставщика имена не держат вовсе
+// (design.md, Решение 7; находка ревью — сценарий был описан, но не проверен).
+describe('plugin-kernel: имя свободно без строки pipeline', () => {
+  for (const name of ['backends', 'predicates', 'steps']) {
+    it(`плагин заводит свой сервис ${name} без отказа, и владельцем имени числится он`, async () => {
+      const kernel = createKernel();
+
+      const fiber = await applyContextPlugin(
+        kernel,
+        {
+          name: 'own-service',
+          apply(ctx) {
+            ctx.provide(name);
+            ctx.set(name, { своё: true });
+          },
+        },
+        '<synthetic>',
+      );
+
+      assert.deepEqual(kernel.ctx.get(name), { своё: true });
+      // Владелец имени — область плагина, а не корневая область ядра: именно
+      // по ней отказ о занятом имени назвал бы теперь плагин, а не ядро.
+      const declared = declaredServices(kernel.ctx).find((service) => service.name === name);
+      assert.equal(declared?.fiber, fiber);
+
+      await fiber.dispose();
+      assert.equal(kernel.ctx.get(name), undefined);
     });
   }
 });
@@ -275,7 +355,7 @@ describe('plugin-kernel: сервис с новым именем', () => {
 
 describe('plugin-kernel: внедрение между плагинами', () => {
   it('плагин b получает тот же объект от a; снятие a снимает b; повторное появление перезапускает тело b', async () => {
-    const kernel = createKernel();
+    const kernel = createPipelineKernel();
     const seen: unknown[] = [];
     let runs = 0;
 
@@ -704,5 +784,55 @@ describe('plugin-kernel: поверхность плагина не требуе
     assert.ok(probed !== undefined, 'сервис probed-service не найден в ctx.reflect.store');
     assert.equal(typeof probed.name, 'string');
     assert.equal((probed.fiber as Record<string, unknown> | undefined)?.name, 'provider');
+  });
+});
+
+// Задача 8.5 (pipeline-owns-services, design.md «Требование: Состав
+// описывается поставщиком и потребителем»): снятие области строки-поставщика
+// каскадно снимает потребителей вместе с их вкладами; снятие потребителя
+// поставщика и соседей не задевает.
+describe('plugin-kernel: каскад снятия строки-поставщика', () => {
+  it('снятие потребителя не задевает ни поставщика, ни соседей', async () => {
+    const kernel = createKernel();
+    await pipelineRow.apply(kernel);
+    const backendFiber = (await backendClaudeRow.apply(kernel)) as Fiber;
+    await predicatesRow.apply(kernel);
+
+    assert.ok(kernel.ctx.backends.contributions.has('claude'));
+    assert.equal(kernel.ctx.predicates.contributions.size, DEFAULT_NATIVE_PREDICATES.length);
+
+    await backendFiber.dispose();
+
+    assert.equal(kernel.ctx.backends.contributions.has('claude'), false);
+    // Сосед (строка predicates) и сам поставщик (сервисы pipeline) целы.
+    assert.equal(kernel.ctx.predicates.contributions.size, DEFAULT_NATIVE_PREDICATES.length);
+    assert.ok(kernel.ctx.get('backends') !== undefined);
+  });
+
+  it('снятие области строки pipeline каскадно снимает потребителей вместе с их вкладами', async () => {
+    const kernel = createKernel();
+    // Строка-поставщик всегда возвращает свою область, а не `void`
+    // (`partRow`, `src/parts/pipeline/services.ts`); тип `apply` шире
+    // (`BuiltinRow`), поэтому фибер приведён к нему явно.
+    const pipelineFiber = (await pipelineRow.apply(kernel)) as Fiber;
+    await backendClaudeRow.apply(kernel);
+    await predicatesRow.apply(kernel);
+
+    const registry = registryFromKernel(kernel);
+    assert.ok(registry.backends.has('claude'));
+    assert.equal(registry.predicates.size, DEFAULT_NATIVE_PREDICATES.length);
+
+    // Снять область самой строки pipeline: её каскадное снятие уносит всё,
+    // что от неё зависело через `inject`, — тем же механизмом cordis, что
+    // уже закреплён выше («плагин b получает тот же объект от a…»).
+    await pipelineFiber.dispose();
+
+    // Сервисы pipeline исчезли — и вместе с ними вклады потребителей: имя
+    // сервиса отсутствует, а не отдаёт пустую карту чужого владельца.
+    assert.equal(kernel.ctx.get('backends'), undefined);
+    assert.equal(kernel.ctx.get('predicates'), undefined);
+    assert.equal(registry.backends.size, 0);
+    assert.equal(registry.predicates.size, 0);
+    assert.deepEqual([...registry.missingServices].sort(), ['backends', 'predicates', 'steps']);
   });
 });

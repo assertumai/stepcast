@@ -60,8 +60,6 @@ function describeState(state: IntrospectionState): string {
   }
 }
 
-const CONTRIB_LABELS = { backends: 'бэкенды', predicates: 'предикаты', commands: 'команды', steps: 'виды шага' } as const;
-
 /**
  * Строки-дополнения: объявленные/запрошенные сервисы и вклады — только когда
  * есть что сказать. Общие для строки дерева и для раздела встроенного вне строк
@@ -85,9 +83,13 @@ function describeDetails(
     lines.push(`    сервисы запрошены: ${names.join(', ')}`);
   }
 
-  const contributionParts = (Object.keys(CONTRIB_LABELS) as (keyof typeof CONTRIB_LABELS)[])
-    .filter((kind) => contributions[kind].length > 0)
-    .map((kind) => `${CONTRIB_LABELS[kind]}: ${contributions[kind].join(', ')}`);
+  // Сервис называется своим именем, а не подписью из таблицы печати
+  // (design.md `pipeline-owns-services`, Решение 6): таблицы доменных
+  // подписей в печати больше нет — сервис, заведённый строкой состава, виден
+  // осмотру наравне со служебными.
+  const contributionParts = Object.entries(contributions)
+    .filter(([, names]) => names.length > 0)
+    .map(([service, names]) => `${service}: ${names.join(', ')}`);
   if (contributionParts.length > 0) lines.push(`    вклады: ${contributionParts.join('; ')}`);
 
   return lines;

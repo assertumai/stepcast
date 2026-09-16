@@ -113,7 +113,7 @@ describe('plugin-contributions: загрузка плагинов', () => {
     // Решение 4).
     assert.deepEqual(
       config.pluginTree.map((row) => row.id),
-      ['backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './plugins/местный', './plugins/local.mjs'],
+      ['pipeline', 'backend-claude', 'predicates', 'step-run', 'step-uses', 'step-script', 'step-agent', 'step-decision', './plugins/местный', './plugins/local.mjs'],
     );
     // `Config.plugins` — модули: псевдоспецификатора встроенной строки в нём нет.
     assert.deepEqual(config.config.plugins, ['./plugins/местный', './plugins/local.mjs']);

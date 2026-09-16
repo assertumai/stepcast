@@ -2,16 +2,19 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { StepcastError } from '../src/core/errors.js';
-import { builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
+import { applyRowOnRoot, builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
-import { createKernel } from '../src/core/plugins/kernel.js';
 import { availableNames, contributionOwner, predicateNames, registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import { isNativeStepKind, type PredicateContribution, type StepcastPlugin, type StepKindContribution } from '../src/core/plugins/contract.js';
 import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
 import { ExitCode } from '../src/core/errors.js';
+import { resolveWithPlugins } from '../src/parts/resolve.js';
 import { BUILTIN_ROWS } from '../src/parts/rows.js';
+import { row as pipeline } from '../src/parts/pipeline/row.js';
 import { row as stepRun } from '../src/parts/steps/run/row.js';
 import { row as stepUses } from '../src/parts/steps/uses/row.js';
+import { row as stepScript } from '../src/parts/steps/script/row.js';
+import { makeProject } from './helpers.js';
 
 /** Вклад предиката, годный для реестра: содержимое здесь не важно. */
 function predicate(name: string): PredicateContribution {
@@ -225,10 +228,7 @@ describe('plugin-registry: имя вида шага занято ключом д
   // не освобождает, и отказ остаётся дословно прежним.
   it('отключённая строка вида шага не освобождает ни его имени, ни его ключей', async () => {
     const kernel = createKernelShell();
-    for (const row of BUILTIN_ROWS) {
-      if (row.id === 'step-run') continue;
-      row.apply(kernel);
-    }
+    await Promise.all(BUILTIN_ROWS.filter((row) => row.id !== 'step-run').map((row) => row.apply(kernel)));
     assert.equal(registryFromKernel(kernel).steps.has('run'), false, 'строка снята составом');
 
     await assert.rejects(
@@ -256,17 +256,12 @@ describe('plugin-registry: имя вида шага занято ключом д
   });
 });
 
-// Задача 2.6: голое ядро без проверок имени — перечня занятых имён в нём нет
-// вовсе, только вызов того, что подано параметром сборки (`createKernelShell`).
-describe('plugin-registry: ядро без проверки имени', () => {
-  it('createKernel() без параметров регистрирует вид шага expect без отказа', async () => {
-    const kernel = createKernel();
-
-    await applyDeclarativePlugin(kernel, { name: 'смелый', steps: [fakeStepKind('expect')] }, '/м.js');
-
-    assert.ok(registryFromKernel(kernel).steps.has('expect'));
-  });
-});
+// Задача 2.6 (kernel-domain-free-imports) заводила это как «голое ядро без
+// проверок имени»: `createKernel()` принимало проверку опцией сборки, и без
+// неё имя `expect` не отказывало. После pipeline-owns-services этой опции нет
+// вовсе — проверка имени вида шага вшита в строку `pipeline` (design.md,
+// Решение 1) и работает всегда, как только сервис `steps` заведён; выразить
+// «ядро без проверки» стало нечем, и сценарий снят вместе с абзацем.
 
 // Задача 1.3: снимок дефолтного дерева — чтобы переезд встроенного слоя
 // (src/parts/**) было чем сверить.
@@ -321,6 +316,53 @@ describe('plugin-registry: снимок дефолтного дерева', () =
   });
 });
 
+// Задача 5.3 (pipeline-owns-services, design.md Решение 4, «Требование:
+// Состав дефолта собирается и без обхода дерева — теми же телами строк»):
+// синхронное умолчание библиотеки и обход дерева дефолта — два разных пути
+// применения одних и тех же тел строк, и обязаны дать один и тот же состав.
+describe('plugin-registry: синхронное умолчание и обход дерева дают один состав', () => {
+  it('вклады, их порядок и их владельцы совпадают', async () => {
+    const project = makeProject({});
+    const { registry: treeRegistry } = await resolveWithPlugins(
+      { cwd: project.root, home: project.home },
+      { projectRoot: project.root },
+    );
+    const syncRegistry = builtinRegistry();
+
+    assert.deepEqual(availableNames(syncRegistry, 'backends'), availableNames(treeRegistry, 'backends'));
+    assert.deepEqual([...syncRegistry.steps.keys()], [...treeRegistry.steps.keys()]);
+    assert.deepEqual([...syncRegistry.predicates.keys()], [...treeRegistry.predicates.keys()]);
+    assert.deepEqual([...syncRegistry.owners], [...treeRegistry.owners]);
+  });
+});
+
+// Задача 5.4 (pipeline-owns-services, design.md Решение 4, «Требование:
+// Поставщик переставлен в конец перечня»): синхронная сборка умолчания не
+// умеет ждать — поставщик обязан стоять в `BUILTIN_ROWS` раньше своих
+// потребителей, и нарушение этого порядка даёт именованный отказ, а не
+// `TypeError` на обращении к отсутствующему сервису. Обход дерева тем же
+// переставленным порядком не задет — это уже закреплено отдельно
+// (`test/plugin-tree.test.ts`, «потребитель и пользовательский плагин впереди
+// pipeline»), где порядок строк узнавание не решает, решает `inject`.
+describe('plugin-registry: поставщик в конце перечня ломает только синхронную сборку', () => {
+  it('перестановка pipeline в конец перечня даёт именованный отказ синхронной сборки', () => {
+    const kernel = createKernelShell();
+    const reordered = [...BUILTIN_ROWS.filter((row) => row.id !== 'pipeline'), pipeline];
+
+    assert.throws(
+      () => {
+        for (const row of reordered) applyRowOnRoot(kernel, row);
+      },
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /backend-claude/);
+        assert.match(error.message, /backends/);
+        return true;
+      },
+    );
+  });
+});
+
 /**
  * Первый вид, чей `native.test` узнаёт запись, — то же обращение к реестру,
  * каким `matchStepKind` (`src/core/pipeline/expand.ts`) обходит `registry.steps`
@@ -337,30 +379,51 @@ function firstNativeMatch(record: Record<string, unknown>, registry: Registry): 
   return undefined;
 }
 
-// Задача 7.5 (builtin-step-kinds-as-rows): порядок узнавания — свойство
-// перечня строк (`src/parts/rows.ts`, `BUILTIN_ROWS`), а не порядка вызовов
-// нигде больше (design.md, Решение 2). Перестановка строк, собранных вручную,
-// меняет ответ — то же дерево, построенное в обратном порядке, узнаёт запись
-// другим видом.
-describe('plugin-registry: порядок узнавания — свойство перечня строк', () => {
+// Задача 7.5 (builtin-step-kinds-as-rows), пересмотрено задачей 1.1
+// (pipeline-owns-services, design.md Решение 11): порядок узнавания —
+// свойство перечня строк-потребителей (`src/parts/rows.ts`, `BUILTIN_ROWS`),
+// а не порядка вызовов нигде больше. После переезда служебных сервисов в
+// строку `pipeline` регистрация видов шага откладывается до её появления
+// (`ctx.inject`), и порядок узнавания обязан остаться порядком применения
+// потребителей — тем самым, что назвал перечень, — а не порядком, в котором
+// cordis впоследствии разрешает отложенные области.
+describe('plugin-registry: порядок узнавания — свойство порядка потребителей, не поставщика', () => {
   const AMBIGUOUS_RECORD = { run: 'echo hi', uses: 'some-step' };
 
-  it('run перед uses в перечне — запись, назвавшая оба ключа, узнаётся видом run', () => {
+  it('run перед uses в перечне потребителей — запись, назвавшая оба ключа, узнаётся видом run', async () => {
     const kernel = createKernelShell();
-    stepRun.apply(kernel);
-    stepUses.apply(kernel);
+    await pipeline.apply(kernel);
+    await stepRun.apply(kernel);
+    await stepUses.apply(kernel);
     const registry = registryFromKernel(kernel);
 
     assert.equal(firstNativeMatch(AMBIGUOUS_RECORD, registry), 'run');
   });
 
-  it('та же пара строк в обратном порядке — та же запись узнаётся видом uses', () => {
+  it('та же пара строк-потребителей в обратном порядке — та же запись узнаётся видом uses', async () => {
     const kernel = createKernelShell();
-    stepUses.apply(kernel);
-    stepRun.apply(kernel);
+    await pipeline.apply(kernel);
+    await stepUses.apply(kernel);
+    await stepRun.apply(kernel);
     const registry = registryFromKernel(kernel);
 
     assert.equal(firstNativeMatch(AMBIGUOUS_RECORD, registry), 'uses');
+  });
+
+  // Сторожевой тест задачи 1.1: строка-поставщик стоит в дереве последней —
+  // оба потребителя заведены собственной областью и ждут сервис `steps`
+  // раньше, чем он появится. Узнавание не переходит на порядок разрешения
+  // cordis: `uses` по-прежнему узнаёт запись раньше `script`.
+  it('поставщик применяется последним — uses по-прежнему узнаёт запись раньше script', async () => {
+    const kernel = createKernelShell();
+    const usesFiber = stepUses.apply(kernel);
+    const scriptFiber = stepScript.apply(kernel);
+    await pipeline.apply(kernel);
+    await usesFiber;
+    await scriptFiber;
+    const registry = registryFromKernel(kernel);
+
+    assert.equal(firstNativeMatch({ uses: 'some-step', script: './main.cjs' }, registry), 'uses');
   });
 });
 
@@ -371,16 +434,16 @@ describe('plugin-registry: порядок узнавания — свойств�
 // `predicates` относительно `backend-claude`/`step-*` не меняет ни состава
 // вкладов, ни того, какой предикат узнает запись.
 describe('plugin-registry: место строки предикатов в перечне ничего не решает', () => {
-  it('predicates первой или последней в перечне — реестр содержит один и тот же состав предикатов', () => {
+  it('predicates первой или последней в перечне — реестр содержит один и тот же состав предикатов', async () => {
     const orderedKernel = createKernelShell();
-    for (const row of BUILTIN_ROWS) row.apply(orderedKernel);
+    await Promise.all(BUILTIN_ROWS.map((row) => row.apply(orderedKernel)));
     const orderedRegistry = registryFromKernel(orderedKernel);
 
     // Строка предикатов переставлена в самый конец перечня — единственная
     // правка порядка вызова, состав строк тот же.
     const reorderedRows = [...BUILTIN_ROWS.filter((row) => row.id !== 'predicates'), ...BUILTIN_ROWS.filter((row) => row.id === 'predicates')];
     const reorderedKernel = createKernelShell();
-    for (const row of reorderedRows) row.apply(reorderedKernel);
+    await Promise.all(reorderedRows.map((row) => row.apply(reorderedKernel)));
     const reorderedRegistry = registryFromKernel(reorderedKernel);
 
     assert.deepEqual(predicateNames(reorderedRegistry), predicateNames(orderedRegistry));

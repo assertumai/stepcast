@@ -99,6 +99,20 @@ export function renderPluginsReport(registry: Registry | undefined): string[] {
 }
 
 /**
+ * Раздел о недостающих служебных сервисах пайплайна (design.md изменения
+ * `pipeline-owns-services`, Решение 8): состав без строки `pipeline` — законное
+ * состояние ядра, и отчёт называет причину прямо, а не молчит пустыми
+ * перечнями бэкендов, предикатов и видов шага, будто их никогда не было.
+ */
+export function renderMissingServicesReport(registry: Registry | undefined): string[] {
+  if (registry === undefined || registry.missingServices.length === 0) return [];
+  return [
+    '',
+    `Сервисы пайплайна не заведены: ${registry.missingServices.join(', ')} — строку, которая их заводит, отключил патч либо она снята из перечня состава (см. stepcast plugins)`,
+  ];
+}
+
+/**
  * Строка отчёта для ключа `plugins`: действующее значение — проекция
  * итогового дерева (`Config.plugins`: модули действующих строк в порядке
  * дерева), а вклад слоёв — объявленное, как у прочих складывающихся списков
@@ -174,6 +188,7 @@ export function runConfigCommand(
   const resolved = resolveConfig({ cwd, flags, ...pluginDefaultsOf(registry) });
   for (const line of renderConfigReport(resolved)) write(line);
   for (const line of renderPluginsReport(registry)) write(line);
+  for (const line of renderMissingServicesReport(registry)) write(line);
   return ExitCode.ok;
 }
 

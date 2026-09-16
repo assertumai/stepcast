@@ -67,7 +67,20 @@ export interface PredicateRegistrar {
   register(name: string, contribution: PredicateContribution): () => void;
 }
 
-/** Контекст ядра: то, чем располагает плагин контекста и команда плагина. */
+/**
+ * Контекст ядра: то, чем располагает плагин контекста и команда плагина.
+ *
+ * Четыре служебных сервиса объявлены полями, а не `| undefined`, хотя заводят
+ * их разные участники состава: `commands` — ядро, `backends`/`predicates`/
+ * `steps` — строка `pipeline` (`pipeline-owns-services`, Решение 1). Поле, а
+ * не необязательное поле, — это не утверждение «сервис есть всегда», а
+ * условие, которое держит `inject`: тело, объявившее зависимость от имени,
+ * зовётся только с разрешённым сервисом, а не объявившее — не вправе к нему
+ * тянуться. Необязательные поля заставили бы каждого автора писать `!` в
+ * теле, где сервис как раз гарантирован, и ничего не сказали бы тому, кто
+ * `inject` не объявил: его тело всё равно позовут (docs/plugins.md,
+ * «Контекст, область и сервис»).
+ */
 export interface Context {
   readonly backends: ContributionRegistrar<BackendContribution>;
   readonly predicates: PredicateRegistrar;

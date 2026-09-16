@@ -10,6 +10,7 @@ import { loadPlugins } from '../src/parts/load.js';
 import { BUILTIN_OWNER, createKernel } from '../src/core/plugins/kernel.js';
 import { kernelFromRegistry } from '../src/core/plugins/registry.js';
 import { declaredServices, requestedServices } from '../src/core/plugins/services.js';
+import { createPipelineKernel } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 interface Bed {
@@ -110,7 +111,7 @@ describe('services: запрошенные сервисы области', () =>
 
 describe('ContributionService: фибер владельца рядом с именем владельца', () => {
   it('вклад плагинной области отдаёт её фибер', async () => {
-    const kernel = createKernel();
+    const kernel = createPipelineKernel();
     const fiber = await applyContextPlugin(
       kernel,
       {
@@ -130,7 +131,7 @@ describe('ContributionService: фибер владельца рядом с им�
   });
 
   it('вклад на корневой области отдаёт корневой фибер и владельца «встроенный»', () => {
-    const kernel = createKernel();
+    const kernel = createPipelineKernel();
     kernel.ctx.backends.register('builtin-like', { create: () => ({}) as never });
 
     const entry = kernel.ctx.backends.entriesWithFiber().find((candidate) => candidate.name === 'builtin-like');
@@ -206,7 +207,7 @@ describe('introspect: приписывание вклада строке дер�
 
     const row = model.rows.find((candidate) => candidate.id === 'backend-claude');
     assert.deepEqual(row?.state, { kind: 'disabled' });
-    assert.deepEqual(row?.contributions, { backends: [], predicates: [], commands: [], steps: [] });
+    assert.deepEqual(row?.contributions, {});
     assert.deepEqual(row?.declaredServices, []);
     assert.deepEqual(row?.requestedServices, []);
   });
@@ -227,33 +228,38 @@ describe('introspect: встроенное вне строк дерева', () =
     const model = introspect(outcomes, kernel, 'cli');
 
     assert.equal(model.builtin.owner, BUILTIN_OWNER);
-    assert.ok(model.builtin.contributions.backends.includes('поздний'));
+    assert.ok((model.builtin.contributions.backends ?? []).includes('поздний'));
     for (const row of model.rows) {
-      assert.ok(!row.contributions.backends.includes('поздний'), `строка ${row.id} присвоила чужой вклад`);
+      assert.ok(!(row.contributions.backends ?? []).includes('поздний'), `строка ${row.id} присвоила чужой вклад`);
     }
   });
 
-  it('вклады ядра, заведённые до первой строки, названы встроенными, а вклад строки остаётся за строкой', async () => {
+  it('строка pipeline объявляет три сервиса; во встроенном вне строк остаётся только commands', async () => {
     const place = bed();
     const config = resolved(place, '');
 
     const { registry, outcomes } = await loadPlugins(config, { projectRoot: place.root });
     const model = introspect(outcomes, kernelFromRegistry(registry), 'cli');
 
-    // Четыре служебных сервиса заводятся `createKernelShell` до применения
-    // первой строки; виды шага (`run`, `uses`, `script`, `agent`, `decision`)
-    // с этого пункта вносят строки `step-*`, а не сборка ядра
-    // (`builtin-step-kinds-as-rows`) — во встроенном вне строк их не осталось.
-    assert.deepEqual(model.builtin.contributions.steps, []);
+    // Служебные сервисы движка пайплайнов заводит строка `pipeline`, а не
+    // сборка ядра (design.md `pipeline-owns-services`, Решение 1): ядро
+    // объявляет на своей корневой области только `commands`, и во встроенном
+    // вне строк дерева остаётся только он.
+    assert.deepEqual(model.builtin.declaredServices.map((service) => service.name), ['commands']);
+    assert.equal(model.builtin.contributions.backends, undefined);
+    assert.equal(model.builtin.contributions.predicates, undefined);
+    assert.equal(model.builtin.contributions.steps, undefined);
+
+    const pipelineRow = model.rows.find((candidate) => candidate.id === 'pipeline');
     assert.deepEqual(
-      model.builtin.declaredServices.map((service) => service.name),
-      ['backends', 'predicates', 'commands', 'steps'],
+      pipelineRow?.declaredServices.map((service) => service.name).sort(),
+      ['backends', 'predicates', 'steps'],
     );
-    // `claude` и виды шага — вклады своих строк, и во встроенном вне строк их нет.
-    assert.deepEqual(model.builtin.contributions.backends, []);
-    // Встроенные предикаты — вклад строки `predicates` (`builtin-predicates-as-row`),
-    // и во встроенном вне строк дерева их тоже не осталось.
-    assert.deepEqual(model.builtin.contributions.predicates, []);
+    assert.deepEqual(pipelineRow?.contributions, {});
+
+    // Виды шага (`run`, `uses`, `script`, `agent`, `decision`) — вклады строк
+    // `step-*`, приписанные им по их собственной области, а не строке
+    // `pipeline` и не встроенному вне строк (`builtin-step-kinds-as-rows`).
     for (const name of ['run', 'uses', 'script', 'agent', 'decision']) {
       const row = model.rows.find((candidate) => candidate.id === `step-${name}`);
       assert.deepEqual(row?.contributions.steps, [name]);
@@ -276,7 +282,7 @@ describe('introspect: встроенное вне строк дерева', () =
 
     const row = model.rows.find((candidate) => candidate.id === 'step-script');
     assert.deepEqual(row?.state, { kind: 'disabled' });
-    assert.deepEqual(row?.contributions, { backends: [], predicates: [], commands: [], steps: [] });
+    assert.deepEqual(row?.contributions, {});
     assert.ok(!registry.steps.has('script'));
     for (const name of ['run', 'uses', 'agent', 'decision']) {
       assert.ok(registry.steps.has(name), `вид ${name} остался в реестре`);
@@ -298,7 +304,7 @@ describe('introspect: приписывание, которого не было',
     });
 
     assert.deepEqual(model.attribution, { available: false, reason: 'реестр пришёл готовым' });
-    for (const row of model.rows) assert.deepEqual(row.contributions.backends, []);
+    for (const row of model.rows) assert.deepEqual(row.contributions, {});
   });
 });
 
