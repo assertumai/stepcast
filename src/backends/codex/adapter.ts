@@ -51,7 +51,11 @@ export function createCodexAdapter(config: BackendConfig): BackendAdapter {
         : [config.command, 'exec'];
       // `--skip-git-repo-check`: режим `copy` даёт дерево без `.git`, и без
       // флага CLI отказывает ещё до промпта.
-      command.push('--json', '--skip-git-repo-check');
+      // Автоматический шаг не наследует личные MCP-серверы из
+      // `$CODEX_HOME/config.toml`: локальный сервер может быть не запущен в
+      // среде runner. Авторизация при этом сохраняется, а серверы,
+      // явно объявленные шагом, ниже возвращаются переопределениями `-c`.
+      command.push('--json', '--skip-git-repo-check', '--ignore-user-config');
 
       const model = invocation.model ?? config.defaultModel;
       if (model !== undefined) command.push('-m', model);
@@ -160,6 +164,9 @@ function mcpOverrides(servers: McpServers): string[] {
   for (const [name, server] of Object.entries(servers)) {
     const prefix = `mcp_servers.${tomlKey(name)}`;
     for (const [key, value] of mcpServerEntries(server)) out.push('-c', `${prefix}.${key}=${value}`);
+    // Объявление pipeline — обещанная шагу интеграция, а не
+    // необязательная личная настройка: без неё Codex обязан отказать.
+    out.push('-c', `${prefix}.required=true`);
   }
   return out;
 }

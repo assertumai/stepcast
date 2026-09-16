@@ -115,6 +115,20 @@ describe('codex-backend: сборка запуска', () => {
     const launch = createCodexAdapter({ ...CONFIG, env: { CODEX_HOME: '/opt/codex' } }).launch(invocation());
     assert.deepEqual(launch.env, { CODEX_HOME: '/opt/codex' });
   });
+
+  it('не подмешивает домашнюю конфигурацию Codex, но сохраняет явный MCP шага', () => {
+    const mcpServers = { required: { url: 'https://mcp.example/required' } } as const;
+    const fresh = adapter.launch(invocation({ mcpServers }));
+    const resumed = adapter.launch(
+      invocation({ mcpServers, sessionId: 'thread-1', resumeSession: true }),
+    );
+
+    for (const launch of [fresh, resumed]) {
+      assert.ok(launch.command.includes('--ignore-user-config'));
+      assert.ok(launch.command.includes('mcp_servers.required.url="https://mcp.example/required"'));
+      assert.ok(launch.command.includes('mcp_servers.required.required=true'));
+    }
+  });
 });
 
 describe('codex-backend: перевод политики доступа', () => {
