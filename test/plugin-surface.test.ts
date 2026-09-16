@@ -12,12 +12,14 @@ import { describe, it } from 'node:test';
  * файл `src/backends/**` или `src/parts/steps/decision/**` проверяется без
  * отдельной правки теста, а не только когда кто-то напишет нарушающий импорт.
  *
- * Разрешено ровно два направления: публичная поверхность `../../plugin.js` и
- * соседний модуль того же каталога — плагин из нескольких файлов (манифест
- * отдельно от адаптера, поля отдельно от исполнителя) остаётся законной
- * раскладкой, а путь наружу, в ядро, отсюда не ведёт никуда. Оба каталога —
- * `src/backends` и `src/parts/steps/decision` — обходятся одним
- * перечислением: граница у них одна и та же, а не две её копии.
+ * Разрешено ровно три направления (`plugin-surface-split`, design.md,
+ * Решение 10): ядерная поверхность `../../plugin.js`, доменная поверхность
+ * `src/parts/pipeline/surface.ts` и соседний модуль того же каталога — плагин
+ * из нескольких файлов (манифест отдельно от адаптера, поля отдельно от
+ * исполнителя) остаётся законной раскладкой, а путь наружу, в ядро, отсюда не
+ * ведёт никуда. Оба каталога — `src/backends` и `src/parts/steps/decision` —
+ * обходятся одним перечислением: граница у них одна и та же, а не две её
+ * копии.
  *
  * Каталог `src/parts/steps/decision` — не единственный вид шага в
  * `src/parts/steps/`: `run`/`uses`/`script`/`agent` под этой же границей не
@@ -35,6 +37,8 @@ import { describe, it } from 'node:test';
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
 const surfaceRoots = [join(repoRoot, 'src/backends'), join(repoRoot, 'src/parts/steps/decision')];
 const pluginModule = resolve(repoRoot, 'src/plugin.ts');
+/** Доменная поверхность `stepcast/pipeline` — второе законное направление рядом с ядерной. */
+const pipelineSurfaceModule = resolve(repoRoot, 'src/parts/pipeline/surface.ts');
 
 function listTsFiles(dir: string): string[] {
   let entries: Dirent[];
@@ -127,8 +131,10 @@ function surfaceViolations(): string[] {
         // `.js` в исходнике — расширение скомпилированного модуля; на диске
         // рядом лежит `.ts`, и сверяться нужно с ним.
         const resolved = resolve(dirname(file), specifier).replace(/\.js$/, '.ts');
-        if (resolved === pluginModule || insideRoot(root, resolved)) continue;
-        violations.push(`${where}: '${specifier}' — ведёт мимо ../../plugin.js и мимо ${relative(repoRoot, root)}`);
+        if (resolved === pluginModule || resolved === pipelineSurfaceModule || insideRoot(root, resolved)) continue;
+        violations.push(
+          `${where}: '${specifier}' — ведёт мимо ../../plugin.js, мимо parts/pipeline/surface.js и мимо ${relative(repoRoot, root)}`,
+        );
       }
     }
   }

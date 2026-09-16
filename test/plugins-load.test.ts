@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 
 import { resolveConfig } from '../src/core/config/resolve.js';
 import { ExitCode, StepcastError } from '../src/core/errors.js';
-import { DECLARATIVE_CONTRIBUTION_FIELDS, StepcastPluginSchema } from '../src/core/plugins/contract.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS, StepcastPluginSchema } from '../src/core/plugins/pipeline-contract.js';
 import { toContextPlugin } from '../src/core/plugins/load.js';
 import { declaredServices } from '../src/core/plugins/services.js';
 import { createKernelShell } from '../src/parts/builtin.js';

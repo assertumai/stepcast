@@ -36,6 +36,15 @@ const PLUGIN_KERNEL_BACKEND_IMPORT = "import { createClaudeAdapter } from '../ba
 const PLUGIN_KERNEL_PIPELINE_IMPORT = "import { RUN_STEP_KIND } from '../pipeline/expand.js';\n";
 const PLUGIN_KERNEL_PIPELINE_TYPE_IMPORT = "import type { ExpandOptions } from '../pipeline/expand.js';\n";
 const BACKEND_TYPES_IMPORT = "import type { BackendAdapter } from '../backend/types.js';\n";
+// Прочие доменные модули, которые несёт доменная половина контракта: ему они
+// разрешены поимённо, ядерным соседям — нет.
+const EXPECT_IMPORT = "import type { EvaluationInput } from '../expect/evaluate.js';\n";
+const JOURNAL_IMPORT = "import type { PredicateResult } from '../journal/schema.js';\n";
+const CONFIG_RESOLVE_IMPORT = "import type { Config } from '../config/resolve.js';\n";
+// Сосед по тем же деревьям, которого не несёт никто: разрешение поимённое, не
+// на дерево.
+const JOURNAL_WRITE_IMPORT = "import { openJournal } from '../journal/writer.js';\n";
+const CONFIG_OTHER_IMPORT = "import { defaultsFor } from '../config/defaults.js';\n";
 
 // Состав дефолта (`src/parts/проба.ts`) лежит на уровень ближе к корню
 // `src/`, чем ядро: поверхность для него — `../cli/main.js`.
@@ -221,17 +230,67 @@ describe('eslint: запреты импорта действуют одновр�
     );
   });
 
-  // Исключение поверхности контракта (design.md, «Что в пункте очереди
-  // уточнено»): ровно `backend/types.js`, только типом, и ничего больше из
+  // Исключение доменного контракта (`plugin-surface-split`, шаг 8, — снято с
+  // ядерного `contract.ts` и заведено на соседнем `pipeline-contract.ts`):
+  // ровно `backend/types.js`, только типом, и ничего больше из
   // `core/backend/**`.
-  it('контракт вклада: backend/types.js разрешён, соседний backend/claude.js — нет', async () => {
-    const allowed = await restrictedImports('src/core/plugins/contract.ts', BACKEND_TYPES_IMPORT);
+  it('доменный контракт вклада: backend/types.js разрешён, соседний backend/claude.js — нет', async () => {
+    const allowed = await restrictedImports('src/core/plugins/pipeline-contract.ts', BACKEND_TYPES_IMPORT);
     assert.deepEqual(allowed, [], allowed.join('\n'));
 
-    const forbidden = await restrictedImports('src/core/plugins/contract.ts', PLUGIN_KERNEL_BACKEND_IMPORT);
+    const forbidden = await restrictedImports('src/core/plugins/pipeline-contract.ts', PLUGIN_KERNEL_BACKEND_IMPORT);
     assert.ok(
       forbidden.some((message) => message.includes('docs/microkernel-target.md')),
       forbidden.join('\n'),
+    );
+  });
+
+  // Требование спеки: доменной половине разрешён РОВНО тот набор доменных
+  // импортов, который она несёт. Дерево бэкендов — не единственное: она несёт
+  // ещё конфигурацию, вход предиката и схему журнала, и разрешение у них такое
+  // же поимённое.
+  it('доменный контракт вклада: разрешены ровно несомые модули, соседи по тем же деревьям — нет', async () => {
+    const allowed = await restrictedImports(
+      'src/core/plugins/pipeline-contract.ts',
+      BACKEND_TYPES_IMPORT + CONFIG_RESOLVE_IMPORT + EXPECT_IMPORT + JOURNAL_IMPORT,
+    );
+    assert.deepEqual(allowed, [], allowed.join('\n'));
+
+    for (const forbidden of [JOURNAL_WRITE_IMPORT, CONFIG_OTHER_IMPORT]) {
+      const messages = await restrictedImports('src/core/plugins/pipeline-contract.ts', forbidden);
+      assert.ok(messages.length > 0, `${forbidden.trim()} обязан отклоняться: ${messages.join('\n')}`);
+    }
+  });
+
+  // Обратная сторона снятого исключения: ядерным модулям каталога доменные
+  // деревья закрыты целиком, а не только дерево бэкендов. Иначе `contract.ts`
+  // вернул бы себе доменные типы вклада соседним импортом — линт смолчал бы,
+  // и граница держалась бы на одном везении.
+  it('contract.ts (ядро): expect/** и journal/** закрыты так же, как backend/**', async () => {
+    for (const forbidden of [EXPECT_IMPORT, JOURNAL_IMPORT, JOURNAL_WRITE_IMPORT]) {
+      const messages = await restrictedImports('src/core/plugins/contract.ts', forbidden);
+      assert.ok(
+        messages.some((message) => message.includes('docs/microkernel-target.md')),
+        `${forbidden.trim()}: ${messages.join('\n')}`,
+      );
+    }
+  });
+
+  // Конфигурация закрыта ядру не целиком: два её модуля читают загрузчик
+  // (`ResolvedConfig`) и дерево строк (`PluginPatchRow`) — они названы
+  // поимённо, остальное дерево закрыто. Остаток снимается переездом этих
+  // модулей (шаг 10 плана), а не молчанием линта.
+  it('ядро плагинов: из конфигурации разрешены два названных модуля, прочее дерево — нет', async () => {
+    const allowed = await restrictedImports(
+      'src/core/plugins/проба.ts',
+      CONFIG_RESOLVE_IMPORT + "import type { PluginPatchRow } from '../config/schema.js';\n",
+    );
+    assert.deepEqual(allowed, [], allowed.join('\n'));
+
+    const messages = await restrictedImports('src/core/plugins/проба.ts', CONFIG_OTHER_IMPORT);
+    assert.ok(
+      messages.some((message) => message.includes('docs/microkernel-target.md')),
+      messages.join('\n'),
     );
   });
 
@@ -240,9 +299,9 @@ describe('eslint: запреты импорта действуют одновр�
   // «MUST действовать одновременно с прочими запретами… не снимая ни одного
   // из них»). Без этого случая потеря была бы видна только нарушением,
   // которое правило обязано было поймать.
-  it('контракт вклада: исключение не сняло ни границы поверхности, ни запрета временного каталога', async () => {
+  it('доменный контракт вклада: исключение не сняло ни границы поверхности, ни запрета временного каталога', async () => {
     const messages = await restrictedImports(
-      'src/core/plugins/contract.ts',
+      'src/core/plugins/pipeline-contract.ts',
       BACKEND_TYPES_IMPORT + PLUGIN_KERNEL_PIPELINE_IMPORT + CLI_IMPORT + TEMP_IMPORT,
     );
     assert.ok(
@@ -255,6 +314,18 @@ describe('eslint: запреты импорта действуют одновр�
     );
     assert.ok(
       messages.some((message) => message.includes('withTempDir()')),
+      messages.join('\n'),
+    );
+  });
+
+  // Задача 6.2 (`plugin-surface-split`): исключение снято с `contract.ts` —
+  // теперь он подчиняется общему блоку `src/core/plugins/**` наравне с прочими
+  // ядерными модулями, и `backend/types.js` в нём запрещён так же, как
+  // `backend/claude.js`.
+  it('contract.ts (ядро): backend/types.js запрещён так же, как прочее из core/backend', async () => {
+    const messages = await restrictedImports('src/core/plugins/contract.ts', BACKEND_TYPES_IMPORT);
+    assert.ok(
+      messages.some((message) => message.includes('docs/microkernel-target.md')),
       messages.join('\n'),
     );
   });

@@ -1,4 +1,5 @@
-import { effectivePermissions, StepcastError } from '../../plugin.js';
+import { StepcastError } from '../../plugin.js';
+import { effectivePermissions } from '../../parts/pipeline/surface.js';
 import type {
   AgentInvocation,
   BackendAdapter,
@@ -10,7 +11,7 @@ import type {
   McpServer,
   McpServers,
   Usage,
-} from '../../plugin.js';
+} from '../../parts/pipeline/surface.js';
 
 /**
  * Адаптер Codex CLI (`codex exec`).

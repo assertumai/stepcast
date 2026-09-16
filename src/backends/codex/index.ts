@@ -1,4 +1,4 @@
-import { defineBackend, definePlugin } from '../../plugin.js';
+import { defineBackend, definePipelinePlugin } from '../../parts/pipeline/surface.js';
 import { createCodexAdapter } from './adapter.js';
 
 /**
@@ -10,7 +10,7 @@ import { createCodexAdapter } from './adapter.js';
  * умеет, и вес чтения кеша как у `claude` (кешированный ввод у OpenAI тоже
  * дешевле обычного примерно на порядок).
  */
-const plugin = definePlugin({
+const plugin = definePipelinePlugin({
   name: 'codex',
   version: '0.1.0',
   backends: {

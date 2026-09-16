@@ -10,7 +10,7 @@ import { resolveConfig, type Config } from '../src/core/config/resolve.js';
 import { lintPipeline } from '../src/core/lint.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
-import type { BackendContribution } from '../src/core/plugins/contract.js';
+import type { BackendContribution } from '../src/core/plugins/pipeline-contract.js';
 import { asAgent, createPipelineKernel, makeProject } from './helpers.js';
 import { tempDir } from './tmp.js';
 

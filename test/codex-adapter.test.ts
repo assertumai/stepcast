@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
 import codexPlugin, { createCodexAdapter, SANDBOX_MODES } from '../src/backends/codex/index.js';
-import type { BackendConfig } from '../src/plugin.js';
+import type { BackendConfig } from '../src/parts/pipeline/surface.js';
 import type { AgentInvocation, BackendAdapter, BackendEvent } from '../src/core/backend/types.js';
 import { discoverModels } from '../src/core/backend/models.js';
 import { resolveConfig } from '../src/core/config/resolve.js';

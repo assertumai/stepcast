@@ -12,7 +12,7 @@ import {
   pluginPredicateEntries,
   pluginStepKindEntries,
 } from '../src/core/pipeline/published-schema.js';
-import type { PredicateContribution, StepcastPlugin, StepKindContribution } from '../src/core/plugins/contract.js';
+import type { PipelinePlugin, PredicateContribution, StepKindContribution } from '../src/core/plugins/pipeline-contract.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import { createPipelineKernel } from './helpers.js';
@@ -50,19 +50,19 @@ function ensureExample(): string {
   return EXAMPLE_PATH;
 }
 
-async function loadExample(): Promise<StepcastPlugin> {
-  const module = (await import(pathToFileURL(ensureExample()).href)) as { default: StepcastPlugin };
+async function loadExample(): Promise<PipelinePlugin> {
+  const module = (await import(pathToFileURL(ensureExample()).href)) as { default: PipelinePlugin };
   return module.default;
 }
 
-function onlyPredicate(plugin: StepcastPlugin): PredicateContribution {
+function onlyPredicate(plugin: PipelinePlugin): PredicateContribution {
   const [predicate, ...rest] = plugin.predicates ?? [];
   assert.ok(predicate !== undefined, 'образец несёт предикат');
   assert.equal(rest.length, 0, 'образец несёт ровно один предикат');
   return predicate;
 }
 
-function onlyStepKind(plugin: StepcastPlugin): StepKindContribution {
+function onlyStepKind(plugin: PipelinePlugin): StepKindContribution {
   const [step, ...rest] = plugin.steps ?? [];
   assert.ok(step !== undefined, 'образец несёт вид шага');
   assert.equal(rest.length, 0, 'образец несёт ровно один вид шага');

@@ -24,7 +24,7 @@ import {
   type StepKind,
   type StepKindContribution,
   type StepKindDocumentForm,
-} from '../plugins/contract.js';
+} from '../plugins/pipeline-contract.js';
 import {
   contributionOwner,
   formerStepKindOwner,

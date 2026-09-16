@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { cpSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { join } from 'node:path';
+import { dirname, join, resolve as resolvePath, sep } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { resolveConfig, type ResolvedConfig } from '../src/core/config/resolve.js';
@@ -437,24 +437,88 @@ export default {
   });
 });
 
+/**
+ * Поддельная установка пакета для проверки разрешения обоих подпутей
+ * (`plugin-surface-split`, design.md, Решение 10): `package.json` с
+ * объявленными `exports` и копия собранного движка рядом. Прогон из этого
+ * репозитория доказывал бы только его раскладку; чужая установка отвечает на
+ * вопрос, разрешится ли подпуть у того, кто поставил `stepcast` пакетом.
+ */
+function fakeInstall(): { readonly root: string; readonly engine: string } {
+  const root = realpathSync(tempDir('pkg-plugin-'));
+  const engine = join(root, 'node_modules', 'stepcast');
+  mkdirSync(engine, { recursive: true });
+  // Пути считаются от скомпилированного теста (`dist/test/`): корневой
+  // `package.json` лежит двумя уровнями выше, собранный движок — рядом.
+  cpSync(fileURLToPath(new URL('../../package.json', import.meta.url)), join(engine, 'package.json'));
+  cpSync(fileURLToPath(new URL('../src', import.meta.url)), join(engine, 'dist', 'src'), {
+    recursive: true,
+  });
+  writeFileSync(join(root, 'package.json'), '{ "name": "потребитель", "type": "module" }\n');
+  return { root, engine };
+}
+
+/**
+ * Доменные значения — вторая половина контракта вклада (`emptyUsage`,
+ * `mergeUsage`, `sumUsage`, `describeRefusal`, `effectivePermissions`,
+ * `defineBackend`, `definePredicate`, `defineStepKind`), переехавшие в
+ * `stepcast/pipeline`: до переезда объявлений (задача 1) этот же перечень
+ * проверял их присутствие в `stepcast/plugin`, теперь — их отсутствие там же
+ * и присутствие в доменном подпути.
+ */
+const DOMAIN_VALUE_NAMES = [
+  'emptyUsage',
+  'mergeUsage',
+  'sumUsage',
+  'describeRefusal',
+  'effectivePermissions',
+  'defineBackend',
+  'definePredicate',
+  'defineStepKind',
+] as const;
+
+/**
+ * Статические рёбра графа загрузки собранного модуля. Форм две, и обе
+ * обязательны: `import … from '…'` (включая побочный `import '…'`) и
+ * `export … from '…'` — у реэкспорта тот же рантайм-эффект, и именно из него
+ * собран `dist/src/plugin.js` целиком (`tsc` сохраняет реэкспорт значения как
+ * есть). Тот же приём разбора, что и в `test/plugin-surface.test.ts`, где обе
+ * формы тоже перечислены рядом.
+ *
+ * Интересны только относительные специфики: `node:*` и пакеты из
+ * `node_modules` доменными модулями движка не бывают.
+ */
+const GRAPH_IMPORT_RE = /(?:^|[\s;}])import\s+(?:[^'"();]*?\sfrom\s+)?['"](\.[^'"]+)['"]/gm;
+const GRAPH_REEXPORT_RE = /(?:^|[\s;}])export\s+[^'"();]*?\sfrom\s+['"](\.[^'"]+)['"]/gm;
+
+/** Модули, достижимые из точки входа по статическим рёбрам, — сама точка входа включительно. */
+function walkLoadGraph(entry: string): Set<string> {
+  const visited = new Set<string>();
+  const stack = [entry];
+  while (stack.length > 0) {
+    const file = stack.pop();
+    if (file === undefined || visited.has(file)) continue;
+    // Специфик, встреченный в докстринге (собранный модуль сохраняет
+    // комментарии), ведёт в несуществующий файл: такое ребро графа не
+    // образует. Настоящее ребро при этом не потеряется молча — проверка ниже
+    // требует, чтобы обход дошёл до поимённо названных модулей.
+    if (!existsSync(file)) continue;
+    visited.add(file);
+    const source = readFileSync(file, 'utf8');
+    for (const re of [GRAPH_IMPORT_RE, GRAPH_REEXPORT_RE]) {
+      for (const match of source.matchAll(re)) {
+        const specifier = match[1];
+        if (specifier === undefined) continue;
+        stack.push(resolvePath(dirname(file), specifier));
+      }
+    }
+  }
+  return visited;
+}
+
 describe('plugin-contributions: подпуть stepcast/plugin', () => {
-  /**
-   * Поддельная установка пакета: `package.json` с объявленными `exports` и
-   * копия собранного движка рядом. Прогон из этого репозитория доказывал бы
-   * только его раскладку; чужая установка отвечает на вопрос, разрешится ли
-   * подпуть у того, кто поставил `stepcast` пакетом.
-   */
   it('разрешается у того, кто поставил пакет, и отдаёт контракт', async () => {
-    const root = realpathSync(tempDir('pkg-plugin-'));
-    const engine = join(root, 'node_modules', 'stepcast');
-    mkdirSync(engine, { recursive: true });
-    // Пути считаются от скомпилированного теста (`dist/test/`): корневой
-    // `package.json` лежит двумя уровнями выше, собранный движок — рядом.
-    cpSync(fileURLToPath(new URL('../../package.json', import.meta.url)), join(engine, 'package.json'));
-    cpSync(fileURLToPath(new URL('../src', import.meta.url)), join(engine, 'dist', 'src'), {
-      recursive: true,
-    });
-    writeFileSync(join(root, 'package.json'), '{ "name": "потребитель", "type": "module" }\n');
+    const { root, engine } = fakeInstall();
 
     const resolvedPath = createRequire(join(root, 'package.json')).resolve('stepcast/plugin');
     assert.equal(resolvedPath, join(engine, 'dist', 'src', 'plugin.js'));
@@ -468,12 +532,78 @@ describe('plugin-contributions: подпуть stepcast/plugin', () => {
       pathToFileURL(fileURLToPath(new URL('../src/plugin.js', import.meta.url))).href
     )) as Record<string, unknown>;
 
-    for (const name of ['runProcess', 'emptyUsage', 'mergeUsage', 'sumUsage', 'describeRefusal', 'StepcastError']) {
+    for (const name of ['runProcess', 'StepcastError', 'parseDuration', 'definePlugin']) {
       assert.equal(typeof plugin[name], 'function', `${name} доступен автору плагина`);
     }
     // Внутренние пути ядра подпуть не публикует: что экспортировано, то и обещано.
     assert.equal(plugin.runPipeline, undefined);
     assert.equal(plugin.expandPipeline, undefined);
+    // Доменные значения переехали в stepcast/pipeline (задача 1, задача 6.4):
+    // ядерный подпуть их больше не отдаёт ни одного.
+    for (const name of DOMAIN_VALUE_NAMES) {
+      assert.equal(plugin[name], undefined, `${name} доменный — ядерный подпуть его не отдаёт`);
+    }
+  });
+
+  /**
+   * Задача 6.5: граница проверяется не составом экспорта (выше), а самим
+   * графом загрузки — статические специфики собранного `dist/src/plugin.js`,
+   * обойдённые рекурсивно тем же приёмом разбора, что и в
+   * `test/plugin-surface.test.ts`. Обещание «ядерный подпуть не тянет ни
+   * одного доменного модуля» держит рантайм-граф импорта, а не только то, что
+   * подпуть экспортирует наружу: тип, стёртый сборкой, графа не оставляет —
+   * этот тест ловит именно оставшееся.
+   */
+  it('загрузка ядерного подпутя не тянет доменных модулей движка', () => {
+    const pluginJs = fileURLToPath(new URL('../src/plugin.js', import.meta.url));
+    const domainPatterns = [/\/core\/backend\//, /\/core\/config\//, /\/core\/expect\//, /\/core\/journal\//, /\/core\/pipeline\//, /\/core\/plugins\/pipeline-contract\.js$/];
+
+    const visited = walkLoadGraph(pluginJs);
+    // Обход, не нашедший ни одного ребра, доказал бы пустоту, а не границу:
+    // `dist/src/plugin.js` — сплошной реэкспорт, и разбор, видящий только
+    // `import`, обошёл бы ровно один узел и прошёл бы при любом откате.
+    // Поэтому сначала проверяется, что граф настоящий, и лишь потом — его
+    // состав.
+    assert.ok(visited.size > 1, `граф обхода вырожден: ${[...visited].join('\n')}`);
+    for (const expected of ['core/errors.js', 'core/exec/process.js', 'core/units.js', 'core/plugins/define.js']) {
+      assert.ok(
+        [...visited].some((file) => file.endsWith(expected.split('/').join(sep))),
+        `обход не дошёл до ${expected}: ${[...visited].join('\n')}`,
+      );
+    }
+
+    const domainHits = [...visited].filter((file) => domainPatterns.some((pattern) => pattern.test(file)));
+    assert.deepEqual(domainHits, [], domainHits.join('\n'));
+  });
+});
+
+describe('plugin-contributions: подпуть stepcast/pipeline', () => {
+  it('разрешается у того, кто поставил пакет, отдельно от stepcast/plugin', async () => {
+    const { root, engine } = fakeInstall();
+
+    const resolvedPath = createRequire(join(root, 'package.json')).resolve('stepcast/pipeline');
+    assert.equal(resolvedPath, join(engine, 'dist', 'src', 'parts', 'pipeline', 'surface.js'));
+    // Второй подпуть разрешается независимо от первого — оба объявлены
+    // манифестом пакета, и разрешение одного не требуется для другого.
+    const pluginPath = createRequire(join(root, 'package.json')).resolve('stepcast/plugin');
+    assert.notEqual(resolvedPath, pluginPath);
+  });
+
+  it('отдаёт доменные значения и не отдаёт ядерных имён, взятых у соседа', async () => {
+    const pipeline = (await import(
+      pathToFileURL(fileURLToPath(new URL('../src/parts/pipeline/surface.js', import.meta.url))).href
+    )) as Record<string, unknown>;
+
+    for (const name of DOMAIN_VALUE_NAMES) {
+      assert.equal(typeof pipeline[name], 'function', `${name} доступен автору доменного вклада`);
+    }
+    assert.equal(typeof pipeline.definePipelinePlugin, 'function');
+    assert.equal(typeof pipeline.pipelineContext, 'function');
+    // Ядерные имена — не обещание доменного подпутя (design.md, Решение 9):
+    // домен не публикует ядро.
+    for (const name of ['StepcastError', 'parseDuration', 'runProcess', 'definePlugin']) {
+      assert.equal(pipeline[name], undefined, `${name} ядерный — доменный подпуть его не отдаёт`);
+    }
   });
 });
 

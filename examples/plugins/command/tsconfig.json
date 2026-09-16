@@ -1,0 +1,35 @@
+{
+  // Конфигурация образца — по образцу `../typed/tsconfig.json`, только
+  // подпуть иной: `stepcast/plugin`, не `stepcast/pipeline`. Никакого `paths`
+  // здесь нет: подпуть разрешается самоссылкой пакета, приходящей из
+  // корневого `package.json` (`exports["./plugin"]`), на `dist/src/plugin.js`
+  // и его `.d.ts` рядом — тем же механизмом, каким его разрешит установленный
+  // пакет у стороннего автора.
+  //
+  // Этот образец — машинная проверка признака «плагин, пользующийся только
+  // ядром, компилируется без доменного подпутя» (`plugin-surface-split`,
+  // design.md, Решение 10): его отсутствие в `npm run typecheck:plugin`
+  // держало бы признак утверждением, а не проверкой. Отсюда то же требование
+  // к порядку, что и у `typed`: команда идёт ПОСЛЕ `npm run build`, когда
+  // `dist/src/` уже собран.
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2023"],
+    "types": [],
+
+    "rootDir": ".",
+    "outDir": "../../../dist/examples/plugins/command",
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+
+    "skipLibCheck": true
+  },
+  "include": ["index.ts"]
+}

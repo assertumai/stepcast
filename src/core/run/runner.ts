@@ -51,7 +51,7 @@ import { locateEngine, isEditableEngine, pinEngine, type EngineInfo, type Engine
 import { HaltCause, type HaltCauseValue } from './halt.js';
 import { resolveInheritSource, type CompletedJob } from './inherit.js';
 import { builtinRegistry } from '../../parts/builtin.js';
-import { DecisionHalt, hasStepExecutor, type StepKindDecisionRequest, type StepKindDecisionResult } from '../plugins/contract.js';
+import { DecisionHalt, hasStepExecutor, type StepKindDecisionRequest, type StepKindDecisionResult } from '../plugins/pipeline-contract.js';
 import { contributionOwner, formerStepKindOwner, stepKindNames, type Registry } from '../plugins/registry.js';
 import { preflight } from './preflight.js';
 import { createScope, type ResourceScope } from './scope.js';

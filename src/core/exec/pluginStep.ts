@@ -5,14 +5,14 @@ import type { Job, PluginStep } from '../pipeline/model.js';
 import { validateStepKindFields } from '../pipeline/expand.js';
 import { pluginContext } from '../plugins/kernel.js';
 import { kernelFromRegistry } from '../plugins/registry.js';
-import { DecisionHalt } from '../plugins/contract.js';
+import { DecisionHalt } from '../plugins/pipeline-contract.js';
 import type {
   StepKindContribution,
   StepKindDecisions,
   StepKindInput,
   StepKindLog,
   StepKindOutcome,
-} from '../plugins/contract.js';
+} from '../plugins/pipeline-contract.js';
 import { toDecisionRecord } from '../run/decision.js';
 import { sumUsage } from '../backend/types.js';
 import { describeExceeded, type BudgetScope, type Exceeded } from '../budget/accumulator.js';

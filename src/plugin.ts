@@ -4,48 +4,62 @@
  * Здесь ровно то, без чего вклад не написать, — и ничего сверх. Что
  * экспортировано, то и обещано: остальное ядро остаётся внутренним, и его
  * перестановка не ломает чужой плагин. Контракт описан в `docs/plugins.md`.
+ *
+ * Ядерный, а не единственный подпуть (`plugin-surface-split`, design.md,
+ * Решение 1): объявления, знающие о пайплайне — шаге, работе, прогоне,
+ * попытке, предикате, бэкенде, журнале, конфигурации движка, — переехали в
+ * `stepcast/pipeline` (`src/parts/pipeline/surface.ts`). Реэкспорта с
+ * пометкой об устаревании здесь нет и не будет (design.md, Решение 7):
+ * половина переехавших имён — значения, и их реэкспорт вернул бы доменные
+ * модули в граф загрузки этого подпутя — то есть ровно то, ради чего шаг
+ * сделан. Таблица ниже — тот самый переход по первой ссылке на определение,
+ * которым автор прежнего импорта попадёт сюда; полная запись выбора и его
+ * причина — в `docs/plugins.md`, раздел «Два подпутя».
+ *
+ * | Прежнее имя (было здесь)                                    | Новый подпуть      |
+ * |--------------------------------------------------------------|--------------------|
+ * | `BackendContribution`, `PredicateContribution`                | `stepcast/pipeline`|
+ * | `StepKindContribution` и вся родня (`StepKindInput`, …)        | `stepcast/pipeline`|
+ * | `LintSite`, `DecisionEffect`, `DecisionOutcome`                | `stepcast/pipeline`|
+ * | `PredicateRegistrar`, `StepKindRegistrar`                      | `stepcast/pipeline`|
+ * | доменные поля контекста (`ctx.backends`, `ctx.predicates`, `ctx.steps`) | `stepcast/pipeline` (`PipelineContext`, `pipelineContext(ctx)`) |
+ * | `BackendAdapter`, `BackendEvent`, `BackendModel`, `BackendRefusal*`, `LaunchSpec`, `AgentInvocation`, `ModelDiscovery`, `ProbeOutput`, `PermissionDenial`, `BackendCapabilities` | `stepcast/pipeline` |
+ * | `describeRefusal`, `emptyUsage`, `mergeUsage`, `sumUsage`      | `stepcast/pipeline`|
+ * | `effectivePermissions`, `Permissions`, `McpServer`, `McpServers`| `stepcast/pipeline`|
+ * | `EvaluationInput`, `PredicateResult`, `Usage`                  | `stepcast/pipeline`|
+ * | `Config`, `BackendConfig`, `Registry`                          | `stepcast/pipeline`|
+ * | `defineBackend`, `definePredicate`, `defineStepKind`           | `stepcast/pipeline`|
+ * | доменные ключи `StepcastPlugin` (`backends`, `predicates`, `steps`) — теперь `PipelinePlugin` | `stepcast/pipeline` (`definePipelinePlugin`) |
+ *
+ * Имена, оставшиеся здесь, импортируются прежним спецификом без единой
+ * правки: `StepcastError`, `parseDuration`, `runProcess`, `definePlugin`,
+ * контекст ядра, каркас CLI.
  */
 
 export type {
-  BackendContribution,
   CommandContribution,
   CommandEnv,
   ContextPlugin,
   ContextPluginFunction,
   ContextPluginObject,
-  DecisionEffect,
-  DecisionOutcome,
-  LintSite,
   LoadedPlugin,
   PluginDiagnostic,
-  PredicateContribution,
   StepcastPlugin,
-  StepKindContribution,
-  StepKindDecisionRequest,
-  StepKindDecisionResult,
-  StepKindDecisions,
-  StepKindDocumentForm,
-  StepKindInput,
-  StepKindLog,
-  StepKindOutcome,
 } from './core/plugins/contract.js';
 
 /**
- * Хелперы объявления вклада — необязательная надстройка над контрактом выше
- * (design.md изменения `plugin-typed-helpers`, Решение 1): каждый в рантайме
- * тождество, ни один не проверяет вклад и не регистрирует его. Ценность
- * `definePlugin`/`defineBackend` — в проверке литерала на лишние и
- * опечатанные поля (схема загрузки объявлена `.loose()` и опечатку пропускает
- * молча); `definePredicate<T>` и `defineStepKind<F>` сверх этого типизируют
- * вход вычислителя объявленным типом `T`/`F`, снимая приведение
- * (`as …`), которое иначе писал бы каждый вклад. Плагин, не знающий об этих
- * хелперах — объектный литерал с прежней аннотацией типа, — загружается и
+ * Хелпер объявления ядерного плагина — необязательная надстройка над
+ * контрактом выше (design.md изменения `plugin-typed-helpers`, Решение 1):
+ * тождество в рантайме, ни проверки вклада, ни регистрации. Ценность —
+ * проверка литерала на лишние и опечатанные поля (схема загрузки объявлена
+ * `.loose()` и опечатку пропускает молча). Плагин, не знающий об этом
+ * хелпере, — объектный литерал с прежней аннотацией типа, — загружается и
  * работает как прежде.
  */
-export { definePlugin, defineBackend, definePredicate, defineStepKind } from './core/plugins/define.js';
+export { definePlugin } from './core/plugins/define.js';
 
 /**
- * Разбор длительностей — единственный диалог для полей полей длительности в
+ * Разбор длительностей — единственный диалог для полей длительности в
  * документе, будь то поле конфигурации или поле вклада (design.md изменения
  * `user-decision-steps`, решение 7): второй диалект длительностей был бы
  * худшим из возможных расширений.
@@ -56,53 +70,20 @@ export { parseDuration } from './core/units.js';
 export type { TreeRow, TreeRowSource } from './core/plugins/tree.js';
 
 /**
- * Контекст ядра: то, без чего плагин контекста не написать. Служебные сервисы
- * типизированы на нём — `ctx.backends.register(имя, вклад)` и симметричные
- * вызовы для прочих видов, — но принадлежат они не ядру: `commands` заводит
- * само ядро, а `backends`, `predicates` и `steps` — строка состава `pipeline`
- * (`pipeline-owns-services`, Решение 1). Отсюда правило: плагин, тянущийся к
- * любому из трёх, обязан объявить `inject` с его именем; поля объявлены здесь
- * как всегда доступные именно потому, что до тела, объявившего зависимость,
- * дело доходит только с разрешённым сервисом, а состав без строки `pipeline`
- * такого тела не зовёт вовсе (docs/plugins.md, «Контекст, область и сервис»).
+ * Контекст ядра: то, без чего плагин контекста не написать. Публикует только
+ * сервис команд и способности области — `backends`/`predicates`/`steps`
+ * называет доменный подпуть `stepcast/pipeline`, чей `PipelineContext`
+ * расширяет этот тип (`plugin-surface-split`, design.md, Решение 4): плагин,
+ * тянущийся к любому из трёх, берёт `pipelineContext(ctx)` оттуда же.
  *
  * Объявлен степкастом целиком и на `cordis` не ссылается: плагину не нужна ни
  * библиотека, ни её типы, и объявлять собственную зависимость от неё не
  * следует — два экземпляра означают два разных хранилища сервисов, не видящих
  * друг друга (docs/plugins.md, граница единственного экземпляра).
  */
-export type { Context, ContributionRegistrar, Inject, PredicateRegistrar, StepKindRegistrar } from './core/plugins/context.js';
+export type { Context, ContributionRegistrar, Inject } from './core/plugins/context.js';
 
 export type { CliIo, CommandSpec, FlagKind, FlagSpec, ParsedArgs } from './core/plugins/cli-types.js';
-
-export type {
-  AgentInvocation,
-  BackendAdapter,
-  BackendCapabilities,
-  BackendEvent,
-  BackendModel,
-  BackendRefusal,
-  BackendRefusalClass,
-  LaunchSpec,
-  ModelDiscovery,
-  PermissionDenial,
-  ProbeOutput,
-} from './core/backend/types.js';
-
-export { describeRefusal, emptyUsage, mergeUsage, sumUsage } from './core/backend/types.js';
-
-/**
- * Правила слияния политики доступа шага с политикой из конфигурации бэкенда.
- * Понадобились адаптеру Codex: без экспорта плагин переписал бы их у себя, и
- * второй бэкенд применял бы `enforce` иначе, чем встроенный.
- */
-export { effectivePermissions } from './core/backend/permissions.js';
-/** Формы объявлений, которые `AgentInvocation` несёт адаптеру: политика и MCP-серверы. */
-export type { McpServer, McpServers, Permissions } from './core/pipeline/model.js';
-
-export type { BackendConfig, Config } from './core/config/resolve.js';
-export type { EvaluationInput } from './core/expect/evaluate.js';
-export type { PredicateResult, Usage } from './core/journal/schema.js';
 
 /** Запуск дочернего процесса под надзором: то же, чем движок исполняет шаги. */
 export { runProcess, DEFAULT_GRACE_MS } from './core/exec/process.js';

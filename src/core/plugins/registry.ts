@@ -1,4 +1,15 @@
-import { hasPredicateEvaluator, hasStepExecutor, isNativePredicate, isNativeStepKind, type BackendContribution, type CommandContribution, type LoadedPlugin, type PredicateContribution, type PredicateKind, type StepKind, type StepKindContribution } from './contract.js';
+import type { CommandContribution, LoadedPlugin } from './contract.js';
+import {
+  hasPredicateEvaluator,
+  hasStepExecutor,
+  isNativePredicate,
+  isNativeStepKind,
+  type BackendContribution,
+  type PredicateContribution,
+  type PredicateKind,
+  type StepKind,
+  type StepKindContribution,
+} from './pipeline-contract.js';
 import { BUILTIN_OWNER, type ContributionService, type Kernel } from './kernel.js';
 
 /**

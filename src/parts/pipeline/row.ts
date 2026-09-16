@@ -1,5 +1,5 @@
 import { assertStepKindNameAvailable } from '../../core/pipeline/schema.js';
-import type { BackendContribution, PredicateKind, StepKind } from '../../core/plugins/contract.js';
+import type { BackendContribution, PredicateKind, StepKind } from '../../core/plugins/pipeline-contract.js';
 import { ContributionService } from '../../core/plugins/kernel.js';
 import { isBuiltinFiber, partRow } from './services.js';
 

@@ -10,6 +10,7 @@ import { loadPlugins } from '../src/parts/load.js';
 import { BUILTIN_OWNER, createKernel } from '../src/core/plugins/kernel.js';
 import { kernelFromRegistry } from '../src/core/plugins/registry.js';
 import { declaredServices, requestedServices } from '../src/core/plugins/services.js';
+import { pipelineContext } from '../src/parts/pipeline/surface.js';
 import { createPipelineKernel } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -118,7 +119,7 @@ describe('ContributionService: фибер владельца рядом с им�
         name: 'contributor',
         inject: ['backends'],
         apply(ctx) {
-          ctx.backends.register('from-plugin', { create: () => ({}) as never });
+          pipelineContext(ctx).backends.register('from-plugin', { create: () => ({}) as never });
         },
       },
       '<synthetic>',

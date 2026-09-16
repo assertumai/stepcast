@@ -7,7 +7,7 @@ import { builtinRegistry } from '../src/parts/builtin.js';
 import { lintPipeline } from '../src/core/lint.js';
 import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { serializeLock } from '../src/core/pipeline/lock.js';
-import type { StepKindDecisionRequest, StepKindDecisionResult, StepKindInput } from '../src/core/plugins/contract.js';
+import type { StepKindDecisionRequest, StepKindDecisionResult, StepKindInput } from '../src/core/plugins/pipeline-contract.js';
 import { makeProject } from './helpers.js';
 
 function baseInput(fields: unknown = { prompt: 'продолжить?', outcomes: { approve: 'continue' } }): Omit<StepKindInput, 'decision'> {

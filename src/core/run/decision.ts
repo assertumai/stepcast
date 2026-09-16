@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { StepcastError } from '../errors.js';
 import type { AwaitingDecision, DecisionEffect, DecisionRecord } from '../journal/schema.js';
 import type { Pipeline } from '../pipeline/model.js';
-import type { StepKindDecisionResult } from '../plugins/contract.js';
+import type { StepKindDecisionResult } from '../plugins/pipeline-contract.js';
 
 /**
  * Чистая часть решения человека (`user-decision-steps`, design.md решение 5):

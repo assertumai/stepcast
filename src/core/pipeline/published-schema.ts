@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
 import { buildDocumentSchemas, DEFAULT_NATIVE_PREDICATES, DEFAULT_NATIVE_STEP_KINDS, isDefaultNativePredicates, isDefaultNativeStepKinds, STEP_COMMON_KEYS } from './schema.js';
-import { hasPredicateEvaluator, hasStepExecutor, type PredicateContribution, type StepKindContribution } from '../plugins/contract.js';
+import { hasPredicateEvaluator, hasStepExecutor, type PredicateContribution, type StepKindContribution } from '../plugins/pipeline-contract.js';
 import { BUILTIN_OWNER } from '../plugins/kernel.js';
 import { contributionOwner, type Registry } from '../plugins/registry.js';
 

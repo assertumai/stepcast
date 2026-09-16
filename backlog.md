@@ -287,12 +287,13 @@ started_at: 2026-09-16T06:54:13.407Z
 
 ## plugin-surface-split
 
-status: todo
+status: done
 title: Публичная поверхность делится на stepcast/plugin и stepcast/pipeline
 group: microkernel
 goal: docs/microkernel-target.md
 why: Шаг 8 плана `docs/microkernel-target.md`. `src/plugin.ts` смешивает типы ядра (контекст, дерево строк, диагностика) с доменными (`StepKindInput`, `EvaluationInput`, `BackendAdapter`, `Permissions`). Пока поверхность одна, домен возвращается в ядро через неё же: модуль ядра вынужден знать доменные типы, чтобы их реэкспортировать, и вынос сервисов остаётся формальным.
 done_when: подпуть `stepcast/plugin` несёт только то, что не знает о пайплайне, а доменные типы переехали в подпуть `stepcast/pipeline`, объявленный строкой `pipeline`; `package.json` объявляет оба; плагин, пользующийся только ядром, компилируется без доменного подпути; `src/backends/codex` и `examples/plugins/*` переписаны на новое деление; прежние импорты из `stepcast/plugin` либо продолжают работать реэкспортом с пометкой об устаревании, либо ломаются с названной причиной и подсказкой, куда переехал тип, — что выбрано, записано в `docs/plugins.md`; `npm run check` и `npm run typecheck:plugin` зелёные
+started_at: 2026-09-16T08:54:13.688Z
 
 ## cli-commands-as-rows
 

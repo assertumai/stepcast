@@ -1,6 +1,6 @@
 import type { Context, Fiber } from 'cordis';
 
-import type { BackendContribution, PredicateKind, StepKind } from '../../core/plugins/contract.js';
+import type { BackendContribution, PipelineContext, PredicateKind, StepKind } from '../../core/plugins/pipeline-contract.js';
 import type { ContributionService, Kernel } from '../../core/plugins/kernel.js';
 import { rowScope, type BuiltinRow } from '../../core/plugins/load.js';
 
@@ -44,6 +44,21 @@ declare module 'cordis' {
     predicates: ContributionService<PredicateKind>;
     steps: ContributionService<StepKind>;
   }
+}
+
+/**
+ * Стык доменного объявления контекста с настоящим (`plugin-surface-split`,
+ * design.md, Решение 4): расхождение `PipelineContext`
+ * (`core/plugins/pipeline-contract.ts`) с составом сервисов, которые заводит
+ * эта строка, — ошибка компиляции здесь, у нас, а не у автора плагина. Имя
+ * иное, чем у ядерного стыка `pluginContext()` (`core/plugins/kernel.ts`), и
+ * иное, чем у публикуемого сужения `pipelineContext()`
+ * (`src/parts/pipeline/surface.ts`) — тот проверяет состав в рантайме, этот
+ * только в типах, и два одноимённых экспорта одного каталога читались бы как
+ * один.
+ */
+export function pipelinePluginContext(ctx: Context): PipelineContext {
+  return ctx;
 }
 
 /** Строка-поставщик или строка-потребитель этого каталога — `BuiltinRow` плюс то, что нужно синхронному умолчанию (design.md, Решение 4). */

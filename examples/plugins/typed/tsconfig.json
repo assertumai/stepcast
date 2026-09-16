@@ -2,23 +2,24 @@
   // Конфигурация образца: ею он и типизируется (`npm run typecheck:plugin`,
   // наравне с образцами витрины), и эмитится в `dist`
   // (`npm run build:plugin-example`) — design.md изменения
-  // `plugin-typed-helpers`, Решение 9. Никакого `paths` на `stepcast/plugin`
+  // `plugin-typed-helpers`, Решение 9. Никакого `paths` на `stepcast/pipeline`
   // здесь нет — этим он и отличается от образцов витрины
   // (`../board/tsconfig.json`): подпуть разрешается самоссылкой пакета,
-  // приходящей из корневого `package.json` (`exports["./plugin"]`), на
-  // `dist/src/plugin.js` и его `.d.ts` рядом — тем же механизмом, каким его
-  // разрешит установленный пакет у стороннего автора.
+  // приходящей из корневого `package.json` (`exports["./pipeline"]`), на
+  // `dist/src/parts/pipeline/surface.js` и его `.d.ts` рядом — тем же
+  // механизмом, каким его разрешит установленный пакет у стороннего автора
+  // (`plugin-surface-split`, design.md, Решение 2, Решение 9).
   //
   // Отсюда единственное требование к порядку: обе команды идут ПОСЛЕ
   // `npm run build`, когда `dist/src/` уже собран, — в `npm run check`
   // `typecheck:plugin` поэтому и стоит после сборки, а не в ряду прочих
   // `typecheck:*`. Запущенный на дереве без собранного `dist/`,
-  // `npm run typecheck:plugin` откажет разрешением `stepcast/plugin`, и это
+  // `npm run typecheck:plugin` откажет разрешением `stepcast/pipeline`, и это
   // ровно тот отказ, который получил бы автор, забывший установить пакет.
   //
   // Эмиттер не переписывает специфик импорта, так что в файле
   // `dist/examples/plugins/typed/index.js` остаётся буквально
-  // `import … from 'stepcast/plugin'` — на этом эмите живёт
+  // `import … from 'stepcast/pipeline'` — на этом эмите живёт
   // `test/example-plugin.test.ts`.
   "compilerOptions": {
     "target": "ES2023",

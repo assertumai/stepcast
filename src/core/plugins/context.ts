@@ -1,4 +1,4 @@
-import type { BackendContribution, CommandContribution, PredicateContribution, StepKindContribution } from './contract.js';
+import type { CommandContribution } from './contract.js';
 
 /**
  * Контекст глазами плагина — публикуемая поверхность подпути `stepcast/plugin`.
@@ -39,53 +39,28 @@ export interface ContributionRegistrar<T> {
 }
 
 /**
- * Регистратор видов шага — то немногое из `ContributionRegistrar`, что видит
- * автор плагина. Не переиспользует сам `ContributionRegistrar<T>`: реестр
- * ядра хранит виды шага одним общим типом, включающим внутреннюю форму
- * `native` (`kernel.ts`), а плагину эта форма недоступна вовсе — узкий
- * интерфейс с одним `register` избегает необходимости объяснять компилятору,
- * что читать `contributions`/`owner` для `steps` плагину незачем.
- *
- * `contribution.waits` (design.md изменения `user-decision-steps`, решение 6)
- * типизирован здесь тем же полем контракта: вклад, объявивший его, — и
- * только он — получает во входе исполнителя способность `decision`.
- */
-export interface StepKindRegistrar {
-  /** Внести вид шага. Отказывает на занятом имени; возвращает disposer. */
-  register(name: string, contribution: StepKindContribution): () => void;
-}
-
-/**
- * Регистратор предикатов — то немногое из `ContributionRegistrar`, что видит
- * автор плагина, тем же приёмом, что и `StepKindRegistrar` (`builtin-predicates-as-row`,
- * design.md, решение 2). Не переиспользует сам `ContributionRegistrar<T>`:
- * реестр ядра хранит предикаты одним общим типом, включающим внутреннюю форму
- * `native` (`kernel.ts`), а плагину эта форма недоступна вовсе.
- */
-export interface PredicateRegistrar {
-  /** Внести предикат. Отказывает на занятом имени; возвращает disposer. */
-  register(name: string, contribution: PredicateContribution): () => void;
-}
-
-/**
  * Контекст ядра: то, чем располагает плагин контекста и команда плагина.
  *
- * Четыре служебных сервиса объявлены полями, а не `| undefined`, хотя заводят
- * их разные участники состава: `commands` — ядро, `backends`/`predicates`/
- * `steps` — строка `pipeline` (`pipeline-owns-services`, Решение 1). Поле, а
- * не необязательное поле, — это не утверждение «сервис есть всегда», а
- * условие, которое держит `inject`: тело, объявившее зависимость от имени,
- * зовётся только с разрешённым сервисом, а не объявившее — не вправе к нему
- * тянуться. Необязательные поля заставили бы каждого автора писать `!` в
- * теле, где сервис как раз гарантирован, и ничего не сказали бы тому, кто
- * `inject` не объявил: его тело всё равно позовут (docs/plugins.md,
- * «Контекст, область и сервис»).
+ * Публикует только сервис команд и способности области — обратимое действие,
+ * чтение и объявление сервиса, область с объявленной зависимостью
+ * (`plugin-surface-split`, design.md, Решение 4). Служебные сервисы вклада
+ * пайплайна — `backends`, `predicates`, `steps` — заводит строка `pipeline`
+ * (`pipeline-owns-services`, Решение 1) и объявляет доменный подпуть
+ * `stepcast/pipeline`, расширяющий этот тип (`PipelineContext`,
+ * `pipeline-contract.ts`), а не сам ядерный контекст: поле здесь означало бы,
+ * что публикуемый подпуть ядра знает о пайплайне, — то самое, что шаг
+ * устраняет.
+ *
+ * `commands` объявлено полем, а не необязательным полем: это не утверждение
+ * «сервис есть всегда», а условие, которое держит `inject`. Тело, объявившее
+ * зависимость от имени, зовётся только с разрешённым сервисом, а не
+ * объявившее — не вправе к нему тянуться. Необязательное поле заставило бы
+ * каждого автора писать `!` в теле, где сервис как раз гарантирован, и ничего
+ * не сказало бы тому, кто `inject` не объявил: его тело всё равно позовут
+ * (docs/plugins.md, «Контекст, область и сервис»).
  */
 export interface Context {
-  readonly backends: ContributionRegistrar<BackendContribution>;
-  readonly predicates: PredicateRegistrar;
   readonly commands: ContributionRegistrar<CommandContribution>;
-  readonly steps: StepKindRegistrar;
   /**
    * Обратимое действие области: тело исполняется сразу, возвращённая им функция
    * вызывается при снятии области. Этим же оформлена каждая регистрация вклада.

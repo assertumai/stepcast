@@ -1,5 +1,6 @@
-import { defineStepKind, parseDuration } from '../../../plugin.js';
-import type { StepKindOutcome } from '../../../plugin.js';
+import { parseDuration } from '../../../plugin.js';
+import { defineStepKind } from '../../pipeline/surface.js';
+import type { StepKindOutcome } from '../../pipeline/surface.js';
 
 import { DECISION_FIELDS_SCHEMA, DECISION_OUTPUT_SCHEMA, lintDecisionFields, normalizedOutcomes, type DecisionFields } from './fields.js';
 

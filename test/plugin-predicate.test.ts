@@ -11,7 +11,7 @@ import { builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/
 import { BUILTIN_ROWS } from '../src/parts/rows.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { contributionOwner, registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
-import type { PredicateContribution } from '../src/core/plugins/contract.js';
+import type { PredicateContribution } from '../src/core/plugins/pipeline-contract.js';
 import { planResume, readSourceRun } from '../src/core/run/resumePlan.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { computeStepKey } from '../src/core/run/stepKey.js';

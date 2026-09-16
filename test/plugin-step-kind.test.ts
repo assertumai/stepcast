@@ -15,7 +15,7 @@ import { builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
 import type { ContributionService } from '../src/core/plugins/kernel.js';
 import { applyContextPlugin, applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, stepKindNames, type Registry } from '../src/core/plugins/registry.js';
-import type { StepKindContribution, StepKindInput } from '../src/core/plugins/contract.js';
+import type { StepKindContribution, StepKindInput } from '../src/core/plugins/pipeline-contract.js';
 import { lintPipeline } from '../src/core/lint.js';
 import { resolveConfig } from '../src/core/config/resolve.js';
 import { projectKey, runPaths } from '../src/core/journal/paths.js';

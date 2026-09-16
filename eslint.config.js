@@ -44,30 +44,87 @@ const backendsBoundaryPatterns = [
 // конфига всё равно ограничен файлами `src/core/plugins/**`, и раньше
 // никакого стороннего `pipeline`/`backend`/`run` в их относительных путях не
 // возникает.
+const KERNEL_DOMAIN_MESSAGE =
+  'Ядро плагинов не зависит от домена: перечень и вклад приходят параметром сборки или регистрацией, а не импортом (docs/microkernel-target.md, шаг 2).';
+
+/**
+ * Доменные деревья, которые ядру плагинов закрыты целиком. Перечислены
+ * отдельными группами, а не одной, затем же, зачем у `backend/**` ниже:
+ * отрицающий шаблон действует на всю группу, в которую внесён, и одна общая
+ * группа превратила бы любое исключение в дыру для всех прочих деревьев.
+ *
+ * `expect/**` и `journal/**` добавлены вместе со снятием исключения с
+ * `contract.ts` (`plugin-surface-split`, шаг 8): без них запрет на
+ * `backend/types.js` держал бы одну дверь из четырёх — доменные типы вклада
+ * (`EvaluationInput`, `PredicateResult`, `Usage`) вернулись бы в ядерный
+ * контракт соседним импортом, и заметить это было бы негде.
+ */
 const kernelBoundaryPatterns = [
   {
-    group: ['**/pipeline/**', '**/backend/**', '**/run/**', '**/steps/**', '**/backends/**', '**/parts/**', '**/ui/**'],
-    message:
-      'Ядро плагинов не зависит от домена: перечень и вклад приходят параметром сборки или регистрацией, а не импортом (docs/microkernel-target.md, шаг 2).',
+    group: ['**/pipeline/**', '**/run/**', '**/steps/**', '**/backends/**', '**/parts/**', '**/ui/**'],
+    message: KERNEL_DOMAIN_MESSAGE,
+  },
+  {
+    group: ['**/backend/**'],
+    message: KERNEL_DOMAIN_MESSAGE,
+  },
+  {
+    group: ['**/expect/**'],
+    message: KERNEL_DOMAIN_MESSAGE,
+  },
+  {
+    group: ['**/journal/**'],
+    message: KERNEL_DOMAIN_MESSAGE,
+  },
+  {
+    // Конфигурация движка доменна по тому же критерию, но два её модуля ядро
+    // плагинов читает по своему делу и сегодня: `config/resolve.js` —
+    // `ResolvedConfig` в загрузчике (`load.ts`), `config/schema.js` —
+    // `PluginPatchRow` в дереве строк (`tree.ts`). Названы поимённо, чтобы
+    // остальное дерево конфигурации оставалось закрытым; их собственный
+    // переезд — остаток шага 10 плана (docs/microkernel-target.md).
+    group: ['**/config/**', '!**/config/resolve.js', '!**/config/schema.js'],
+    message: KERNEL_DOMAIN_MESSAGE,
   },
 ];
 
 /**
- * То же ограничение доменных деревьев, но без `backend/**` целиком — ровно
- * для `contract.ts` ниже, которому разрешён один модуль этого дерева
- * (`backend/types.js`, только тип). Дерево бэкендов вынесено у него в
- * отдельную группу затем, что исключение действует в ней одной: отрицающий
- * шаблон на `backend/types.js`, внесённый в общую группу доменных деревьев,
- * снял бы запрет и с прочих. Само отрицание установленная версия правила
- * понимает — это и проверяет `test/eslint-config.test.ts` («backend/types.js
- * разрешён, соседний backend/claude.js — нет»), и потому исключение выражено
- * им, а не третьим блоком конфига (design.md, Решение 4: «если отрицание
- * работает, блоки допустимо слить»).
+ * Те же доменные деревья для `pipeline-contract.ts` ниже, но с поимённым
+ * перечнем модулей, которые доменная половина контракта действительно несёт:
+ * `backend/types.js` (типы адаптера), `config/resolve.js` и `config/schema.js`
+ * (запись бэкенда в конфигурации), `expect/evaluate.js` (вход предиката),
+ * `journal/schema.js` (итог предиката и расход). Ровно этот набор — и ничего
+ * сверх: соседний `backend/claude.js` или `journal/write.js` отклоняется здесь
+ * так же, как в любом другом модуле ядра.
+ *
+ * Исключения выражены отрицающим шаблоном внутри одной группы, а не отдельным
+ * блоком конфига: отрицание установленная версия правила понимает — это и
+ * проверяет `test/eslint-config.test.ts` («backend/types.js разрешён,
+ * соседний backend/claude.js — нет»), — и по design.md, Решение 4, «если
+ * отрицание работает, блоки допустимо слить». Дерево, из которого разрешён
+ * хоть один модуль, вынесено в эту группу целиком: отрицание действует на всю
+ * группу, куда внесено, и оставлять рядом с ним дерево без исключений значило
+ * бы молча открыть и его.
  */
-const kernelBoundaryPatternsExceptBackend = [
+const domainContractPatterns = [
   {
     group: ['**/pipeline/**', '**/run/**', '**/steps/**', '**/backends/**', '**/parts/**', '**/ui/**'],
-    message: kernelBoundaryPatterns[0].message,
+    message: KERNEL_DOMAIN_MESSAGE,
+  },
+  {
+    group: [
+      '**/backend/**',
+      '**/config/**',
+      '**/expect/**',
+      '**/journal/**',
+      '!**/backend/types.js',
+      '!**/config/resolve.js',
+      '!**/config/schema.js',
+      '!**/expect/evaluate.js',
+      '!**/journal/schema.js',
+    ],
+    message:
+      'Доменному контракту вклада разрешён ровно тот набор доменных модулей, который он несёт: backend/types.js, config/resolve.js, config/schema.js, expect/evaluate.js, journal/schema.js — и только типом (docs/microkernel-target.md, шаг 2; переезд модуля — шаг 10).',
   },
 ];
 
@@ -180,38 +237,31 @@ export default tseslint.config(
     // Ядро плагинов — те же запреты, что у ядра выше, плюс граница домена
     // (`kernel-domain-free-imports`): узкий блок на тех же файлах молча снял
     // бы прежние запреты, если не повторить их здесь одной записью правила.
-    // `contract.ts` — публикуемая поверхность, а не модуль ядра, — исключён
-    // отсюда и получает свой блок ниже с одним разрешённым исключением.
+    // `contract.ts` больше не исключён (`plugin-surface-split`, шаг 8):
+    // доменная половина контракта выехала в соседний `pipeline-contract.ts`
+    // (свой блок ниже), и `contract.ts` — ядерный модуль без единого
+    // доменного импорта, как и прочие модули этого каталога.
     files: ['src/core/plugins/**/*.ts'],
-    ignores: ['src/core/plugins/contract.ts'],
+    ignores: ['src/core/plugins/pipeline-contract.ts'],
     rules: {
       'no-restricted-imports': ['error', { paths: enginePaths, patterns: [...coreBoundaryPatterns, ...kernelBoundaryPatterns] }],
     },
   },
   {
-    // Контракт вклада (`stepcast/plugin`) доменен по определению
-    // (design.md, «Что в пункте очереди уточнено»): рядом с ним живут
-    // `EvaluationInput` и `Usage`, а `src/plugin.ts` реэкспортирует его типы
-    // напрямую. Исключение — ровно один модуль домена, `backend/types.js`, и
-    // только типом; снять его целиком — шаг 8 плана
-    // (docs/microkernel-target.md): разделение `stepcast/plugin` и
-    // `stepcast/pipeline`.
-    files: ['src/core/plugins/contract.ts'],
+    // Доменная половина контракта (`stepcast/pipeline`) — соседний модуль
+    // ядра, временно (`plugin-surface-split`, design.md, Решение 3): вклад
+    // бэкенда, предиката, вида шага и их родня знают о пайплайне по
+    // определению, а таблица декларативной формы читает `registry.ts`/`load.ts`
+    // — ядру импортировать `src/parts/**` запрещено линтом, и соседний модуль
+    // того же каталога под этот запрет не подпадает. Разрешён поимённый набор
+    // доменных модулей — ровно тот, что этот контракт несёт
+    // (`domainContractPatterns` выше); переезд самого модуля в
+    // `src/parts/pipeline/` — шаг 10 плана (docs/microkernel-target.md).
+    files: ['src/core/plugins/pipeline-contract.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
-        {
-          paths: enginePaths,
-          patterns: [
-            ...coreBoundaryPatterns,
-            ...kernelBoundaryPatternsExceptBackend,
-            {
-              group: ['**/backend/**', '!**/backend/types.js'],
-              message:
-                'Контракту вклада разрешён только backend/types.js (типом) — прочее из core/backend доменно (docs/microkernel-target.md, шаг 2; снятие исключения — шаг 8).',
-            },
-          ],
-        },
+        { paths: enginePaths, patterns: [...coreBoundaryPatterns, ...domainContractPatterns] },
       ],
     },
   },

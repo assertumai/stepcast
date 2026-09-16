@@ -7,14 +7,8 @@ import { findPackageRoot } from '../package-schema.js';
 
 import type { ResolvedConfig } from '../config/resolve.js';
 import { isStepcastError, StepcastError } from '../errors.js';
-import {
-  DECLARATIVE_CONTRIBUTION_FIELDS,
-  isContextPlugin,
-  StepcastPluginSchema,
-  type ContextPlugin,
-  type ContextPluginObject,
-  type StepcastPlugin,
-} from './contract.js';
+import { isContextPlugin, type ContextPlugin, type ContextPluginObject } from './contract.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS, StepcastPluginSchema, type PipelinePlugin } from './pipeline-contract.js';
 import { translateReservedNameConflict, unresolvedFibers, type Context, type Fiber, type Kernel } from './kernel.js';
 import { readPluginManifest, type PluginManifest } from './manifest.js';
 import { registryFromKernel, type Registry } from './registry.js';
@@ -208,7 +202,7 @@ export function rowFailureError(row: TreeRow): StepcastError | undefined {
 }
 
 export type Recognized =
-  | { readonly form: 'declarative'; readonly plugin: StepcastPlugin }
+  | { readonly form: 'declarative'; readonly plugin: PipelinePlugin }
   | { readonly form: 'context'; readonly plugin: ContextPlugin };
 
 /**
@@ -258,7 +252,7 @@ function toPlugin(module: unknown, row: TreeRow, path: string): Recognized {
       },
     );
   }
-  return { form: 'declarative', plugin: exported as StepcastPlugin };
+  return { form: 'declarative', plugin: exported as PipelinePlugin };
 }
 
 /**
@@ -267,7 +261,7 @@ function toPlugin(module: unknown, row: TreeRow, path: string): Recognized {
  * регистрация — тем же вызовом, каким её сделал бы плагин контекста, и в той
  * же области — области этого плагина.
  */
-export function toContextPlugin(plugin: StepcastPlugin): ContextPluginObject {
+export function toContextPlugin(plugin: PipelinePlugin): ContextPluginObject {
   // Инъекция и регистрация идут по одной и той же таблице
   // (`DECLARATIVE_CONTRIBUTION_FIELDS`, `contract.ts`, design.md, Решение 10):
   // перечень имён, по которым плагин ждёт сервисы, и перечень ключей, которые
@@ -361,7 +355,7 @@ export async function applyPlugin(kernel: Kernel, recognized: Recognized, source
 }
 
 /** Применить плагин декларативной формы — сокращение для частого случая (тесты, `applyPluginTree`). */
-export function applyDeclarativePlugin(kernel: Kernel, plugin: StepcastPlugin, source: string): Promise<Fiber> {
+export function applyDeclarativePlugin(kernel: Kernel, plugin: PipelinePlugin, source: string): Promise<Fiber> {
   return applyPlugin(kernel, { form: 'declarative', plugin }, source);
 }
 

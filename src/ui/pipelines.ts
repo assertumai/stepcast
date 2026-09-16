@@ -13,7 +13,7 @@ import type { Kernel } from '../core/plugins/kernel.js';
 import { kernelFromRegistry, registryFromKernel, type Registry } from '../core/plugins/registry.js';
 import type { TreeRow } from '../core/plugins/tree.js';
 import type { Job, ModelOrigin, Pipeline } from '../core/pipeline/model.js';
-import { hasStepExecutor } from '../core/plugins/contract.js';
+import { hasStepExecutor } from '../core/plugins/pipeline-contract.js';
 import { layoutJobs, type JobGraph } from './graph.js';
 import { paramViews, type StepParamView } from './steps.js';
 

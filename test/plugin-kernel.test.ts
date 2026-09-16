@@ -8,17 +8,19 @@ import { FiberState, Service, type Fiber } from 'cordis';
 
 import { ExitCode, StepcastError } from '../src/core/errors.js';
 import { createBuiltinKernel } from '../src/parts/builtin.js';
+import type { CommandContribution } from '../src/core/plugins/contract.js';
+import type { PipelineCommandEnv } from '../src/core/plugins/pipeline-contract.js';
 import type {
   BackendContribution,
-  CommandContribution,
   PredicateContribution,
-} from '../src/core/plugins/contract.js';
+} from '../src/core/plugins/pipeline-contract.js';
 import {
   applyContextPlugin,
   applyDeclarativePlugin,
 } from '../src/core/plugins/load.js';
 import { loadPlugins } from '../src/parts/load.js';
 import { row as pipelineRow } from '../src/parts/pipeline/row.js';
+import { pipelineContext } from '../src/parts/pipeline/surface.js';
 import { row as backendClaudeRow } from '../src/parts/backends/claude/row.js';
 import { row as predicatesRow } from '../src/parts/expect/row.js';
 import { ContributionService, createKernel } from '../src/core/plugins/kernel.js';
@@ -127,8 +129,9 @@ describe('plugin-kernel: обратимость регистрации', () => {
         name: 'multi',
         inject: ['backends', 'predicates', 'commands'],
         apply(ctx) {
-          ctx.backends.register('b', backend());
-          ctx.predicates.register('p', predicate('p'));
+          const pipeline = pipelineContext(ctx);
+          pipeline.backends.register('b', backend());
+          pipeline.predicates.register('p', predicate('p'));
           ctx.commands.register('c', command('c'));
         },
       },
@@ -313,7 +316,7 @@ describe('plugin-kernel: встроенные предикаты — обычн�
         name: 'own-predicate',
         inject: ['predicates'],
         apply(ctx) {
-          ctx.predicates.register('своё_имя', predicate('своё_имя'));
+          pipelineContext(ctx).predicates.register('своё_имя', predicate('своё_имя'));
         },
       },
       '<synthetic>',
@@ -379,7 +382,7 @@ describe('plugin-kernel: внедрение между плагинами', () =
         apply(ctx) {
           runs++;
           seen.push(ctx.get('shared-thing'));
-          ctx.backends.register('from-b', backend());
+          pipelineContext(ctx).backends.register('from-b', backend());
         },
       },
       '<b>',
@@ -507,9 +510,10 @@ describe('plugin-kernel: наполовину загруженный плаги�
           name: 'broken',
           inject: ['backends', 'predicates'],
           apply(ctx) {
-            ctx.predicates.register('half_ok', predicate('half_ok'));
+            const pipeline = pipelineContext(ctx);
+            pipeline.predicates.register('half_ok', predicate('half_ok'));
             // Имя занято встроенным бэкендом — отказ посреди применения.
-            ctx.backends.register('claude', backend());
+            pipeline.backends.register('claude', backend());
           },
         },
         '<synthetic>',
@@ -576,7 +580,7 @@ describe('plugin-kernel: конфликт имени встроенного пр
           apply(ctx) {
             ctx.commands.register('half-cmd', command('half-cmd'));
             // Имя занято встроенным предикатом — отказ посреди применения.
-            ctx.predicates.register('exit_code', predicate('exit_code'));
+            pipelineContext(ctx).predicates.register('exit_code', predicate('exit_code'));
           },
         },
         '<synthetic>',
@@ -604,7 +608,7 @@ describe('plugin-kernel: две формы плагина', () => {
         name: 'twin',
         inject: ['backends'],
         apply(ctx) {
-          ctx.backends.register('twin', backend());
+          pipelineContext(ctx).backends.register('twin', backend());
         },
       },
       '<c>',
@@ -692,14 +696,19 @@ withOwnService.inject = ['commands'];
 
     const printed: string[] = [];
     const io: CliIo = { out: (line) => printed.push(line), err: () => {}, cwd: place.root };
-    const code = await contribution.run({ command: 'greet', positional: [], flags: {} }, io, {
+    // Типизирован явно `PipelineCommandEnv`: `contribution.run` объявлен
+    // ядерным `CommandEnv` (реестр хранит команды общим типом), а литерал с
+    // полями `config`/`registry` без аннотации получил бы отказ избыточных
+    // полей — тем же основанием, что и в `src/cli/main.ts`.
+    const env: PipelineCommandEnv = {
       cwd: place.root,
       config: out.config,
       registry,
       ctx,
       pluginTree: out.pluginTree,
       pluginOutcomes: undefined,
-    });
+    };
+    const code = await contribution.run({ command: 'greet', positional: [], flags: {} }, io, env);
 
     assert.equal(code, 0);
     assert.deepEqual(printed, ['привет']);
@@ -834,5 +843,70 @@ describe('plugin-kernel: каскад снятия строки-поставщи
     assert.equal(registry.backends.size, 0);
     assert.equal(registry.predicates.size, 0);
     assert.deepEqual([...registry.missingServices].sort(), ['backends', 'predicates', 'steps']);
+  });
+});
+
+// Задача 7 (`plugin-surface-split`): сужение контекста автору — проверка, а
+// не приведение (design.md, Решение 5). Оба исхода: состав со строкой
+// pipeline (три сервиса разрешаются) и состав без неё (названный отказ, а не
+// падение на первом обращении к отсутствующему полю).
+describe('plugin-surface-split: pipelineContext(ctx) — сужение доменного контекста', () => {
+  it('в составе со строкой pipeline возвращает контекст с регистраторами вклада', async () => {
+    const kernel = createPipelineKernel();
+    const pipeline = pipelineContext(kernel.ctx);
+
+    const dispose = pipeline.backends.register('surface-check', backend());
+    assert.ok(pipeline.backends.contributions.has('surface-check'));
+    dispose();
+  });
+
+  it('в составе без строки pipeline отказывает названно, подсказывая объявить inject', () => {
+    const kernel = createKernel();
+
+    assert.throws(
+      () => pipelineContext(kernel.ctx),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /backends/);
+        assert.match(error.message, /predicates/);
+        assert.match(error.message, /steps/);
+        assert.match(error.hint ?? '', /inject/);
+        // Подсказка различает два случая: необъявленная зависимость лечится
+        // `inject`, а состав, не заводящий имени вовсе, — нет, и `inject` на
+        // такое имя оставил бы область ждать навсегда.
+        assert.match(error.hint ?? '', /отключена или заменена/);
+        return true;
+      },
+    );
+  });
+
+  // Тело, объявившее зависимость от одного сервиса (`ctx.inject(['backends'],
+  // …)` — документированный образец), сужает контекст к нему же: сужение
+  // проверяет ровно названное, а не все три имени разом. Иначе в составе, где
+  // строка `pipeline` заменена своей, отдающей часть сервисов, законное
+  // сужение отказывало бы на том, чего вклад не просил.
+  it('названное подмножество проверяется отдельно от прочих сервисов', () => {
+    const kernel = createPipelineKernel();
+    const onlyBackends = pipelineContext(kernel.ctx, ['backends']);
+
+    const dispose = onlyBackends.backends.register('subset-check', backend());
+    assert.ok(onlyBackends.backends.contributions.has('subset-check'));
+    dispose();
+  });
+
+  it('сужение к названному сервису в составе без него отказывает, называя одно это имя', () => {
+    const kernel = createKernel();
+
+    assert.throws(
+      () => pipelineContext(kernel.ctx, ['steps']),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /steps/);
+        // Имена, которых вклад не просил, в отказе не названы: иначе автор
+        // пошёл бы объявлять зависимость от сервисов, ему не нужных.
+        assert.equal(/backends|predicates/.test(error.message), false, error.message);
+        return true;
+      },
+    );
   });
 });

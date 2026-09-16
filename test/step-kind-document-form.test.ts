@@ -9,9 +9,10 @@ import { expandPipeline } from '../src/core/pipeline/expand.js';
 import { resolveLate } from '../src/core/pipeline/late.js';
 import type { Job } from '../src/core/pipeline/model.js';
 import { createBuiltinKernel } from '../src/parts/builtin.js';
+import { pipelineContext } from '../src/parts/pipeline/surface.js';
 import { applyContextPlugin, applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { registryFromKernel, stepKindNames, type Registry } from '../src/core/plugins/registry.js';
-import type { StepKindContribution } from '../src/core/plugins/contract.js';
+import type { StepKindContribution } from '../src/core/plugins/pipeline-contract.js';
 import { runPipeline } from '../src/core/run/runner.js';
 import { buildPipelines } from '../src/ui/pipelines.js';
 import { resolveConfig } from '../src/core/config/resolve.js';
@@ -552,7 +553,7 @@ describe('step-kind-document-form: узнавание не спрашивает 
       {
         name: 'native-impostor',
         apply(ctx) {
-          (ctx.steps as { register(name: string, value: unknown): () => void }).register('deploy-kind', {
+          (pipelineContext(ctx).steps as { register(name: string, value: unknown): () => void }).register('deploy-kind', {
             ...fakeDocumentStepKind(),
             native: { смысла: 'нет' },
           });

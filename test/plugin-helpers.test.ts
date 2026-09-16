@@ -2,14 +2,18 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { z } from 'zod';
 
+import { definePlugin } from '../src/plugin.js';
+import type { StepcastPlugin } from '../src/core/plugins/contract.js';
 import {
   defineBackend,
-  definePlugin,
+  definePipelinePlugin,
   definePredicate,
   defineStepKind,
+  StepcastPluginSchema,
+  type PipelinePlugin,
   type StepKindInput,
-} from '../src/plugin.js';
-import { StepcastPluginSchema, type StepcastPlugin } from '../src/core/plugins/contract.js';
+} from '../src/core/plugins/pipeline-contract.js';
+import type { PipelinePlugin as PublishedPipelinePlugin } from '../src/parts/pipeline/surface.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { availableNames, predicateNames, registryFromKernel, stepKindNames } from '../src/core/plugins/registry.js';
 import { createPipelineKernel } from './helpers.js';
@@ -51,8 +55,8 @@ describe('plugin-helpers: тождество в рантайме', () => {
 
 describe('plugin-helpers: вклад из хелпера принимается загрузкой наравне с литералом', () => {
   /** Плагин теми же именами вкладов и теми же умолчаниями бэкенда, что и его литеральный эквивалент ниже. */
-  function pluginFromHelpers(): StepcastPlugin {
-    return definePlugin({
+  function pluginFromHelpers(): PipelinePlugin {
+    return definePipelinePlugin({
       name: 'helpers-plugin',
       version: '1.0.0',
       backends: {
@@ -80,7 +84,7 @@ describe('plugin-helpers: вклад из хелпера принимается 
   }
 
   /** Тот же состав, но объявленный объектными литералами с прежней аннотацией типа — контрольная группа. */
-  function pluginFromLiterals(): StepcastPlugin {
+  function pluginFromLiterals(): PipelinePlugin {
     return {
       name: 'literals-plugin',
       version: '1.0.0',
@@ -345,6 +349,58 @@ function typeCheckZodModelIsNotASchema(): void {
   });
 }
 void typeCheckZodModelIsNotASchema;
+
+/**
+ * Доменная форма плагина публикуется подпутём наравне с хелпером: хелперы
+ * необязательны (docs/plugins.md, «Хелперы объявления»), и автор, пишущий
+ * декларативный плагин литералом, аннотирует его именно этим именем. Проверка
+ * состава подпутей (`test/plugin-load.test.ts`) смотрит только значения —
+ * пропуск типа ловится здесь, компиляцией: имя берётся из `surface.js`, а не
+ * из внутреннего `pipeline-contract.js`.
+ */
+function typeCheckDeclarativePluginWithoutHelper(): void {
+  const plugin: PublishedPipelinePlugin = {
+    name: 'literal-domain-plugin',
+    steps: [
+      {
+        name: 'word-count',
+        title: 'Счётчик слов',
+        fields: { type: 'object' },
+        execute: () => ({ exitCode: 0 }),
+      },
+    ],
+  };
+  void plugin;
+}
+void typeCheckDeclarativePluginWithoutHelper;
+
+/**
+ * Сценарий спеки `plugin-surface-split` «Доменный ключ в ядерной форме
+ * плагина»: компиляция обязана отказать на самом ключе, а не принять
+ * объявление, которое движок никуда не внесёт. Проверяется обеими формами —
+ * хелпером и аннотацией литерала, — потому что держится это на одном и том же
+ * свойстве ядерного типа (проверка избыточных полей литерала), и обобщение
+ * `definePlugin<P>`, отвергнутое в design.md, Решение 8, сняло бы отказ
+ * незаметно.
+ */
+function typeCheckDomainKeyInKernelHelper(): void {
+  definePlugin({
+    name: 'kernel-only',
+    // @ts-expect-error — `steps` — доменный ключ формы `PipelinePlugin` (`stepcast/pipeline`); ядерный `definePlugin` его не принимает
+    steps: [],
+  });
+}
+void typeCheckDomainKeyInKernelHelper;
+
+function typeCheckDomainKeyInKernelPluginType(): void {
+  const plugin: StepcastPlugin = {
+    name: 'kernel-only',
+    // @ts-expect-error — та же граница в аннотации литерала: доменные ключи несёт только `PipelinePlugin`
+    backends: {},
+  };
+  void plugin;
+}
+void typeCheckDomainKeyInKernelPluginType;
 
 function typeCheckStepKindWaitsFalse(): void {
   defineStepKind<{ readonly url: string }>({

@@ -14,7 +14,7 @@ import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { nativeStepKindNames, registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
 import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../src/core/pipeline/published-schema.js';
 import { hasErrors, lintPipeline, type Diagnostic } from '../src/core/lint.js';
-import type { StepKindContribution } from '../src/core/plugins/contract.js';
+import type { StepKindContribution } from '../src/core/plugins/pipeline-contract.js';
 import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
 import { gitCommit, gitInit, makeProject, withHome, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';

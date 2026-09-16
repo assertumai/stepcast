@@ -1,5 +1,5 @@
 import { StepcastError } from '../errors.js';
-import { hasStepExecutor } from '../plugins/contract.js';
+import { hasStepExecutor } from '../plugins/pipeline-contract.js';
 import type { Registry } from '../plugins/registry.js';
 import { interpolateTree, interpolateTypedTree, type Scope } from './interpolate.js';
 import type { Job, Step } from './model.js';

@@ -5,7 +5,7 @@ import { StepcastError } from '../src/core/errors.js';
 import { applyRowOnRoot, builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { availableNames, contributionOwner, predicateNames, registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
-import { isNativeStepKind, type PredicateContribution, type StepcastPlugin, type StepKindContribution } from '../src/core/plugins/contract.js';
+import { isNativeStepKind, type PredicateContribution, type PipelinePlugin, type StepKindContribution } from '../src/core/plugins/pipeline-contract.js';
 import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
 import { ExitCode } from '../src/core/errors.js';
 import { resolveWithPlugins } from '../src/parts/resolve.js';
@@ -55,7 +55,7 @@ describe('plugin-contributions: реестр вкладов', () => {
   it('плагин добавляет вклады трёх видов', async () => {
     const kernel = createBuiltinKernel();
     const registry = registryFromKernel(kernel);
-    const plugin: StepcastPlugin = {
+    const plugin: PipelinePlugin = {
       name: 'пример',
       version: '1.2.0',
       backends: { codex: { create: () => ({}) as never } },

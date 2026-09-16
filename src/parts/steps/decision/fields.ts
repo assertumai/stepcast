@@ -1,5 +1,6 @@
 import { parseDuration } from '../../../plugin.js';
-import type { DecisionEffect, DecisionOutcome, LintSite, PluginDiagnostic } from '../../../plugin.js';
+import type { PluginDiagnostic } from '../../../plugin.js';
+import type { DecisionEffect, DecisionOutcome, LintSite } from '../../pipeline/surface.js';
 
 /**
  * Поля вида шага `decision` (design.md изменения `user-decision-steps`,

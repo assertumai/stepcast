@@ -1,17 +1,21 @@
 import { z } from 'zod';
-import { definePlugin, definePredicate, defineStepKind } from 'stepcast/plugin';
+import { definePipelinePlugin, definePredicate, defineStepKind } from 'stepcast/pipeline';
 
 /**
- * Образец плагина движка (design.md изменения `plugin-typed-helpers`,
- * Решение 8): первый в репозитории, применяющий хелперы `define*` к своему
- * коду, а не к встроенным плагинам пакета. Каждая схема вклада — значение
- * предиката, поля вида шага и его структурированный выход — приходит из своей
- * единственной zod-модели: тип выводом (`z.infer`), схема — преобразованием
- * той же модели (`toContributionSchema` ниже). Второй записи формы значения в
- * этом файле нет.
+ * Образец доменного плагина движка (design.md изменения `plugin-typed-helpers`,
+ * Решение 8; `plugin-surface-split`, design.md, Решение 9): первый в
+ * репозитории, применяющий хелперы `define*` к своему коду, а не к встроенным
+ * плагинам пакета, и первый, объявляющий вклад пайплайна через доменный
+ * подпуть `stepcast/pipeline`, а не через ядерный. Каждая схема вклада —
+ * значение предиката, поля вида шага и его структурированный выход — приходит
+ * из своей единственной zod-модели: тип выводом (`z.infer`), схема —
+ * преобразованием той же модели (`toContributionSchema` ниже). Второй записи
+ * формы значения в этом файле нет.
  *
- * Импорты — только `stepcast/plugin` и `zod`: то же, что видит сторонний
- * автор плагина, установивший `stepcast` пакетом (design.md, Решение 9).
+ * Импорты — только `stepcast/pipeline` и `zod`: то же, что видит сторонний
+ * автор доменного вклада, установивший `stepcast` пакетом (design.md,
+ * Решение 9). Ядерный `stepcast/plugin` этому образцу не нужен вовсе — за
+ * него отвечает соседний образец `examples/plugins/command`.
  */
 
 /**
@@ -67,7 +71,7 @@ type WordCountFields = z.infer<typeof WordCountFields>;
 const WordCountOutput = z.object({ words: z.number().int().nonnegative() }).strict();
 type WordCountOutput = z.infer<typeof WordCountOutput>;
 
-export default definePlugin({
+export default definePipelinePlugin({
   name: 'typed-example',
   version: '0.1.0',
   predicates: [

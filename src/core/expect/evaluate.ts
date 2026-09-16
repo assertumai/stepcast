@@ -13,7 +13,7 @@ import { describeScriptUnresolved } from '../pipeline/expand.js';
 import type { Predicate, ScriptUnresolved } from '../pipeline/model.js';
 import type { PredicateResult } from '../journal/schema.js';
 import type { KnowledgeSource } from '../knowledge/types.js';
-import { hasPredicateEvaluator } from '../plugins/contract.js';
+import { hasPredicateEvaluator } from '../plugins/pipeline-contract.js';
 import type { Registry } from '../plugins/registry.js';
 
 /**

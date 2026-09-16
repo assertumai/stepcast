@@ -1,7 +1,8 @@
 import { resolveConfig } from '../core/config/resolve.js';
 import { ExitCode, isStepcastError, StepcastError, type ExitCodeValue } from '../core/errors.js';
 import { parseArgs, type CliIo, type CommandSpec } from './args.js';
-import type { CommandContribution, CommandEnv } from '../core/plugins/contract.js';
+import type { CommandContribution } from '../core/plugins/contract.js';
+import type { PipelineCommandEnv } from '../core/plugins/pipeline-contract.js';
 import { kernelFromRegistry } from '../core/plugins/registry.js';
 import { resolveWithPlugins } from '../parts/resolve.js';
 import { reportError } from './output.js';
@@ -319,7 +320,7 @@ const PIPELINE_SERVICES: readonly string[] = ['backends', 'predicates', 'steps']
  * складывается в реестр, и диспетчеризация не знает, встроенная команда или
  * внесённая плагином.
  */
-export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
+export const BUILTIN_COMMANDS: readonly CommandContribution<PipelineCommandEnv>[] = [
   {
     name: 'run',
     spec: COMMANDS['run'] as CommandSpec,
@@ -485,18 +486,18 @@ export const BUILTIN_COMMANDS: readonly CommandContribution[] = [
 ];
 
 /** Найти вклад встроенной команды по имени — без обращения к реестру плагинов. */
-function findBuiltinCommand(name: string): CommandContribution | undefined {
+function findBuiltinCommand(name: string): CommandContribution<PipelineCommandEnv> | undefined {
   return BUILTIN_COMMANDS.find((contribution) => contribution.name === name);
 }
 
 /**
- * `CommandEnv` ранней ветки: настоящих `config` и `registry` в ней нет,
- * потому что она их не разрешает. Чтение любого из двух свойств — признак
- * того, что перечень независимых команд назвал команду неверно, и это
+ * `PipelineCommandEnv` ранней ветки: настоящих `config` и `registry` в ней
+ * нет, потому что она их не разрешает. Чтение любого из двух свойств —
+ * признак того, что перечень независимых команд назвал команду неверно, и это
  * StepcastError с объяснением, а не встроенные умолчания: подставленное
  * умолчание превратило бы ошибку разметки в тихое неверное поведение.
  */
-export function buildIndependentCommandEnv(name: string, cwd: string): CommandEnv {
+export function buildIndependentCommandEnv(name: string, cwd: string): PipelineCommandEnv {
   function readForbidden(): never {
     throw new StepcastError(
       `Команда ${name} объявлена независимой от конфигурации и не вправе читать её`,
@@ -588,14 +589,22 @@ export async function run(argv: readonly string[], io: CliIo): Promise<ExitCodeV
       );
     }
 
-    return await contribution.run(args, io, {
+    // Типизирован явно `PipelineCommandEnv`, а не отдан литералом: `contribution`
+    // хранится ядерным `CommandContribution` (реестр общий на оба вида
+    // команд — design.md, «Risks»), и его `run` ждёт параметром ядерный
+    // `CommandEnv`. Именованная переменная того же значения, что подходит и
+    // под доменное, и под ядерное окружение структурно, проходит проверку
+    // избыточных полей литерала один раз здесь, а не отдельно на каждой из
+    // двадцати пяти команд.
+    const env: PipelineCommandEnv = {
       cwd: io.cwd,
       config: resolved.config,
       registry,
       ctx,
       pluginTree: resolved.pluginTree,
       pluginOutcomes: outcomes,
-    });
+    };
+    return await contribution.run(args, io, env);
   } catch (error) {
     return reportError(error, io.err);
   }
