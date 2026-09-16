@@ -3,11 +3,11 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { cleanupRun, removeRunWithStats } from '../src/core/run/cleanup.js';
-import { projectKey } from '../src/core/journal/paths.js';
-import { ensureUsageRecord } from '../src/core/journal/usageStore.js';
-import { buildOverview, type Overview } from '../src/ui/overview.js';
-import { buildUsage, NO_PIPELINE, UNKNOWN_MODEL } from '../src/ui/usage.js';
+import { cleanupRun, removeRunWithStats } from '../src/parts/pipeline/run/cleanup.js';
+import { projectKey } from '../src/parts/pipeline/run/journal/paths.js';
+import { ensureUsageRecord } from '../src/parts/pipeline/run/journal/usageStore.js';
+import { buildOverview, type Overview } from '../src/parts/ui/overview.js';
+import { buildUsage, NO_PIPELINE, UNKNOWN_MODEL } from '../src/parts/ui/usage.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 
 describe('ui-dashboard: расход поперёк прогонов', () => {

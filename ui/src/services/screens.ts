@@ -1,6 +1,6 @@
 import { Service, type Context } from 'cordis';
 
-import type { ScreenDeclaration } from '../../../src/ui/screens/declaration.ts';
+import type { ScreenDeclaration } from '../../../src/parts/ui/screens/declaration.ts';
 
 /**
  * Состав экранов на месте живого сервиса ядра витрины (design.md, Решение

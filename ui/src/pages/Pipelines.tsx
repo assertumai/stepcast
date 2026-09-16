@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 
-import { groupProjects } from '../../../src/ui/grouping';
+import { groupProjects } from '../../../src/parts/ui/grouping';
 import {
   fetchPipelines,
   type Overview,
@@ -24,7 +24,7 @@ import { RUN_TARGET } from '../screens/run';
  * остаётся одна строка со счётом и ссылкой.
  *
  * Инвентарь приходит из `GET /api/pipelines` (демон читает файлы проектов),
- * счёт прогонов — из живого обзора; сводит их `src/ui/grouping.ts` по файлу,
+ * счёт прогонов — из живого обзора; сводит их `src/parts/ui/grouping.ts` по файлу,
  * которым прогон запущен.
  */
 

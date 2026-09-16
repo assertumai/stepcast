@@ -1,9 +1,9 @@
-import { resolveConfig, type ResolveOptions, type ResolvedConfig } from '../core/config/resolve.js';
+import { resolveConfig, type ResolveOptions, type ResolvedConfig } from './pipeline/config/resolve.js';
 import { loadPlugins, type DefaultLoadOptions } from './load.js';
-import type { RowOutcome } from '../core/plugins/load.js';
-import type { Context } from '../core/plugins/context.js';
-import { pluginContext } from '../core/plugins/kernel.js';
-import { contributionOwner, kernelFromRegistry, type Registry } from '../core/plugins/registry.js';
+import type { RowOutcome } from '../kernel/load.js';
+import type { Context } from '../kernel/context.js';
+import { pluginContext } from '../kernel/kernel.js';
+import { contributionOwner, kernelFromRegistry, type Registry } from '../kernel/registry.js';
 
 /**
  * Разрешение конфигурации вместе с плагинами.

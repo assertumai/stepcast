@@ -4,8 +4,8 @@ import { existsSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from 
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
-import { addWorktree, removeWorktree } from '../src/core/run/worktrees.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { addWorktree, removeWorktree } from '../src/parts/pipeline/run/worktrees.js';
 import { tempDir } from './tmp.js';
 
 /**

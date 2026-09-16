@@ -3,18 +3,18 @@ import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createFakeBackend, initLine, resultLine } from '../src/core/backend/fake.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { runPipeline } from '../src/core/run/runner.js';
+import { createFakeBackend, initLine, resultLine } from '../src/parts/pipeline/backend/fake.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { runPipeline } from '../src/parts/pipeline/run/runner.js';
 
-import { formatElapsed, renderProgressLine } from '../src/cli/progress.js';
-import { runRunCommand } from '../src/cli/commands/run.js';
-import { runLogsCommand } from '../src/cli/commands/logs.js';
-import type { ParsedArgs } from '../src/cli/args.js';
-import { readStatus, resolveRun } from '../src/core/journal/reader.js';
-import type { Event, RunStatus } from '../src/core/journal/schema.js';
-import type { UsageSnapshot } from '../src/core/budget/accumulator.js';
-import { ExitCode } from '../src/core/errors.js';
+import { formatElapsed, renderProgressLine } from '../src/parts/pipeline/commands/progress.js';
+import { runRunCommand } from '../src/parts/pipeline/commands/run.js';
+import { runLogsCommand } from '../src/parts/pipeline/commands/logs.js';
+import type { ParsedArgs } from '../src/kernel/cli/args.js';
+import { readStatus, resolveRun } from '../src/parts/pipeline/run/journal/reader.js';
+import type { Event, RunStatus } from '../src/parts/pipeline/run/journal/schema.js';
+import type { UsageSnapshot } from '../src/parts/pipeline/run/budget/accumulator.js';
+import { ExitCode } from '../src/kernel/errors.js';
 import { gitCommit, gitInit, makeProject, withHome } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -253,7 +253,7 @@ describe('run-progress: рендеринг строк ленты', () => {
 
   it('многострочная раскрашенная деталь предиката сворачивается в одну чистую строку', () => {
     // Ровно то, что кладёт в событие предикат `cmd`: команда, двоеточие,
-    // перевод строки и раскрашенный вывод (src/core/expect/evaluate.ts).
+    // перевод строки и раскрашенный вывод (src/parts/pipeline/expect/evaluate.ts).
     const detail = `npm test:\n${ESC}[31mFAIL${ESC}[39m test/a.test.ts\r\n  ${ESC}[2mожидалось 1${ESC}[22m\n`;
     const rendered =
       renderProgressLine(
@@ -635,7 +635,7 @@ describe('run-progress: команда run печатает ход', () => {
     assert.equal(quiet.lines.some((line) => line.includes('build:')), false, 'строк о работе быть не должно');
     assert.equal(quiet.lines.some((line) => line.includes('build/compile:')), false, 'строк о шаге быть не должно');
     // Строка о снимке движка — часть той же ленты: `--quiet` не заводит
-    // наблюдателя вовсе (`src/cli/commands/run.ts`), и ни одно событие,
+    // наблюдателя вовсе (`src/parts/pipeline/commands/run.ts`), и ни одно событие,
     // включая engine.pinned, до печати не доходит.
     assert.equal(quiet.lines.some((line) => line.startsWith('движок:')), false, 'строк о движке быть не должно');
     assert.ok(quiet.lines.some((line) => /^прогон .+: success$/.test(line)), 'итог остаётся');

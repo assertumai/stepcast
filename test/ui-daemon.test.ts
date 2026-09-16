@@ -14,9 +14,9 @@ import {
   runningDaemon,
   stopDaemon,
   writeRecord,
-} from '../src/ui/daemon.js';
-import { currentDaemonKernel } from '../src/ui/kernel.js';
-import { StepcastError } from '../src/core/errors.js';
+} from '../src/parts/ui/daemon/daemon.js';
+import { currentDaemonKernel } from '../src/parts/ui/daemon/kernel.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import { tempDir } from './tmp.js';
 
 function bed(): ReturnType<typeof daemonPaths> {

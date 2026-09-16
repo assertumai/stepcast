@@ -1,9 +1,9 @@
 /**
  * Разбор потока шага — реэкспорт общего с демоном модуля.
  *
- * Сами правила лежат в `src/ui/transcript.ts`: они чистые, и там их достаёт
+ * Сами правила лежат в `src/parts/ui/transcript.ts`: они чистые, и там их достаёт
  * обычный тест (`test/ui-transcript.test.ts`). Здесь остаётся привычный
- * витрине путь импорта, тот же, что у `format.ts` над `src/ui/format.ts`.
+ * витрине путь импорта, тот же, что у `format.ts` над `src/parts/ui/format.ts`.
  */
 
 export {
@@ -18,4 +18,4 @@ export {
   type ToolOutcome,
   type ToolResultEntry,
   type TranscriptEntry,
-} from '../../src/ui/transcript';
+} from '../../src/parts/ui/transcript';

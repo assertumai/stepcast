@@ -5,12 +5,12 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import { parse as parseYaml } from 'yaml';
 
-import { createFakeBackend, initLine, resultLine } from '../src/core/backend/fake.js';
-import { resolveConfig, type Config } from '../src/core/config/resolve.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { lintPipeline } from '../src/core/lint.js';
-import { readStatus } from '../src/core/journal/reader.js';
-import { runPipeline } from '../src/core/run/runner.js';
+import { createFakeBackend, initLine, resultLine } from '../src/parts/pipeline/backend/fake.js';
+import { resolveConfig, type Config } from '../src/parts/pipeline/config/resolve.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { lintPipeline } from '../src/parts/pipeline/domain/lint.js';
+import { readStatus } from '../src/parts/pipeline/run/journal/reader.js';
+import { runPipeline } from '../src/parts/pipeline/run/runner.js';
 import { asAgent } from './helpers.js';
 import { makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';

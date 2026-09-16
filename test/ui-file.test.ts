@@ -3,8 +3,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { MAX_FILE_BYTES, readJournalFile, resolveJournalPath } from '../src/ui/file.js';
-import { StepcastError } from '../src/core/errors.js';
+import { MAX_FILE_BYTES, readJournalFile, resolveJournalPath } from '../src/parts/ui/file.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import { tempDir } from './tmp.js';
 
 function bed(): string {

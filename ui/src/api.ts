@@ -1,4 +1,4 @@
-import type { ModelTier, ModelTiers } from '../../src/core/config/modelTiers.js';
+import type { ModelTier, ModelTiers } from '../../src/parts/pipeline/config/modelTiers.js';
 
 /**
  * Договор витрины с демоном.
@@ -9,9 +9,9 @@ import type { ModelTier, ModelTiers } from '../../src/core/config/modelTiers.js'
  * делятся. Расхождение с сервером типизация здесь не поймает; его ловят тесты
  * сервера, проверяющие ответы. Зато вся граница видна в одном файле.
  *
- * Поля сверены построчно с `src/ui/overview.ts`, `src/ui/snapshot.ts`,
- * `src/ui/pipelines.ts`, `src/ui/graph.ts` и `src/ui/settings.ts`, а формы
- * ответов на отбор и удаление — с обработчиками `src/ui/server.ts`.
+ * Поля сверены построчно с `src/parts/ui/overview.ts`, `src/parts/ui/snapshot.ts`,
+ * `src/parts/ui/pipelines.ts`, `src/parts/ui/graph.ts` и `src/parts/ui/settings.ts`, а формы
+ * ответов на отбор и удаление — с обработчиками `src/parts/ui/server.ts`.
  */
 
 export type StatusValue =
@@ -390,8 +390,8 @@ export interface StepsOverview {
   readonly generatedAt: string;
 }
 
-/** Сверено построчно с `WidgetView`/`ProjectWidgetsView`/`WidgetsOverview` (`src/ui/widgets.ts`). */
-/** Сверено с `WidgetDeprecation` (`src/ui/widgets.ts`). */
+/** Сверено построчно с `WidgetView`/`ProjectWidgetsView`/`WidgetsOverview` (`src/parts/ui/widgets.ts`). */
+/** Сверено с `WidgetDeprecation` (`src/parts/ui/widgets.ts`). */
 export interface WidgetDeprecation {
   /** `specifier` — таблица не несёт самого голого спецификатора; `name` — специфик остался, а имя из него ушло. */
   readonly kind: 'specifier' | 'name';
@@ -416,7 +416,7 @@ export interface WidgetsOverview {
   readonly generatedAt: string;
 }
 
-/** Сверено построчно с `ProposalOrigin`/`ProposalRecord` (`src/core/proposals/entry.ts`). */
+/** Сверено построчно с `ProposalOrigin`/`ProposalRecord` (`src/parts/pipeline/domain/proposals/entry.ts`). */
 export interface ProposalOrigin {
   readonly run?: string;
   readonly job?: string;
@@ -444,13 +444,13 @@ export interface ProposalRecord {
   readonly decidedAt?: string;
 }
 
-/** Негодная запись очереди — сверено с `InvalidProposalFile` (`src/core/proposals/store.ts`). */
+/** Негодная запись очереди — сверено с `InvalidProposalFile` (`src/parts/pipeline/domain/proposals/store.ts`). */
 export interface ProposalsInvalidFile {
   readonly file: string;
   readonly reason: string;
 }
 
-/** Запись, отданная `GET /api/proposals`, — та же запись плюс содержимое цели сейчас (`src/ui/screens/proposals/server.ts`). `null` — цели ещё нет (действие `create`). */
+/** Запись, отданная `GET /api/proposals`, — та же запись плюс содержимое цели сейчас (`src/parts/ui/screens/proposals/server.ts`). `null` — цели ещё нет (действие `create`). */
 export interface ProposalApiRecord extends ProposalRecord {
   readonly currentContent: string | null;
 }
@@ -472,7 +472,7 @@ export interface ProposalsOverview {
  * (до 256 КиБ на запись), без текущего содержимого цели и без режима доставки
  * (`ui-proposals`, Решение 15: «поток несёт только состав очереди»). Служит
  * сигналом «перечитай `GET /api/proposals`», а не прямым источником данных для
- * дифа. Сверено с `ProposalStreamRecord` (`src/ui/proposals.ts`).
+ * дифа. Сверено с `ProposalStreamRecord` (`src/parts/ui/proposals.ts`).
  */
 export type ProposalStreamRecord = Omit<ProposalRecord, 'content'>;
 
@@ -488,7 +488,7 @@ export interface ProposalsStreamEvent {
 
 /**
  * Строка состава браузерных плагинов — сверено построчно с `PluginRowView`
- * (`src/ui/plugins.ts`, design.md изменения `hot-swap-preserves-data`,
+ * (`src/parts/ui/plugins.ts`, design.md изменения `hot-swap-preserves-data`,
  * Решение 12): `id` каталога плагина домашнего слоя, версия — отпечаток
  * каталога, идёт в адрес модуля и в ключ сверки состава ядра
  * (`ui/src/services/plugins.ts`).
@@ -502,7 +502,7 @@ export interface PluginsOverview {
   readonly plugins: readonly PluginRowView[];
 }
 
-/** Разобранная ошибка компиляции виджета — сверено с `CompileFailure` (`src/ui/widgets.ts`). */
+/** Разобранная ошибка компиляции виджета — сверено с `CompileFailure` (`src/parts/ui/widgets.ts`). */
 export interface WidgetCompileFailure {
   readonly file: string;
   readonly line: number;
@@ -513,7 +513,7 @@ export interface WidgetCompileFailure {
 /** Файл, из которого пришёл пункт очереди — открытые либо решённые (`docs/backlog.md`). */
 export type BacklogSourceFile = 'backlog.md' | 'archived.md';
 
-/** Состояния пункта очереди — сверено с `BACKLOG_STATUSES` (`src/core/backlog/schema.ts`). */
+/** Состояния пункта очереди — сверено с `BACKLOG_STATUSES` (`src/parts/pipeline/domain/backlog/schema.ts`). */
 export type BacklogStatus = 'todo' | 'in_progress' | 'done' | 'failed';
 
 /**
@@ -522,7 +522,7 @@ export type BacklogStatus = 'todo' | 'in_progress' | 'done' | 'failed';
  */
 export type ScrumColumn = 'todo' | 'in_progress' | 'done' | 'archive';
 
-/** Сверено построчно с `src/ui/backlog.ts`. */
+/** Сверено построчно с `src/parts/ui/backlog.ts`. */
 export interface BacklogItemView {
   readonly slug: string;
   readonly status: BacklogStatus;
@@ -564,7 +564,7 @@ export interface BacklogOverview {
   readonly generatedAt: string;
 }
 
-/** Сверено построчно с `UsageMeasure` (`src/ui/usage.ts`). */
+/** Сверено построчно с `UsageMeasure` (`src/parts/ui/usage.ts`). */
 export interface UsageMeasure {
   readonly billableTokens: number;
   readonly costUsd: number;
@@ -620,7 +620,7 @@ export interface UsageResult {
 }
 
 /**
- * Доля расхода, чью модель назвать нечем (`src/ui/usage.ts`).
+ * Доля расхода, чью модель назвать нечем (`src/parts/ui/usage.ts`).
  *
  * Строка продублирована, а не импортирована: `usage.ts` читает диск через
  * `reader.js` и живёт только в демоне (см. заголовок этого файла), а значение
@@ -640,7 +640,7 @@ export interface FileContent {
 
 /**
  * Вывод шага по логическому адресу — сверено построчно с
- * `src/ui/stepOutput.ts` и обработчиком `/api/step-output` в `src/ui/server.ts`.
+ * `src/parts/ui/stepOutput.ts` и обработчиком `/api/step-output` в `src/parts/ui/server.ts`.
  */
 export interface StepOutputStream {
   readonly exists: boolean;
@@ -693,7 +693,7 @@ export interface ModelOption {
 
 /**
  * Итог перечисления моделей одного агента — те же имена причин, что у
- * `discoverModels` демона (`src/core/backend/models.ts`): `unsupported` —
+ * `discoverModels` демона (`src/parts/pipeline/backend/models.ts`): `unsupported` —
  * бэкенд перечислять не умеет, `not_installed` — команда не найдена,
  * `timeout` — не ответил за отпущенное время, `failed` — ответил отказом
  * (текст CLI как есть), `unparsed` — ответ не разобран, `probe_error` — код
@@ -744,7 +744,7 @@ export interface RunSelection {
   /**
    * Число прогонов области отбора, чей статус демон не смог прочитать ни из
    * состояния, ни из манифеста и которых поэтому не назвал (`selectCandidates`
-   * в `src/core/run/cleanup.ts`). Отобранные сюда не входят: срок берёт такой
+   * в `src/parts/pipeline/run/cleanup.ts`). Отобранные сюда не входят: срок берёт такой
    * прогон по времени каталога, и он уже стоит в `runs`. У отбора по явному
    * списку адресов всегда 0 — проверять там нечего.
    */
@@ -756,7 +756,7 @@ export type RemovalOutcomeKind = 'removed' | 'skipped_missing' | 'skipped_alive'
 /**
  * Судьба статистики при удалении: `kept` — сохранена, `removed` — снята явной
  * просьбой, `missing` — записи у прогона не было и снимать было нечего
- * (`StatsOutcome` в `src/core/run/cleanup.ts`).
+ * (`StatsOutcome` в `src/parts/pipeline/run/cleanup.ts`).
  */
 export type StatsOutcome = 'kept' | 'removed' | 'missing';
 export type StatsDisposition = 'keep' | 'drop';
@@ -775,7 +775,7 @@ export interface RemovalSummary {
   readonly freedBytes: number;
 }
 
-/** Кандидат к снятию из хранилища расхода — сверено с `handleSelectUsageRecords` в `src/ui/server.ts`. */
+/** Кандидат к снятию из хранилища расхода — сверено с `handleSelectUsageRecords` в `src/parts/ui/server.ts`. */
 export interface UsageRecordCandidate {
   readonly address: string;
   readonly ageMs: number;
@@ -928,7 +928,7 @@ export async function fetchFile(
 /**
  * Дописанное с вывода шага. Присутствие `stdoutOffset`/`stderrOffset` в
  * параметрах — сама просьба прочитать поток (см. `StepOutputQuery` в
- * `src/ui/stepOutput.ts`): не запрошенный поток демон не читает и не отдаёт.
+ * `src/parts/ui/stepOutput.ts`): не запрошенный поток демон не читает и не отдаёт.
  */
 export async function fetchStepOutput(options: {
   readonly address: string;
@@ -1089,7 +1089,7 @@ export async function deleteRuns(addresses: readonly string[], stats?: StatsDisp
 /**
  * Отбор записей хранилища расхода к снятию — только отчёт, файлов прогонов
  * не касается. Те же признаки, что у `selectRuns`, кроме «оборванного»: он к
- * записи не применим (`selectUsageRecords` в `core/journal/usageStore.ts`).
+ * записи не применим (`selectUsageRecords` в `parts/pipeline/run/journal/usageStore.ts`).
  */
 export async function selectUsageRecords(options: {
   readonly failed?: boolean;

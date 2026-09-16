@@ -6,7 +6,7 @@ import { describe, it } from 'node:test';
 
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { SHARED_MODULES } from '../../src/ui/sharedModules.ts';
+import { SHARED_MODULES } from '../../src/parts/ui/daemon/sharedModules.ts';
 import * as StepcastUi from '@stepcast/ui';
 import {
   Button,
@@ -59,7 +59,7 @@ describe('ui-components: состав библиотеки не расходит
     const missing = SHARED_MODULES['@stepcast/ui'].names.filter(
       (name) => !Object.prototype.hasOwnProperty.call(mod, name),
     );
-    assert.deepEqual(missing, [], 'перечень записи разошёлся с реальным экспортом ui/src/ui/index.ts');
+    assert.deepEqual(missing, [], 'перечень записи разошёлся с реальным экспортом ui/src/parts/ui/index.ts');
   });
 
   it('модуль не экспортирует лишнего сверх объявленного перечня', () => {
@@ -192,7 +192,7 @@ describe('ui-components: ни один цвет не назван литерал
 
   it('файлы стилей библиотеки не содержат цвет литералом', () => {
     const files = readdirSync(ROOT_UI).filter((name) => name.endsWith('.css'));
-    assert.ok(files.length > 0, 'в ui/src/ui/ не нашлось ни одного файла стилей');
+    assert.ok(files.length > 0, 'в ui/src/parts/ui/ не нашлось ни одного файла стилей');
 
     const offenders: string[] = [];
     for (const file of files) {

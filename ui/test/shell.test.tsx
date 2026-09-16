@@ -139,7 +139,7 @@ describe('shell: слот screen по ключу маршрута', () => {
 });
 
 describe('shell: настоящий каркас на настоящем ядре', () => {
-  /** Объявление минимального экрана — те же поля, что несёт `ScreenDeclaration` (`src/ui/screens/declaration.ts`): путь и место в меню больше не его поля (`ui-routes`). */
+  /** Объявление минимального экрана — те же поля, что несёт `ScreenDeclaration` (`src/parts/ui/screens/declaration.ts`): путь и место в меню больше не его поля (`ui-routes`). */
   const SAMPLE_DECLARATION = { id: 'screen-sample', title: 'Пример', params: [] };
 
   /** Маршрут корня на этот экран, с местом в навигации — таблица маршрутов, а не поля объявления экрана. */

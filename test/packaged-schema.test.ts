@@ -4,9 +4,9 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
-import { judgeVerdictSchemaPath } from '../src/core/expect/verdict.js';
-import { packagedSchemaPath } from '../src/core/package-schema.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { judgeVerdictSchemaPath } from '../src/parts/pipeline/expect/verdict.js';
+import { packagedSchemaPath } from '../src/parts/pipeline/domain/package-schema.js';
 import { tempDir } from './tmp.js';
 
 interface PackageSchemaModule {
@@ -31,7 +31,11 @@ async function fakeInstall(schemaNames?: readonly string[]): Promise<{
   // (`/var` → `/private/var`), а движок возвращает путь уже разрешённым.
   const root = realpathSync(tempDir('pkg-'));
   writeFileSync(join(root, 'package.json'), '{ "name": "stepcast", "type": "module" }\n');
-  cpSync(fileURLToPath(new URL('../src/core', import.meta.url)), join(root, 'src', 'core'), {
+  // `src/` целиком, а не один `core/`: `package-schema.ts` читает
+  // `findPackageRoot` из ядра (`src/kernel/packageRoot.ts`,
+  // `source-tree-microkernel-layout`, Решение 6), и поддельная установка
+  // обязана нести оба модуля, а не только тот, что копировался раньше.
+  cpSync(fileURLToPath(new URL('../src', import.meta.url)), join(root, 'src'), {
     recursive: true,
   });
 
@@ -43,7 +47,7 @@ async function fakeInstall(schemaNames?: readonly string[]): Promise<{
   }
 
   const module = (await import(
-    pathToFileURL(join(root, 'src', 'core', 'package-schema.js')).href
+    pathToFileURL(join(root, 'src', 'parts', 'pipeline', 'domain', 'package-schema.js')).href
   )) as PackageSchemaModule;
   return { root, module };
 }

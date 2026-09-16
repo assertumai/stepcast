@@ -3,9 +3,9 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { buildOverview } from '../src/ui/overview.js';
-import { cleanupRun, removeRunWithStats } from '../src/core/run/cleanup.js';
-import { projectKey } from '../src/core/journal/paths.js';
+import { buildOverview } from '../src/parts/ui/overview.js';
+import { cleanupRun, removeRunWithStats } from '../src/parts/pipeline/run/cleanup.js';
+import { projectKey } from '../src/parts/pipeline/run/journal/paths.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 
 describe('ui-dashboard: обзор всех проектов и прогонов', () => {
@@ -356,7 +356,7 @@ describe('ui-dashboard: обзор всех проектов и прогонов
     // встроенного модуля в ESM нельзя — как process.kill выше, — поэтому
     // проверяется то, что проверке доступно: обзор о ней вовсе не знает, и
     // её появление здесь заметит именно эта проверка.
-    const source = readFileSync(new URL('../src/ui/overview.js', import.meta.url), 'utf8');
+    const source = readFileSync(new URL('../src/parts/ui/overview.js', import.meta.url), 'utf8');
     assert.doesNotMatch(source, /dirSize|run\/cleanup/);
   });
 

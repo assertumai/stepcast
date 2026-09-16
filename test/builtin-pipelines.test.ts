@@ -4,23 +4,23 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import {
   findPackageRoot,
   packagedPipelineNames,
   packagedPipelinePath,
   resolvePipelineTarget,
-} from '../src/core/package-schema.js';
-import { resolveConfig } from '../src/core/config/resolve.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { hasErrors, lintPipeline } from '../src/core/lint.js';
-import { createClaudeAdapter } from '../src/core/backend/claude.js';
-import { resultLine } from '../src/core/backend/fake.js';
-import { runPipeline } from '../src/core/run/runner.js';
-import { readStatus } from '../src/core/journal/reader.js';
-import type { AgentInvocation, BackendAdapter, LaunchSpec } from '../src/core/backend/types.js';
-import { readProposalsDir } from '../src/core/proposals/store.js';
-import { widgetsDirPath } from '../src/ui/widgets.js';
+} from '../src/parts/pipeline/domain/package-schema.js';
+import { resolveConfig } from '../src/parts/pipeline/config/resolve.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { hasErrors, lintPipeline } from '../src/parts/pipeline/domain/lint.js';
+import { createClaudeAdapter } from '../src/parts/backends/claude/adapter.js';
+import { resultLine } from '../src/parts/pipeline/backend/fake.js';
+import { runPipeline } from '../src/parts/pipeline/run/runner.js';
+import { readStatus } from '../src/parts/pipeline/run/journal/reader.js';
+import type { AgentInvocation, BackendAdapter, LaunchSpec } from '../src/parts/pipeline/backend/types.js';
+import { readProposalsDir } from '../src/parts/pipeline/domain/proposals/store.js';
+import { widgetsDirPath } from '../src/parts/ui/widgets.js';
 import { makeProject, withHome, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

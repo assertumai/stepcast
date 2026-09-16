@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { Context, type Fiber } from 'cordis';
 import type { ComponentType } from 'react';
 
-import { failedFibers, settle, unresolvedFibers } from '../../src/core/plugins/fibers';
+import { failedFibers, settle, unresolvedFibers } from '../../src/kernel/fibers';
 // Расширение явно: `ui/src/slots.tsx` (рендерер) — тот же basename, esbuild и
 // tsc(bundler) расходятся, что значит голое `./slots` (см. комментарий в `ui/src/kernel.ts`).
 import { SlotsService, slot, slotServiceName, translateSlotNameConflict, type SlotDescriptor } from '../src/slots.ts';

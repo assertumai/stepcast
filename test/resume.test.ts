@@ -4,11 +4,11 @@ import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'no
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createAnchorer, detectAnchorKind, manifestStore } from '../src/core/anchor/index.js';
-import { createFakeBackend, initLine, resultLine, toolUseLine } from '../src/core/backend/fake.js';
-import type { BackendConfig, Config } from '../src/core/config/resolve.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { findStepDir, readEvents, readStatus, readUsage, resolveRun } from '../src/core/journal/reader.js';
+import { createAnchorer, detectAnchorKind, manifestStore } from '../src/parts/pipeline/domain/anchor/index.js';
+import { createFakeBackend, initLine, resultLine, toolUseLine } from '../src/parts/pipeline/backend/fake.js';
+import type { BackendConfig, Config } from '../src/parts/pipeline/config/resolve.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { findStepDir, readEvents, readStatus, readUsage, resolveRun } from '../src/parts/pipeline/run/journal/reader.js';
 import {
   buildResumePlan,
   changedSince,
@@ -19,10 +19,10 @@ import {
   producedBy,
   readSourceRun,
   type ResumePlan,
-} from '../src/core/run/resumePlan.js';
-import type { BackendAdapter } from '../src/core/backend/types.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
-import type { StepRecord } from '../src/core/journal/schema.js';
+} from '../src/parts/pipeline/run/resumePlan.js';
+import type { BackendAdapter } from '../src/parts/pipeline/backend/types.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
+import type { StepRecord } from '../src/parts/pipeline/run/journal/schema.js';
 import { makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -530,7 +530,7 @@ jobs:
     const first = await firstRun(b);
     assert.equal(first.status, 'failed');
 
-    const { buildPreviousFailure } = await import('../src/core/run/previousFailure.js');
+    const { buildPreviousFailure } = await import('../src/parts/pipeline/run/previousFailure.js');
     const note = buildPreviousFailure(first.journal.paths, readStatus(first.journal.paths));
 
     assert.ok(note !== undefined);
@@ -545,7 +545,7 @@ jobs:
     const b = bed({ 'маркер.txt': 'есть', 'stepcast.yml': TWO_JOBS });
     const first = await firstRun(b);
 
-    const { buildPreviousFailure } = await import('../src/core/run/previousFailure.js');
+    const { buildPreviousFailure } = await import('../src/parts/pipeline/run/previousFailure.js');
     assert.equal(
       buildPreviousFailure(first.journal.paths, readStatus(first.journal.paths)),
       undefined,
@@ -638,7 +638,7 @@ jobs:
 
   // Сценарий: «Продолжаемый шаг выдержки об отказе не получает»
   it('buildPreviousFailure не выбирает своим адресатом работу, чей шаг продолжает сессию', async () => {
-    const { buildPreviousFailure } = await import('../src/core/run/previousFailure.js');
+    const { buildPreviousFailure } = await import('../src/parts/pipeline/run/previousFailure.js');
     const status = {
       run_id: 'r1',
       pipeline: 'p',
@@ -672,7 +672,7 @@ describe('run-resume: запись о прерывании', () => {
   // Сценарий: «Запись добавлена продолжаемому шагу» / «Запись говорит о
   // прерывании, а не о непройденной проверке»
   it('interrupted.md называет прерывание прерыванием и не несёт протокол попыток', async () => {
-    const { buildInterruptedNote } = await import('../src/core/run/previousFailure.js');
+    const { buildInterruptedNote } = await import('../src/parts/pipeline/run/previousFailure.js');
     const text = buildInterruptedNote();
 
     assert.match(text, /прерван/i);

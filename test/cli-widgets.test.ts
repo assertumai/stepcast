@@ -3,9 +3,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { ExitCode } from '../src/core/errors.js';
-import { runWidgetsCommand } from '../src/cli/commands/widgets.js';
-import { SHARED_MODULE_TABLE_VERSION } from '../src/ui/sharedModules.js';
+import { ExitCode } from '../src/kernel/errors.js';
+import { runWidgetsCommand } from '../src/parts/ui/commands/widgets.js';
+import { SHARED_MODULE_TABLE_VERSION } from '../src/parts/ui/daemon/sharedModules.js';
 import { tempDir } from './tmp.js';
 
 function capture(): { lines: string[]; write: (line: string) => void } {

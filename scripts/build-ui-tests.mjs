@@ -8,7 +8,7 @@ import * as esbuild from 'esbuild';
 /**
  * Сборка браузерных тестов витрины — design.md `cordis-kernel-browser`,
  * Решение 12. `ui/test/**\/*.test.tsx` собираются esbuild'ом (тем же
- * пакетом, которым демон компилирует виджеты, `src/ui/widgets.ts`) в
+ * пакетом, которым демон компилирует виджеты, `src/parts/ui/widgets.ts`) в
  * `dist/ui-test/`; `react` и `react-dom` (и его подпути, включая
  * `react-dom/server`, которым тесты рендерят) остаются внешними — их
  * разрешит сам Node из `node_modules`. Отдельный скрипт, а не запись esbuild

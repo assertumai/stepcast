@@ -1,11 +1,11 @@
 import type { z } from 'zod';
 
-import { PipelineDocumentSchema, JobDocumentSchema, StepManifestSchema } from '../src/core/pipeline/schema.js';
-import { PluginsPatchDocumentSchema, RawConfigSchema } from '../src/core/config/schema.js';
-import { PluginManifestSchema } from '../src/core/plugins/manifest.js';
-import { BacklogItemSchema, BacklogSlotsResponseSchema } from '../src/core/backlog/schema.js';
-import { RouteDocumentSchema } from '../src/ui/routesFile.js';
-import { DashboardDocumentSchema } from '../src/ui/dashboardsFile.js';
+import { PipelineDocumentSchema, JobDocumentSchema, StepManifestSchema } from '../src/parts/pipeline/document/schema.js';
+import { PluginsPatchDocumentSchema, RawConfigSchema } from '../src/parts/pipeline/config/schema.js';
+import { PluginManifestSchema } from '../src/kernel/tree/manifest.js';
+import { BacklogItemSchema, BacklogSlotsResponseSchema } from '../src/parts/pipeline/domain/backlog/schema.js';
+import { RouteDocumentSchema } from '../src/parts/ui/routesFile.js';
+import { DashboardDocumentSchema } from '../src/parts/ui/dashboardsFile.js';
 
 /**
  * Перечень целей генерации JSON Schema — общий для скрипта печати

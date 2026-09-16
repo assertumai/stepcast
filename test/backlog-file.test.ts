@@ -3,12 +3,12 @@ import { chmodSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
-import { finishItem, oneLine, readBacklogFile, tailLine, REASON_LIMIT } from '../src/core/backlog/file.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { finishItem, oneLine, readBacklogFile, tailLine, REASON_LIMIT } from '../src/parts/pipeline/domain/backlog/file.js';
 import { tempDir } from './tmp.js';
 
 /**
- * Файловая сторона очереди (`src/core/backlog/file.ts`): её пользуются и
+ * Файловая сторона очереди (`src/parts/pipeline/domain/backlog/file.ts`): её пользуются и
  * `stepcast backlog`, и сведение дорожек, поэтому проверяется она здесь один
  * раз — временными файлами, в отличие от чистого ядра в `test/backlog.test.ts`.
  */

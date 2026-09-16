@@ -3,12 +3,12 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { authRefusalLine, createFakeBackend, rateLimitRefusalLine, resultLine } from '../src/core/backend/fake.js';
-import type { BackendAdapter } from '../src/core/backend/types.js';
-import { runJudgePass } from '../src/core/exec/judgePass.js';
-import { RunJournal } from '../src/core/journal/writer.js';
-import type { Predicate } from '../src/core/pipeline/model.js';
-import type { PredicateResult, Usage } from '../src/core/journal/schema.js';
+import { authRefusalLine, createFakeBackend, rateLimitRefusalLine, resultLine } from '../src/parts/pipeline/backend/fake.js';
+import type { BackendAdapter } from '../src/parts/pipeline/backend/types.js';
+import { runJudgePass } from '../src/parts/pipeline/run/exec/judgePass.js';
+import { RunJournal } from '../src/parts/pipeline/run/journal/writer.js';
+import type { Predicate } from '../src/parts/pipeline/document/model.js';
+import type { PredicateResult, Usage } from '../src/parts/pipeline/run/journal/schema.js';
 import { tempDir } from './tmp.js';
 
 function bed(): { runsRoot: string; projectRoot: string; stepDir: string } {

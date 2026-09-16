@@ -3,15 +3,15 @@ import { globSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { estimateTokens } from '../src/core/context/assemble.js';
-import { evaluatePredicates } from '../src/core/expect/evaluate.js';
-import { createFsKnowledgeSource, globsIntersect, parseUnit } from '../src/core/knowledge/fs.js';
-import { createKnowledgeSource } from '../src/core/knowledge/source.js';
+import { estimateTokens } from '../src/parts/pipeline/domain/context/assemble.js';
+import { evaluatePredicates } from '../src/parts/pipeline/expect/evaluate.js';
+import { createFsKnowledgeSource, globsIntersect, parseUnit } from '../src/parts/pipeline/domain/knowledge/fs.js';
+import { createKnowledgeSource } from '../src/parts/pipeline/domain/knowledge/source.js';
 import {
   KnowledgeWriteRequestSchema,
   type KnowledgeSource,
-} from '../src/core/knowledge/types.js';
-import { StepcastError } from '../src/core/errors.js';
+} from '../src/parts/pipeline/domain/knowledge/types.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import { anchorHash, gitCommit, gitInit } from './helpers.js';
 import { tempDir } from './tmp.js';
 

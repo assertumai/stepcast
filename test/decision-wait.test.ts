@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { mkdirSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
-import { runPaths } from '../src/core/journal/paths.js';
-import { atomicWrite } from '../src/core/journal/writer.js';
-import { decisionRecordPath } from '../src/core/journal/paths.js';
-import type { AwaitingDecision } from '../src/core/journal/schema.js';
-import { waitForDecision } from '../src/core/run/decisionWait.js';
+import { runPaths } from '../src/parts/pipeline/run/journal/paths.js';
+import { atomicWrite } from '../src/parts/pipeline/run/journal/writer.js';
+import { decisionRecordPath } from '../src/parts/pipeline/run/journal/paths.js';
+import type { AwaitingDecision } from '../src/parts/pipeline/run/journal/schema.js';
+import { waitForDecision } from '../src/parts/pipeline/run/decisionWait.js';
 import { tempDir } from './tmp.js';
 
 function paths() {
@@ -25,7 +25,7 @@ function awaiting(overrides: Partial<AwaitingDecision> = {}): AwaitingDecision {
   };
 }
 
-describe('core/run/decisionWait: опрос каталога решений', () => {
+describe('parts/pipeline/run/decisionWait: опрос каталога решений', () => {
   it('решение, лежавшее на диске до начала ожидания, применяется первым же тактом', async () => {
     const p = paths();
     mkdirSync(p.decisions, { recursive: true });

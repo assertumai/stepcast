@@ -1,6 +1,6 @@
 import type { JSX, ReactNode } from 'react';
 
-import type { RouteTarget } from '../../src/ui/routes.ts';
+import type { RouteTarget } from '../../src/parts/ui/routes.ts';
 import { hrefForTarget } from './router';
 
 /**

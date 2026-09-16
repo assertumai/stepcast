@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { mergeToolOutcomes, parseTranscript, type TranscriptEntry } from '../src/ui/transcript.js';
+import { mergeToolOutcomes, parseTranscript, type TranscriptEntry } from '../src/parts/ui/transcript.js';
 
 /**
  * Образцы строк — той же формы, что пишет `adapter.parseLine`
- * (`src/core/backend/claude.ts`): `system`/`init`, `assistant` с текстом и с
+ * (`src/parts/backends/claude/adapter.ts`): `system`/`init`, `assistant` с текстом и с
  * `tool_use`, `user` с `tool_result`, `result`.
  */
 const INIT_LINE = JSON.stringify({

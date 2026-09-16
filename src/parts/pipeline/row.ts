@@ -1,9 +1,9 @@
 import type { Fiber } from 'cordis';
 
-import { assertStepKindNameAvailable } from '../../core/pipeline/schema.js';
-import type { BackendContribution, PredicateKind, StepKind } from '../../core/plugins/pipeline-contract.js';
-import { ContributionService } from '../../core/plugins/kernel.js';
-import { isBuiltinRowFiber } from '../../core/plugins/load.js';
+import { assertStepKindNameAvailable } from './document/schema.js';
+import type { BackendContribution, PredicateKind, StepKind } from './contract.js';
+import { ContributionService } from '../../kernel/kernel.js';
+import { isBuiltinRowFiber } from '../../kernel/load.js';
 import { partRow } from './services.js';
 
 /**
@@ -11,7 +11,7 @@ import { partRow } from './services.js';
  * Решение 1). Заводит три служебных сервиса движка пайплайнов на своей
  * области и не вносит ни одного вклада — бэкенды, предикаты и виды шага
  * приносят соседние строки-потребители (`src/parts/backends/claude/row.ts`,
- * `src/parts/expect/row.ts`, строки видов шага в `src/parts/steps`).
+ * `src/parts/pipeline/expect/row.ts`, строки видов шага в `src/parts/steps`).
  *
  * Проверка имени вида шага (`assertStepKindNameAvailable`) — доменное знание,
  * которое ядро принимало параметром сборки (`kernel-domain-free-imports`,
@@ -20,7 +20,7 @@ import { partRow } from './services.js';
  */
 export const row = partRow('pipeline', [], (ctx) => {
   // Признак встроенности сервисов пайплайна — по образцу `commands` в ядре
-  // (`core/plugins/kernel.ts`, `createKernel`): идентичность области этой
+  // (`kernel/kernel.ts`, `createKernel`): идентичность области этой
   // строки (в синхронной сборке умолчания это корневая область — все строки
   // применяются прямо на ней, `applyRowOnRoot`) ИЛИ пометка `rowScope` у
   // строки-потребителя со своей областью (design.md изменения

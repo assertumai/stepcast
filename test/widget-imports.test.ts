@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { parseWidgetImports, unresolvedSharedNames } from '../src/ui/widgetImports.js';
+import { parseWidgetImports, unresolvedSharedNames } from '../src/parts/ui/widgetImports.js';
 
 describe('widgetImports: разбор голых спецификаторов', () => {
   it('имя из таблицы не считается неразрешённым', () => {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { layoutJobs, type GraphInput } from '../src/ui/graph.js';
+import { layoutJobs, type GraphInput } from '../src/parts/ui/graph.js';
 
 /**
  * Раскладка работ графом. Проверяется правило, а не картинка: колонка равна

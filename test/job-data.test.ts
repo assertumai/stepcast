@@ -4,29 +4,29 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { row as dataRow, runDataCommand } from '../src/cli/commands/data.js';
-import { parseArgs } from '../src/cli/args.js';
-import type { CommandSpec } from '../src/core/plugins/cli-types.js';
+import { row as dataRow, runDataCommand } from '../src/parts/pipeline/commands/data.js';
+import { parseArgs } from '../src/kernel/cli/args.js';
+import type { CommandSpec } from '../src/kernel/cli/types.js';
 
 /** Описание аргументов команды `data` — из её собственного модуля (`cli-commands-as-rows`), не из общего литерала. */
 const DATA_COMMANDS: Record<string, CommandSpec> = { data: dataRow.command.spec };
-import { StepcastError } from '../src/core/errors.js';
-import { readJobData, writeJobDataUnchecked, jobDataPath } from '../src/core/journal/data.js';
-import { readStatus } from '../src/core/journal/reader.js';
-import { jobDir as runJobDir, projectKey } from '../src/core/journal/paths.js';
-import { renderDisplay } from '../src/core/pipeline/display.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { lintPipeline } from '../src/core/lint.js';
-import { serializeLock } from '../src/core/pipeline/lock.js';
-import { resolveLate } from '../src/core/pipeline/late.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { readJobData, writeJobDataUnchecked, jobDataPath } from '../src/parts/pipeline/run/journal/data.js';
+import { readStatus } from '../src/parts/pipeline/run/journal/reader.js';
+import { jobDir as runJobDir, projectKey } from '../src/parts/pipeline/run/journal/paths.js';
+import { renderDisplay } from '../src/parts/pipeline/document/display.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { lintPipeline } from '../src/parts/pipeline/domain/lint.js';
+import { serializeLock } from '../src/parts/pipeline/document/lock.js';
+import { resolveLate } from '../src/parts/pipeline/document/late.js';
 import {
   buildResumePlan,
   parseFrom,
   readSourceRun,
   type ResumePlan,
-} from '../src/core/run/resumePlan.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
-import { buildSnapshot } from '../src/ui/snapshot.js';
+} from '../src/parts/pipeline/run/resumePlan.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
+import { buildSnapshot } from '../src/parts/ui/snapshot.js';
 import { makeJournalBed, makeProject, seedRun, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

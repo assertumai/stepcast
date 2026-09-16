@@ -1,6 +1,6 @@
 import type { Context } from 'cordis';
 
-import type { ScreenListing } from '../../../src/ui/screens/declaration.ts';
+import type { ScreenListing } from '../../../src/parts/ui/screens/declaration.ts';
 import { BUILTIN_SCREENS } from '../screens/index';
 
 /**

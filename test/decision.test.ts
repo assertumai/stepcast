@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
-import { computeWaitId, selectAwaiting, toDecisionRecord, validateDecision } from '../src/core/run/decision.js';
-import { computeStepKey } from '../src/core/run/stepKey.js';
-import type { AwaitingDecision } from '../src/core/journal/schema.js';
-import type { PluginStep } from '../src/core/pipeline/model.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { computeWaitId, selectAwaiting, toDecisionRecord, validateDecision } from '../src/parts/pipeline/run/decision.js';
+import { computeStepKey } from '../src/parts/pipeline/run/stepKey.js';
+import type { AwaitingDecision } from '../src/parts/pipeline/run/journal/schema.js';
+import type { PluginStep } from '../src/parts/pipeline/document/model.js';
 
 function awaiting(overrides: Partial<AwaitingDecision> = {}): AwaitingDecision {
   return {
@@ -18,7 +18,7 @@ function awaiting(overrides: Partial<AwaitingDecision> = {}): AwaitingDecision {
   };
 }
 
-describe('core/run/decision: идентификатор ожидания', () => {
+describe('parts/pipeline/run/decision: идентификатор ожидания', () => {
   it('одни и те же составляющие дают один и тот же идентификатор', () => {
     const identity = { job: 'build', step: 'gate', attempt: 1, iteration: 1, since: '2026-01-01T00:00:00.000Z' };
     assert.equal(computeWaitId(identity), computeWaitId({ ...identity }));
@@ -38,7 +38,7 @@ describe('core/run/decision: идентификатор ожидания', () =>
   });
 });
 
-describe('core/run/decision: выбор ожидания', () => {
+describe('parts/pipeline/run/decision: выбор ожидания', () => {
   it('нет ожиданий вовсе — отказ', () => {
     assert.throws(() => selectAwaiting([]), (error: unknown) => {
       assert.ok(error instanceof StepcastError);
@@ -101,7 +101,7 @@ describe('core/run/decision: выбор ожидания', () => {
   });
 });
 
-describe('core/run/decision: проверка предложенного решения', () => {
+describe('parts/pipeline/run/decision: проверка предложенного решения', () => {
   const knownSteps = new Set(['build', 'build/gate', 'deploy']);
 
   it('исход вне перечня — отказ с перечнем допустимых', () => {
@@ -168,7 +168,7 @@ function decisionStep(fields: unknown): PluginStep {
   };
 }
 
-describe('core/run/decision: принятое решение в ключе шага', () => {
+describe('parts/pipeline/run/decision: принятое решение в ключе шага', () => {
   const key = (step: PluginStep): string =>
     computeStepKey({ lockHash: 'lock', jobId: 'build', step, inputsFingerprint: undefined, backendCommand: undefined, upstream: [] });
 
@@ -187,7 +187,7 @@ describe('core/run/decision: принятое решение в ключе ша�
   });
 });
 
-describe('core/run/decision: форма записи решения', () => {
+describe('parts/pipeline/run/decision: форма записи решения', () => {
   it('камелкейс результата переводится в snake_case записи журнала', () => {
     const record = toDecisionRecord({
       outcome: 'redo',

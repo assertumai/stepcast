@@ -3,12 +3,12 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { buildSnapshot } from '../src/ui/snapshot.js';
-import { cleanupRun } from '../src/core/run/cleanup.js';
-import { projectKey } from '../src/core/journal/paths.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { serializeLock } from '../src/core/pipeline/lock.js';
-import type { RunStatus } from '../src/core/journal/schema.js';
+import { buildSnapshot } from '../src/parts/ui/snapshot.js';
+import { cleanupRun } from '../src/parts/pipeline/run/cleanup.js';
+import { projectKey } from '../src/parts/pipeline/run/journal/paths.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { serializeLock } from '../src/parts/pipeline/document/lock.js';
+import type { RunStatus } from '../src/parts/pipeline/run/journal/schema.js';
 import { makeJournalBed, makeProject, seedRun } from './helpers.js';
 
 const PIPELINE = `

@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent, type JSX } from 'react';
 
-import type { RouteDefinition } from '../../../src/ui/routes.ts';
+import type { RouteDefinition } from '../../../src/parts/ui/routes.ts';
 
 /**
  * Экран «Маршруты»: перечень действующих маршрутов с источником каждого

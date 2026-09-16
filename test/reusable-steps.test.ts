@@ -3,8 +3,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { expandPipeline, type ScriptRoots } from '../src/core/pipeline/expand.js';
-import { StepcastError } from '../src/core/errors.js';
+import { expandPipeline, type ScriptRoots } from '../src/parts/pipeline/document/expand.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import { asScript, makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

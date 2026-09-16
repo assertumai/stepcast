@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
-import type { CliIo } from '../src/cli/args.js';
-import { run as runCli } from '../src/cli/main.js';
-import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
+import type { CliIo } from '../src/kernel/cli/args.js';
+import { run as runCli } from '../src/parts/cli/main.js';
+import { ExitCode, type ExitCodeValue } from '../src/kernel/errors.js';
 import { makeProject, withHome, type Project } from './helpers.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -108,7 +108,7 @@ describe('stepcast schema: без плагинов', () => {
   });
 
   // Ветвь шага script: печатаемая схема принимает и отклоняет те же
-  // документы, что и разбор движка (`toStep` в `src/core/pipeline/expand.ts`).
+  // документы, что и разбор движка (`toStep` в `src/parts/pipeline/document/expand.ts`).
   it('печатаемая схема пайплайна признаёт шаг script и отклоняет script вместе с run', async () => {
     const project = makeProject({});
     const outcome = await cli(project, ['schema']);

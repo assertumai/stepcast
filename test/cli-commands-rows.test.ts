@@ -3,9 +3,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import type { CliIo } from '../src/cli/args.js';
-import { run as runCli } from '../src/cli/main.js';
-import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
+import type { CliIo } from '../src/kernel/cli/args.js';
+import { run as runCli } from '../src/parts/cli/main.js';
+import { ExitCode, type ExitCodeValue } from '../src/kernel/errors.js';
 import { makeProject, withHome, type Project } from './helpers.js';
 
 /**
@@ -214,7 +214,7 @@ describe('plugin-tree: строка плагина вставлена перед
 /**
  * Каталог плагинов, названный идентификатором строки независимой команды
  * (находка ревью): защита строки от состава (`protectIndependentRows`,
- * `src/core/config/resolve.ts`) возвращает встроенную идентичность тому месту,
+ * `src/parts/pipeline/config/resolve.ts`) возвращает встроенную идентичность тому месту,
  * которое строка занимает, — а каталожная строка стоит в дереве отдельно,
  * своим отказом и своим путём, ровно как у прочих двадцати двух команд.
  */

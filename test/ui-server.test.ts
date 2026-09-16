@@ -18,31 +18,31 @@ import {
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { resetModelDiscoveryCache } from '../src/core/backend/models.js';
-import { dashboardPath } from '../src/ui/assets.js';
-import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
+import { resetModelDiscoveryCache } from '../src/parts/pipeline/backend/models.js';
+import { dashboardPath } from '../src/parts/ui/daemon/assets.js';
+import { createUiServer, LOOPBACK, type UiServer } from '../src/parts/ui/daemon/server.js';
 import {
   createKernelCache,
   disposeRaisedKernels,
   resolveWithCachedKernel,
   type KernelCache,
-} from '../src/ui/pipelines.js';
-import { hrefFor, type RouteTable } from '../src/ui/routes.js';
-import { launchDecide, launchRun } from '../src/ui/runLaunch.js';
-import { declaration as runDeclaration } from '../src/ui/screens/run/declaration.js';
-import { createWatcher, type Watcher } from '../src/ui/watcher.js';
-import { resolveConfig, type Config } from '../src/core/config/resolve.js';
-import { projectKey, runPaths, shortRunId, stepDir, usageStorePath } from '../src/core/journal/paths.js';
-import { MAX_FILE_BYTES } from '../src/ui/file.js';
-import { proposeEntry } from '../src/core/proposals/store.js';
-import { runGcCommand } from '../src/cli/commands/gc.js';
-import type { ParsedArgs } from '../src/cli/args.js';
+} from '../src/parts/ui/pipelines.js';
+import { hrefFor, type RouteTable } from '../src/parts/ui/routes.js';
+import { launchDecide, launchRun } from '../src/parts/ui/runLaunch.js';
+import { declaration as runDeclaration } from '../src/parts/ui/screens/run/declaration.js';
+import { createWatcher, type Watcher } from '../src/parts/ui/daemon/watcher.js';
+import { resolveConfig, type Config } from '../src/parts/pipeline/config/resolve.js';
+import { projectKey, runPaths, shortRunId, stepDir, usageStorePath } from '../src/parts/pipeline/run/journal/paths.js';
+import { MAX_FILE_BYTES } from '../src/parts/ui/file.js';
+import { proposeEntry } from '../src/parts/pipeline/domain/proposals/store.js';
+import { runGcCommand } from '../src/parts/pipeline/commands/gc.js';
+import type { ParsedArgs } from '../src/kernel/cli/args.js';
 import {
   createWidgetCompiler,
   widgetsDirPath,
   type EsbuildTransformApi,
   type WidgetCompiler,
-} from '../src/ui/widgets.js';
+} from '../src/parts/ui/widgets.js';
 import { makeJournalBed, seedRun, withHome } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -328,7 +328,7 @@ describe('ui-dashboard: HTTP-витрина', () => {
 
   // Обзор называет файл, которым запущен прогон: по нему первый экран
   // связывает прогон с пайплайном — имя для этого не годится (см.
-  // `src/ui/grouping.ts` и `test/ui-grouping.test.ts`).
+  // `src/parts/ui/grouping.ts` и `test/ui-grouping.test.ts`).
   it('называет в обзоре файл пайплайна относительно корня проекта', async (t) => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
@@ -539,7 +539,7 @@ describe('ui-dashboard: HTTP-витрина', () => {
 
     // Состав браузерных строк и состав экранов отстают от прочих событий
     // такта: оба спрашиваются у ядра демона (`activePlugins`/`activeScreens`,
-    // `src/ui/server.ts`), а это `await` — отсюда они последними, а не между
+    // `src/parts/ui/daemon/server.ts`), а это `await` — отсюда они последними, а не между
     // `widgets` и `run`. Таблица маршрутов — синхронно из наблюдателя, поэтому
     // идёт прежде `run`. Порядок событий клиенту безразличен (каждое ложится в
     // своё поле снимка `live`), но перечень обмена проверяется целиком, чтобы
@@ -2776,7 +2776,7 @@ describe('ui-dashboard: изоляция и снятие контекстов я
     // Запись проекта та же: объявления плагинов не менялись, и сервер взял
     // готовое ядро, а не поднял своё. Вторая запись — `home:<home>`: любой
     // запрос под `/api/` теперь ищет обработчик в реестре собственного ядра
-    // демона (`src/ui/kernel.ts`, `ui-daemon`, «Настройки и маршруты живут в
+    // демона (`src/parts/ui/daemon/kernel.ts`, `ui-daemon`, «Настройки и маршруты живут в
     // одном контексте демона»), и этот запрос завёл её впервые.
     assert.equal(kernelCache.entries.size, 2);
     assert.equal([...kernelCache.entries.values()][0], entry);
@@ -2799,7 +2799,7 @@ describe('ui-dashboard: изоляция и снятие контекстов я
     assert.equal(pick(pipelines.json, 'pipelines', 0, 'error'), undefined);
     // Две записи: проект, раскрытый `/api/pipelines`, и `home:<home>` —
     // собственное ядро демона, которое дispatcher резолвит на каждый запрос
-    // под `/api/`, чтобы найти обработчик в его реестре (`src/ui/kernel.ts`).
+    // под `/api/`, чтобы найти обработчик в его реестре (`src/parts/ui/daemon/kernel.ts`).
     assert.equal(kernelCache.entries.size, 2);
     const projectEntry = kernelCache.entries.get(projectRoot);
     assert.deepEqual(projectEntry?.kernel.ctx.get('shared-service'), { from: 'plugin' });
@@ -2834,8 +2834,8 @@ describe('ui-dashboard: изоляция и снятие контекстов я
     const moduleUrl = (path: string): string =>
       JSON.stringify(pathToFileURL(fileURLToPath(new URL(path, import.meta.url))).href);
     const probe = [
-      `import { createUiServer } from ${moduleUrl('../src/ui/server.js')};`,
-      `import { resolveConfig } from ${moduleUrl('../src/core/config/resolve.js')};`,
+      `import { createUiServer } from ${moduleUrl('../src/parts/ui/daemon/server.js')};`,
+      `import { resolveConfig } from ${moduleUrl('../src/parts/pipeline/config/resolve.js')};`,
       `const home = ${JSON.stringify(home)};`,
       'const { config } = resolveConfig({ cwd: home, home, projectPath: null });',
       `const server = await createUiServer({ runsRoot: ${JSON.stringify(runsRoot)}, config, home, port: 0 });`,
@@ -4034,7 +4034,7 @@ describe('ui-dashboard: жизненный цикл компилятора ви�
     const key = projectKey(projectRoot);
     writeWidget(projectRoot, 'clock', HOOK_WIDGET);
 
-    const serverModulePath = fileURLToPath(new URL('../src/ui/server.js', import.meta.url));
+    const serverModulePath = fileURLToPath(new URL('../src/parts/ui/daemon/server.js', import.meta.url));
     const serverModuleUrl = pathToFileURL(serverModulePath).href;
     const probe = [
       `import { createUiServer } from ${JSON.stringify(serverModuleUrl)};`,
@@ -4127,7 +4127,7 @@ describe('ui-dashboard: жизненный цикл компилятора ви�
       ].join('\n'),
     );
 
-    const serverModuleUrl = pathToFileURL(fileURLToPath(new URL('../src/ui/server.js', import.meta.url))).href;
+    const serverModuleUrl = pathToFileURL(fileURLToPath(new URL('../src/parts/ui/daemon/server.js', import.meta.url))).href;
     const probe = [
       `import { createUiServer } from ${JSON.stringify(serverModuleUrl)};`,
       'const lines = [];',

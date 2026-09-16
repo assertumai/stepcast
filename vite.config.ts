@@ -12,7 +12,7 @@ import { viteSingleFile } from 'vite-plugin-singlefile';
  * отдаёт её единственным файлом. Свойство «демон не становится файловым
  * сервером» с разбором MIME и защитой от обхода путей отменено спайком
  * `ui-runtime-widget-spike`: демон отдаёт сгенерированный JS виджетов по двум
- * объявленным формам адреса под `/widgets/` (`src/ui/server.ts`), с той же
+ * объявленным формам адреса под `/widgets/` (`src/parts/ui/daemon/server.ts`), с той же
  * защитой от обхода, что и у прочих путей витрины. Страница по-прежнему одна:
  * то, что отменено, — граница «ничего, кроме страницы», а не «страница не
  * одна».
@@ -53,7 +53,7 @@ export default defineConfig({
     proxy: {
       '/api': { target: DAEMON, changeOrigin: false },
       // Перечень форм адреса виджета — тот же, что отдаёт демон
-      // (`isWidgetPath`, `src/ui/routes.ts`), и это сверено тестом
+      // (`isWidgetPath`, `src/parts/ui/routes.ts`), и это сверено тестом
       // («карта имён страницы», `test/ui-shared-modules.test.ts`: каждая форма
       // адреса обязана попасть под запись прокси). Без записи здесь дев-сервер
       // сам отвечал бы на `/widgets/...` (и то и молча, 404 встроенным
@@ -81,10 +81,10 @@ export default defineConfig({
       // что любая открытая в браузере страница читает через `/@fs/` что
       // угодно из рабочего дерева.
       //
-      // `src/ui/screens` разрешён каталогом, а не перечнем файлов
+      // `src/parts/ui/screens` разрешён каталогом, а не перечнем файлов
       // (`builtin-pages-as-plugins`, design.md Решение 14): объявления
       // экранов — общий с демоном модуль на каждый встроенный экран
-      // (`src/ui/screens/<id>/declaration.ts`), и перечислять десять файлов
+      // (`src/parts/ui/screens/<id>/declaration.ts`), и перечислять десять файлов
       // поимённо давало бы тот же доступ ценой лишней строки на каждый новый
       // экран; серверные половины (`server.ts`) в этом каталоге тоже лежат, но
       // витрина их не импортирует, и дев-сервер отдаёт браузеру только то, что
@@ -92,18 +92,18 @@ export default defineConfig({
       allow: [
         join(ROOT, 'ui'),
         join(ROOT, 'node_modules'),
-        join(ROOT, 'src', 'ui', 'routes.ts'),
-        join(ROOT, 'src', 'ui', 'grouping.ts'),
-        join(ROOT, 'src', 'ui', 'format.ts'),
-        join(ROOT, 'src', 'ui', 'transcript.ts'),
-        join(ROOT, 'src', 'ui', 'runsView.ts'),
-        join(ROOT, 'src', 'ui', 'filters.ts'),
-        join(ROOT, 'src', 'ui', 'backlogView.ts'),
-        join(ROOT, 'src', 'ui', 'scrumView.ts'),
-        join(ROOT, 'src', 'ui', 'sharedModules.ts'),
-        join(ROOT, 'src', 'ui', 'screens'),
-        join(ROOT, 'src', 'core', 'config', 'modelTiers.ts'),
-        join(ROOT, 'src', 'core', 'plugins', 'fibers.ts'),
+        join(ROOT, 'src', 'parts', 'ui', 'routes.ts'),
+        join(ROOT, 'src', 'parts', 'ui', 'grouping.ts'),
+        join(ROOT, 'src', 'parts', 'ui', 'format.ts'),
+        join(ROOT, 'src', 'parts', 'ui', 'transcript.ts'),
+        join(ROOT, 'src', 'parts', 'ui', 'runsView.ts'),
+        join(ROOT, 'src', 'parts', 'ui', 'filters.ts'),
+        join(ROOT, 'src', 'parts', 'ui', 'backlogView.ts'),
+        join(ROOT, 'src', 'parts', 'ui', 'scrumView.ts'),
+        join(ROOT, 'src', 'parts', 'ui', 'daemon', 'sharedModules.ts'),
+        join(ROOT, 'src', 'parts', 'ui', 'screens'),
+        join(ROOT, 'src', 'parts', 'pipeline', 'config', 'modelTiers.ts'),
+        join(ROOT, 'src', 'kernel', 'fibers.ts'),
       ],
     },
   },

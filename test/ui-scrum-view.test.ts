@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { BACKLOG_STATUSES } from '../src/core/backlog/schema.js';
+import { BACKLOG_STATUSES } from '../src/parts/pipeline/domain/backlog/schema.js';
 import {
   COLUMN_TITLES,
   DROPPABLE_COLUMNS,
@@ -10,7 +10,7 @@ import {
   insertionBefore,
   viewBoard,
   type BoardItemLike,
-} from '../src/ui/scrumView.js';
+} from '../src/parts/ui/scrumView.js';
 
 /**
  * Раскладка доски: что в какой колонке лежит и куда встанет перетащенная

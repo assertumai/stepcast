@@ -11,11 +11,11 @@
     "stepcast": "./dist/src/bin.js"
   },
   "exports": {
-    ".": "./dist/src/core/index.js",
-    "./plugin": "./dist/src/plugin.js",
+    ".": "./dist/src/parts/pipeline/index.js",
+    "./plugin": "./dist/src/plugin/index.js",
     "./pipeline": "./dist/src/parts/pipeline/surface.js",
-    "./step": "./dist/src/step/index.js",
-    "./backends/codex": "./dist/src/backends/codex/index.js"
+    "./step": "./dist/src/parts/pipeline/step/index.js",
+    "./backends/codex": "./dist/src/parts/backends/codex/index.js"
   },
   "files": [
     "dist",

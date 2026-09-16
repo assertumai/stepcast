@@ -1,6 +1,6 @@
 import type { JSX } from 'react';
 
-import type { RouteTable } from '../../../src/ui/routes.ts';
+import type { RouteTable } from '../../../src/parts/ui/routes.ts';
 
 /** Файл слоя, в который витрина пишет маршруты по умолчанию, — для подсказок на странице. */
 export const HOME_ROUTES_FILE = '~/.stepcast/routes.yml';

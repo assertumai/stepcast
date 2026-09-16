@@ -3,10 +3,10 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { resolveConfig } from '../src/core/config/resolve.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { StepcastError } from '../src/core/errors.js';
-import { buildPipelines } from '../src/ui/pipelines.js';
+import { resolveConfig } from '../src/parts/pipeline/config/resolve.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { buildPipelines } from '../src/parts/ui/pipelines.js';
 import { makeJournalBed, makeProject, seedRun, type Project } from './helpers.js';
 
 /** Ошибка разбора пайплайна проекта — единственное, ради чего заведён проект. */

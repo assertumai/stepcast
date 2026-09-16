@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { run } from './cli/main.js';
+import { run } from './parts/cli/main.js';
 
 /**
  * Прочитать стандартный ввод целиком. Интерактивный терминал (нет ни файла,

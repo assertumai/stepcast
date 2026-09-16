@@ -7,7 +7,7 @@ import {
   nextOccurrence,
   parseCron,
   type CronMask,
-} from '../src/core/trigger/cron.js';
+} from '../src/parts/pipeline/domain/trigger/cron.js';
 
 function mask(expression: string): CronMask {
   const parsed = parseCron(expression);

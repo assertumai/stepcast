@@ -3,10 +3,10 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { evaluatePredicates } from '../src/core/expect/evaluate.js';
-import { UsageAccumulator, describeExceeded } from '../src/core/budget/accumulator.js';
-import type { Predicate } from '../src/core/pipeline/model.js';
-import type { Usage, UsageReport } from '../src/core/journal/schema.js';
+import { evaluatePredicates } from '../src/parts/pipeline/expect/evaluate.js';
+import { UsageAccumulator, describeExceeded } from '../src/parts/pipeline/run/budget/accumulator.js';
+import type { Predicate } from '../src/parts/pipeline/document/model.js';
+import type { Usage, UsageReport } from '../src/parts/pipeline/run/journal/schema.js';
 import { tempDir } from './tmp.js';
 
 function workdir(files: Record<string, string> = {}): string {

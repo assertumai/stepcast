@@ -9,22 +9,22 @@ import {
   pluginPredicateEntries,
   pluginStepKindEntries,
   type PluginPredicateEntry,
-} from '../src/core/pipeline/published-schema.js';
+} from '../src/parts/pipeline/document/published-schema.js';
 import { builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
 import { BUILTIN_ROWS } from '../src/parts/rows.js';
-import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
-import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
+import { applyDeclarativePlugin } from '../src/kernel/load.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/parts/pipeline/contract.js';
 import {
   nativePredicateNames,
   nativeStepKindNames,
   registryFromKernel,
   type Registry,
-} from '../src/core/plugins/registry.js';
+} from '../src/kernel/registry.js';
 import {
   DEFAULT_NATIVE_STEP_KINDS,
   isDefaultNativePredicates,
-} from '../src/core/pipeline/schema.js';
-import { StepcastError } from '../src/core/errors.js';
+} from '../src/parts/pipeline/document/schema.js';
+import { StepcastError } from '../src/kernel/errors.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 

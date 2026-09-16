@@ -3,13 +3,13 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createFakeBackend, initLine, resultLine } from '../src/core/backend/fake.js';
-import type { BackendConfig } from '../src/core/config/resolve.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { findStepDir, readEvents, resolveRun } from '../src/core/journal/reader.js';
-import { planResume, readSourceRun } from '../src/core/run/resumePlan.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
-import type { ContextReport } from '../src/core/journal/schema.js';
+import { createFakeBackend, initLine, resultLine } from '../src/parts/pipeline/backend/fake.js';
+import type { BackendConfig } from '../src/parts/pipeline/config/resolve.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { findStepDir, readEvents, resolveRun } from '../src/parts/pipeline/run/journal/reader.js';
+import { planResume, readSourceRun } from '../src/parts/pipeline/run/resumePlan.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
+import type { ContextReport } from '../src/parts/pipeline/run/journal/schema.js';
 import { gitInit, makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

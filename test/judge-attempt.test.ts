@@ -3,10 +3,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createFakeBackend, initLine, resultLine, type FakeBackend } from '../src/core/backend/fake.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { findStepDir, readExpectReports, readStatus } from '../src/core/journal/reader.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
+import { createFakeBackend, initLine, resultLine, type FakeBackend } from '../src/parts/pipeline/backend/fake.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { findStepDir, readExpectReports, readStatus } from '../src/parts/pipeline/run/journal/reader.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
 import { makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

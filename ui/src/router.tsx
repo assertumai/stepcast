@@ -1,7 +1,7 @@
 import { useCallback, useContext, useEffect, useState, useSyncExternalStore } from 'react';
 import type { Context } from 'cordis';
 
-import { hrefFor, parseRoute, type MatchedRoute, type RouteTarget } from '../../src/ui/routes';
+import { hrefFor, parseRoute, type MatchedRoute, type RouteTarget } from '../../src/parts/ui/routes';
 import { KernelContext } from './kernel';
 import type { RoutesSnapshot } from './services/routes';
 import type { ScreensSnapshot } from './services/screens';
@@ -15,8 +15,8 @@ export type { MatchedRoute };
  *
  * Настоящие адреса, а не `#`: страница прогона должна пережить перезагрузку,
  * открыться в новой вкладке и годиться для ссылки. Демон отдаёт витрину на
- * любой не-API адрес (`src/ui/server.ts`), а разбор пути — `parseRoute` из
- * `src/ui/routes.ts` — общий с ним модуль.
+ * любой не-API адрес (`src/parts/ui/server.ts`), а разбор пути — `parseRoute` из
+ * `src/parts/ui/routes.ts` — общий с ним модуль.
  *
  * Таблица маршрутов приходит от демона (`GET /api/routes`, событие потока
  * `routes`) и живёт в сервисе `ctx.routes` (`ui/src/services/routes.ts`).

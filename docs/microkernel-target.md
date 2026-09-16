@@ -29,7 +29,7 @@
 разобрана на строки, а сервисы `screens` и `api` заводит не ядро демона, а
 строка `ui-shell` — потому что «тип обработчика маршрута тянет за собой
 окружение демона, которого у ядра нет и не будет»
-(`src/ui/screens/registry.ts`). Довод дословно применим к `backends`,
+(`src/parts/ui/screens/registry.ts`). Довод дословно применим к `backends`,
 `predicates` и `steps`: `EvaluationInput` и `StepKindInput` тянут за собой
 понятия прогона, попытки и журнала. Разница лишь в том, что витрину эту
 операцию прошла, а пайплайн — нет.
@@ -103,34 +103,47 @@ src/
     tree/                     строки, слои, патчи, порядок, enabled
     load.ts                   разрешение модуля, импорт, откат частичного вклада
     introspect.ts             кто что внёс — для `stepcast plugins`
-    config/                   механизм слоёв (без доменных ключей)
-    cli/                      argv, io, справка, диспетчер команд
+    cli/                      argv, io, помощник объявления строки команды
+    fs/  packageRoot.ts       временный каталог, подъём до корня пакета
     errors.ts  schema-failure.ts  units.ts
 
   plugin/                     ← публичная поверхность `stepcast/plugin`
     index.ts                  типы ядра + definePlugin / definePredicate<T> / defineStepKind<F>
 
   parts/                      ← строки встроенного слоя: пакет их несёт, ядро — нет
+    rows.ts  load.ts  builtin.ts  resolve.ts   состав дефолта движка
+    cli/                       каркас точки входа CLI, отдельный от ядра
+      main.ts  rows.ts          точка входа, перечень строк встроенных команд
+      commands/  plugins.ts     единственная ядерная команда, читающая состав
     pipeline/
       row.ts                  строка: provide('backends' | 'predicates' | 'steps')
       surface.ts              публичная поверхность `stepcast/pipeline` (доменные типы)
+      contract.ts             доменный контракт вклада (было core/plugins/pipeline-contract.ts)
+      services.ts             PIPELINE_SERVICES, помощник строки-потребителя
+      index.ts                цель подпути `stepcast`
       document/               разбор, раскрытие, схемы            (ныне core/pipeline)
-      run/                    исполнение, журнал, бюджет, resume  (ныне core/run)
+      run/                    исполнение, resume                  (ныне core/run)
+        exec/  journal/  budget/                                  (ныне core/exec, core/journal, core/budget)
       expect/                 предикаты: union + switch целиком здесь
+      backend/                типы, реестр, модели, права, слоты, fake (ныне core/backend/*)
+      config/                 механизм слоёв конфигурации          (ныне core/config)
       steps/
         agent/  run/  script/  uses/   каждый со своим row.ts
         decision/                      row.ts — вид шага, отключаемый отдельно
       domain/                 knowledge, lanes, anchor, backlog, proposals,
-                              trigger, budget, context, expr
-      commands/               run, resume, status, lint, diff, usage, logs, gc, …
+                              trigger, project, context, expr, graph, lint,
+                              text, textDiff, остаток package-schema.ts
+      commands/               run, resume, status, lint, diff, usage, logs, gc, … (21)
+      step/                   публикуемая обёртка раннера, цель подпути `stepcast/step`
     backends/
-      claude/  row.ts         строка backend-claude
-      codex/   row.ts         строка backend-codex (вне дефолта)
+      claude/  adapter.ts  row.ts   строка backend-claude
+      codex/   adapter.ts  index.ts  цель подпути `stepcast/backends/codex`
     ui/
       shell/                  строка ui-shell: provide('screens' | 'api')
       screens/                14 строк, по каталогу на экран
       dashboards/  runLaunch/
-      daemon/                 http, watcher, kernel-cache, sharedModules
+      commands/               up, down, widgets — знают витрину, не пайплайн
+      daemon/                 daemon, server, http, watcher, kernel, assets, sharedModules
 
   builtin/                    файлы поставки, не код: routes.yml, steps/, scripts/, pipelines/
   bin.ts                      точка входа процесса CLI (перечень строк — parts/rows.ts, не здесь)
@@ -143,9 +156,9 @@ src/
 ### Каталог — не то же самое, что строка
 
 Признак строки — **модуль, экспортирующий `row`**, а не место в дереве
-каталогов; соглашение уже действует в витрине (`src/ui/dashboards/row.ts`,
-`src/ui/screens/*/server.ts`) и в движке (`src/parts/backends/claude/row.ts`,
-`src/parts/steps/decision/row.ts`). Поэтому `decision` лежит рядом с
+каталогов; соглашение уже действует в витрине (`src/parts/ui/dashboards/row.ts`,
+`src/parts/ui/screens/*/server.ts`) и в движке (`src/parts/backends/claude/row.ts`,
+`src/parts/pipeline/steps/decision/row.ts`). Поэтому `decision` лежит рядом с
 родственными видами шага, оставаясь отдельной строкой, а состав дефолта
 определяет перечень в `src/parts/rows.ts` — модуле данных, а не раскладка
 файлов и не `bin.ts` (точка входа процесса).
@@ -194,7 +207,7 @@ zod в контракте касается передачи модели чер�
    имени вида шага ядро принимает параметром сборки (`KernelOptions.nameGuards`);
    встроенный слой поставки (`backend/claude.js`, `pipeline/expand.js`,
    `steps/decision`) уехал из ядра в `src/parts/builtin.ts`; загрузчик
-   (`src/core/plugins/load.ts`) больше не несёт своей таблицы строк и находит
+   (`src/kernel/load.ts`) больше не несёт своей таблицы строк и находит
    фабрику только среди строк, поданных параметром. Граница проверяется
    линтером (`no-restricted-imports` на `src/core/plugins/**`). Остаток снят
    шагом 8: доменная половина контракта выделена в `pipeline-contract.ts`,
@@ -205,9 +218,9 @@ zod в контракте касается передачи модели чер�
    (`PluginPatchRow` в дереве строк); их переезд — остаток шага 10.
 3. ✅ **Соглашение о строке** (`row.ts`) и перечень дефолта декларацией
    (`row-module-convention`): строки движка — `src/parts/backends/claude/row.ts`,
-   `src/parts/steps/decision/row.ts`; перечень дефолта — модуль данных
-   `src/parts/rows.ts`, не `bin.ts`; строка каркаса витрины — `src/ui/shell/row.ts`,
-   перечень витрины — `src/ui/rows.ts`. Пересечение перечня движка и перечня
+   `src/parts/pipeline/steps/decision/row.ts`; перечень дефолта — модуль данных
+   `src/parts/rows.ts`, не `bin.ts`; строка каркаса витрины — `src/parts/ui/shell/row.ts`,
+   перечень витрины — `src/parts/ui/rows.ts`. Пересечение перечня движка и перечня
    вызывающего по `id` — именованный отказ состава, а не молчаливый дубль в
    семени дерева.
 4. ✅ **Контракт вида шага уравнивается** (`step-kind-document-contract`):
@@ -228,7 +241,7 @@ zod в контракте касается передачи модели чер�
    Решение 3).
 5. ✅ **Четыре встроенных вида шага — строками** (`builtin-step-kinds-as-rows`):
    `step-run`, `step-uses`, `step-script`, `step-agent` заведены рядом с
-   `step-decision` (`src/parts/steps/{run,uses,script,agent,decision}/row.ts`),
+   `step-decision` (`src/parts/pipeline/steps/{run,uses,script,agent,decision}/row.ts`),
    перечислены в `src/parts/rows.ts` тем же порядком, каким они узнают свой
    шаг; `createKernelShell` их больше не регистрирует, `registerBuiltinStepKinds`
    снят, а `expand.ts` отдаёт строкам четыре внутренние формы поимённо.
@@ -236,12 +249,11 @@ zod в контракте касается передачи модели чер�
    проекта (`published-schema.ts`) собираются по действующему составу видов
    внутренней формы, а не по постоянному перечню; вид, снятый составом, даёт
    именованный отказ разбора, отличный от «неизвестного ключа». `decision`
-   переехал физически (`src/steps/decision/` → `src/parts/steps/decision/`),
+   переехал физически (`src/steps/decision/` → `src/parts/pipeline/steps/decision/`),
    оставаясь строкой с прежним `id`; граница линтера «вклад идёт через
-   `stepcast/plugin`» переехала вместе с ним. По прежнему адресу остались
-   пустые модули (`export {}`) с объяснением переезда: снять отслеживаемый
-   git файл агенту петли нечем (`agent-cannot-clean-up`), и удаление каталога
-   `src/steps/` остаётся отдельной правкой рукой. Форма `native` эту привилегию
+   `stepcast/plugin`» переехала вместе с ним. Прежнего адреса не осталось
+   вовсе: пустые модули-призраки (`export {}`), которыми тот переезд обошёлся
+   вместо удаления, сняты вместе с каталогом `src/steps/` шагом 10. Форма `native` эту привилегию
    не потеряла (см. оговорку в шаге 4) — переезд в строки её не снимает.
    Резерв ключей формата (`BUILTIN_STEP_KIND_KEY_OWNERS`) от состава не
    зависит: отключение строки не освобождает её ключей плагину — это остаётся
@@ -250,7 +262,7 @@ zod в контракте касается передачи модели чер�
    сохранением union и `switch`: все десять встроенных предикатов
    (`exit_code`, `file_exists`, `schema`, `matches`, `not_matches`,
    `changed_only`, `knowledge_valid`, `cmd`, `script`, `judge`) заведены
-   строкой `src/parts/expect/row.ts`, перечисленной в `src/parts/rows.ts`
+   строкой `src/parts/pipeline/expect/row.ts`, перечисленной в `src/parts/rows.ts`
    сразу после `backend-claude`; `createKernelShell` больше не резервирует ни
    одного имени, `Kernel.reservePredicate` и `ContributionService.reserved`
    сняты. `expand.ts` отдаёт строке десять внутренних форм `native`
@@ -278,7 +290,7 @@ zod в контракте касается передачи модели чер�
    области и не вносит ни одного вклада — их приносят соседние строки-потребители
    (`backend-claude`, `predicates`, пять строк видов шага), применённые
    собственной областью с объявленным `inject` (`partRow`, `src/parts/pipeline/services.ts`,
-   поверх общего с `screenRow` помощника `rowScope`, `src/core/plugins/load.ts`).
+   поверх общего с `screenRow` помощника `rowScope`, `src/kernel/load.ts`).
    Ядро (`createKernel()`) без опций и без единого доменного имени — заводит
    только `commands`. Ключевой шаг: после него ядро перестаёт знать доменные
    имена.
@@ -313,7 +325,7 @@ zod в контракте касается передачи модели чер�
    окружению с ядерным умолчанием, `Context` публикует только `commands` и
    способности области); `define.ts` — только `definePlugin`. Прежние импорты
    доменных имён из `stepcast/plugin` ломаются без реэкспорта — таблица
-   переезда в `docs/plugins.md` и в заголовке `src/plugin.ts`. Плагины
+   переезда в `docs/plugins.md` и в заголовке `src/plugin/index.ts`. Плагины
    поставки (`codex`, `decision`) и образец `examples/plugins/typed` переписаны
    новым делением; заведён второй образец, `examples/plugins/command`, — плагин,
    знающий только ядро, входящий в `npm run typecheck:plugin` как машинная
@@ -321,10 +333,10 @@ zod в контракте касается передачи модели чер�
    `contract.ts` (`backend/types.js`) снято.
 
    Остаток для шага 10, названный явно: доменная половина контракта
-   (`src/core/plugins/pipeline-contract.ts` — доменные типы вклада, их схемы
+   (`src/parts/pipeline/contract.ts` — доменные типы вклада, их схемы
    загрузки, таблица декларативной формы `DECLARATIVE_CONTRIBUTION_FIELDS`,
    доменные объявления контекста `PipelineContext`/`PipelineCommandEnv`)
-   осталась соседним модулем `src/core/plugins/contract.ts`, а не переехала в
+   осталась соседним модулем `src/kernel/contract.ts`, а не переехала в
    `src/parts/pipeline/`: `registry.ts` и `load.ts` читают её доменные типы, а
    ядру импортировать `src/parts/**` запрещено линтом — этим запретом закрыт
    откат шага 2 (design.md изменения, Решение 3). Таблица декларативной формы
@@ -336,7 +348,7 @@ zod в контракте касается передачи модели чер�
    остальное дерево, и снимаются они тем же переездом.
 9. ✅ **Встроенные команды CLI — строками** (`cli-commands-as-rows`): каждая
    из двадцати пяти команд — модуль, экспортирующий `row` (`src/cli/commands/*.ts`,
-   `commandRow()`, `src/cli/commandRow.ts`), с `id` вида `command-<имя>`.
+   `commandRow()`, `src/kernel/cli/commandRow.ts`), с `id` вида `command-<имя>`.
    Перечень строк команд — `src/cli/rows.ts` (`COMMAND_ROWS`, `COMMAND_ROW_IDS`);
    он лежит у вызывающего (`src/cli`), а не в `src/parts/rows.ts`: тела команд —
    в `src/cli/commands/**`, куда `src/parts/**` импортировать запрещено линтом,
@@ -358,29 +370,112 @@ zod в контракте касается передачи модели чер�
 
    Остаток шага 8 закрыт тем же пунктом: таблица ключей декларативной формы
    (`DECLARATIVE_CONTRIBUTION_FIELDS`) стала параметром обхода
-   (`LoadOptions.declarativeFields`, `src/core/plugins/load.ts`) — ядро плагинов
+   (`LoadOptions.declarativeFields`, `src/kernel/load.ts`) — ядро плагинов
    её больше не импортирует; состав дефолта (`src/parts/load.ts`) подаёт
    действующую таблицу целиком. Ключ декларативной формы, которого поданная
    таблица не называет, отказывает по имени, называя ключ и плагин.
 
    Признак владельца встроенного вклада (Решение 7 design.md изменения)
-   переехал в ядро: `rowScope` (`src/core/plugins/load.ts`) помечает область
+   переехал в ядро: `rowScope` (`src/kernel/load.ts`) помечает область
    любой строки, заведённой через него, одним модульным множеством —
    `partRow` (`src/parts/pipeline/services.ts`), `screenRow`
-   (`src/ui/screens/registry.ts`) и `commandRow` больше не держат каждый свою
+   (`src/parts/ui/screens/registry.ts`) и `commandRow` больше не держат каждый свою
    копию признака. Сервис `commands` признаёт встроенным вклад корневой
    области или помеченной строки — тем же правилом, каким сервисы строки
    `pipeline` уже признавали помеченные строки-потребители.
-10. **Физический переезд каталогов** в `kernel/` и `parts/` — последним, когда
-    границы уже проверены компилятором, а не наоборот. Остатки, названные
-    предыдущими шагами: `src/cli/commands/**` → `src/parts/pipeline/commands/**`
-    (шаг 9, `cli-commands-as-rows`, design.md «Non-Goals») и переезд
-    `src/core/plugins/pipeline-contract.ts` (доменные типы вклада, их схемы
-    загрузки, таблица декларативной формы) в `src/parts/pipeline/` (шаг 8,
-    остаток, назван также в design.md `cli-commands-as-rows`, Решение 11).
+10. ✅ **Физический переезд каталогов** в `kernel/` и `parts/`
+    (`source-tree-microkernel-layout`) — последним, когда границы уже
+    проверены компилятором, а не наоборот. Двести шестьдесят пять модулей
+    `src/**` переехали `git mv`-эквивалентом (песочница прогона блокирует
+    прямой `git mv`; переезд сделан `fs.renameSync` и синхронизирован с
+    индексом отдельно — содержимое файлов от этого не меняется, и
+    `git diff -M` читает результат переименованиями) на дерево, названное в
+    «Финальной структуре кода» выше. Оба остатка, названные шагами 8 и 9,
+    закрыты: `src/cli/commands/**` (21 доменная команда) →
+    `src/parts/pipeline/commands/**`, `up`/`down`/`widgets` →
+    `src/parts/ui/commands/**`, `plugins` → `src/parts/cli/commands/plugins.ts`;
+    `src/core/plugins/pipeline-contract.ts` → `src/parts/pipeline/contract.ts`.
+    Граница ядра сведена в одну запись правила линтера, действующую деревьями
+    (`src/kernel/**` не импортирует `src/parts/**`, `src/plugin/**`,
+    `src/bin.ts`) вместо перечня доменных имён сегментов — перечень пришлось
+    бы дописывать на каждое новое доменное имя, одно правило над деревьями не
+    растёт.
+
+    Вторая граница — «вклад плагина поставки идёт через публичный подпуть» —
+    переехала вместе с плагинами и сменила форму: до переезда она была названа
+    деревом движка (`**/core/**`), а после него оба плагина поставки лежат
+    ВНУТРИ `src/parts/` и называют внутренний модуль подъёмом без узнаваемого
+    сегмента (`../../run/journal/schema.js` из `steps/decision/`). Дерево в
+    правиле стало бы вакуумным, поэтому запрет назван подъёмом выше
+    собственного каталога плагина, а разрешены ровно два публичных подпутя
+    (`stepcast/plugin`, `stepcast/pipeline`). Проба линтера в
+    `test/eslint-config.test.ts` называет настоящие адреса, и отдельная
+    проверка требует их существования на диске: проба по снесённому адресу
+    прошла бы при любом правиле, и вакуумное правило выглядело бы работающим.
+
+    Отступления от «переезд — переименование, содержимое меняется только
+    спецификаторами импорта и текстами, называющими путь» — шесть, а не пять
+    запланированных (`openspec/changes/source-tree-microkernel-layout/design.md`,
+    Решение 4):
+    1. `load.ts` объявляет узкий вход («то, у чего есть `pluginTree`») вместо
+       импорта `ResolvedConfig`.
+    2. Схема документа `plugins.patch.yml` переехала в `kernel/tree/patch.ts` —
+       формат патча описывает дерево строк, а не конфигурацию движка.
+    3. `package-schema.ts` разделён: `findPackageRoot` — в `kernel/packageRoot.ts`,
+       остальное — в `parts/pipeline/domain/package-schema.ts`.
+    4. `PIPELINE_SERVICES` переехал из каркаса CLI (`kernel/cli/commandRow.ts`)
+       к строке-поставщику (`parts/pipeline/services.ts`); строки доменных
+       команд подают перечень параметром `inject`.
+    5. Пути, вычисляемые от расположения модуля (`runLaunch.ts`, `assets.ts`,
+       `up.ts` → `bin.js`; `PACKAGED_WRAPPERS` → `wrapper.js`), пересчитаны по
+       новой глубине.
+    6. **Найдено самим переездом, не запланировано заранее.** `load.ts` и
+       `registry.ts` читают контракт декларативного плагина
+       (`StepcastPluginSchema`, типы вклада, различители `isNative*`) — эта
+       зависимость была доменной и до переезда тоже, но модуль назывался
+       `pipeline-contract.ts` (совпадение подстроки «pipeline», а не сегмент
+       пути), и перечень доменных имён его не ловил. Переезд в
+       `parts/pipeline/contract.ts` завёл настоящий сегмент `parts`, и то же
+       самое имя, что раньше проходило мимо правила, стало нарушением. Снять
+       его значило бы переписать `load.ts`/`registry.ts` на структурный вход
+       (как уже сделано для `ResolvedConfig`, отступление 1) — а такая правка
+       не переименование. Исключение осталось: поимённое, на два файла и один
+       специфик (`eslint.config.js`, `test/eslint-config.test.ts` проверяет
+       обе стороны — что оно действует и что не расползлось на соседей).
 
 ## Что остаётся открытым
 
 - **Плагины из исходников.** Механизм, которым демон компилирует виджеты
   (`docs/widgets.md`), — прямой путь к тому, чтобы пользователь дорабатывал код
   строк без пересборки пакета; в этот план он не входит и делается отдельно.
+- **`kernel/config/` схемы не появился.** Механизм слоёв конфигурации переехал
+  в `parts/pipeline/config/` целиком, а не отделился от таблицы доменных
+  ключей: `merge.ts` (`valueKind`) по-прежнему знает `defaults.step_timeout`,
+  `limits.tokens` и родню. Отделение — правка поведения, а не переименование
+  (`source-tree-microkernel-layout`, design.md, Non-Goals); стоит ли оно
+  отдельного пункта очереди — вопрос к плану, а не к переезду.
+- **`parts/pipeline/config/resolve.ts` импортирует перечень состава**
+  (`parts/rows.ts`). После переезда это импорт внутри `parts/`, границы он не
+  нарушает — но слой всё же знает о составе больше, чем должен.
+- **Адаптер `claude` не переписан на публичную поверхность.** Он лежит в
+  `parts/backends/claude/adapter.ts` рядом со своей строкой, но написан
+  внутренними импортами, как и до переезда; граница «вклад плагина поставки
+  идёт через `stepcast/plugin`» из-за этого названа перечнем каталогов
+  (`parts/backends/codex/**`, `parts/pipeline/steps/decision/**`), а не деревом
+  `parts/backends/**` (`source-tree-microkernel-layout`, design.md, Решение 8).
+  Переписывание `claude` сделало бы правило деревом — цена названа, решения
+  нет.
+- **Одно именное исключение границы ядра осталось.** `load.ts` и `registry.ts`
+  читают доменный контракт вклада из `parts/pipeline/contract.js`, и линт
+  разрешает им это поимённо (шестое отступление шага 10 выше). Снять его можно
+  двумя способами, и оба — правка поведения, а не переименование: переписать
+  оба модуля на структурный вход (как сделано для `ResolvedConfig`) либо увезти
+  реестр вкладов к строке `pipeline`. До тех пор исключение держится узким —
+  два файла, один специфик, — и `test/eslint-config.test.ts` проверяет обе
+  стороны: что оно действует и что не расползлось на соседей по `src/kernel/`.
+- **Дерево `test/**` осталось плоским.** 147 файлов лежат по предмету
+  проверки, а не зеркалят новую раскладку `src/`; заводить дерево тестов по
+  образцу `src/` — отдельное решение со своей ценой (пути в `package.json`,
+  `tsconfig`, привычка искать тест по имени модуля), и мешать его с переездом
+  исходников значило бы лишить оба проверяемости (`source-tree-microkernel-layout`,
+  design.md, Решение 9).

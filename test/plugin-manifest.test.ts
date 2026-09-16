@@ -3,8 +3,8 @@ import { readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { isStepcastError } from '../src/core/errors.js';
-import { readPluginManifest } from '../src/core/plugins/manifest.js';
+import { isStepcastError } from '../src/kernel/errors.js';
+import { readPluginManifest } from '../src/kernel/tree/manifest.js';
 import { tempDir } from './tmp.js';
 
 function pluginDir(): string {

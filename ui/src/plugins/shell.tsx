@@ -1,7 +1,7 @@
 import { Component, useContext, useEffect, useSyncExternalStore, type JSX, type ReactNode } from 'react';
 import type { Context } from 'cordis';
 
-import { hrefForRoute } from '../../../src/ui/routes.ts';
+import { hrefForRoute } from '../../../src/parts/ui/routes.ts';
 import { KernelContext, ROOT } from '../kernel';
 import { HOME_ROUTES_FILE, RoutesListing } from '../pages/Routes';
 import { useRoute, useRoutes, useScreens } from '../router';

@@ -186,7 +186,7 @@ export class SlotsService extends Service {
    * (design.md, Решение 3). `this.ctx` — контекст вызвавшего: cordis отдаёт
    * сервис через трекер, привязанный к обращающемуся контексту, тем же
    * приёмом, что и `ContributionService.register` в демоне
-   * (`src/core/plugins/kernel.ts`). Возвращается раньше, чем вклад окажется в
+   * (`src/kernel/kernel.ts`). Возвращается раньше, чем вклад окажется в
    * слоте: тело `ctx.inject` исполняется, когда имя слота разрешится, пусть
    * даже в ближайшей микрозадаче, — синхронности здесь нет и не будет.
    *
@@ -396,7 +396,7 @@ declare module 'cordis' {
  * Отказ cordis на попытке объявить уже занятое имя слота — сообщение
  * внутреннего формата cordis (`service "<имя>" has been registered at
  * <...>`), переводится в названный отказ тем же приёмом, что
- * `translateReservedNameConflict` в демонском `src/core/plugins/kernel.ts`
+ * `translateReservedNameConflict` в демонском `src/kernel/kernel.ts`
  * (design.md, Решение 1 и 6). В отличие от демона список занятых имён не
  * фиксирован: под перевод попадает любое имя с префиксом `slot:`. Сообщение
  * cordis называет только первого владельца — второго (кто сейчас попытался

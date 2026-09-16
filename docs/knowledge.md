@@ -47,7 +47,7 @@
 Идентификатор записываемой единицы состоит из букв, цифр, точки, дефиса и
 подчёркивания и начинается с буквы или цифры. Ограничение стоит на контракте,
 а не во встроенном источнике: любой источник, отображающий идентификатор в
-путь, иначе записал бы `../../src/core/errors` за пределы своего хранилища.
+путь, иначе записал бы `../../src/kernel/errors` за пределы своего хранилища.
 
 Три свойства контракта важнее его формы:
 
@@ -94,9 +94,9 @@ knowledge/
 id: process-kill-is-posix-only
 title: Убийство дерева процессов сделано группой POSIX, и Windows не проверяется
 scope:
-  - src/core/exec/**
+  - src/parts/pipeline/run/exec/**
 anchors:
-  - path: src/core/exec/process.ts
+  - path: src/parts/pipeline/run/exec/process.ts
     hash: '3f7c1a9d2e04b816'
 status: active
 ---
@@ -116,7 +116,7 @@ status: active
 
 ```yaml
 anchors:
-  - path: src/core/exec/process.ts
+  - path: src/parts/pipeline/run/exec/process.ts
     hash: '3f7c1a9d2e04b816'
     stale_since: 2026-09-06T09:12:33Z
 ```
@@ -155,7 +155,7 @@ anchors:
 Значение пересчитывается человеком одной командой:
 
 ```bash
-shasum -a 256 src/core/exec/process.ts | cut -c1-16
+shasum -a 256 src/parts/pipeline/run/exec/process.ts | cut -c1-16
 ```
 
 **Оглавление производно.** Файла индекса в дереве нет: `index` собирается из

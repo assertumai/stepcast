@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
-import { claudeModelDiscovery, createClaudeAdapter, parseResetAt } from '../src/core/backend/claude.js';
+import { claudeModelDiscovery, createClaudeAdapter, parseResetAt } from '../src/parts/backends/claude/adapter.js';
 import {
   authRefusalLine,
   createFakeBackend,
@@ -12,25 +12,25 @@ import {
   rateLimitRefusalLine,
   resultLine,
   toolUseLine,
-} from '../src/core/backend/fake.js';
-import { emptyUsage, mergeUsage, sumUsage } from '../src/core/backend/types.js';
-import { createSessionRegistry, executeAgentStep } from '../src/core/exec/agentStep.js';
-import { runJudgePass } from '../src/core/exec/judgePass.js';
-import { createBackendSlots } from '../src/core/backend/slots.js';
-import { RunJournal } from '../src/core/journal/writer.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { runPipeline } from '../src/core/run/runner.js';
-import { resolveAdapter } from '../src/core/backend/registry.js';
+} from '../src/parts/pipeline/backend/fake.js';
+import { emptyUsage, mergeUsage, sumUsage } from '../src/parts/pipeline/backend/types.js';
+import { createSessionRegistry, executeAgentStep } from '../src/parts/pipeline/run/exec/agentStep.js';
+import { runJudgePass } from '../src/parts/pipeline/run/exec/judgePass.js';
+import { createBackendSlots } from '../src/parts/pipeline/backend/slots.js';
+import { RunJournal } from '../src/parts/pipeline/run/journal/writer.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { runPipeline } from '../src/parts/pipeline/run/runner.js';
+import { resolveAdapter } from '../src/parts/pipeline/backend/registry.js';
 import { builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
-import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
-import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
-import { registryFromKernel } from '../src/core/plugins/registry.js';
-import { readEvents, readStatus } from '../src/core/journal/reader.js';
-import { StepcastError } from '../src/core/errors.js';
+import { applyDeclarativePlugin } from '../src/kernel/load.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/parts/pipeline/contract.js';
+import { registryFromKernel } from '../src/kernel/registry.js';
+import { readEvents, readStatus } from '../src/parts/pipeline/run/journal/reader.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import { makeProject } from './helpers.js';
-import type { BackendConfig, Config } from '../src/core/config/resolve.js';
-import type { AgentStep } from '../src/core/pipeline/model.js';
-import type { AgentInvocation, BackendAdapter, BackendCapabilities } from '../src/core/backend/types.js';
+import type { BackendConfig, Config } from '../src/parts/pipeline/config/resolve.js';
+import type { AgentStep } from '../src/parts/pipeline/document/model.js';
+import type { AgentInvocation, BackendAdapter, BackendCapabilities } from '../src/parts/pipeline/backend/types.js';
 import { tempDir } from './tmp.js';
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));

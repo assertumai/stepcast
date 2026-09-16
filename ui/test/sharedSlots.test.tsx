@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { SHARED_MODULES } from '../../src/ui/sharedModules.ts';
+import { SHARED_MODULES } from '../../src/parts/ui/daemon/sharedModules.ts';
 import * as SharedSlots from '@stepcast/slots';
 import { SCREEN as ShellScreen } from '../src/plugins/shell.tsx';
 

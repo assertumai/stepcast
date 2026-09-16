@@ -1,6 +1,6 @@
-import { StepcastError } from '../../core/errors.js';
-import type { Context } from '../../core/plugins/context.js';
-import type { PipelineContext } from '../../core/plugins/pipeline-contract.js';
+import { StepcastError } from '../../kernel/errors.js';
+import type { Context } from '../../kernel/context.js';
+import type { PipelineContext } from './contract.js';
 
 /**
  * Публичная поверхность для авторов доменного вклада:
@@ -44,7 +44,7 @@ export type {
   StepKindLog,
   StepKindOutcome,
   StepKindRegistrar,
-} from '../../core/plugins/pipeline-contract.js';
+} from './contract.js';
 
 /**
  * Хелперы объявления вклада пайплайна (design.md, Решение 8): каждый в
@@ -58,7 +58,7 @@ export {
   definePipelinePlugin,
   definePredicate,
   defineStepKind,
-} from '../../core/plugins/pipeline-contract.js';
+} from './contract.js';
 
 export type {
   AgentInvocation,
@@ -72,24 +72,24 @@ export type {
   ModelDiscovery,
   PermissionDenial,
   ProbeOutput,
-} from '../../core/backend/types.js';
+} from './backend/types.js';
 
-export { describeRefusal, emptyUsage, mergeUsage, sumUsage } from '../../core/backend/types.js';
+export { describeRefusal, emptyUsage, mergeUsage, sumUsage } from './backend/types.js';
 
 /**
  * Правила слияния политики доступа шага с политикой из конфигурации бэкенда.
  * Понадобились адаптеру Codex: без экспорта плагин переписал бы их у себя, и
  * второй бэкенд применял бы `enforce` иначе, чем встроенный.
  */
-export { effectivePermissions } from '../../core/backend/permissions.js';
+export { effectivePermissions } from './backend/permissions.js';
 /** Формы объявлений, которые `AgentInvocation` несёт адаптеру: политика и MCP-серверы. */
-export type { McpServer, McpServers, Permissions } from '../../core/pipeline/model.js';
+export type { McpServer, McpServers, Permissions } from './document/model.js';
 
-export type { BackendConfig, Config } from '../../core/config/resolve.js';
-export type { EvaluationInput } from '../../core/expect/evaluate.js';
-export type { PredicateResult, Usage } from '../../core/journal/schema.js';
+export type { BackendConfig, Config } from './config/resolve.js';
+export type { EvaluationInput } from './expect/evaluate.js';
+export type { PredicateResult, Usage } from './run/journal/schema.js';
 
-export type { Registry } from '../../core/plugins/registry.js';
+export type { Registry } from '../../kernel/registry.js';
 
 /** Имена служебных сервисов пайплайна — те, что заводит строка `pipeline`. */
 export type PipelineService = 'backends' | 'predicates' | 'steps';

@@ -4,17 +4,17 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { getEventListeners } from 'node:events';
 
-import { createAnchorer } from '../src/core/anchor/index.js';
-import { createFakeBackend, resultLine } from '../src/core/backend/fake.js';
-import type { Config } from '../src/core/config/resolve.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { findStepDir, readEvents, readStatus } from '../src/core/journal/reader.js';
-import { resolveExitCode, runPipeline, type RunResult } from '../src/core/run/runner.js';
-import { locateEngine } from '../src/core/run/engine.js';
-import { HALT_CAUSES, HaltCause } from '../src/core/run/halt.js';
-import { ExitCode } from '../src/core/errors.js';
-import type { Event, StatusValue, StepRecord } from '../src/core/journal/schema.js';
-import type { UsageSnapshot } from '../src/core/budget/accumulator.js';
+import { createAnchorer } from '../src/parts/pipeline/domain/anchor/index.js';
+import { createFakeBackend, resultLine } from '../src/parts/pipeline/backend/fake.js';
+import type { Config } from '../src/parts/pipeline/config/resolve.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { findStepDir, readEvents, readStatus } from '../src/parts/pipeline/run/journal/reader.js';
+import { resolveExitCode, runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
+import { locateEngine } from '../src/parts/pipeline/run/engine.js';
+import { HALT_CAUSES, HaltCause } from '../src/parts/pipeline/run/halt.js';
+import { ExitCode } from '../src/kernel/errors.js';
+import type { Event, StatusValue, StepRecord } from '../src/parts/pipeline/run/journal/schema.js';
+import type { UsageSnapshot } from '../src/parts/pipeline/run/budget/accumulator.js';
 import { gitCommit, gitInit, makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -312,7 +312,7 @@ describe('bookkeeping: неудача учёта не трогает стату�
     const project = makeProject({ 'stepcast.yml': THREE_STEPS });
     const result = await run(project);
 
-    const { bookkeep } = await import('../src/core/run/bookkeeping.js');
+    const { bookkeep } = await import('../src/parts/pipeline/run/bookkeeping.js');
     const value = bookkeep({ journal: result.journal, job: 'first', step: 'one' }, 'проба', () => {
       throw new Error('якорь не снялся');
     });
@@ -329,7 +329,7 @@ describe('bookkeeping: неудача учёта не трогает стату�
     const project = makeProject({ 'stepcast.yml': THREE_STEPS });
     const result = await run(project);
 
-    const { bookkeep } = await import('../src/core/run/bookkeeping.js');
+    const { bookkeep } = await import('../src/parts/pipeline/run/bookkeeping.js');
     const value = bookkeep({ journal: result.journal }, 'проба', () => 42);
 
     assert.equal(value, 42);

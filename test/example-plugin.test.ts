@@ -5,17 +5,17 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, it } from 'node:test';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 
-import { validateAgainstSchema } from '../src/core/expect/evaluate.js';
-import { validateStepKindFields } from '../src/core/pipeline/expand.js';
+import { validateAgainstSchema } from '../src/parts/pipeline/expect/evaluate.js';
+import { validateStepKindFields } from '../src/parts/pipeline/document/expand.js';
 import {
   buildPublishedSchemas,
   pluginPredicateEntries,
   pluginStepKindEntries,
-} from '../src/core/pipeline/published-schema.js';
-import type { PipelinePlugin, PredicateContribution, StepKindContribution } from '../src/core/plugins/pipeline-contract.js';
-import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
-import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
-import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
+} from '../src/parts/pipeline/document/published-schema.js';
+import type { PipelinePlugin, PredicateContribution, StepKindContribution } from '../src/parts/pipeline/contract.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/parts/pipeline/contract.js';
+import { applyDeclarativePlugin } from '../src/kernel/load.js';
+import { registryFromKernel, type Registry } from '../src/kernel/registry.js';
 import { createPipelineKernel } from './helpers.js';
 
 /**
@@ -163,7 +163,7 @@ describe('example-plugin: examples/plugins/typed — схемы проверяю
 
     // Выход объявлен схемой — иначе движку нечем проверить `structured`, и
     // значение уходит в `${jobs.*.output}` непроверенным
-    // (`src/core/exec/pluginStep.ts`).
+    // (`src/parts/pipeline/run/exec/pluginStep.ts`).
     assert.ok(output !== undefined, 'вид шага образца объявляет схему выхода');
     assert.equal(validateAgainstSchema(output, { words: 3 }).passed, true);
     assert.equal(validateAgainstSchema(output, { words: 'три' }).passed, false);

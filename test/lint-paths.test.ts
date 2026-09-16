@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { lintPipeline, type Diagnostic } from '../src/core/lint.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { lintPipeline, type Diagnostic } from '../src/parts/pipeline/domain/lint.js';
 import { makeProject } from './helpers.js';
 
 const SCHEMA = JSON.stringify({ type: 'object' });

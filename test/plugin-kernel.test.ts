@@ -6,32 +6,32 @@ import { fileURLToPath } from 'node:url';
 
 import { FiberState, Service, type Fiber } from 'cordis';
 
-import { ExitCode, StepcastError } from '../src/core/errors.js';
+import { ExitCode, StepcastError } from '../src/kernel/errors.js';
 import { createBuiltinKernel } from '../src/parts/builtin.js';
-import type { CommandContribution } from '../src/core/plugins/contract.js';
-import type { PipelineCommandEnv } from '../src/core/plugins/pipeline-contract.js';
+import type { CommandContribution } from '../src/kernel/contract.js';
+import type { PipelineCommandEnv } from '../src/parts/pipeline/contract.js';
 import type {
   BackendContribution,
   PredicateContribution,
-} from '../src/core/plugins/pipeline-contract.js';
-import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
+} from '../src/parts/pipeline/contract.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/parts/pipeline/contract.js';
 import {
   applyContextPlugin,
   applyDeclarativePlugin,
-} from '../src/core/plugins/load.js';
+} from '../src/kernel/load.js';
 import { loadPlugins } from '../src/parts/load.js';
 import { row as pipelineRow } from '../src/parts/pipeline/row.js';
 import { pipelineContext } from '../src/parts/pipeline/surface.js';
 import { row as backendClaudeRow } from '../src/parts/backends/claude/row.js';
-import { row as predicatesRow } from '../src/parts/expect/row.js';
-import { ContributionService, createKernel } from '../src/core/plugins/kernel.js';
-import { declaredServices } from '../src/core/plugins/services.js';
-import { availableNames, predicateNames, registryFromKernel } from '../src/core/plugins/registry.js';
-import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
+import { row as predicatesRow } from '../src/parts/pipeline/expect/row.js';
+import { ContributionService, createKernel } from '../src/kernel/kernel.js';
+import { declaredServices } from '../src/kernel/services.js';
+import { availableNames, predicateNames, registryFromKernel } from '../src/kernel/registry.js';
+import { DEFAULT_NATIVE_PREDICATES } from '../src/parts/pipeline/document/schema.js';
 import { resolveWithPlugins } from '../src/parts/resolve.js';
-import { resolveConfig, type ResolvedConfig } from '../src/core/config/resolve.js';
-import { run as runCli } from '../src/cli/main.js';
-import type { CliIo } from '../src/cli/args.js';
+import { resolveConfig, type ResolvedConfig } from '../src/parts/pipeline/config/resolve.js';
+import { run as runCli } from '../src/parts/cli/main.js';
+import type { CliIo } from '../src/kernel/cli/args.js';
 import { createPipelineKernel, makeProject, withHome } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -700,7 +700,7 @@ withOwnService.inject = ['commands'];
     // Типизирован явно `PipelineCommandEnv`: `contribution.run` объявлен
     // ядерным `CommandEnv` (реестр хранит команды общим типом), а литерал с
     // полями `config`/`registry` без аннотации получил бы отказ избыточных
-    // полей — тем же основанием, что и в `src/cli/main.ts`.
+    // полей — тем же основанием, что и в `src/parts/cli/main.ts`.
     const env: PipelineCommandEnv = {
       cwd: place.root,
       config: out.config,
@@ -723,7 +723,7 @@ withOwnService.inject = ['commands'];
  * без расширения, чего `moduleResolution: NodeNext` не разрешает: под таким
  * резолвером `import { Context } from 'cordis'` не даёт ни одного имени, а
  * `skipLibCheck` этого не лечит. Наш компилятор обходит это ручным
- * объявлением (`src/core/plugins/cordis.d.ts`), но оно живёт в `src` и в `dist`
+ * объявлением (`src/kernel/cordis.d.ts`), но оно живёт в `src` и в `dist`
  * не эмитится — значит публикуемый тип контекста не вправе на cordis ссылаться
  * вовсе. Отсюда обе проверки ниже: что в опубликованных объявлениях библиотеки
  * нет, и что ручное объявление не разошлось с установленной версией.
@@ -731,9 +731,9 @@ withOwnService.inject = ['commands'];
 describe('plugin-kernel: поверхность плагина не требует cordis', () => {
   /** Объявления, которые автор плагина читает, импортируя `stepcast/plugin`. */
   const PUBLISHED = [
-    '../src/plugin.d.ts',
-    '../src/core/plugins/context.d.ts',
-    '../src/core/plugins/contract.d.ts',
+    '../src/plugin/index.d.ts',
+    '../src/kernel/context.d.ts',
+    '../src/kernel/contract.d.ts',
   ];
 
   for (const relative of PUBLISHED) {
@@ -753,7 +753,7 @@ describe('plugin-kernel: поверхность плагина не требуе
   it('ручное объявление cordis совпадает с установленной версией по рантайму', () => {
     const ctx = createKernel().ctx as unknown as Record<string, unknown>;
 
-    // Ровно то, что объявлено в `src/core/plugins/context.ts` как контракт
+    // Ровно то, что объявлено в `src/kernel/context.ts` как контракт
     // плагина, плюс то, чем пользуется само ядро.
     for (const name of ['effect', 'get', 'set', 'provide', 'inject', 'plugin']) {
       assert.equal(typeof ctx[name], 'function', `Context.${name} не функция в установленной версии cordis`);

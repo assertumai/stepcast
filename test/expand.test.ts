@@ -4,21 +4,21 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import { parse as parseYaml } from 'yaml';
 
-import { evaluatePredicates } from '../src/core/expect/evaluate.js';
-import { lintPipeline } from '../src/core/lint.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { interpolate, interpolateTree, type Scope } from '../src/core/pipeline/interpolate.js';
-import { jobLockHash, serializeLock } from '../src/core/pipeline/lock.js';
-import { computeStepKey } from '../src/core/run/stepKey.js';
-import { StepcastError } from '../src/core/errors.js';
-import type { BackendConfig, Config } from '../src/core/config/resolve.js';
+import { evaluatePredicates } from '../src/parts/pipeline/expect/evaluate.js';
+import { lintPipeline } from '../src/parts/pipeline/domain/lint.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { interpolate, interpolateTree, type Scope } from '../src/parts/pipeline/document/interpolate.js';
+import { jobLockHash, serializeLock } from '../src/parts/pipeline/document/lock.js';
+import { computeStepKey } from '../src/parts/pipeline/run/stepKey.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import type { BackendConfig, Config } from '../src/parts/pipeline/config/resolve.js';
 import { asAgent, asRun, asScript, makeProject, MINIMAL_PIPELINE, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
-import type { ScriptRoots } from '../src/core/pipeline/expand.js';
-import type { Predicate } from '../src/core/pipeline/model.js';
+import type { ScriptRoots } from '../src/parts/pipeline/document/expand.js';
+import type { Predicate } from '../src/parts/pipeline/document/model.js';
 import { createKernelShell } from '../src/parts/builtin.js';
 import { BUILTIN_ROWS } from '../src/parts/rows.js';
-import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
+import { registryFromKernel, type Registry } from '../src/kernel/registry.js';
 
 /**
  * Реестр дефолтного состава без одной названной строки вида шага — тем же

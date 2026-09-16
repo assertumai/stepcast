@@ -1,6 +1,6 @@
 import type { Context } from 'cordis';
 
-import { declaration } from '../../../src/ui/screens/settings/declaration.ts';
+import { declaration } from '../../../src/parts/ui/screens/settings/declaration.ts';
 import { Settings } from '../pages/Settings';
 import { SCREEN } from '@stepcast/slots';
 

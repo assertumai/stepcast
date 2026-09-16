@@ -3,13 +3,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { jobDir } from '../src/core/journal/paths.js';
-import { findStepDir, readEvents, readStatus } from '../src/core/journal/reader.js';
-import { lintPipeline } from '../src/core/lint.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
-import { HaltCause } from '../src/core/run/halt.js';
-import { StepcastError } from '../src/core/errors.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { jobDir } from '../src/parts/pipeline/run/journal/paths.js';
+import { findStepDir, readEvents, readStatus } from '../src/parts/pipeline/run/journal/reader.js';
+import { lintPipeline } from '../src/parts/pipeline/domain/lint.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
+import { HaltCause } from '../src/parts/pipeline/run/halt.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import { makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

@@ -3,9 +3,9 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
-import { readJobData } from '../src/core/journal/data.js';
-import { exec, input, log, output, publish } from '../src/step/index.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { readJobData } from '../src/parts/pipeline/run/journal/data.js';
+import { exec, input, log, output, publish } from '../src/parts/pipeline/step/index.js';
 import { tempDir } from './tmp.js';
 
 /**

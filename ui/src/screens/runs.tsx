@@ -1,7 +1,7 @@
 import type { JSX } from 'react';
 import type { Context } from 'cordis';
 
-import { declaration } from '../../../src/ui/screens/runs/declaration.ts';
+import { declaration } from '../../../src/parts/ui/screens/runs/declaration.ts';
 import type { Overview } from '../api';
 import { Runs } from '../pages/Runs';
 import { SCREEN } from '@stepcast/slots';

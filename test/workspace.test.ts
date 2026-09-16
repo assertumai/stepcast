@@ -4,18 +4,18 @@ import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSyn
 import { basename, join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createAnchorer } from '../src/core/anchor/index.js';
-import { buildGraph } from '../src/core/graph.js';
-import type { Config } from '../src/core/config/resolve.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { readEvents, readStatus, resolveRun } from '../src/core/journal/reader.js';
-import { resolveInheritSource, type CompletedJob } from '../src/core/run/inherit.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
-import { StepcastError } from '../src/core/errors.js';
-import { applyRun } from '../src/core/run/apply.js';
-import { HaltCause } from '../src/core/run/halt.js';
-import { prepareWorkspace } from '../src/core/run/workspace.js';
-import { RunJournal } from '../src/core/journal/writer.js';
+import { createAnchorer } from '../src/parts/pipeline/domain/anchor/index.js';
+import { buildGraph } from '../src/parts/pipeline/domain/graph.js';
+import type { Config } from '../src/parts/pipeline/config/resolve.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { readEvents, readStatus, resolveRun } from '../src/parts/pipeline/run/journal/reader.js';
+import { resolveInheritSource, type CompletedJob } from '../src/parts/pipeline/run/inherit.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { applyRun } from '../src/parts/pipeline/run/apply.js';
+import { HaltCause } from '../src/parts/pipeline/run/halt.js';
+import { prepareWorkspace } from '../src/parts/pipeline/run/workspace.js';
+import { RunJournal } from '../src/parts/pipeline/run/journal/writer.js';
 import { gitCommit, gitInit as gitInitDir, makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

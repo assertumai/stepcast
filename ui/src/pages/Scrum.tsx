@@ -25,7 +25,7 @@ import {
   insertionBefore,
   viewBoard,
   type ScrumColumn,
-} from '../../../src/ui/scrumView';
+} from '../../../src/parts/ui/scrumView';
 import {
   editBacklogItem,
   fetchPipelines,
@@ -334,7 +334,7 @@ function fieldsOf(item: BacklogItemView): ItemFields {
     done_when: item.doneWhen,
     // Действующая группа равна слагу, когда поле не заполнено: показывать её в
     // поле ввода значило бы предлагать записать в файл то, чего человек не
-    // писал (`effectiveGroup`, `src/core/backlog/parse.ts`).
+    // писал (`effectiveGroup`, `src/parts/pipeline/domain/backlog/parse.ts`).
     group: item.group === item.slug ? '' : item.group,
     track: item.track,
     repos: '',
@@ -346,7 +346,7 @@ function fieldsOf(item: BacklogItemView): ItemFields {
  *
  * Правится то, что описывает работу; статус задаёт колонка, `started_at` и
  * `reason` пишет движок — они показаны, но не редактируются
- * (`src/ui/screens/scrum/server.ts`, перечень полей).
+ * (`src/parts/ui/screens/scrum/server.ts`, перечень полей).
  *
  * Форма не перечитывается на каждый кадр живого потока: значения набираются
  * заново только при смене выбранного пункта. Иначе такт наблюдателя,

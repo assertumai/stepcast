@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
-import { readEvents } from '../src/core/journal/reader.js';
-import { RunJournal } from '../src/core/journal/writer.js';
-import { createScope } from '../src/core/run/scope.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { readEvents } from '../src/parts/pipeline/run/journal/reader.js';
+import { RunJournal } from '../src/parts/pipeline/run/journal/writer.js';
+import { createScope } from '../src/parts/pipeline/run/scope.js';
 import { makeJournalBed } from './helpers.js';
 
 function journalWithEvents(): RunJournal {

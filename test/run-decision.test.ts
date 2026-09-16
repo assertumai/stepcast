@@ -2,11 +2,11 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import { builtinRegistry } from '../src/parts/builtin.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { readStatus } from '../src/core/journal/reader.js';
-import type { RunPaths } from '../src/core/journal/paths.js';
-import { writeDecisionRecord } from '../src/core/journal/writer.js';
-import { runPipeline } from '../src/core/run/runner.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { readStatus } from '../src/parts/pipeline/run/journal/reader.js';
+import type { RunPaths } from '../src/parts/pipeline/run/journal/paths.js';
+import { writeDecisionRecord } from '../src/parts/pipeline/run/journal/writer.js';
+import { runPipeline } from '../src/parts/pipeline/run/runner.js';
 import { makeProject } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -53,7 +53,7 @@ async function findRunPaths(runsRoot: string): Promise<RunPaths> {
   const projectDir = join(runsRoot, projectKey);
   await waitUntil(() => readdirSync(projectDir).some((name) => name !== 'latest'));
   const runId = readdirSync(projectDir).find((name) => name !== 'latest') as string;
-  const { runPaths } = await import('../src/core/journal/paths.js');
+  const { runPaths } = await import('../src/parts/pipeline/run/journal/paths.js');
   return runPaths(runsRoot, projectKey, runId);
 }
 
@@ -240,7 +240,7 @@ jobs:
     // `stepcast decide`, увидев, что прогон не идёт.
     decide(paths, waitId, { outcome: 'approve' });
 
-    const { planResume, readSourceRun } = await import('../src/core/run/resumePlan.js');
+    const { planResume, readSourceRun } = await import('../src/parts/pipeline/run/resumePlan.js');
     const source = readSourceRun(paths);
     const { expanded, plan } = planResume({ cwd: project.root, config, source, registry });
     const resumed = await runPipeline({
@@ -260,14 +260,14 @@ jobs:
     assert.equal(step?.status, 'success');
     assert.deepEqual(step?.decision, { outcome: 'approve', effect: 'continue', by: 'user' });
 
-    const { readEvents } = await import('../src/core/journal/reader.js');
+    const { readEvents } = await import('../src/parts/pipeline/run/journal/reader.js');
     const carried = readEvents(resumed.journal.paths).filter((event) => event.kind === 'decision.carried');
     assert.equal(carried.length, 1, 'перенос решения записан событием');
 
     // Запись решения остаётся в каталоге исходного прогона следом: прочтение
     // её не удаляет.
     const { existsSync } = await import('node:fs');
-    const { decisionRecordPath } = await import('../src/core/journal/paths.js');
+    const { decisionRecordPath } = await import('../src/parts/pipeline/run/journal/paths.js');
     assert.ok(existsSync(decisionRecordPath(paths, waitId)));
   });
 
@@ -313,7 +313,7 @@ jobs:
     const first = await promise;
     assert.equal(first.status, 'failed', 'падает нижележащая работа, а не шаг решения');
 
-    const { planResume, readSourceRun } = await import('../src/core/run/resumePlan.js');
+    const { planResume, readSourceRun } = await import('../src/parts/pipeline/run/resumePlan.js');
     const source = readSourceRun(paths);
     const { expanded, plan } = planResume({ cwd: project.root, config, source, registry });
     const resumed = await runPipeline({
@@ -330,7 +330,7 @@ jobs:
     const gate = resumedStatus.jobs.find((job) => job.id === 'build')?.steps[0];
     assert.ok(gate?.reused_from !== undefined, 'шаг решения переиспользован по совпавшему ключу');
 
-    const { readEvents } = await import('../src/core/journal/reader.js');
+    const { readEvents } = await import('../src/parts/pipeline/run/journal/reader.js');
     const asked = readEvents(resumed.journal.paths).filter((event) => event.kind === 'decision.awaiting');
     assert.deepEqual(asked, [], 'нового ожидания не заводилось');
   });

@@ -4,9 +4,9 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { run, type CliIo } from '../src/cli/main.js';
-import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
-import { shortRunId } from '../src/core/journal/paths.js';
+import { run, type CliIo } from '../src/parts/cli/main.js';
+import { ExitCode, type ExitCodeValue } from '../src/kernel/errors.js';
+import { shortRunId } from '../src/parts/pipeline/run/journal/paths.js';
 import { gitCommit, gitInit } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -426,7 +426,7 @@ describe('CLI: stepcast backlog finish', () => {
   it('многострочная причина сводится в одну строку, очередь остаётся разбираемой', async () => {
     const dir = bed(item('an-item', { ...COMPLETE, status: 'in_progress' }));
 
-    // Ровно то, что собирает reasonWithOutput (src/core/lanes/merge.ts) из
+    // Ровно то, что собирает reasonWithOutput (src/parts/pipeline/domain/lanes/merge.ts) из
     // stderr красной проверки.
     const result = await backlog(dir, [
       'finish',

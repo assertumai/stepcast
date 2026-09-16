@@ -12,8 +12,8 @@ import {
   parseMoney,
   parsePercent,
   parseTokens,
-} from '../src/core/units.js';
-import { StepcastError } from '../src/core/errors.js';
+} from '../src/kernel/units.js';
+import { StepcastError } from '../src/kernel/errors.js';
 
 describe('единицы измерения', () => {
   // Спека pipeline-definition: «Дробное число токенов»

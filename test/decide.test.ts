@@ -3,14 +3,14 @@ import { readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { ExitCode } from '../src/core/errors.js';
-import { projectKey, runPaths, type RunPaths } from '../src/core/journal/paths.js';
-import { readManifest, readStatus } from '../src/core/journal/reader.js';
-import { atomicWrite } from '../src/core/journal/writer.js';
-import { runDecideCommand } from '../src/cli/commands/decide.js';
-import { runStatusCommand } from '../src/cli/commands/status.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
+import { ExitCode } from '../src/kernel/errors.js';
+import { projectKey, runPaths, type RunPaths } from '../src/parts/pipeline/run/journal/paths.js';
+import { readManifest, readStatus } from '../src/parts/pipeline/run/journal/reader.js';
+import { atomicWrite } from '../src/parts/pipeline/run/journal/writer.js';
+import { runDecideCommand } from '../src/parts/pipeline/commands/decide.js';
+import { runStatusCommand } from '../src/parts/pipeline/commands/status.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
 import { makeProject, withHome, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

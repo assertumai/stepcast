@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import type { CliIo } from '../src/cli/args.js';
-import { run as runCli } from '../src/cli/main.js';
-import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
+import type { CliIo } from '../src/kernel/cli/args.js';
+import { run as runCli } from '../src/parts/cli/main.js';
+import { ExitCode, type ExitCodeValue } from '../src/kernel/errors.js';
 import { makeProject, withHome, type Project } from './helpers.js';
 
 /**

@@ -3,16 +3,16 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { runContextCommand } from '../src/cli/commands/context.js';
+import { runContextCommand } from '../src/parts/pipeline/commands/context.js';
 import {
   assembleContext,
   type AssembleOptions,
   type KnowledgeResolver,
-} from '../src/core/context/assemble.js';
-import type { ParsedArgs } from '../src/cli/args.js';
-import { ExitCode, StepcastError } from '../src/core/errors.js';
-import { RunJournal } from '../src/core/journal/writer.js';
-import { listRuns } from '../src/core/journal/reader.js';
+} from '../src/parts/pipeline/domain/context/assemble.js';
+import type { ParsedArgs } from '../src/kernel/cli/args.js';
+import { ExitCode, StepcastError } from '../src/kernel/errors.js';
+import { RunJournal } from '../src/parts/pipeline/run/journal/writer.js';
+import { listRuns } from '../src/parts/pipeline/run/journal/reader.js';
 import { makeProject, type Project } from './helpers.js';
 
 const PIPELINE = `

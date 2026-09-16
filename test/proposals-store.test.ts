@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import {
   acceptProposal,
   findProposal,
@@ -12,7 +12,7 @@ import {
   readProposalsDir,
   rejectProposal,
   writeProposalTargetDirect,
-} from '../src/core/proposals/store.js';
+} from '../src/parts/pipeline/domain/proposals/store.js';
 import { tempDir } from './tmp.js';
 
 function project(): string {

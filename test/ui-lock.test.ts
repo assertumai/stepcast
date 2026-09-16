@@ -3,9 +3,9 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { readLockJobs } from '../src/core/pipeline/lockRead.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { serializeLock } from '../src/core/pipeline/lock.js';
+import { readLockJobs } from '../src/parts/pipeline/document/lockRead.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { serializeLock } from '../src/parts/pipeline/document/lock.js';
 import { makeProject } from './helpers.js';
 import { tempDir } from './tmp.js';
 

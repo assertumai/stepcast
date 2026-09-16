@@ -1,6 +1,6 @@
 import type { Context } from 'cordis';
 
-import type { RouteDefinition } from '../../../src/ui/routes.ts';
+import type { RouteDefinition } from '../../../src/parts/ui/routes.ts';
 
 /**
  * Плагин `routes` — читает действующую таблицу маршрутов у демона

@@ -1,7 +1,7 @@
 import { createElement, type ComponentType, type ReactElement } from 'react';
 
 import type { BacklogOverview, Overview, ProposalsStreamEvent, RunSnapshot, WidgetsOverview } from './api';
-import type { RouteDefinition, RouteTarget } from '../../src/ui/routes.ts';
+import type { RouteDefinition, RouteTarget } from '../../src/parts/ui/routes.ts';
 // Дополнение типов контекста: `declare module 'cordis'` в `services/screens.ts`,
 // `services/routes.ts` и `services/live.ts` типизирует `ctx.screens`,
 // `ctx.routes` и `ctx.live` (реестр слотов — в `slots.ts`, откуда эта

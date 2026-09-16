@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { z } from 'zod';
 
 import { SCHEMA_TARGETS } from './schema-targets.js';
-import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../src/core/pipeline/published-schema.js';
+import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../src/parts/pipeline/document/published-schema.js';
 import { builtinRegistry } from '../src/parts/builtin.js';
 
 /**

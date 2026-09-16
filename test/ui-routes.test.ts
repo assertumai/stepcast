@@ -18,7 +18,7 @@ import {
   widgetModuleHref,
   type RouteDefinition,
   type RouteTable,
-} from '../src/ui/routes.js';
+} from '../src/parts/ui/routes.js';
 
 /** Небольшая таблица маршрутов, покрывающая специфичность, необязательный сегмент и перечень значений. */
 const TABLE: RouteTable = [

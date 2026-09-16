@@ -1,6 +1,6 @@
 import { useState, type JSX } from 'react';
 
-import { diffLines, type DiffLine } from '../../../src/core/textDiff.ts';
+import { diffLines, type DiffLine } from '../../../src/parts/pipeline/domain/textDiff.ts';
 import {
   decideProposal,
   type ProjectProposalsPayload,
@@ -15,7 +15,7 @@ import { RUN_TARGET } from '../screens/run';
  * Экран «Предложения» (`ui-proposals`, design.md Решение 8, 15): очередь всех
  * проектов дифом, сгруппированная по прогону-источнику; открытые записи
  * развёрнуты, решённые свёрнуты. Диф считает браузер построчным LCS
- * (`src/core/textDiff.ts`) из содержимого цели на диске сейчас и предложенного
+ * (`src/parts/pipeline/domain/textDiff.ts`) из содержимого цели на диске сейчас и предложенного
  * текста — оба уже пришли с `GET /api/proposals`.
  */
 

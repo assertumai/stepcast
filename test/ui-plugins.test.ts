@@ -5,16 +5,16 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, type TestContext } from 'node:test';
 
-import { resolveConfig } from '../src/core/config/resolve.js';
+import { resolveConfig } from '../src/parts/pipeline/config/resolve.js';
 import { loadPlugins } from '../src/parts/load.js';
-import type { KernelCache } from '../src/ui/pipelines.js';
-import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
-import { createWatcher, type Watcher } from '../src/ui/watcher.js';
-import { UI_ROWS } from '../src/ui/rows.js';
-import { buildHomePlugins, directoryFingerprint, pluginDirPath } from '../src/ui/plugins.js';
-import { createWidgetCompiler, type EsbuildTransformApi, type WidgetCompiler } from '../src/ui/widgets.js';
-import { pluginModuleHref } from '../src/ui/routes.js';
-import { SHARED_MODULE_LIST } from '../src/ui/sharedModules.js';
+import type { KernelCache } from '../src/parts/ui/pipelines.js';
+import { createUiServer, LOOPBACK, type UiServer } from '../src/parts/ui/daemon/server.js';
+import { createWatcher, type Watcher } from '../src/parts/ui/daemon/watcher.js';
+import { UI_ROWS } from '../src/parts/ui/rows.js';
+import { buildHomePlugins, directoryFingerprint, pluginDirPath } from '../src/parts/ui/plugins.js';
+import { createWidgetCompiler, type EsbuildTransformApi, type WidgetCompiler } from '../src/parts/ui/widgets.js';
+import { pluginModuleHref } from '../src/parts/ui/routes.js';
+import { SHARED_MODULE_LIST } from '../src/parts/ui/daemon/sharedModules.js';
 import { makeJournalBed } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -100,7 +100,7 @@ describe('ui-plugins: отпечаток каталога плагина', () =>
     symlinkSync(join(outside, 'secret.tsx'), join(dir, 'escape.tsx'));
 
     // Границу каталога плагина по реальному пути держит сам манифест
-    // (`resolvePluginHalf`, `src/core/plugins/manifest.ts`) — плагин с половиной
+    // (`resolvePluginHalf`, `src/kernel/tree/manifest.ts`) — плагин с половиной
     // за пределами своего каталога не перечисляется вовсе, а значит, не
     // попадает ни в поток, ни в состав, которым гейтится его адрес.
     assert.deepEqual(buildHomePlugins(home), { plugins: [] });

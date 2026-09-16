@@ -4,8 +4,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
 
-import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
-import { createKernelCache, type KernelCache } from '../src/ui/pipelines.js';
+import { createUiServer, LOOPBACK, type UiServer } from '../src/parts/ui/daemon/server.js';
+import { createKernelCache, type KernelCache } from '../src/parts/ui/pipelines.js';
 import { makeJournalBed } from './helpers.js';
 
 /**

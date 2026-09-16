@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { stepDecisionContribution } from '../src/parts/steps/decision/index.js';
-import { lintDecisionFields } from '../src/parts/steps/decision/fields.js';
+import { stepDecisionContribution } from '../src/parts/pipeline/steps/decision/index.js';
+import { lintDecisionFields } from '../src/parts/pipeline/steps/decision/fields.js';
 import { builtinRegistry } from '../src/parts/builtin.js';
-import { lintPipeline } from '../src/core/lint.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { serializeLock } from '../src/core/pipeline/lock.js';
-import type { StepKindDecisionRequest, StepKindDecisionResult, StepKindInput } from '../src/core/plugins/pipeline-contract.js';
+import { lintPipeline } from '../src/parts/pipeline/domain/lint.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { serializeLock } from '../src/parts/pipeline/document/lock.js';
+import type { StepKindDecisionRequest, StepKindDecisionResult, StepKindInput } from '../src/parts/pipeline/contract.js';
 import { makeProject } from './helpers.js';
 
 function baseInput(fields: unknown = { prompt: 'продолжить?', outcomes: { approve: 'continue' } }): Omit<StepKindInput, 'decision'> {

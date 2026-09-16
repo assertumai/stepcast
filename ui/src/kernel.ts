@@ -1,7 +1,7 @@
 import { Context, type Fiber } from 'cordis';
 import { createContext } from 'react';
 
-import { failedFibers, settle, topLevelFibers, unresolvedFibers } from '../../src/core/plugins/fibers';
+import { failedFibers, settle, topLevelFibers, unresolvedFibers } from '../../src/kernel/fibers';
 // Расширение у `./slots.ts` — явно, не по привычке: рядом лежит
 // `ui/src/slots.tsx` (рендерер), и резолверы расходятся, что означает голое
 // `./slots` — esbuild (vite, сборка тестов) по умолчанию пробует `.tsx`
@@ -39,8 +39,8 @@ import type { StyleSink } from './services/styles';
  * переживает любую перерисовку по устройству, а не по соглашению.
  *
  * Отказы не бросаются наружу вызовом — они собираются `settle()`, тем же
- * приёмом, что и в демоне (`src/core/plugins/kernel.ts`), через общий модуль
- * `src/core/plugins/fibers.ts`.
+ * приёмом, что и в демоне (`src/kernel/kernel.ts`), через общий модуль
+ * `src/kernel/fibers.ts`.
  */
 
 export { ROOT };

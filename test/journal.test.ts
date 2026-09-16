@@ -4,8 +4,8 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, writeFileSync
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { RunJournal } from '../src/core/journal/writer.js';
-import { cleanupRun } from '../src/core/run/cleanup.js';
+import { RunJournal } from '../src/parts/pipeline/run/journal/writer.js';
+import { cleanupRun } from '../src/parts/pipeline/run/cleanup.js';
 import {
   findAliveRun,
   findStepDir,
@@ -24,12 +24,12 @@ import {
   readUsageSoft,
   resolveRun,
   unknownKeyKind,
-} from '../src/core/journal/reader.js';
+} from '../src/parts/pipeline/run/journal/reader.js';
 import {
   JOURNAL_FORMAT,
   JOURNAL_FORMAT_FINGERPRINTS,
   journalSchemaFingerprint,
-} from '../src/core/journal/format.js';
+} from '../src/parts/pipeline/run/journal/format.js';
 import {
   findProjectRoot,
   makeRunId,
@@ -37,13 +37,13 @@ import {
   projectKey,
   shortRunId,
   stepDirName,
-} from '../src/core/journal/paths.js';
-import { AttemptRecordSchema, RunStatusSchema, type RunStatus } from '../src/core/journal/schema.js';
-import { StepcastError } from '../src/core/errors.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { runPipeline } from '../src/core/run/runner.js';
-import { createFakeBackend, resultLine } from '../src/core/backend/fake.js';
-import type { Config } from '../src/core/config/resolve.js';
+} from '../src/parts/pipeline/run/journal/paths.js';
+import { AttemptRecordSchema, RunStatusSchema, type RunStatus } from '../src/parts/pipeline/run/journal/schema.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { runPipeline } from '../src/parts/pipeline/run/runner.js';
+import { createFakeBackend, resultLine } from '../src/parts/pipeline/backend/fake.js';
+import type { Config } from '../src/parts/pipeline/config/resolve.js';
 import {
   gitCommit,
   gitInit as gitInitDir,
@@ -1671,7 +1671,7 @@ describe('run-journal: версия формата и диагноз чтени�
     assert.equal(
       journalSchemaFingerprint(),
       JOURNAL_FORMAT_FINGERPRINTS[JOURNAL_FORMAT],
-      'схема журнала изменилась: поднимите JOURNAL_FORMAT в src/core/journal/format.ts ' +
+      'схема журнала изменилась: поднимите JOURNAL_FORMAT в src/parts/pipeline/run/journal/format.ts ' +
         'и добавьте в JOURNAL_FORMAT_FINGERPRINTS строку новой версии с вычисленным отпечатком',
     );
   });

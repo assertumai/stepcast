@@ -3,14 +3,14 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createClaudeAdapter } from '../src/core/backend/claude.js';
-import { discoverModels, resetModelDiscoveryCache } from '../src/core/backend/models.js';
-import type { ModelDiscovery, ProbeOutput } from '../src/core/backend/types.js';
-import { resolveConfig, type Config } from '../src/core/config/resolve.js';
-import { lintPipeline } from '../src/core/lint.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
-import type { BackendContribution } from '../src/core/plugins/pipeline-contract.js';
+import { createClaudeAdapter } from '../src/parts/backends/claude/adapter.js';
+import { discoverModels, resetModelDiscoveryCache } from '../src/parts/pipeline/backend/models.js';
+import type { ModelDiscovery, ProbeOutput } from '../src/parts/pipeline/backend/types.js';
+import { resolveConfig, type Config } from '../src/parts/pipeline/config/resolve.js';
+import { lintPipeline } from '../src/parts/pipeline/domain/lint.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { registryFromKernel, type Registry } from '../src/kernel/registry.js';
+import type { BackendContribution } from '../src/parts/pipeline/contract.js';
 import { asAgent, createPipelineKernel, makeProject } from './helpers.js';
 import { tempDir } from './tmp.js';
 

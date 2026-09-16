@@ -275,7 +275,7 @@ function FilesSection({
 
           {/* Прогоны, которых отбор не назвал и проверить не смог: у отбора по
               сроку таких нет — срок берёт их по времени каталога, и они уже в
-              списке (`uncheckedCount` в `src/core/run/cleanup.ts`). */}
+              списке (`uncheckedCount` в `src/parts/pipeline/run/cleanup.ts`). */}
           {selection.uncheckedCount === 0 ? null : (
             <p className="note dim">
               Ещё {selection.uncheckedCount} прогон(ов) сюда не попали — журнал не читается, статус
@@ -410,7 +410,7 @@ function StatsSection({
 
   // Проект — такой же признак отбора, как срок и исход: названный без них, он
   // отбирает свою область целиком (`selectUsageRecords` в
-  // `core/journal/usageStore.ts`), и запрещать такой отбор нечем.
+  // `parts/pipeline/run/journal/usageStore.ts`), и запрещать такой отбор нечем.
   const nothingAsked = !failed && olderThan === '' && project === '';
 
   return (

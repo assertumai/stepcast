@@ -3,13 +3,13 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { resolveLate, type LateScope } from '../src/core/pipeline/late.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
-import { jobScratchDir } from '../src/core/journal/paths.js';
-import { readStatus } from '../src/core/journal/reader.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { resolveLate, type LateScope } from '../src/parts/pipeline/document/late.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
+import { jobScratchDir } from '../src/parts/pipeline/run/journal/paths.js';
+import { readStatus } from '../src/parts/pipeline/run/journal/reader.js';
 import { asAgent, asRun, asScript, makeProject, type Project } from './helpers.js';
-import type { Job } from '../src/core/pipeline/model.js';
+import type { Job } from '../src/parts/pipeline/document/model.js';
 import { tempDir } from './tmp.js';
 
 const SCOPE: LateScope = {

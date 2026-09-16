@@ -3,20 +3,20 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { resolveConfig } from '../src/core/config/resolve.js';
-import { ExitCode, StepcastError } from '../src/core/errors.js';
+import { resolveConfig } from '../src/parts/pipeline/config/resolve.js';
+import { ExitCode, StepcastError } from '../src/kernel/errors.js';
 import {
   DECLARATIVE_CONTRIBUTION_FIELDS,
   StepcastPluginSchema,
   type DeclarativeContributionFields,
   type PipelinePlugin,
-} from '../src/core/plugins/pipeline-contract.js';
-import { toContextPlugin } from '../src/core/plugins/load.js';
-import { declaredServices } from '../src/core/plugins/services.js';
+} from '../src/parts/pipeline/contract.js';
+import { toContextPlugin } from '../src/kernel/load.js';
+import { declaredServices } from '../src/kernel/services.js';
 import { createKernelShell } from '../src/parts/builtin.js';
 import { loadPlugins } from '../src/parts/load.js';
-import { availableNames } from '../src/core/plugins/registry.js';
-import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
+import { availableNames } from '../src/kernel/registry.js';
+import { DEFAULT_NATIVE_PREDICATES } from '../src/parts/pipeline/document/schema.js';
 import { tempDir } from './tmp.js';
 
 /**

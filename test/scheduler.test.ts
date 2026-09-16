@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { overallStatus, schedule, type JobOutcome } from '../src/core/run/scheduler.js';
-import { buildGraph } from '../src/core/graph.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
+import { overallStatus, schedule, type JobOutcome } from '../src/parts/pipeline/run/scheduler.js';
+import { buildGraph } from '../src/parts/pipeline/domain/graph.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
 import { makeProject } from './helpers.js';
-import type { Pipeline } from '../src/core/pipeline/model.js';
+import type { Pipeline } from '../src/parts/pipeline/document/model.js';
 
 function pipelineOf(yaml: string, inputs?: Record<string, string>): Pipeline {
   const project = makeProject({ 'stepcast.yml': yaml });

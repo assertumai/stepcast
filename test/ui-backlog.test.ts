@@ -3,9 +3,9 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { buildBacklog } from '../src/ui/backlog.js';
-import { buildOverview } from '../src/ui/overview.js';
-import { projectKey } from '../src/core/journal/paths.js';
+import { buildBacklog } from '../src/parts/ui/backlog.js';
+import { buildOverview } from '../src/parts/ui/overview.js';
+import { projectKey } from '../src/parts/pipeline/run/journal/paths.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 
 /**
@@ -33,7 +33,7 @@ function makeSecondProject(runsRoot: string, home: string): string {
   return projectRoot;
 }
 
-describe('ui-dashboard: сборка вида очереди (src/ui/backlog.ts)', () => {
+describe('ui-dashboard: сборка вида очереди (src/parts/ui/backlog.ts)', () => {
   it('показывает разделы двух проектов с их пунктами, в порядке файла', () => {
     const { runsRoot, projectRoot, home } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });

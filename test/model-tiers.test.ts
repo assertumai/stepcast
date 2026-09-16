@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import codexPlugin from '../src/backends/codex/index.js';
-import { resolveConfig } from '../src/core/config/resolve.js';
-import { StepcastError } from '../src/core/errors.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { serializeLock } from '../src/core/pipeline/lock.js';
+import codexPlugin from '../src/parts/backends/codex/index.js';
+import { resolveConfig } from '../src/parts/pipeline/config/resolve.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { serializeLock } from '../src/parts/pipeline/document/lock.js';
 import { asAgent, makeProject } from './helpers.js';
 
 const TIERS_CONFIG = `

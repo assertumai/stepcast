@@ -8,7 +8,7 @@ import {
   preparePublication,
   publishPrepared,
   rollbackPrepared,
-} from '../src/core/lanes/publication.js';
+} from '../src/parts/pipeline/domain/lanes/publication.js';
 import { gitCommit, gitInit } from './helpers.js';
 import { tempDir } from './tmp.js';
 

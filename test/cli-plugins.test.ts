@@ -3,9 +3,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import type { CliIo } from '../src/cli/args.js';
-import { run as runCli } from '../src/cli/main.js';
-import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
+import type { CliIo } from '../src/kernel/cli/args.js';
+import { run as runCli } from '../src/parts/cli/main.js';
+import { ExitCode, type ExitCodeValue } from '../src/kernel/errors.js';
 import { makeProject, withHome, type Project } from './helpers.js';
 
 interface Outcome {

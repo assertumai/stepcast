@@ -9,34 +9,39 @@ import { describe, it } from 'node:test';
  * design.md `user-decision-steps`, решение 12) закреплена дважды: правилом
  * линта (`eslint.config.js`) и здесь. Линт решает построчно и не разворачивает
  * `**`-паттерн заранее — этот тест перечисляет модули на диске, так что новый
- * файл `src/backends/**` или `src/parts/steps/decision/**` проверяется без
- * отдельной правки теста, а не только когда кто-то напишет нарушающий импорт.
+ * файл `src/parts/backends/codex/**` или `src/parts/pipeline/steps/decision/**`
+ * проверяется без отдельной правки теста, а не только когда кто-то напишет
+ * нарушающий импорт.
  *
  * Разрешено ровно три направления (`plugin-surface-split`, design.md,
- * Решение 10): ядерная поверхность `../../plugin.js`, доменная поверхность
+ * Решение 10): ядерная поверхность `../../plugin/index.js`, доменная поверхность
  * `src/parts/pipeline/surface.ts` и соседний модуль того же каталога — плагин
  * из нескольких файлов (манифест отдельно от адаптера, поля отдельно от
  * исполнителя) остаётся законной раскладкой, а путь наружу, в ядро, отсюда не
- * ведёт никуда. Оба каталога — `src/backends` и `src/parts/steps/decision` —
- * обходятся одним перечислением: граница у них одна и та же, а не две её
- * копии.
+ * ведёт никуда. Оба каталога — `src/parts/backends/codex` и
+ * `src/parts/pipeline/steps/decision` — обходятся одним перечислением:
+ * граница у них одна и та же, а не две её копии. `src/parts/backends/claude` в
+ * перечне не значится (`source-tree-microkernel-layout`, Решение 8): адаптер
+ * написан внутренними импортами и публичной поверхностью не пользуется —
+ * граница, названная деревом, потребовала бы либо переписать его, либо дать
+ * ему именное исключение.
  *
- * Каталог `src/parts/steps/decision` — не единственный вид шага в
- * `src/parts/steps/`: `run`/`uses`/`script`/`agent` под этой же границей не
+ * Каталог `src/parts/pipeline/steps/decision` — не единственный вид шага в
+ * `src/parts/pipeline/steps/`: `run`/`uses`/`script`/`agent` под этой же границей не
  * ходят вовсе — их строки лишь называют внутреннюю форму разбора движка
- * (`core/pipeline/expand.js`), и этой поверхности не имеют
+ * (`parts/pipeline/document/expand.js`), и этой поверхности не имеют
  * (`builtin-step-kinds-as-rows`, design.md, Решение 8). Корень назван точно
- * на `decision`, не на всём `src/parts/steps/`.
+ * на `decision`, не на всём `src/parts/pipeline/steps/`.
  *
  * `row.ts` границы не проверяет — исключён так же, как в `eslint.config.js`:
- * он не реализация вклада, ему нужен тип `BuiltinRow` из `src/core/plugins/load.js`.
+ * он не реализация вклада, ему нужен тип `BuiltinRow` из `src/kernel/load.js`.
  *
  * На пустом каталоге тест проходит вырожденно: перечислять и проверять нечего,
  * пока в пакете нет ни одного плагина этого вида.
  */
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
-const surfaceRoots = [join(repoRoot, 'src/backends'), join(repoRoot, 'src/parts/steps/decision')];
-const pluginModule = resolve(repoRoot, 'src/plugin.ts');
+const surfaceRoots = [join(repoRoot, 'src/parts/backends/codex'), join(repoRoot, 'src/parts/pipeline/steps/decision')];
+const pluginModule = resolve(repoRoot, 'src/plugin/index.ts');
 /** Доменная поверхность `stepcast/pipeline` — второе законное направление рядом с ядерной. */
 const pipelineSurfaceModule = resolve(repoRoot, 'src/parts/pipeline/surface.ts');
 
@@ -133,7 +138,7 @@ function surfaceViolations(): string[] {
         const resolved = resolve(dirname(file), specifier).replace(/\.js$/, '.ts');
         if (resolved === pluginModule || resolved === pipelineSurfaceModule || insideRoot(root, resolved)) continue;
         violations.push(
-          `${where}: '${specifier}' — ведёт мимо ../../plugin.js, мимо parts/pipeline/surface.js и мимо ${relative(repoRoot, root)}`,
+          `${where}: '${specifier}' — ведёт мимо ../../plugin/index.js, мимо parts/pipeline/surface.js и мимо ${relative(repoRoot, root)}`,
         );
       }
     }
@@ -143,32 +148,32 @@ function surfaceViolations(): string[] {
 }
 
 describe('backends и steps/decision: публичная поверхность', () => {
-  it('каждый импорт ведёт во встроенный модуль Node, в ../../plugin.js либо в соседний модуль плагина', () => {
+  it('каждый импорт ведёт во встроенный модуль Node, в ../../plugin/index.js либо в соседний модуль плагина', () => {
     assert.deepEqual(surfaceViolations(), []);
   });
 
   // Разбор — половина проверки: пропущенная форма импорта означает границу,
   // которой на самом деле нет. Проверяется на тексте, а не на файле: писать
-  // нарушающий модуль в `src/backends` ради теста значило бы ронять первую
+  // нарушающий модуль в `src/parts/backends/codex` ради теста значило бы ронять первую
   // проверку этого же describe.
   it('разбор видит побочный, динамический и вычисленный импорт наравне со статическим', () => {
     const parsed = parseImports(
       [
-        "import '../../core/errors.js';",
+        "import '../../../kernel/errors.js';",
         "import { join } from 'node:path';",
-        "const { StepcastError } = await import('../../core/errors.js');",
-        "const legacy = require('../../core/plugins/registry.js');",
+        "const { StepcastError } = await import('../../../kernel/errors.js');",
+        "const legacy = require('../../../kernel/registry.js');",
         'const computed = await import(chosenByName);',
-        "export type { Thing } from '../../plugin.js';",
+        "export type { Thing } from '../../../plugin/index.js';",
       ].join('\n'),
     );
 
     assert.deepEqual(parsed.specifiers, [
-      '../../core/errors.js',
+      '../../../kernel/errors.js',
       'node:path',
-      '../../plugin.js',
-      '../../core/errors.js',
-      '../../core/plugins/registry.js',
+      '../../../plugin/index.js',
+      '../../../kernel/errors.js',
+      '../../../kernel/registry.js',
     ]);
     assert.deepEqual(parsed.computed, ['import(…)']);
   });

@@ -3,10 +3,10 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import type { CliIo } from '../src/cli/args.js';
-import { buildIndependentCommandEnv, run as runCli } from '../src/cli/main.js';
-import { COMMAND_ROWS } from '../src/cli/rows.js';
-import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
+import type { CliIo } from '../src/kernel/cli/args.js';
+import { buildIndependentCommandEnv, run as runCli } from '../src/parts/cli/main.js';
+import { COMMAND_ROWS } from '../src/parts/cli/rows.js';
+import { ExitCode, StepcastError, type ExitCodeValue } from '../src/kernel/errors.js';
 import { makeProject, seedRun, withHome, type Project } from './helpers.js';
 
 interface Outcome {

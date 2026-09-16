@@ -3,13 +3,13 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { resolveConfig, type ResolvedConfig } from '../src/core/config/resolve.js';
-import { StepcastError } from '../src/core/errors.js';
-import { createKernel } from '../src/core/plugins/kernel.js';
-import { walkPluginTree } from '../src/core/plugins/load.js';
-import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/core/plugins/pipeline-contract.js';
-import { availableNames, contributionOwner } from '../src/core/plugins/registry.js';
-import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
+import { resolveConfig, type ResolvedConfig } from '../src/parts/pipeline/config/resolve.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { createKernel } from '../src/kernel/kernel.js';
+import { walkPluginTree } from '../src/kernel/load.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../src/parts/pipeline/contract.js';
+import { availableNames, contributionOwner } from '../src/kernel/registry.js';
+import { DEFAULT_NATIVE_PREDICATES } from '../src/parts/pipeline/document/schema.js';
 import { loadPlugins } from '../src/parts/load.js';
 import { BUILTIN_ROWS, BUILTIN_ROW_IDS } from '../src/parts/rows.js';
 import { tempDir } from './tmp.js';
@@ -156,7 +156,7 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
 // одного перечня `src/parts/rows.ts` (`BUILTIN_ROW_IDS` выведен из
 // `BUILTIN_ROWS`), и проверять тут можно лишь то, что перечень действительно
 // сеет дерево — весь и в своём порядке. Развести формы способен только
-// вызывающий, подающий их двумя параметрами (`src/ui/kernel.ts:126` и `:128`),
+// вызывающий, подающий их двумя параметрами (`src/parts/ui/daemon/kernel.ts:126` и `:128`),
 // — эта ветвь и проверяется отдельно.
 describe('plugin-tree: две формы набора строк — id в семени и фабрика при обходе', () => {
   it('перечень движка сеет встроенный слой дефолтной сборки целиком и в своём порядке', () => {

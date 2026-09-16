@@ -1,6 +1,6 @@
 import { Service, type Context } from 'cordis';
 
-import type { RouteTable } from '../../../src/ui/routes.ts';
+import type { RouteTable } from '../../../src/parts/ui/routes.ts';
 
 /**
  * Таблица маршрутов на месте живого сервиса ядра витрины (`ui-routes`,

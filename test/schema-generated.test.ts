@@ -5,7 +5,7 @@ import { describe, it } from 'node:test';
 import { z } from 'zod';
 
 import { SCHEMA_TARGETS } from '../scripts/schema-targets.js';
-import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../src/core/pipeline/published-schema.js';
+import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../src/parts/pipeline/document/published-schema.js';
 import { builtinRegistry } from '../src/parts/builtin.js';
 
 /**

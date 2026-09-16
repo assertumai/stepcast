@@ -3,14 +3,14 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createFakeBackend, initLine, resultLine } from '../src/core/backend/fake.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { findStepDir, readStatus, readEvents } from '../src/core/journal/reader.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
-import { readSourceRun } from '../src/core/run/resumePlan.js';
-import { buildPreviousFailure } from '../src/core/run/previousFailure.js';
-import { buildIterationNote } from '../src/core/run/iterationNote.js';
-import type { PredicateResult } from '../src/core/journal/schema.js';
+import { createFakeBackend, initLine, resultLine } from '../src/parts/pipeline/backend/fake.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { findStepDir, readStatus, readEvents } from '../src/parts/pipeline/run/journal/reader.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
+import { readSourceRun } from '../src/parts/pipeline/run/resumePlan.js';
+import { buildPreviousFailure } from '../src/parts/pipeline/run/previousFailure.js';
+import { buildIterationNote } from '../src/parts/pipeline/run/iterationNote.js';
+import type { PredicateResult } from '../src/parts/pipeline/run/journal/schema.js';
 import { makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

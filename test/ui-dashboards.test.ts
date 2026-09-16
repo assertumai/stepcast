@@ -7,7 +7,7 @@ import {
   resolveCellParam,
   type DashboardCellDefinition,
   type DashboardDefinition,
-} from '../src/ui/dashboards.js';
+} from '../src/parts/ui/dashboards.js';
 
 function cell(overrides: Partial<DashboardCellDefinition> & Pick<DashboardCellDefinition, 'id'>): DashboardCellDefinition {
   return { widget: 'runs', at: { column: 0, row: 0, width: 4, height: 2 }, ...overrides };

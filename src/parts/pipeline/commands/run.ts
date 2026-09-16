@@ -1,0 +1,184 @@
+import { resolveConfig, type Config } from '../config/resolve.js';
+import type { Registry } from '../../../kernel/registry.js';
+import { ExitCode, isStepcastError, type ExitCodeValue } from '../../../kernel/errors.js';
+import { findProjectRoot, projectKey, runPaths, shortRunId } from '../run/journal/paths.js';
+import { readStatus } from '../run/journal/reader.js';
+import type { Event } from '../run/journal/schema.js';
+import { hasErrors, lintPipeline } from '../domain/lint.js';
+import { expandPipeline } from '../document/expand.js';
+import { resolvePipelineTarget } from '../domain/package-schema.js';
+import type { PipelineCommandEnv } from '../contract.js';
+import { runPipeline } from '../run/runner.js';
+import type { UsageSnapshot } from '../run/budget/accumulator.js';
+import { renderProgressLine } from './progress.js';
+import { commandRow } from '../../../kernel/cli/commandRow.js';
+import { PIPELINE_SERVICES } from '../services.js';
+import { formatDiagnostic } from './lint.js';
+import { continueRestartChain } from './resume.js';
+import type { ParsedArgs } from '../../../kernel/cli/args.js';
+
+/**
+ * Конфигурация приходит из окружения команды, когда точка входа уже разрешила
+ * её вместе с плагинами: повторный `resolveConfig({ cwd })` терял бы слой
+ * умолчаний плагинных бэкендов, и `backends.<имя>` плагина не существовало бы
+ * для команды, хотя `stepcast config` его показывает. Без `config` (прямой
+ * вызов из тестов) команда разрешает конфигурацию сама, как прежде.
+ */
+export async function runRunCommand(
+  args: ParsedArgs,
+  write: (line: string) => void,
+  cwd: string,
+  registry?: Registry,
+  resolvedConfig?: Config,
+): Promise<ExitCodeValue> {
+  const target = args.positional[0] ?? 'stepcast.yml';
+  // `stepcast:<имя>` называет пайплайн поставки, а не файл каталога запуска
+  // (`pipeline-definition`, «Ссылка на поставку называет и пайплайн, а не
+  // только схему»): путь разрешается от расположения движка, а не от `cwd`,
+  // и слои `script`/`step` пайплайна ищутся от `cwd`, а не от каталога
+  // поставки внутри пакета (`projectRoot` ниже).
+  const { pipelinePath, isSupplyPipeline } = resolvePipelineTarget(cwd, target);
+  const config = resolvedConfig ?? resolveConfig({ cwd }).config;
+  const inputs = (args.flags.input as Record<string, string> | undefined) ?? {};
+
+  const expanded = expandPipeline({
+    pipelinePath,
+    config,
+    inputs,
+    ...(registry === undefined ? {} : { registry }),
+    ...(isSupplyPipeline ? { projectRoot: cwd } : {}),
+  });
+
+  // Проверка перед запуском бесплатна по сравнению с прогоном, поэтому она
+  // безусловна: ловить структурную ошибку после первого агентского шага
+  // означает платить за неё токенами.
+  const diagnostics = lintPipeline(expanded, { config, cwd, ...(registry === undefined ? {} : { registry }) });
+  for (const diagnostic of diagnostics) {
+    for (const line of formatDiagnostic(diagnostic)) write(line);
+  }
+  if (hasErrors(diagnostics)) return ExitCode.configError;
+
+  if (args.flags['dry-run'] === true) {
+    write(`ok: ${target} — проверка пройдена, прогон не запускался`);
+    return ExitCode.ok;
+  }
+
+  const controller = new AbortController();
+  const onSignal = (): void => controller.abort();
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
+
+  const projectRoot = findProjectRoot(cwd);
+  const onEvent = args.flags.quiet === true ? undefined : buildProgressObserver(config, projectRoot, write);
+
+  try {
+    const result = await runPipeline({
+      expanded,
+      config,
+      projectRoot,
+      cwd,
+      ...(registry === undefined ? {} : { registry }),
+      signal: controller.signal,
+      ...(onEvent === undefined ? {} : { onEvent }),
+    });
+
+    const runId = shortRunId(result.journal.paths.runId);
+    write(`прогон ${runId}: ${result.status}`);
+    write(`журнал: ${result.journal.paths.dir}`);
+
+    if (result.costLimitUnapplied) {
+      write(
+        'предупреждение: денежный потолок объявлен, но ни одна попытка не сообщила цены — потолок не применялся',
+      );
+    }
+
+    // В изолированном режиме результат остался в стороне. Молча закончить —
+    // значит оставить пользователя гадать, где его работа.
+    const isolated = readStatus(result.journal.paths).jobs.filter(
+      (job) => job.workspace !== undefined && job.workspace.mode !== 'cwd',
+    );
+    if (isolated.length > 0) {
+      write('рабочие деревья:');
+      for (const job of isolated) {
+        write(`  ${job.id} (${job.workspace?.mode}): ${job.workspace?.path}`);
+      }
+      write(`наложить результат на текущее дерево: stepcast apply ${runId}`);
+    }
+
+    if (result.restart !== undefined) {
+      // Сигнал отмены идёт в цепочку: обработчики SIGINT/SIGTERM стоят до
+      // конца команды, и звено цепочки обязано слушать тот же контроллер —
+      // иначе Ctrl-C на ожидающем звене не отменял бы ничего.
+      return continueRestartChain(
+        result.restart.from,
+        result.journal.paths,
+        config,
+        cwd,
+        write,
+        registry,
+        controller.signal,
+      );
+    }
+    return result.exitCode;
+  } catch (error) {
+    if (!isStepcastError(error)) throw error;
+    for (const line of formatDiagnostic({
+      severity: 'error',
+      message: error.message,
+      ...(error.file === undefined ? {} : { file: error.file }),
+      ...(error.at === undefined ? {} : { at: error.at }),
+      ...(error.hint === undefined ? {} : { hint: error.hint }),
+    })) {
+      write(line);
+    }
+    return error.exitCode;
+  } finally {
+    process.removeListener('SIGINT', onSignal);
+    process.removeListener('SIGTERM', onSignal);
+  }
+}
+
+/**
+ * Наблюдатель ленты хода прогона: по `run.started` первыми строками печатает
+ * идентификатор прогона и путь к каталогу журнала — до того, как исполнится
+ * хоть одна работа, — затем по одной строке на печатаемое событие.
+ *
+ * Время строки считается от `run.started` по меткам времени самих событий, а
+ * не через `usage.elapsedMs()` снимка: тот вычитает сон и после
+ * `budget.waiting` пошёл бы назад.
+ */
+function buildProgressObserver(
+  config: Config,
+  projectRoot: string,
+  write: (line: string) => void,
+): (event: Event, usage: UsageSnapshot) => void {
+  let startedAtMs: number | undefined;
+  return (event, usage) => {
+    if (event.kind === 'run.started') {
+      startedAtMs = Date.parse(event.ts);
+      const paths = runPaths(config.runs.root, projectKey(projectRoot), event.run_id);
+      write(`прогон ${shortRunId(event.run_id)}`);
+      write(`журнал: ${paths.dir}`);
+    }
+    const elapsedMs = startedAtMs === undefined ? 0 : Date.parse(event.ts) - startedAtMs;
+    const rendered = renderProgressLine(event, usage, elapsedMs);
+    if (rendered !== undefined) write(rendered);
+  };
+}
+
+export const row = commandRow<PipelineCommandEnv>(
+  {
+    name: 'run',
+    spec: {
+      description: 'выполнить пайплайн',
+      positional: ['pipeline'],
+      flags: {
+        input: { kind: 'keyValue', description: 'значение входа пайплайна: --input имя=значение' },
+        'dry-run': { kind: 'boolean', description: 'только проверить, не запуская работы' },
+        quiet: { kind: 'boolean', description: 'не печатать ход прогона' },
+      },
+    },
+    run: (args, io, env) => runRunCommand(args, io.out, env.cwd, env.registry, env.config),
+  },
+  { inject: PIPELINE_SERVICES },
+);

@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { withTempDir } from '../src/core/fs/tempDir.js';
+import { withTempDir } from '../src/kernel/fs/tempDir.js';
 import { tempDir } from './tmp.js';
 
 /**

@@ -10,7 +10,7 @@ import {
   type BacklogFilters,
   type BacklogOrderDirection,
   type BacklogSectionView,
-} from '../../../src/ui/backlogView';
+} from '../../../src/parts/ui/backlogView';
 
 /**
  * Экран очереди улучшений: раздел на проект, внутри — пункты в порядке
@@ -19,7 +19,7 @@ import {
  * приходят живым потоком (`live.ts`, событие `backlog`) — отдельного запроса
  * экран не делает: первый кадр потока и есть первая загрузка.
  *
- * Отбор, нумерация и порядок считает чистый модуль `src/ui/backlogView.ts` —
+ * Отбор, нумерация и порядок считает чистый модуль `src/parts/ui/backlogView.ts` —
  * здесь только состояние экрана (что выбрано) и отрисовка, тем же разделением,
  * что у списка прогонов (`Runs.tsx`).
  */
@@ -31,8 +31,8 @@ const PLAN_METRIC = 'plan';
 /**
  * Отказы разбора раздела — по одному на не разобравшийся файл: текст, файл и
  * место, тем же приёмом, каким показана карточка неразбираемого пайплайна
- * (`src/ui/pipelines.ts`, `PipelineError`). Подсказки в этом составе нет: ядро
- * очереди её не заполняет (`src/ui/backlog.ts`).
+ * (`src/parts/ui/pipelines.ts`, `PipelineError`). Подсказки в этом составе нет: ядро
+ * очереди её не заполняет (`src/parts/ui/backlog.ts`).
  */
 function BacklogFailures({ failures }: { readonly failures: readonly BacklogFailure[] }): JSX.Element {
   return (

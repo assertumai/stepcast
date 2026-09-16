@@ -6,7 +6,7 @@ scope:
   - .stepcast/pipelines/**
   - .stepcast/jobs/**
 anchors:
-  - path: src/core/run/runner.ts
+  - path: src/parts/pipeline/run/runner.ts
     hash: 'b35d39b45cc0a4dc'
 status: active
 ---

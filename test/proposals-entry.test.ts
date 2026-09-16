@@ -7,7 +7,7 @@ import {
   buildProposalId,
   checkProposalContentSize,
   parseProposalTarget,
-} from '../src/core/proposals/entry.js';
+} from '../src/parts/pipeline/domain/proposals/entry.js';
 
 describe('proposals/entry: разбор и проверка цели', () => {
   it('три законные цели разбираются на вид кабинета и id', () => {

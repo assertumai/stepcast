@@ -1,19 +1,19 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import { applyRowOnRoot, builtinRegistry, createBuiltinKernel, createKernelShell } from '../src/parts/builtin.js';
-import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
-import { availableNames, contributionOwner, predicateNames, registryFromKernel, type Registry } from '../src/core/plugins/registry.js';
-import { DECLARATIVE_CONTRIBUTION_FIELDS, isNativeStepKind, type PredicateContribution, type PipelinePlugin, type StepKindContribution } from '../src/core/plugins/pipeline-contract.js';
-import { DEFAULT_NATIVE_PREDICATES } from '../src/core/pipeline/schema.js';
-import { ExitCode } from '../src/core/errors.js';
+import { applyDeclarativePlugin } from '../src/kernel/load.js';
+import { availableNames, contributionOwner, predicateNames, registryFromKernel, type Registry } from '../src/kernel/registry.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS, isNativeStepKind, type PredicateContribution, type PipelinePlugin, type StepKindContribution } from '../src/parts/pipeline/contract.js';
+import { DEFAULT_NATIVE_PREDICATES } from '../src/parts/pipeline/document/schema.js';
+import { ExitCode } from '../src/kernel/errors.js';
 import { resolveWithPlugins } from '../src/parts/resolve.js';
 import { BUILTIN_ROWS } from '../src/parts/rows.js';
 import { row as pipeline } from '../src/parts/pipeline/row.js';
-import { row as stepRun } from '../src/parts/steps/run/row.js';
-import { row as stepUses } from '../src/parts/steps/uses/row.js';
-import { row as stepScript } from '../src/parts/steps/script/row.js';
+import { row as stepRun } from '../src/parts/pipeline/steps/run/row.js';
+import { row as stepUses } from '../src/parts/pipeline/steps/uses/row.js';
+import { row as stepScript } from '../src/parts/pipeline/steps/script/row.js';
 import { makeProject } from './helpers.js';
 
 /** Вклад предиката, годный для реестра: содержимое здесь не важно. */
@@ -278,13 +278,13 @@ describe('plugin-registry: снимок дефолтного дерева', () =
     assert.deepEqual([...kernel.ctx.steps.contributions.keys()], ['run', 'uses', 'script', 'agent', 'decision']);
     // Встроенные предикаты — вклады сервиса `predicates`, внесённые строкой
     // (`builtin-predicates-as-row`), а не зарезервированные без содержания
-    // имена: порядок — порядок их перечисления в `src/parts/expect/row.ts`,
+    // имена: порядок — порядок их перечисления в `src/parts/pipeline/expect/row.ts`,
     // те же десять форм, что `DEFAULT_NATIVE_PREDICATES`.
     assert.deepEqual([...kernel.ctx.predicates.contributions.keys()].sort(), [...DEFAULT_NATIVE_PREDICATES].sort());
   });
 
   // Задача 1 (row-module-convention): переезд строк движка в модули
-  // (`src/parts/backends/claude/row.ts`, `src/parts/steps/decision/row.ts`)
+  // (`src/parts/backends/claude/row.ts`, `src/parts/pipeline/steps/decision/row.ts`)
   // не вправе сменить владельца вклада — вклад остаётся внесённым на
   // корневой области ядра, а не через `kernel.ctx.plugin`, и это видно
   // снаружи только тут: по признаку области, а не по имени строки.
@@ -367,7 +367,7 @@ describe('plugin-registry: поставщик в конце перечня ло�
 
 /**
  * Первый вид, чей `native.test` узнаёт запись, — то же обращение к реестру,
- * каким `matchStepKind` (`src/core/pipeline/expand.ts`) обходит `registry.steps`
+ * каким `matchStepKind` (`src/parts/pipeline/document/expand.ts`) обходит `registry.steps`
  * и останавливается на первом совпадении. Записывается здесь заново, а не
  * зовётся из `expand.ts`, потому что сама функция не экспортирована: вопрос
  * теста — «чей порядок это решает», а не «как разбирается документ», и полный

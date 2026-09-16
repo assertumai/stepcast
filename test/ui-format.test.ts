@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { fmtBytes, fmtDuration, fmtMoney, fmtSpan, fmtTokens, pluralRuns } from '../src/ui/format.js';
+import { fmtBytes, fmtDuration, fmtMoney, fmtSpan, fmtTokens, pluralRuns } from '../src/parts/ui/format.js';
 
 describe('ui-format: длительность', () => {
   it('не показывает разрядов, которых на часах не бывает', () => {

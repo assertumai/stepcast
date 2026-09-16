@@ -4,13 +4,13 @@ import { existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { createAnchorer } from '../src/core/anchor/index.js';
-import type { Config } from '../src/core/config/resolve.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { findStepDir, readStatus } from '../src/core/journal/reader.js';
-import { removeRun } from '../src/core/run/cleanup.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
-import { projectKey } from '../src/core/journal/paths.js';
+import { createAnchorer } from '../src/parts/pipeline/domain/anchor/index.js';
+import type { Config } from '../src/parts/pipeline/config/resolve.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { findStepDir, readStatus } from '../src/parts/pipeline/run/journal/reader.js';
+import { removeRun } from '../src/parts/pipeline/run/cleanup.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
+import { projectKey } from '../src/parts/pipeline/run/journal/paths.js';
 import { gitCommit, gitInit, makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

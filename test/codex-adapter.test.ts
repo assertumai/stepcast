@@ -4,15 +4,15 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
-import codexPlugin, { createCodexAdapter, SANDBOX_MODES } from '../src/backends/codex/index.js';
+import codexPlugin, { createCodexAdapter, SANDBOX_MODES } from '../src/parts/backends/codex/index.js';
 import type { BackendConfig } from '../src/parts/pipeline/surface.js';
-import type { AgentInvocation, BackendAdapter, BackendEvent } from '../src/core/backend/types.js';
-import { discoverModels } from '../src/core/backend/models.js';
-import { resolveConfig } from '../src/core/config/resolve.js';
-import { createSessionRegistry, executeAgentStep } from '../src/core/exec/agentStep.js';
-import { StepcastError } from '../src/core/errors.js';
-import { registryFromKernel } from '../src/core/plugins/registry.js';
-import type { AgentStep } from '../src/core/pipeline/model.js';
+import type { AgentInvocation, BackendAdapter, BackendEvent } from '../src/parts/pipeline/backend/types.js';
+import { discoverModels } from '../src/parts/pipeline/backend/models.js';
+import { resolveConfig } from '../src/parts/pipeline/config/resolve.js';
+import { createSessionRegistry, executeAgentStep } from '../src/parts/pipeline/run/exec/agentStep.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { registryFromKernel } from '../src/kernel/registry.js';
+import type { AgentStep } from '../src/parts/pipeline/document/model.js';
 import { createPipelineKernel } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -421,8 +421,8 @@ describe('codex-backend: возможности и манифест плагин
     const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')) as {
       exports: Record<string, string>;
     };
-    assert.equal(pkg.exports['./backends/codex'], './dist/src/backends/codex/index.js');
-    assert.ok(existsSync(fileURLToPath(new URL('../../dist/src/backends/codex/index.js', import.meta.url))));
+    assert.equal(pkg.exports['./backends/codex'], './dist/src/parts/backends/codex/index.js');
+    assert.ok(existsSync(fileURLToPath(new URL('../../dist/src/parts/backends/codex/index.js', import.meta.url))));
   });
 });
 

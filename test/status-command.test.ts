@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
-import { runStatusCommand } from '../src/cli/commands/status.js';
-import { describeRefusal } from '../src/core/backend/types.js';
-import { writeLaneMerge } from '../src/core/lanes/mergeRecord.js';
-import type { ParsedArgs } from '../src/cli/args.js';
+import { runStatusCommand } from '../src/parts/pipeline/commands/status.js';
+import { describeRefusal } from '../src/parts/pipeline/backend/types.js';
+import { writeLaneMerge } from '../src/parts/pipeline/domain/lanes/mergeRecord.js';
+import type { ParsedArgs } from '../src/kernel/cli/args.js';
 import { makeJournalBed, seedRun, withHome } from './helpers.js';
 
 function args(flags: ParsedArgs['flags'] = {}): ParsedArgs {

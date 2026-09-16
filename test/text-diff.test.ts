@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { diffLines } from '../src/core/textDiff.js';
+import { diffLines } from '../src/parts/pipeline/domain/textDiff.js';
 
 describe('textDiff: построчный LCS', () => {
   it('правка в середине несёт same вокруг removed/added', () => {

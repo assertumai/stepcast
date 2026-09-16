@@ -4,18 +4,18 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { evaluateLane, knownLanes } from '../src/core/lanes/lanes.js';
-import { assertCleanTree, commitAll, currentCommit, headMessage, resetToCommit } from '../src/core/lanes/tree.js';
-import { runCheck } from '../src/core/lanes/check.js';
-import { hasLaneItem, readLaneItem, takenLanes } from '../src/core/lanes/item.js';
-import { mergedLanes, readLaneMerge, writeLaneMerge } from '../src/core/lanes/mergeRecord.js';
-import { StepcastError } from '../src/core/errors.js';
-import type { JobRecord } from '../src/core/journal/schema.js';
+import { evaluateLane, knownLanes } from '../src/parts/pipeline/domain/lanes/lanes.js';
+import { assertCleanTree, commitAll, currentCommit, headMessage, resetToCommit } from '../src/parts/pipeline/domain/lanes/tree.js';
+import { runCheck } from '../src/parts/pipeline/domain/lanes/check.js';
+import { hasLaneItem, readLaneItem, takenLanes } from '../src/parts/pipeline/domain/lanes/item.js';
+import { mergedLanes, readLaneMerge, writeLaneMerge } from '../src/parts/pipeline/domain/lanes/mergeRecord.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import type { JobRecord } from '../src/parts/pipeline/run/journal/schema.js';
 import { gitCommit, gitInit } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 /**
- * Юнит-тесты примитивов `src/core/lanes/`: годность дорожки (`lanes.ts`),
+ * Юнит-тесты примитивов `src/parts/pipeline/domain/lanes/`: годность дорожки (`lanes.ts`),
  * операции над деревом (`tree.ts`), исполнение проверки (`check.ts`) и чтение
  * файла пункта (`item.ts`). Обход целиком (`merge.ts`) проверяется на
  * настоящих прогонах в `test/merge-lanes.test.ts`.

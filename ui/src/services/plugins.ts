@@ -1,7 +1,7 @@
 import { Service, type Context, type Fiber } from 'cordis';
 
-import { WIDGET_ERROR_EXPORT, WIDGET_STYLE_EXPORT } from '../../../src/ui/sharedModules.ts';
-import { pluginModuleHref } from '../../../src/ui/routes.ts';
+import { WIDGET_ERROR_EXPORT, WIDGET_STYLE_EXPORT } from '../../../src/parts/ui/daemon/sharedModules.ts';
+import { pluginModuleHref } from '../../../src/parts/ui/routes.ts';
 import type { PluginRowView, WidgetCompileFailure } from '../api';
 import type { StyleSink } from './styles.ts';
 import { defaultStyleSink } from './styles.ts';
@@ -212,7 +212,7 @@ export class PluginsService extends Service {
     }
 
     // Ошибка сборки приходит не отказом запроса, а исполняемым модулем и тем
-    // же 200 (`errorModuleText`, `src/ui/widgets.ts`): `import()` браузера
+    // же 200 (`errorModuleText`, `src/parts/ui/widgets.ts`): `import()` браузера
     // превращает любой не-2xx ответ в `TypeError` без тела, и без чтения этого
     // экспорта сломанная половина применилась бы как пустая — молча, тем же
     // приёмом, каким её читает хост виджета (`ui/src/widgetHost.tsx`).

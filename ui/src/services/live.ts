@@ -1,7 +1,7 @@
 import { Service, type Context } from 'cordis';
 
-import type { RouteDefinition } from '../../../src/ui/routes.ts';
-import type { ScreenDeclaration } from '../../../src/ui/screens/declaration.ts';
+import type { RouteDefinition } from '../../../src/parts/ui/routes.ts';
+import type { ScreenDeclaration } from '../../../src/parts/ui/screens/declaration.ts';
 import type { BacklogOverview, Overview, PluginRowView, ProposalsStreamEvent, RunSnapshot, WidgetsOverview } from '../api';
 
 /**
@@ -9,7 +9,7 @@ import type { BacklogOverview, Overview, PluginRowView, ProposalsStreamEvent, Ru
  * `useLive` (design.md `cordis-kernel-browser`, Решение 10).
  *
  * Демон ведёт один общий наблюдатель на всех подключённых клиентов
- * (`src/ui/watcher.ts`); один `EventSource` на вкладку открывается эффектом
+ * (`src/parts/ui/watcher.ts`); один `EventSource` на вкладку открывается эффектом
  * СВОЕЙ области — не размонтированием компонента, — и закрывается снятием
  * этой области. `follow(адрес)` пересоздаёт подписку тем же поведением, что
  * был у эффекта хука: прежний снимок прогона не переживает смену адреса, а

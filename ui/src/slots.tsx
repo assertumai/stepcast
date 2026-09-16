@@ -180,7 +180,7 @@ export function KernelRoot({ kernel }: { readonly kernel: BrowserKernel }): Reac
   useEffect(() => {
     let cancelled = false;
     // Одна строка лога на беду, а не на пересборку: тем же правилом, каким
-    // наблюдатель демона не повторяет отказ разбора журнала (`src/ui/watcher.ts`).
+    // наблюдатель демона не повторяет отказ разбора журнала (`src/parts/ui/watcher.ts`).
     const logged = new Set<string>();
 
     const refresh = (): void => {

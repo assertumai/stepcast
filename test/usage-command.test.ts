@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
-import { runUsageCommand } from '../src/cli/commands/usage.js';
-import { runGcCommand } from '../src/cli/commands/gc.js';
-import type { ParsedArgs } from '../src/cli/args.js';
-import type { RunStatus, UsageReport } from '../src/core/journal/schema.js';
+import { runUsageCommand } from '../src/parts/pipeline/commands/usage.js';
+import { runGcCommand } from '../src/parts/pipeline/commands/gc.js';
+import type { ParsedArgs } from '../src/kernel/cli/args.js';
+import type { RunStatus, UsageReport } from '../src/parts/pipeline/run/journal/schema.js';
 import { makeJournalBed, seedRun, withHome } from './helpers.js';
 
 function args(positional: string[] = [], flags: ParsedArgs['flags'] = {}): ParsedArgs {

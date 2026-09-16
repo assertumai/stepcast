@@ -1,8 +1,8 @@
 import type { JSX } from 'react';
 import type { Context } from 'cordis';
 
-import { declaration } from '../../../src/ui/screens/run/declaration.ts';
-import type { RouteTarget } from '../../../src/ui/routes.ts';
+import { declaration } from '../../../src/parts/ui/screens/run/declaration.ts';
+import type { RouteTarget } from '../../../src/parts/ui/routes.ts';
 import type { RunSnapshot } from '../api';
 import { RunDetail } from '../pages/RunDetail';
 import { SCREEN } from '@stepcast/slots';

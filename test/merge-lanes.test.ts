@@ -4,16 +4,16 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, 
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { run as runCli, type CliIo } from '../src/cli/main.js';
-import { REASON_LIMIT } from '../src/core/backlog/index.js';
-import type { Config } from '../src/core/config/resolve.js';
-import { ExitCode, StepcastError, type ExitCodeValue } from '../src/core/errors.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { runPaths } from '../src/core/journal/paths.js';
-import { mergeLanes } from '../src/core/lanes/merge.js';
-import { readLaneMerge } from '../src/core/lanes/mergeRecord.js';
-import { applyRun } from '../src/core/run/apply.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
+import { run as runCli, type CliIo } from '../src/parts/cli/main.js';
+import { REASON_LIMIT } from '../src/parts/pipeline/domain/backlog/index.js';
+import type { Config } from '../src/parts/pipeline/config/resolve.js';
+import { ExitCode, StepcastError, type ExitCodeValue } from '../src/kernel/errors.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { runPaths } from '../src/parts/pipeline/run/journal/paths.js';
+import { mergeLanes } from '../src/parts/pipeline/domain/lanes/merge.js';
+import { readLaneMerge } from '../src/parts/pipeline/domain/lanes/mergeRecord.js';
+import { applyRun } from '../src/parts/pipeline/run/apply.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
 import { gitCommit, gitInit as gitInitDir, makeProject, withHome, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -26,7 +26,7 @@ import { tempDir } from './tmp.js';
  * Работы дорожек названы `work-<дорожка>` / `confirm-<дорожка>` — ни одна не
  * называется `verify` и не несёт суффикса, склеенного из имени дорожки:
  * решение о годности проверяется на именах, которых склейка `verify-${lane}`
- * не найдёт (см. `src/core/lanes/lanes.ts`).
+ * не найдёт (см. `src/parts/pipeline/domain/lanes/lanes.ts`).
  */
 
 // Переходники к общим помощникам (`test/helpers.ts`): здесь репозиторий

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { BACKLOG_STATUSES as SCHEMA_STATUSES } from '../src/core/backlog/schema.js';
+import { BACKLOG_STATUSES as SCHEMA_STATUSES } from '../src/parts/pipeline/domain/backlog/schema.js';
 import {
   viewBacklog,
   BACKLOG_STATUSES,
@@ -10,7 +10,7 @@ import {
   type BacklogFilters,
   type BacklogItemLike,
   type BacklogSectionLike,
-} from '../src/ui/backlogView.js';
+} from '../src/parts/ui/backlogView.js';
 
 function item(slug: string, status: BacklogItemLike['status'] = 'todo'): BacklogItemLike {
   return { slug, status };

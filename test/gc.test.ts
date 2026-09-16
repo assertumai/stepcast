@@ -3,13 +3,13 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { runGcCommand } from '../src/cli/commands/gc.js';
-import type { ParsedArgs } from '../src/cli/args.js';
-import { ExitCode, isStepcastError } from '../src/core/errors.js';
-import { projectKey } from '../src/core/journal/paths.js';
-import { readUsageStore } from '../src/core/journal/usageStore.js';
-import { RunJournal } from '../src/core/journal/writer.js';
-import type { RunManifest } from '../src/core/journal/schema.js';
+import { runGcCommand } from '../src/parts/pipeline/commands/gc.js';
+import type { ParsedArgs } from '../src/kernel/cli/args.js';
+import { ExitCode, isStepcastError } from '../src/kernel/errors.js';
+import { projectKey } from '../src/parts/pipeline/run/journal/paths.js';
+import { readUsageStore } from '../src/parts/pipeline/run/journal/usageStore.js';
+import { RunJournal } from '../src/parts/pipeline/run/journal/writer.js';
+import type { RunManifest } from '../src/parts/pipeline/run/journal/schema.js';
 import { tempDir } from './tmp.js';
 
 function args(flags: ParsedArgs['flags'] = {}): ParsedArgs {

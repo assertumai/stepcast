@@ -4,10 +4,10 @@ import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { jobDir, jobScratchDir, runPaths } from '../src/core/journal/paths.js';
-import { readEvents, readStatus, resolveRun } from '../src/core/journal/reader.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { jobDir, jobScratchDir, runPaths } from '../src/parts/pipeline/run/journal/paths.js';
+import { readEvents, readStatus, resolveRun } from '../src/parts/pipeline/run/journal/reader.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
 import { makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

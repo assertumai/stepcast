@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { evaluate, parseExpression, references } from '../src/core/expr/parse.js';
-import { StepcastError } from '../src/core/errors.js';
+import { evaluate, parseExpression, references } from '../src/parts/pipeline/domain/expr/parse.js';
+import { StepcastError } from '../src/kernel/errors.js';
 
 const scope = {
   inputs: { skip_review: false, count: 3, name: 'foo' },

@@ -1,0 +1,83 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve as resolvePath } from 'node:path';
+
+import { buildPublishedSchemas, pluginPredicateEntries, pluginStepKindEntries } from '../document/published-schema.js';
+import { nativePredicateNames, nativeStepKindNames, type Registry } from '../../../kernel/registry.js';
+import { isDefaultNativePredicates, isDefaultNativeStepKinds } from '../document/schema.js';
+import { ExitCode, type ExitCodeValue } from '../../../kernel/errors.js';
+import type { PipelineCommandEnv } from '../contract.js';
+import { commandRow } from '../../../kernel/cli/commandRow.js';
+import { PIPELINE_SERVICES } from '../services.js';
+import type { ParsedArgs } from '../../../kernel/cli/args.js';
+
+/**
+ * Печатает схемы документов проекта: `stepcast schema`.
+ *
+ * Отказ загрузки объявленного плагина достаётся общим ходом точки входа
+ * (`resolveWithPlugins`, `src/parts/cli/main.ts`) — до этой функции дело не
+ * доходит вовсе, и записи от неполного реестра здесь произойти не может
+ * (design.md, решение 1).
+ */
+export function runSchemaCommand(
+  args: ParsedArgs,
+  write: (line: string) => void,
+  cwd: string,
+  registry: Registry,
+): ExitCodeValue {
+  const outDir = resolvePath(cwd, typeof args.flags.out === 'string' ? args.flags.out : join('.stepcast', 'schema'));
+
+  // Тот же перечень, с каким сверяет записанный файл `stepcast lint`.
+  const predicates = pluginPredicateEntries(registry);
+  const stepKinds = pluginStepKindEntries(registry);
+  const nativeStepKinds = nativeStepKindNames(registry);
+  const nativePredicates = nativePredicateNames(registry);
+
+  const { pipeline, job, notes } = buildPublishedSchemas(predicates, stepKinds, nativeStepKinds, nativePredicates);
+
+  mkdirSync(outDir, { recursive: true });
+  const pipelinePath = join(outDir, 'pipeline.schema.json');
+  const jobPath = join(outDir, 'job.schema.json');
+  writeFileSync(pipelinePath, `${JSON.stringify(pipeline, null, 2)}\n`);
+  writeFileSync(jobPath, `${JSON.stringify(job, null, 2)}\n`);
+
+  write(`записано: ${pipelinePath}`);
+  write(`записано: ${jobPath}`);
+
+  // Виды шага встроенных строк дерева (`decision`) в этот счёт не входят: они
+  // есть и в поставляемой пакетом схеме, и проект, ничего своего не
+  // добавивший, получает файл, совпадающий с ней, — сообщать обратное значило
+  // бы звать пользователя искать отличие, которого нет. Отключённый встроенный
+  // вид шага (`builtin-step-kinds-as-rows`) снимает эту схожесть тоже: схема
+  // проекта тогда не признаёт его ключей, и печатать «совпадает» значило бы
+  // соврать.
+  if (
+    predicates.length === 0 &&
+    stepKinds.every((entry) => entry.builtin === true) &&
+    isDefaultNativeStepKinds(nativeStepKinds) &&
+    isDefaultNativePredicates(nativePredicates)
+  ) {
+    write('плагинных предикатов и видов шага нет: схема совпадает с поставляемой пакетом');
+  }
+
+  for (const note of notes) {
+    const kind = note.kind === 'predicate' ? 'предиката' : 'полей вида шага';
+    write(`предупреждение: схема значения ${kind} ${note.name} (плагин ${note.plugin}) не вложена в схему — ${note.reason}`);
+  }
+
+  return ExitCode.ok;
+}
+
+export const row = commandRow<PipelineCommandEnv>(
+  {
+    name: 'schema',
+    spec: {
+      description:
+        'записать в .stepcast/schema/ JSON Schema документов проекта, знающую предикаты загруженных плагинов',
+      flags: {
+        out: { kind: 'string', description: 'каталог вывода вместо .stepcast/schema/' },
+      },
+    },
+    run: (args, io, env) => runSchemaCommand(args, io.out, env.cwd, env.registry),
+  },
+  { inject: PIPELINE_SERVICES },
+);

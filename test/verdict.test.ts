@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
-import { judgeVerdictSchemaPath, parseVerdict } from '../src/core/expect/verdict.js';
+import { judgeVerdictSchemaPath, parseVerdict } from '../src/parts/pipeline/expect/verdict.js';
 
 describe('agent-backend: схема вердикта судьи', () => {
   it('резолвится в существующий файл', () => {

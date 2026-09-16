@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { packagedSchemaPath } from '../src/core/package-schema.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { packagedSchemaPath } from '../src/parts/pipeline/domain/package-schema.js';
 import { makeProject } from './helpers.js';
-import type { Job } from '../src/core/pipeline/model.js';
+import type { Job } from '../src/parts/pipeline/document/model.js';
 
 const SCHEMA = JSON.stringify({ type: 'object' });
 

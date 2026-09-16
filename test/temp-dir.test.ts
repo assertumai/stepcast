@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { withTempDir } from '../src/core/fs/tempDir.js';
+import { withTempDir } from '../src/kernel/fs/tempDir.js';
 // Песочница процесса: без неё каталоги помощника ушли бы в настоящий $TMPDIR
 // и пережили бы прогон.
 import './tmp.js';

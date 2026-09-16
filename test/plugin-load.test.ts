@@ -5,12 +5,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve as resolvePath, sep } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { resolveConfig, type ResolvedConfig } from '../src/core/config/resolve.js';
-import { StepcastError } from '../src/core/errors.js';
+import { resolveConfig, type ResolvedConfig } from '../src/parts/pipeline/config/resolve.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import { loadPlugins } from '../src/parts/load.js';
-import { availableNames, predicateNames } from '../src/core/plugins/registry.js';
+import { availableNames, predicateNames } from '../src/kernel/registry.js';
 import { resolveWithPlugins, type ResolvedWithPlugins } from '../src/parts/resolve.js';
-import { resolveAdapter } from '../src/core/backend/registry.js';
+import { resolveAdapter } from '../src/parts/pipeline/backend/registry.js';
 import { builtinRegistry } from '../src/parts/builtin.js';
 import { tempDir } from './tmp.js';
 
@@ -481,7 +481,7 @@ const DOMAIN_VALUE_NAMES = [
  * Статические рёбра графа загрузки собранного модуля. Форм две, и обе
  * обязательны: `import … from '…'` (включая побочный `import '…'`) и
  * `export … from '…'` — у реэкспорта тот же рантайм-эффект, и именно из него
- * собран `dist/src/plugin.js` целиком (`tsc` сохраняет реэкспорт значения как
+ * собран `dist/src/plugin/index.js` целиком (`tsc` сохраняет реэкспорт значения как
  * есть). Тот же приём разбора, что и в `test/plugin-surface.test.ts`, где обе
  * формы тоже перечислены рядом.
  *
@@ -521,7 +521,7 @@ describe('plugin-contributions: подпуть stepcast/plugin', () => {
     const { root, engine } = fakeInstall();
 
     const resolvedPath = createRequire(join(root, 'package.json')).resolve('stepcast/plugin');
-    assert.equal(resolvedPath, join(engine, 'dist', 'src', 'plugin.js'));
+    assert.equal(resolvedPath, join(engine, 'dist', 'src', 'plugin', 'index.js'));
   });
 
   it('отдаёт автору плагина ровно объявленную поверхность', async () => {
@@ -529,7 +529,7 @@ describe('plugin-contributions: подпуть stepcast/plugin', () => {
     // зависимостей движка, и её импорт проверял бы наличие `node_modules`, а
     // не состав экспорта.
     const plugin = (await import(
-      pathToFileURL(fileURLToPath(new URL('../src/plugin.js', import.meta.url))).href
+      pathToFileURL(fileURLToPath(new URL('../src/plugin/index.js', import.meta.url))).href
     )) as Record<string, unknown>;
 
     for (const name of ['runProcess', 'StepcastError', 'parseDuration', 'definePlugin']) {
@@ -547,7 +547,7 @@ describe('plugin-contributions: подпуть stepcast/plugin', () => {
 
   /**
    * Задача 6.5: граница проверяется не составом экспорта (выше), а самим
-   * графом загрузки — статические специфики собранного `dist/src/plugin.js`,
+   * графом загрузки — статические специфики собранного `dist/src/plugin/index.js`,
    * обойдённые рекурсивно тем же приёмом разбора, что и в
    * `test/plugin-surface.test.ts`. Обещание «ядерный подпуть не тянет ни
    * одного доменного модуля» держит рантайм-граф импорта, а не только то, что
@@ -555,17 +555,24 @@ describe('plugin-contributions: подпуть stepcast/plugin', () => {
    * этот тест ловит именно оставшееся.
    */
   it('загрузка ядерного подпутя не тянет доменных модулей движка', () => {
-    const pluginJs = fileURLToPath(new URL('../src/plugin.js', import.meta.url));
-    const domainPatterns = [/\/core\/backend\//, /\/core\/config\//, /\/core\/expect\//, /\/core\/journal\//, /\/core\/pipeline\//, /\/core\/plugins\/pipeline-contract\.js$/];
+    const pluginJs = fileURLToPath(new URL('../src/plugin/index.js', import.meta.url));
+    const domainPatterns = [
+      /\/parts\/pipeline\/backend\//,
+      /\/parts\/pipeline\/config\//,
+      /\/parts\/pipeline\/expect\//,
+      /\/parts\/pipeline\/run\/journal\//,
+      /\/parts\/pipeline\/document\//,
+      /\/parts\/pipeline\/contract\.js$/,
+    ];
 
     const visited = walkLoadGraph(pluginJs);
     // Обход, не нашедший ни одного ребра, доказал бы пустоту, а не границу:
-    // `dist/src/plugin.js` — сплошной реэкспорт, и разбор, видящий только
+    // `dist/src/plugin/index.js` — сплошной реэкспорт, и разбор, видящий только
     // `import`, обошёл бы ровно один узел и прошёл бы при любом откате.
     // Поэтому сначала проверяется, что граф настоящий, и лишь потом — его
     // состав.
     assert.ok(visited.size > 1, `граф обхода вырожден: ${[...visited].join('\n')}`);
-    for (const expected of ['core/errors.js', 'core/exec/process.js', 'core/units.js', 'core/plugins/define.js']) {
+    for (const expected of ['kernel/errors.js', 'parts/pipeline/run/exec/process.js', 'kernel/units.js', 'kernel/define.js']) {
       assert.ok(
         [...visited].some((file) => file.endsWith(expected.split('/').join(sep))),
         `обход не дошёл до ${expected}: ${[...visited].join('\n')}`,
@@ -674,7 +681,7 @@ describe('codex-backend: загрузка плагина пакета', () => {
   // Собранный модуль — тот же, что отдаёт подпуть `stepcast/backends/codex`;
   // из теста он берётся путём, потому что самоссылка пакета разрешается через
   // `dist/`, а тесты и так исполняются из него.
-  const MODULE = fileURLToPath(new URL('../src/backends/codex/index.js', import.meta.url));
+  const MODULE = fileURLToPath(new URL('../src/parts/backends/codex/index.js', import.meta.url));
 
   // Сценарий: «Плагин объявлен»
   it('объявленный ключом plugins, плагин даёт адаптер codex с умолчаниями вклада', async () => {

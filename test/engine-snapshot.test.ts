@@ -4,13 +4,13 @@ import { join, relative as relativePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
-import { isEditableEngine, locateEngine, pinEngine, type EngineLocation } from '../src/core/run/engine.js';
-import { StepcastError } from '../src/core/errors.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
-import { planResume, readSourceRun } from '../src/core/run/resumePlan.js';
-import { readEvents, readManifest } from '../src/core/journal/reader.js';
-import type { Event } from '../src/core/journal/schema.js';
+import { isEditableEngine, locateEngine, pinEngine, type EngineLocation } from '../src/parts/pipeline/run/engine.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
+import { planResume, readSourceRun } from '../src/parts/pipeline/run/resumePlan.js';
+import { readEvents, readManifest } from '../src/parts/pipeline/run/journal/reader.js';
+import type { Event } from '../src/parts/pipeline/run/journal/schema.js';
 import { makeProject, testBaseEnv, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -625,16 +625,16 @@ jobs:
  * argv, а не из графа модулей движка, — тот же довод, что и у загрузчика
  * плагинов (design.md изменения `script-step-contract`, решение 8).
  *
- * `src/ui/widgets.ts` — тем же доводом в третий раз, но по другой причине:
+ * `src/parts/ui/widgets.ts` — тем же доводом в третий раз, но по другой причине:
  * это код демона (`stepcast up`), а не пайплайна, и снимок движка резюмируемого
  * прогона его не касается вовсе. Импорт `esbuild` отложен намеренно — демон
  * без единого виджета не должен поднимать службу компилятора (design.md
  * изменения `ui-runtime-widget-spike`, Решение 1).
  */
 const ALLOWED_DYNAMIC_IMPORTS = new Set([
-  join('src', 'core', 'plugins', 'load.js'),
-  join('src', 'step', 'wrapper.js'),
-  join('src', 'ui', 'widgets.js'),
+  join('src', 'kernel', 'load.js'),
+  join('src', 'parts', 'pipeline', 'step', 'wrapper.js'),
+  join('src', 'parts', 'ui', 'widgets.js'),
 ]);
 
 function jsFilesUnder(dir: string): string[] {
@@ -673,10 +673,13 @@ describe('run-engine-snapshot: граф модулей движка загруж
 
   it('отказывает на подложенном динамическом импорте вне исключения', () => {
     const distRoot = tempDir('stepcast-dynimport-');
-    mkdirSync(join(distRoot, 'src', 'core', 'plugins'), { recursive: true });
-    mkdirSync(join(distRoot, 'src', 'core', 'run'), { recursive: true });
-    writeFileSync(join(distRoot, 'src', 'core', 'plugins', 'load.js'), 'export const load = (u) => import(u);\n');
-    writeFileSync(join(distRoot, 'src', 'core', 'run', 'engine.js'), 'export const bad = (u) => import(u);\n');
+    mkdirSync(join(distRoot, 'src', 'kernel'), { recursive: true });
+    mkdirSync(join(distRoot, 'src', 'parts', 'pipeline', 'run'), { recursive: true });
+    writeFileSync(join(distRoot, 'src', 'kernel', 'load.js'), 'export const load = (u) => import(u);\n');
+    writeFileSync(
+      join(distRoot, 'src', 'parts', 'pipeline', 'run', 'engine.js'),
+      'export const bad = (u) => import(u);\n',
+    );
 
     const violations = findDisallowedDynamicImports(distRoot);
 

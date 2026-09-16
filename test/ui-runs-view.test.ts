@@ -10,7 +10,7 @@ import {
   type RunFilters,
   type RunLike,
   type SortOrder,
-} from '../src/ui/runsView.js';
+} from '../src/parts/ui/runsView.js';
 
 /** Прогон обзора с разумными умолчаниями — тест переопределяет только то, что проверяет. */
 function run(overrides: Partial<RunLike> & { readonly runId: string }): RunLike {

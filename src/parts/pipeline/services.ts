@@ -1,18 +1,18 @@
 import type { Context } from 'cordis';
 
-import type { BackendContribution, PipelineContext, PredicateKind, StepKind } from '../../core/plugins/pipeline-contract.js';
-import type { ContributionService, Kernel } from '../../core/plugins/kernel.js';
-import { rowScope, type BuiltinRow } from '../../core/plugins/load.js';
+import type { BackendContribution, PipelineContext, PredicateKind, StepKind } from './contract.js';
+import type { ContributionService, Kernel } from '../../kernel/kernel.js';
+import { rowScope, type BuiltinRow } from '../../kernel/load.js';
 
 /**
  * Служебные сервисы движка пайплайнов — `backends`, `predicates`, `steps` —
  * и помощник строки-потребителя, общий для всех строк этого каталога
  * (design.md `pipeline-owns-services`, Решение 1). Раскладка та же, что у
  * витрины: сами сервисы и объявление контекста cordis живут рядом с
- * помощником, а не в ядре (`src/ui/screens/registry.ts`, `src/ui/shell/row.ts`).
+ * помощником, а не в ядре (`src/parts/ui/screens/registry.ts`, `src/parts/ui/shell/row.ts`).
  *
  * `declare module 'cordis'` для этих трёх сервисов переехало сюда из ядра:
- * ядро (`src/core/plugins/kernel.ts`) их типов не знает вовсе — они заводятся
+ * ядро (`src/kernel/kernel.ts`) их типов не знает вовсе — они заводятся
  * строкой `pipeline` (`./row.ts`), не сборкой ядра.
  */
 
@@ -27,9 +27,9 @@ declare module 'cordis' {
 /**
  * Стык доменного объявления контекста с настоящим (`plugin-surface-split`,
  * design.md, Решение 4): расхождение `PipelineContext`
- * (`core/plugins/pipeline-contract.ts`) с составом сервисов, которые заводит
+ * (`parts/pipeline/contract.ts`) с составом сервисов, которые заводит
  * эта строка, — ошибка компиляции здесь, у нас, а не у автора плагина. Имя
- * иное, чем у ядерного стыка `pluginContext()` (`core/plugins/kernel.ts`), и
+ * иное, чем у ядерного стыка `pluginContext()` (`kernel/kernel.ts`), и
  * иное, чем у публикуемого сужения `pipelineContext()`
  * (`src/parts/pipeline/surface.ts`) — тот проверяет состав в рантайме, этот
  * только в типах, и два одноимённых экспорта одного каталога читались бы как
@@ -38,6 +38,16 @@ declare module 'cordis' {
 export function pipelinePluginContext(ctx: Context): PipelineContext {
   return ctx;
 }
+
+/**
+ * Сервисы, которые заводит строка `pipeline` — объявляют строки доменных
+ * команд CLI, читающие вклады пайплайна (design.md `pipeline-owns-services`,
+ * Решение 9; `source-tree-microkernel-layout`, Решение 7): ядро, знающее эти
+ * три доменных имени наизусть, отменяло бы шаг 7 плана. Строки доменных
+ * команд подают перечень помощнику объявления строки (`src/kernel/cli/commandRow.ts`)
+ * параметром `inject`.
+ */
+export const PIPELINE_SERVICES: readonly string[] = ['backends', 'predicates', 'steps'];
 
 /** Строка-поставщик или строка-потребитель этого каталога — `BuiltinRow` плюс то, что нужно синхронному умолчанию (design.md, Решение 4). */
 export interface PartRow extends BuiltinRow {
@@ -54,7 +64,7 @@ export interface PartRow extends BuiltinRow {
 
 /**
  * Строка-поставщик или строка-потребитель служебных сервисов пайплайна:
- * `rowScope` (`src/core/plugins/load.ts`) — сама ставит пометку области
+ * `rowScope` (`src/kernel/load.ts`) — сама ставит пометку области
  * (design.md изменения `cli-commands-as-rows`, Решение 7), до первой
  * регистрации (design.md, Решение 2, Решение 3). Форма дерева (`apply`)
  * заводит собственную область строки с объявленным `inject`; синхронное

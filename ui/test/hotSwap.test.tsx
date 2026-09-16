@@ -28,7 +28,7 @@ const LIST = slot<Record<string, never>, 'list'>('list', 'list');
 
 interface PluginModule {
   readonly default?: (ctx: Context) => void;
-  /** Ошибка сборки, пришедшая исполняемым модулем, — то же имя экспорта, что у виджета (`src/ui/sharedModules.ts`). */
+  /** Ошибка сборки, пришедшая исполняемым модулем, — то же имя экспорта, что у виджета (`src/parts/ui/daemon/sharedModules.ts`). */
   readonly __stepcastWidgetError?: {
     readonly file: string;
     readonly line: number;
@@ -397,7 +397,7 @@ describe('hot-swap: отказы замены', () => {
     await kernel.settle();
 
     // Демон отдаёт ошибку сборки тем же 200 и исполняемым модулем
-    // (`errorModuleText`, `src/ui/widgets.ts`): `import()` не бросает, и без
+    // (`errorModuleText`, `src/parts/ui/widgets.ts`): `import()` не бросает, и без
     // чтения этого экспорта сломанная половина применилась бы как пустая —
     // молча, без единой строки в диагностиках.
     loader.set('a', '2', {

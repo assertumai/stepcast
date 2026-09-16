@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
@@ -14,6 +16,17 @@ import { ESLint } from 'eslint';
  * Проверяется поведение линта на подставном содержимом: `lintText` берёт путь
  * лишь для выбора применимых блоков конфига, файла с таким путём на диске
  * может не быть.
+ *
+ * Граница ядра сведена в одну запись правила на ступени 8 переезда
+ * `source-tree-microkernel-layout` (design.md, Решение 2): `src/kernel/**` не
+ * импортирует `src/parts/**`, `src/plugin/**` и `src/bin.ts`. Перечни
+ * доменных деревьев по именам сегментов и оба поимённых исключения
+ * (`config/resolve.js`, `config/schema.js`), нужные, пока домен жил рядом с
+ * ядром в `src/core/`, сняты вместе с самим `src/core/`. Единственное
+ * оставшееся исключение — `load.ts`/`registry.ts`, и только на
+ * `parts/pipeline/contract.js` (design.md, Решение 4, шестое отступление);
+ * проверки ниже называют его прямо и проверяют, что больше ни один модуль
+ * ядра исключения не несёт.
  */
 const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
 const eslint = new ESLint({ cwd: repoRoot });
@@ -25,63 +38,131 @@ async function restrictedImports(filePath: string, code: string): Promise<string
     .map((message) => message.message);
 }
 
-const CLI_IMPORT = "import { run } from '../../cli/main.js';\n";
 const TEMP_IMPORT = "import { mkdtempSync } from 'node:fs';\n";
 const TMPDIR_IMPORT = "import { tmpdir } from 'node:os';\n";
-const CORE_IMPORT = "import { createClaudeAdapter } from '../../core/backend/claude.js';\n";
 
-// Импорты для файла ядра плагинов (`src/core/plugins/проба.ts`): пути на
-// уровень выше, чем у ядра общего вида (`src/core/run/проба.ts`).
-const PLUGIN_KERNEL_BACKEND_IMPORT = "import { createClaudeAdapter } from '../backend/claude.js';\n";
-const PLUGIN_KERNEL_PIPELINE_IMPORT = "import { RUN_STEP_KIND } from '../pipeline/expand.js';\n";
-const PLUGIN_KERNEL_PIPELINE_TYPE_IMPORT = "import type { ExpandOptions } from '../pipeline/expand.js';\n";
-const BACKEND_TYPES_IMPORT = "import type { BackendAdapter } from '../backend/types.js';\n";
-// Прочие доменные модули, которые несёт доменная половина контракта: ему они
-// разрешены поимённо, ядерным соседям — нет.
-const EXPECT_IMPORT = "import type { EvaluationInput } from '../expect/evaluate.js';\n";
-const JOURNAL_IMPORT = "import type { PredicateResult } from '../journal/schema.js';\n";
-const CONFIG_RESOLVE_IMPORT = "import type { Config } from '../config/resolve.js';\n";
-// Сосед по тем же деревьям, которого не несёт никто: разрешение поимённое, не
-// на дерево.
-const JOURNAL_WRITE_IMPORT = "import { openJournal } from '../journal/writer.js';\n";
-const CONFIG_OTHER_IMPORT = "import { defaultsFor } from '../config/defaults.js';\n";
+/**
+ * Подставные файлы двух плагинов поставки: границу проверяем с их глубины,
+ * потому что специфик, который они пишут, относительный и глубину знает.
+ */
+const CODEX_PROBE = 'src/parts/backends/codex/проба.ts';
+const DECISION_PROBE = 'src/parts/pipeline/steps/decision/проба.ts';
 
-// Состав дефолта (`src/parts/проба.ts`) лежит на уровень ближе к корню
-// `src/`, чем ядро: поверхность для него — `../cli/main.js`.
-const PARTS_CLI_IMPORT = "import { run } from '../cli/main.js';\n";
+/**
+ * Внутренние модули движка — теми спецификами, какими их назвал бы сам плагин
+ * со своей глубины. Адреса настоящие, и проверка ниже это требует: до переезда
+ * `source-tree-microkernel-layout` запрет был назван деревом каталога `core`, а
+ * проба — адресом `../../core/backend/claude.js`; когда дерево `src/core/`
+ * снялось, правило и проба разошлись с действительностью одинаково и остались
+ * зелёными вдвоём. `no-restricted-imports` сверяет текст специфика, а не его
+ * разрешение, поэтому проба по несуществующему адресу проходит тавтологически
+ * и вакуумного правила не замечает.
+ */
+const CODEX_INTERNAL = [
+  '../../pipeline/run/journal/schema.js',
+  '../../pipeline/contract.js',
+  '../../pipeline/config/resolve.js',
+  '../../load.js',
+  '../claude/adapter.js',
+  '../../../kernel/load.js',
+];
+const DECISION_INTERNAL = [
+  '../../run/journal/schema.js',
+  '../../document/expand.js',
+  '../../contract.js',
+  '../../services.js',
+  '../../../load.js',
+  '../../../../kernel/load.js',
+];
+
+/**
+ * Подъём выше `src/` — отдельная запись правила: разрешённый вход вклада
+ * глубже четырёх ступеней не поднимается, отрицать там нечего. Адрес
+ * настоящий, как и у прочих проб.
+ */
+const ABOVE_SRC = '../../../../../test/tmp.js';
+
+/** Разрешённый вход вклада: два публичных подпутя, каждый со своей глубины. */
+const CODEX_SURFACE = ['../../pipeline/surface.js', '../../../plugin/index.js'];
+const DECISION_SURFACE = ['../../surface.js', '../../../../plugin/index.js'];
+
+function importLine(specifier: string): string {
+  return `import * as probe from '${specifier}';\n`;
+}
+
+/** Адрес, на который специфик указывает с диска: `.js` в исходнике — расширение сборки. */
+function targetOf(probeFile: string, specifier: string): string {
+  return resolve(repoRoot, dirname(probeFile), specifier).replace(/\.js$/, '.ts');
+}
+
+// Импорты строки поставки (`src/parts/pipeline/services.js`) — тем же
+// спецификом, каким его назвал бы модуль ядра (`src/kernel/kernel.ts`).
+const PARTS_VALUE_IMPORT = "import { PIPELINE_SERVICES } from '../parts/pipeline/services.js';\n";
+const PARTS_TYPE_IMPORT = "import type { PartRow } from '../parts/pipeline/services.js';\n";
+const PLUGIN_SURFACE_IMPORT = "import { definePlugin } from '../plugin/index.js';\n";
+const BIN_IMPORT = "import '../bin.js';\n";
+const BIN_IMPORT_DEEP = "import '../../bin.js';\n";
+
+// Единственное разрешённое исключение (design.md, Решение 4, шестое
+// отступление): контракт декларативного плагина, переехавший в
+// `parts/pipeline/contract.ts`. Оба файла — `load.ts` и `registry.ts` — лежат
+// прямо в `src/kernel/`, и специфик у обоих один.
+const CONTRACT_IMPORT = "import { StepcastPluginSchema } from '../parts/pipeline/contract.js';\n";
 
 describe('eslint: запреты импорта действуют одновременно', () => {
-  // test-sandbox, «Код движка мимо помощника».
-  it('ядро: прямое создание временного каталога отклоняется', async () => {
-    const messages = await restrictedImports('src/core/run/проба.ts', TEMP_IMPORT + TMPDIR_IMPORT);
+  // test-sandbox, «Код движка мимо помощника»: запрет прямого создания
+  // временного каталога действует широко, по всему src/, не только на ядре.
+  it('движок: прямое создание временного каталога отклоняется', async () => {
+    const messages = await restrictedImports('src/parts/pipeline/run/проба.ts', TEMP_IMPORT + TMPDIR_IMPORT);
     assert.equal(messages.length, 2, messages.join('\n'));
-    assert.ok(messages.every((message) => message.includes('src/core/fs/tempDir.ts')), messages.join('\n'));
+    assert.ok(messages.every((message) => message.includes('src/kernel/fs/tempDir.ts')), messages.join('\n'));
   });
 
-  it('ядро: импорт поверхности отклоняется границей ядра', async () => {
-    const messages = await restrictedImports('src/core/run/проба.ts', CLI_IMPORT);
+  it('ядро: импорт строки поставки отклоняется границей ядра', async () => {
+    const messages = await restrictedImports('src/kernel/kernel.ts', PARTS_VALUE_IMPORT);
     assert.ok(
-      messages.some((message) => message.includes('граница ядра')),
+      messages.some((message) => message.includes('design.md, Решение 2')),
       messages.join('\n'),
+    );
+  });
+
+  it('ядро: импорт строки поставки типом отклоняется так же, как значением', async () => {
+    const messages = await restrictedImports('src/kernel/kernel.ts', PARTS_TYPE_IMPORT);
+    assert.ok(
+      messages.some((message) => message.includes('design.md, Решение 2')),
+      messages.join('\n'),
+    );
+  });
+
+  it('ядро: импорт публичной поверхности отклоняется той же границей', async () => {
+    const messages = await restrictedImports('src/kernel/kernel.ts', PLUGIN_SURFACE_IMPORT);
+    assert.ok(
+      messages.some((message) => message.includes('design.md, Решение 2')),
+      messages.join('\n'),
+    );
+  });
+
+  it('ядро: импорт src/bin.ts отклоняется той же границей на любой относительной глубине', async () => {
+    const shallow = await restrictedImports('src/kernel/kernel.ts', BIN_IMPORT);
+    const deep = await restrictedImports('src/kernel/tree/tree.ts', BIN_IMPORT_DEEP);
+    assert.ok(
+      shallow.some((message) => message.includes('design.md, Решение 2')),
+      shallow.join('\n'),
+    );
+    assert.ok(
+      deep.some((message) => message.includes('design.md, Решение 2')),
+      deep.join('\n'),
     );
   });
 
   // Тот самый случай, ради которого проверка и написана: на файле ядра
   // действуют оба запрета сразу, и ни один не вытесняет другого.
-  it('ядро: оба запрета срабатывают в одном файле', async () => {
-    const messages = await restrictedImports('src/core/run/проба.ts', CLI_IMPORT + TEMP_IMPORT);
+  it('ядро: граница ядра и запрет временного каталога срабатывают в одном файле', async () => {
+    const messages = await restrictedImports('src/kernel/kernel.ts', PARTS_VALUE_IMPORT + TEMP_IMPORT);
     assert.ok(
-      messages.some((message) => message.includes('граница ядра')),
+      messages.some((message) => message.includes('design.md, Решение 2')),
       messages.join('\n'),
     );
-    assert.ok(
-      messages.some((message) => message.includes('withTempDir()')),
-      messages.join('\n'),
-    );
-  });
-
-  it('поверхность движка: прямое создание временного каталога отклоняется', async () => {
-    const messages = await restrictedImports('src/cli/commands/проба.ts', TEMP_IMPORT);
     assert.ok(
       messages.some((message) => message.includes('withTempDir()')),
       messages.join('\n'),
@@ -90,15 +171,15 @@ describe('eslint: запреты импорта действуют одновр�
 
   // Помощник заводит каталог напрямую по своему назначению, но границу ядра
   // исключением из первого запрета не теряет.
-  it('помощник движка: временный каталог разрешён, граница ядра остаётся', async () => {
-    const messages = await restrictedImports('src/core/fs/tempDir.ts', CLI_IMPORT + TEMP_IMPORT + TMPDIR_IMPORT);
+  it('помощник ядра: временный каталог разрешён, граница ядра остаётся', async () => {
+    const messages = await restrictedImports('src/kernel/fs/tempDir.ts', PARTS_VALUE_IMPORT + TEMP_IMPORT + TMPDIR_IMPORT);
     assert.deepEqual(
       messages.filter((message) => message.includes('tempDir.ts')),
       [],
       'помощнику прямое создание разрешено',
     );
     assert.ok(
-      messages.some((message) => message.includes('граница ядра')),
+      messages.some((message) => message.includes('design.md, Решение 2')),
       messages.join('\n'),
     );
   });
@@ -115,201 +196,53 @@ describe('eslint: запреты импорта действуют одновр�
     assert.deepEqual(await restrictedImports('test/tmp.ts', TEMP_IMPORT + TMPDIR_IMPORT), []);
   });
 
-  // Плагины пакета: близость к ядру ограничена механически (design.md
-  // первого настоящего плагина, решение 2). Тот же случай, что и у ядра
-  // выше, — оба запрета обязаны сработать в одном файле, иначе новый блок
-  // молча снял бы запрет временного каталога с этих файлов.
-  it('плагины пакета: импорт ядра отклоняется границей плагина', async () => {
-    const messages = await restrictedImports('src/backends/codex/проба.ts', CORE_IMPORT);
-    assert.ok(
-      messages.some((message) => message.includes('../../plugin.js')),
-      messages.join('\n'),
-    );
-  });
-
-  it('плагины пакета: оба запрета срабатывают в одном файле', async () => {
-    const messages = await restrictedImports('src/backends/codex/проба.ts', CORE_IMPORT + TEMP_IMPORT);
-    assert.ok(
-      messages.some((message) => message.includes('../../plugin.js')),
-      messages.join('\n'),
-    );
-    assert.ok(
-      messages.some((message) => message.includes('withTempDir()')),
-      messages.join('\n'),
-    );
-  });
-
-  // Задача 6.4 (builtin-step-kinds-as-rows): реализация `decision` переехала
-  // в `src/parts/steps/decision/`, где без отдельного блока конфига файлы
-  // попали бы под общий `src/parts/**` — там запрета на импорт `src/core` нет
-  // (design.md, Решение 8). Тот же образец, что и у `src/backends/codex`.
-  it('реализация decision (src/parts/steps/decision) не вправе импортировать src/core', async () => {
-    const messages = await restrictedImports('src/parts/steps/decision/проба.ts', CORE_IMPORT);
-    assert.ok(
-      messages.some((message) => message.includes('plugin.js')),
-      messages.join('\n'),
-    );
-  });
-
-  // Блок плагинов пакета совпадает на этих файлах последним и заменяет опции
-  // правила целиком — значит, граница ядра и поверхности, которую строкам
-  // поставки даёт блок `src/parts/**`, обязана быть перечислена в нём же.
-  // Иначе переезд `decision` под `src/parts/` молча снял бы с него запрет
-  // импорта `src/cli`, оставленный всем прочим строкам.
-  it('реализация decision: граница плагина и граница поверхности срабатывают вместе', async () => {
-    const messages = await restrictedImports('src/parts/steps/decision/проба.ts', CORE_IMPORT + CLI_IMPORT + TEMP_IMPORT);
-    assert.ok(
-      messages.some((message) => message.includes('plugin.js')),
-      messages.join('\n'),
-    );
-    assert.ok(
-      messages.some((message) => message.includes('граница ядра')),
-      messages.join('\n'),
-    );
-    assert.ok(
-      messages.some((message) => message.includes('withTempDir()')),
-      messages.join('\n'),
-    );
-  });
-
-  // `row.ts` той же строки — не реализация вклада, ему нужен тип `BuiltinRow`
-  // из `src/core/plugins/load.js`, и границе плагина он не подчиняется
-  // (`ignores` блока в `eslint.config.js`).
-  it('row.ts строки step-decision вправе импортировать src/core', async () => {
-    const messages = await restrictedImports(
-      'src/parts/steps/decision/row.ts',
-      "import type { BuiltinRow } from '../../../core/plugins/load.js';\n",
-    );
-    assert.deepEqual(messages, []);
-  });
-
-  // Ядро плагинов не зависит от домена (`kernel-domain-free-imports`,
-  // design.md, Решение 4): разбор пайплайна и бэкенды — доменные деревья,
-  // запрещённые модулям `src/core/plugins/**`.
-  it('ядро плагинов: импорт бэкендов значением отклоняется границей домена', async () => {
-    const messages = await restrictedImports('src/core/plugins/проба.ts', PLUGIN_KERNEL_BACKEND_IMPORT);
-    assert.ok(
-      messages.some((message) => message.includes('docs/microkernel-target.md')),
-      messages.join('\n'),
-    );
-  });
-
-  it('ядро плагинов: импорт разбора пайплайна типом отклоняется так же, как значением', async () => {
-    const byValue = await restrictedImports('src/core/plugins/проба.ts', PLUGIN_KERNEL_PIPELINE_IMPORT);
-    const byType = await restrictedImports('src/core/plugins/проба.ts', PLUGIN_KERNEL_PIPELINE_TYPE_IMPORT);
-    assert.ok(
-      byValue.some((message) => message.includes('docs/microkernel-target.md')),
-      byValue.join('\n'),
-    );
-    assert.ok(
-      byType.some((message) => message.includes('docs/microkernel-target.md')),
-      byType.join('\n'),
-    );
-  });
-
-  // Тот самый случай, ради которого написан этот файл: на модуле ядра
-  // плагинов срабатывают все три запрета сразу, и ни один не вытесняет
-  // прочие — граница домена, граница ядра и поверхности, запрет временного
-  // каталога напрямую.
-  it('ядро плагинов: граница домена, граница поверхности и запрет временного каталога срабатывают одновременно', async () => {
-    const messages = await restrictedImports(
-      'src/core/plugins/проба.ts',
-      PLUGIN_KERNEL_PIPELINE_IMPORT + CLI_IMPORT + TEMP_IMPORT,
-    );
-    assert.ok(
-      messages.some((message) => message.includes('docs/microkernel-target.md')),
-      messages.join('\n'),
-    );
-    assert.ok(
-      messages.some((message) => message.includes('граница ядра')),
-      messages.join('\n'),
-    );
-    assert.ok(
-      messages.some((message) => message.includes('withTempDir()')),
-      messages.join('\n'),
-    );
-  });
-
-  // Исключение доменного контракта (`plugin-surface-split`, шаг 8, — снято с
-  // ядерного `contract.ts` и заведено на соседнем `pipeline-contract.ts`):
-  // ровно `backend/types.js`, только типом, и ничего больше из
-  // `core/backend/**`.
-  it('доменный контракт вклада: backend/types.js разрешён, соседний backend/claude.js — нет', async () => {
-    const allowed = await restrictedImports('src/core/plugins/pipeline-contract.ts', BACKEND_TYPES_IMPORT);
-    assert.deepEqual(allowed, [], allowed.join('\n'));
-
-    const forbidden = await restrictedImports('src/core/plugins/pipeline-contract.ts', PLUGIN_KERNEL_BACKEND_IMPORT);
-    assert.ok(
-      forbidden.some((message) => message.includes('docs/microkernel-target.md')),
-      forbidden.join('\n'),
-    );
-  });
-
-  // Требование спеки: доменной половине разрешён РОВНО тот набор доменных
-  // импортов, который она несёт. Дерево бэкендов — не единственное: она несёт
-  // ещё конфигурацию, вход предиката и схему журнала, и разрешение у них такое
-  // же поимённое.
-  it('доменный контракт вклада: разрешены ровно несомые модули, соседи по тем же деревьям — нет', async () => {
-    const allowed = await restrictedImports(
-      'src/core/plugins/pipeline-contract.ts',
-      BACKEND_TYPES_IMPORT + CONFIG_RESOLVE_IMPORT + EXPECT_IMPORT + JOURNAL_IMPORT,
-    );
-    assert.deepEqual(allowed, [], allowed.join('\n'));
-
-    for (const forbidden of [JOURNAL_WRITE_IMPORT, CONFIG_OTHER_IMPORT]) {
-      const messages = await restrictedImports('src/core/plugins/pipeline-contract.ts', forbidden);
-      assert.ok(messages.length > 0, `${forbidden.trim()} обязан отклоняться: ${messages.join('\n')}`);
+  // Проба границы плагина поставки обязана называть адрес, который на диске
+  // есть: правило сверяет текст специфика, и проба по снесённому дереву
+  // проходит, что бы правило ни запрещало. Этим и держится смысл проверок
+  // ниже — без неё вакуумное правило выглядело бы работающим.
+  it('пробы границы плагина названы настоящими модулями движка', () => {
+    for (const [probe, specifiers] of [
+      [CODEX_PROBE, [...CODEX_INTERNAL, ...CODEX_SURFACE]],
+      [DECISION_PROBE, [...DECISION_INTERNAL, ...DECISION_SURFACE, ABOVE_SRC]],
+    ] as const) {
+      for (const specifier of specifiers) {
+        const target = targetOf(probe, specifier);
+        assert.ok(existsSync(target), `${probe}: '${specifier}' → ${target} — такого модуля нет`);
+      }
     }
   });
 
-  // Обратная сторона снятого исключения: ядерным модулям каталога доменные
-  // деревья закрыты целиком, а не только дерево бэкендов. Иначе `contract.ts`
-  // вернул бы себе доменные типы вклада соседним импортом — линт смолчал бы,
-  // и граница держалась бы на одном везении.
-  it('contract.ts (ядро): expect/** и journal/** закрыты так же, как backend/**', async () => {
-    for (const forbidden of [EXPECT_IMPORT, JOURNAL_IMPORT, JOURNAL_WRITE_IMPORT]) {
-      const messages = await restrictedImports('src/core/plugins/contract.ts', forbidden);
+  // Плагины пакета: близость к ядру ограничена механически (design.md
+  // первого настоящего плагина, решение 2). Запрет назван подъёмом из
+  // каталога плагина, а не деревом движка: оба плагина лежат внутри
+  // `src/parts/`, и внутренний модуль они называют относительным спецификом
+  // без узнаваемого сегмента.
+  it('плагины пакета: импорт внутреннего модуля движка отклоняется границей плагина', async () => {
+    for (const specifier of CODEX_INTERNAL) {
+      const messages = await restrictedImports(CODEX_PROBE, importLine(specifier));
       assert.ok(
-        messages.some((message) => message.includes('docs/microkernel-target.md')),
-        `${forbidden.trim()}: ${messages.join('\n')}`,
+        messages.some((message) => message.includes('src/plugin/index.ts')),
+        `${specifier}: ${messages.join('\n')}`,
       );
     }
   });
 
-  // Конфигурация закрыта ядру не целиком: два её модуля читают загрузчик
-  // (`ResolvedConfig`) и дерево строк (`PluginPatchRow`) — они названы
-  // поимённо, остальное дерево закрыто. Остаток снимается переездом этих
-  // модулей (шаг 10 плана), а не молчанием линта.
-  it('ядро плагинов: из конфигурации разрешены два названных модуля, прочее дерево — нет', async () => {
-    const allowed = await restrictedImports(
-      'src/core/plugins/проба.ts',
-      CONFIG_RESOLVE_IMPORT + "import type { PluginPatchRow } from '../config/schema.js';\n",
-    );
-    assert.deepEqual(allowed, [], allowed.join('\n'));
-
-    const messages = await restrictedImports('src/core/plugins/проба.ts', CONFIG_OTHER_IMPORT);
-    assert.ok(
-      messages.some((message) => message.includes('docs/microkernel-target.md')),
-      messages.join('\n'),
-    );
+  // Обратная сторона запрета: разрешённый вход вклада им не задет. Без этой
+  // проверки границу можно было бы «починить» запретом всего подряд, и
+  // сломался бы сам плагин, а не тест.
+  it('плагины пакета: публичные подпути границей не задеты', async () => {
+    for (const specifier of CODEX_SURFACE) {
+      const messages = await restrictedImports(CODEX_PROBE, importLine(specifier));
+      assert.deepEqual(messages, [], `${specifier}: ${messages.join('\n')}`);
+    }
   });
 
-  // Блок исключения заменяет опции правила, унаследованные от блока
-  // `src/core/**/*.ts`, целиком — и обязан повторить их (требование спеки:
-  // «MUST действовать одновременно с прочими запретами… не снимая ни одного
-  // из них»). Без этого случая потеря была бы видна только нарушением,
-  // которое правило обязано было поймать.
-  it('доменный контракт вклада: исключение не сняло ни границы поверхности, ни запрета временного каталога', async () => {
-    const messages = await restrictedImports(
-      'src/core/plugins/pipeline-contract.ts',
-      BACKEND_TYPES_IMPORT + PLUGIN_KERNEL_PIPELINE_IMPORT + CLI_IMPORT + TEMP_IMPORT,
-    );
+  // Тот же случай, что и у ядра выше, — оба запрета обязаны сработать в одном
+  // файле, иначе блок плагина молча снял бы запрет временного каталога.
+  it('плагины пакета: оба запрета срабатывают в одном файле', async () => {
+    const messages = await restrictedImports(CODEX_PROBE, importLine(CODEX_INTERNAL[0]!) + TEMP_IMPORT);
     assert.ok(
-      messages.some((message) => message.includes('docs/microkernel-target.md')),
-      messages.join('\n'),
-    );
-    assert.ok(
-      messages.some((message) => message.includes('граница ядра')),
+      messages.some((message) => message.includes('src/plugin/index.ts')),
       messages.join('\n'),
     );
     assert.ok(
@@ -318,36 +251,120 @@ describe('eslint: запреты импорта действуют одновр�
     );
   });
 
-  // Задача 6.2 (`plugin-surface-split`): исключение снято с `contract.ts` —
-  // теперь он подчиняется общему блоку `src/core/plugins/**` наравне с прочими
-  // ядерными модулями, и `backend/types.js` в нём запрещён так же, как
-  // `backend/claude.js`.
-  it('contract.ts (ядро): backend/types.js запрещён так же, как прочее из core/backend', async () => {
-    const messages = await restrictedImports('src/core/plugins/contract.ts', BACKEND_TYPES_IMPORT);
+  // Реализация `decision` (`src/parts/pipeline/steps/decision/`) — без
+  // отдельного блока конфига файлы попали бы под общий `src/**` выше, где
+  // запрета на внутренние модули движка нет (design.md, Решение 8). Глубина у
+  // неё своя, и специфики те же модули называют иначе, чем у codex.
+  it('реализация decision (src/parts/pipeline/steps/decision) не вправе импортировать внутренние модули движка', async () => {
+    for (const specifier of DECISION_INTERNAL) {
+      const messages = await restrictedImports(DECISION_PROBE, importLine(specifier));
+      assert.ok(
+        messages.some((message) => message.includes('src/plugin/index.ts')),
+        `${specifier}: ${messages.join('\n')}`,
+      );
+    }
+  });
+
+  it('реализация decision: подъём выше src/ отклоняется тем же блоком', async () => {
+    const messages = await restrictedImports(DECISION_PROBE, importLine(ABOVE_SRC));
     assert.ok(
-      messages.some((message) => message.includes('docs/microkernel-target.md')),
+      messages.some((message) => message.includes('src/plugin/index.ts')),
       messages.join('\n'),
     );
   });
 
-  // Переезд `builtin.ts`/`resolve.ts` из `src/core/plugins/` в `src/parts/`
-  // (`kernel-domain-free-imports`, Решение 2) вывел их из-под блока ядра:
-  // граница ядра и поверхности на новом месте держится собственным блоком, а
-  // не тем, что её никто не нарушал.
-  it('состав дефолта: импорт поверхности отклоняется границей ядра', async () => {
-    const messages = await restrictedImports('src/parts/проба.ts', PARTS_CLI_IMPORT);
+  it('реализация decision: публичные подпути границей не задеты', async () => {
+    for (const specifier of DECISION_SURFACE) {
+      const messages = await restrictedImports(DECISION_PROBE, importLine(specifier));
+      assert.deepEqual(messages, [], `${specifier}: ${messages.join('\n')}`);
+    }
+  });
+
+  // Блок плагинов пакета совпадает на этих файлах последним и заменяет опции
+  // правила целиком — значит, запрет временного каталога, который дают все
+  // строки поставки, обязан быть перечислен в нём же. Иначе переезд
+  // `decision` под `src/parts/` молча снял бы его с одной этой реализации.
+  it('реализация decision: граница плагина и запрет временного каталога срабатывают вместе', async () => {
+    const messages = await restrictedImports(DECISION_PROBE, importLine(DECISION_INTERNAL[0]!) + TEMP_IMPORT);
     assert.ok(
-      messages.some((message) => message.includes('граница ядра')),
+      messages.some((message) => message.includes('src/plugin/index.ts')),
+      messages.join('\n'),
+    );
+    assert.ok(
+      messages.some((message) => message.includes('withTempDir()')),
       messages.join('\n'),
     );
   });
 
-  it('состав дефолта: оба запрета срабатывают в одном файле', async () => {
-    const messages = await restrictedImports('src/parts/проба.ts', PARTS_CLI_IMPORT + TEMP_IMPORT);
-    assert.ok(
-      messages.some((message) => message.includes('граница ядра')),
+  // `row.ts` той же строки — не реализация вклада, ему нужна строка-поставщик
+  // (`src/parts/pipeline/services.js`), и границе плагина он не подчиняется
+  // (`ignores` блока в `eslint.config.js`): специфик, отклоняемый у соседей,
+  // ему не грозит вовсе, потому что блок его не касается.
+  it('row.ts строки step-decision не подчиняется границе плагина', async () => {
+    for (const specifier of DECISION_INTERNAL) {
+      const messages = await restrictedImports('src/parts/pipeline/steps/decision/row.ts', importLine(specifier));
+      assert.deepEqual(messages, [], `${specifier}: ${messages.join('\n')}`);
+    }
+  });
+
+  // Единственное оставшееся исключение границы ядра (design.md, Решение 4,
+  // шестое отступление): ровно `parts/pipeline/contract.js`, только этим
+  // двум файлам.
+  it('load.ts и registry.ts: контракт декларативного плагина разрешён, прочая строка поставки — нет', async () => {
+    for (const file of ['src/kernel/load.ts', 'src/kernel/registry.ts']) {
+      const allowed = await restrictedImports(file, CONTRACT_IMPORT);
+      assert.deepEqual(allowed, [], `${file}: ${allowed.join('\n')}`);
+
+      const forbidden = await restrictedImports(file, PARTS_VALUE_IMPORT);
+      assert.ok(
+        forbidden.some((message) => message.includes('design.md, Решение 2')),
+        `${file}: ${forbidden.join('\n')}`,
+      );
+    }
+  });
+
+  // Исключение не снимает ни запрет на публичную поверхность, ни запрет
+  // временного каталога — оно узкое, на один специфик, а не общее
+  // ослабление границы этих двух файлов.
+  it('load.ts: исключение контракта не снимает ни поверхность, ни временный каталог', async () => {
+    const messages = await restrictedImports('src/kernel/load.ts', CONTRACT_IMPORT + PLUGIN_SURFACE_IMPORT + TEMP_IMPORT);
+    assert.deepEqual(
+      messages.filter((message) => message.includes('parts/pipeline/contract')),
+      [],
       messages.join('\n'),
     );
+    assert.ok(
+      messages.some((message) => message.includes('design.md, Решение 2')),
+      messages.join('\n'),
+    );
+    assert.ok(
+      messages.some((message) => message.includes('withTempDir()')),
+      messages.join('\n'),
+    );
+  });
+
+  // Обратная сторона: у соседей `load.ts`/`registry.ts` по каталогу того же
+  // исключения нет — контракт декларативного плагина запрещён им так же, как
+  // и прочая строка поставки. Без этой проверки исключение легко расползлось
+  // бы на весь `src/kernel/` незаметно.
+  it('прочие модули ядра исключения не несут: контракт декларативного плагина запрещён так же, как прочая строка поставки', async () => {
+    for (const file of ['src/kernel/kernel.ts', 'src/kernel/contract.ts', 'src/kernel/tree/tree.ts', 'src/kernel/introspect.ts']) {
+      const messages = await restrictedImports(file, CONTRACT_IMPORT);
+      assert.ok(
+        messages.some((message) => message.includes('design.md, Решение 2')),
+        `${file}: ${messages.join('\n')}`,
+      );
+    }
+  });
+
+  // Переезд `builtin.ts`/`resolve.ts`/`load.ts`/`rows.ts` из `src/core/plugins/`
+  // в `src/parts/` (`kernel-domain-free-imports`, Решение 2) вывел их из-под
+  // блока ядра: они больше не подчиняются границе ядра вовсе — состав дефолта
+  // вправе импортировать что угодно из своего дерева, только запрет
+  // временного каталога держится на нём тем же общим блоком, что и на любом
+  // другом модуле движка.
+  it('состав дефолта: временный каталог напрямую по-прежнему отклоняется', async () => {
+    const messages = await restrictedImports('src/parts/проба.ts', TEMP_IMPORT);
     assert.ok(
       messages.some((message) => message.includes('withTempDir()')),
       messages.join('\n'),

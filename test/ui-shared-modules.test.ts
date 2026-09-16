@@ -16,15 +16,15 @@ import {
   checkedRouteSegment,
   sharedModuleText,
   type SharedModuleSpecifier,
-} from '../src/ui/sharedModules.js';
-import { isSafeSegment, sharedModuleHref, widgetModuleHref } from '../src/ui/routes.js';
-import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
-import { createWidgetCompiler } from '../src/ui/widgets.js';
+} from '../src/parts/ui/daemon/sharedModules.js';
+import { isSafeSegment, sharedModuleHref, widgetModuleHref } from '../src/parts/ui/routes.js';
+import { createUiServer, LOOPBACK, type UiServer } from '../src/parts/ui/daemon/server.js';
+import { createWidgetCompiler } from '../src/parts/ui/widgets.js';
 import { makeJournalBed } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 /**
- * Таблица общих модулей (`src/ui/sharedModules.ts`, design.md изменения
+ * Таблица общих модулей (`src/parts/ui/daemon/sharedModules.ts`, design.md изменения
  * `shared-module-table`, Решения 1—4): один перечень, из которого выведены
  * карта имён страницы, публикация экземпляров, адреса переходников, прокси
  * дев-сервера и `external` сборки — проверка ловит разъезд любой пары, а не

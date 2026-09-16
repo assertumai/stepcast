@@ -3,10 +3,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
-import { parse, effectiveGroup, toRecord, isFree, selectItems, withFields } from '../src/core/backlog/index.js';
-import { BacklogSlotsResponseSchema } from '../src/core/backlog/schema.js';
-import type { BacklogEntry } from '../src/core/backlog/index.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { parse, effectiveGroup, toRecord, isFree, selectItems, withFields } from '../src/parts/pipeline/domain/backlog/index.js';
+import { BacklogSlotsResponseSchema } from '../src/parts/pipeline/domain/backlog/schema.js';
+import type { BacklogEntry } from '../src/parts/pipeline/domain/backlog/index.js';
 
 /**
  * Ядро очереди не делает ввода-вывода, поэтому тест не заводит ни временных

@@ -3,8 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
-import { buildRouteTable, homeRoutesPath, projectRoutesPath, writeRouteRow } from '../src/ui/routesFile.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { buildRouteTable, homeRoutesPath, projectRoutesPath, writeRouteRow } from '../src/parts/ui/routesFile.js';
 import { tempDir } from './tmp.js';
 
 /** Домашний и проектный каталоги для трёх слоёв — без .stepcast/routes.yml, если тест его не пишет. */

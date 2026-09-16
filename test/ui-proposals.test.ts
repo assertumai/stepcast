@@ -4,8 +4,8 @@ import { get, request } from 'node:http';
 import { join } from 'node:path';
 import { describe, it, type TestContext } from 'node:test';
 
-import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
-import { proposeEntry } from '../src/core/proposals/store.js';
+import { createUiServer, LOOPBACK, type UiServer } from '../src/parts/ui/daemon/server.js';
+import { proposeEntry } from '../src/parts/pipeline/domain/proposals/store.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 
 /**

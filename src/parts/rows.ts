@@ -1,19 +1,19 @@
 import { row as pipeline } from './pipeline/row.js';
 import { row as backendClaude } from './backends/claude/row.js';
-import { row as predicates } from './expect/row.js';
-import { row as stepRun } from './steps/run/row.js';
-import { row as stepUses } from './steps/uses/row.js';
-import { row as stepScript } from './steps/script/row.js';
-import { row as stepAgent } from './steps/agent/row.js';
-import { row as stepDecision } from './steps/decision/row.js';
+import { row as predicates } from './pipeline/expect/row.js';
+import { row as stepRun } from './pipeline/steps/run/row.js';
+import { row as stepUses } from './pipeline/steps/uses/row.js';
+import { row as stepScript } from './pipeline/steps/script/row.js';
+import { row as stepAgent } from './pipeline/steps/agent/row.js';
+import { row as stepDecision } from './pipeline/steps/decision/row.js';
 import type { PartRow } from './pipeline/services.js';
 
 /**
  * Перечень строк движка (`plugin-tree`, design.md, Решение 3): список
  * модулей, а не программа — ни одного тела строки здесь нет. Добавление и
  * изъятие строки дефолта — правка этого списка, и только его: ни обход
- * дерева (`src/core/plugins/load.ts`), ни состав дефолта (`src/parts/load.ts`),
- * ни разрешение конфигурации (`src/core/config/resolve.ts`) при этом не
+ * дерева (`src/kernel/load.ts`), ни состав дефолта (`src/parts/load.ts`),
+ * ни разрешение конфигурации (`src/parts/pipeline/config/resolve.ts`) при этом не
  * правятся.
  *
  * `pipeline` (design.md изменения `pipeline-owns-services`, Решение 1) стоит
@@ -26,12 +26,12 @@ import type { PartRow } from './pipeline/services.js';
  * строк видов шага (`step-run`, `step-uses`, `step-script`, `step-agent`) он
  * же и порядок их узнавания в документе (`builtin-step-kinds-as-rows`,
  * design.md, Решение 2) — `step-uses` стоит раньше `step-script` ровно поэтому
- * (комментарий у `parseUsesStep`, `src/core/pipeline/expand.ts`). У строки
+ * (комментарий у `parseUsesStep`, `src/parts/pipeline/document/expand.ts`). У строки
  * встроенных предикатов своего ограничения порядка нет: ключи предикатов не
  * пересекаются, и место строки `predicates` в перечне не влияет ни на разбор
  * документа, ни на вычисление (`builtin-predicates-as-row`, design.md,
  * Решение 8) — она стоит сразу после `backend-claude` просто по соседству с
- * `src/core/expect`, откуда берёт формы.
+ * `src/parts/pipeline/expect`, откуда берёт формы.
  *
  * Отключение или замена строки `pipeline` патчем состава — законное
  * состояние (`plugin-tree`, «Служебные сервисы пайплайна приносит строка

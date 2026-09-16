@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { UsageAccumulator } from '../src/core/budget/accumulator.js';
+import { UsageAccumulator } from '../src/parts/pipeline/run/budget/accumulator.js';
 import {
   authRefusalLine,
   createFakeBackend,
@@ -9,13 +9,13 @@ import {
   rateLimitRefusalLine,
   resultLine,
   type FakeBackend,
-} from '../src/core/backend/fake.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { readEvents, readStatus, readUsage, resolveRun } from '../src/core/journal/reader.js';
-import { runPipeline, type RunOptions, type RunResult } from '../src/core/run/runner.js';
-import { createWaitState } from '../src/core/run/waitState.js';
-import { ExitCode } from '../src/core/errors.js';
-import type { Config } from '../src/core/config/resolve.js';
+} from '../src/parts/pipeline/backend/fake.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { readEvents, readStatus, readUsage, resolveRun } from '../src/parts/pipeline/run/journal/reader.js';
+import { runPipeline, type RunOptions, type RunResult } from '../src/parts/pipeline/run/runner.js';
+import { createWaitState } from '../src/parts/pipeline/run/waitState.js';
+import { ExitCode } from '../src/kernel/errors.js';
+import type { Config } from '../src/parts/pipeline/config/resolve.js';
 import {
   AttemptRecordSchema,
   BudgetStateSchema,
@@ -23,7 +23,7 @@ import {
   UsageReportSchema,
   UsageSchema,
   type Usage,
-} from '../src/core/journal/schema.js';
+} from '../src/parts/pipeline/run/journal/schema.js';
 import { makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

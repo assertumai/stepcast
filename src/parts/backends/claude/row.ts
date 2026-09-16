@@ -1,11 +1,16 @@
-import { claudeModelDiscovery, createClaudeAdapter } from '../../../core/backend/claude.js';
+import { claudeModelDiscovery, createClaudeAdapter } from './adapter.js';
 import { partRow } from '../../pipeline/services.js';
 
 /**
- * Строка встроенного слоя: бэкенд `claude`. Реализация остаётся на прежнем
- * месте (`src/core/backend/claude.ts`) — её физический переезд в этот каталог
- * шаг 5 плана `docs/microkernel-target.md`; здесь заводится только модуль
- * строки по адресу целевой структуры (`plugin-tree`, design.md, Решение 2).
+ * Строка встроенного слоя: бэкенд `claude`. Реализация лежит рядом
+ * (`./adapter.ts`, `source-tree-microkernel-layout`, ступень 3) — адаптер
+ * написан внутренними импортами и публичной поверхностью (`stepcast/plugin`)
+ * не пользуется, поэтому граница плагинов поставки названа перечнем каталогов
+ * (`parts/backends/codex/**`, `parts/pipeline/steps/decision/**`), а не деревом
+ * `parts/backends/**`: этот каталог в перечне не значится вовсе — ни в `files`,
+ * ни в `ignores`, — и правило его не касается (design.md, Решение 8;
+ * `eslint.config.js`). Переписывание адаптера на публичный подпуть — с ним
+ * правило стало бы деревом — названо открытым в плане.
  *
  * Строка-потребитель сервиса `backends` (design.md `pipeline-owns-services`,
  * Решение 2): применяется собственной областью с объявленным `inject`, а не

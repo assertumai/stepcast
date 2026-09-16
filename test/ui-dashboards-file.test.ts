@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { StepcastError } from '../src/core/errors.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import {
   buildDashboards,
   dashboardFingerprint,
@@ -11,7 +11,7 @@ import {
   projectDashboardsDirPath,
   writeDashboard,
   type DashboardFileDocument,
-} from '../src/ui/dashboardsFile.js';
+} from '../src/parts/ui/dashboardsFile.js';
 import { tempDir } from './tmp.js';
 
 function layerDirs(): { home: string; projectRoot: string } {

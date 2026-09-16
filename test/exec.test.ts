@@ -3,16 +3,16 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { buildStepEnv, injectedVariables, parseEnvFile } from '../src/core/exec/env.js';
-import { BUILTIN_CONFIG } from '../src/core/config/defaults.js';
-import { runProcess } from '../src/core/exec/process.js';
-import { planAttempt, runAttempts } from '../src/core/exec/attempts.js';
-import { executeRunStep } from '../src/core/exec/runStep.js';
-import { jobScratchDir } from '../src/core/journal/paths.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { runPipeline } from '../src/core/run/runner.js';
+import { buildStepEnv, injectedVariables, parseEnvFile } from '../src/parts/pipeline/run/exec/env.js';
+import { BUILTIN_CONFIG } from '../src/parts/pipeline/config/defaults.js';
+import { runProcess } from '../src/parts/pipeline/run/exec/process.js';
+import { planAttempt, runAttempts } from '../src/parts/pipeline/run/exec/attempts.js';
+import { executeRunStep } from '../src/parts/pipeline/run/exec/runStep.js';
+import { jobScratchDir } from '../src/parts/pipeline/run/journal/paths.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { runPipeline } from '../src/parts/pipeline/run/runner.js';
 import { makeProject, testBaseEnv } from './helpers.js';
-import type { Attempts, RunStep } from '../src/core/pipeline/model.js';
+import type { Attempts, RunStep } from '../src/parts/pipeline/document/model.js';
 import { tempDir } from './tmp.js';
 
 const NO_ATTEMPTS: Attempts = { max: 1, escalation: [] };

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { moveBetween, moveWithin, withStatus } from '../src/core/backlog/index.js';
-import { parse } from '../src/core/backlog/parse.js';
+import { moveBetween, moveWithin, withStatus } from '../src/parts/pipeline/domain/backlog/index.js';
+import { parse } from '../src/parts/pipeline/domain/backlog/parse.js';
 
 /**
  * Перенос пункта — текстовая правка очереди, которой доска витрины двигает

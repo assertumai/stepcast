@@ -4,19 +4,19 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
-import { createWatcher } from '../src/ui/watcher.js';
-import { StepcastError } from '../src/core/errors.js';
-import { cleanupRun, removeRunWithStats } from '../src/core/run/cleanup.js';
-import { projectKey } from '../src/core/journal/paths.js';
-import { removeUsageRecords } from '../src/core/journal/usageStore.js';
-import { widgetsDirPath } from '../src/ui/widgets.js';
-import { homeRoutesPath, projectRoutesPath } from '../src/ui/routesFile.js';
-import { homeDashboardsDirPath, projectDashboardsDirPath } from '../src/ui/dashboardsFile.js';
-import { proposalsDirPath, proposeEntry, readProposalsDir } from '../src/core/proposals/store.js';
-import type { BacklogOverview } from '../src/ui/backlog.js';
-import type { Overview } from '../src/ui/overview.js';
-import type { WidgetsOverview } from '../src/ui/widgets.js';
-import type { ProposalsOverview } from '../src/ui/proposals.js';
+import { createWatcher } from '../src/parts/ui/daemon/watcher.js';
+import { StepcastError } from '../src/kernel/errors.js';
+import { cleanupRun, removeRunWithStats } from '../src/parts/pipeline/run/cleanup.js';
+import { projectKey } from '../src/parts/pipeline/run/journal/paths.js';
+import { removeUsageRecords } from '../src/parts/pipeline/run/journal/usageStore.js';
+import { widgetsDirPath } from '../src/parts/ui/widgets.js';
+import { homeRoutesPath, projectRoutesPath } from '../src/parts/ui/routesFile.js';
+import { homeDashboardsDirPath, projectDashboardsDirPath } from '../src/parts/ui/dashboardsFile.js';
+import { proposalsDirPath, proposeEntry, readProposalsDir } from '../src/parts/pipeline/domain/proposals/store.js';
+import type { BacklogOverview } from '../src/parts/ui/backlog.js';
+import type { Overview } from '../src/parts/ui/overview.js';
+import type { WidgetsOverview } from '../src/parts/ui/widgets.js';
+import type { ProposalsOverview } from '../src/parts/ui/proposals.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -496,7 +496,7 @@ describe('ui-dashboard: наблюдатель за корнем прогоно�
      * `readFileSync` для уже загруженного модуля нечем.
      */
     it('отпечаток считается дешёвой половиной состава, без чтения исходников виджетов', () => {
-      const text = readFileSync(fileURLToPath(new URL('../../src/ui/watcher.ts', import.meta.url)), 'utf8');
+      const text = readFileSync(fileURLToPath(new URL('../../src/parts/ui/daemon/watcher.ts', import.meta.url)), 'utf8');
       assert.match(text, /projectWidgetVersions\(/);
       assert.doesNotMatch(
         text,

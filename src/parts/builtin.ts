@@ -1,15 +1,15 @@
 // Цикл «встроенный слой поставки ↔ разбор» не исчез переносом регистрации
 // видов шага в строки (`builtin-step-kinds-as-rows`) — он перестал проходить
 // через этот файл и через `registerBuiltinStepKinds`, но замкнулся между
-// `parts/rows.ts` и `core/pipeline/expand.ts`: `expand.ts` читает
+// `parts/rows.ts` и `parts/pipeline/document/expand.ts`: `expand.ts` читает
 // `builtinRegistry` отсюда, а строки `step-run`/`step-uses`/`step-script`/
-// `step-agent` (`src/parts/steps/*/row.ts`), перечисленные в `rows.ts`, читают
+// `step-agent` (`src/parts/pipeline/steps/*/row.ts`), перечисленные в `rows.ts`, читают
 // внутренние формы разбора из `expand.ts`. Разрывает его физический переезд
 // разбора (шаг 10 плана `docs/microkernel-target.md`) либо снятие умолчания
 // `registry` у `expandPipeline` — не этот пункт (design.md, «Risks»).
-import { StepcastError } from '../core/errors.js';
-import { createKernel, type Kernel } from '../core/plugins/kernel.js';
-import { registryFromKernel, type Registry } from '../core/plugins/registry.js';
+import { StepcastError } from '../kernel/errors.js';
+import { createKernel, type Kernel } from '../kernel/kernel.js';
+import { registryFromKernel, type Registry } from '../kernel/registry.js';
 import type { PartRow } from './pipeline/services.js';
 import { BUILTIN_ROWS } from './rows.js';
 
@@ -27,9 +27,9 @@ import { BUILTIN_ROWS } from './rows.js';
  * Встроенные вклады описываются строками того же формата, что и вклады
  * плагинов (`plugin-tree`, design.md, Решение 1): каждая строка — модуль,
  * экспортирующий `row` (`src/parts/backends/claude/row.ts`,
- * `src/parts/steps/decision/row.ts`), а перечень `BUILTIN_ROWS` (`./rows.js`)
+ * `src/parts/pipeline/steps/decision/row.ts`), а перечень `BUILTIN_ROWS` (`./rows.js`)
  * только называет эти модули — встроенный слой дерева. Загрузчик
- * (`src/core/plugins/load.ts`) находит фабрику по имени формы
+ * (`src/kernel/load.ts`) находит фабрику по имени формы
  * `use: stepcast:<id>` среди строк, поданных ему параметром
  * (`kernel-domain-free-imports`, Решение 3), а не по диску и не по
  * собственной таблице — единственный, кто эту таблицу знает, это состав
@@ -42,13 +42,13 @@ import { BUILTIN_ROWS } from './rows.js';
  * (узнать свою запись, разобрать в типизированную модель), а не сигнатуру
  * `evaluate(value: unknown, …)`, которая заменила бы десять проверенных
  * ветвей на десять приведений типа. Все десять вносит одна строка
- * (`src/parts/expect/row.ts`), перечисленная в `BUILTIN_ROWS` наравне с
+ * (`src/parts/pipeline/expect/row.ts`), перечисленная в `BUILTIN_ROWS` наравне с
  * прочими: сборка ядра сама не занимает ни одного имени предиката.
  */
 
 // Поиска фабрики по имени здесь больше нет (`findBuiltinRow` до
 // `kernel-domain-free-imports`): фабрику строки формы `stepcast:<имя>` ищет
-// обход дерева и только среди поданных ему строк (`src/core/plugins/load.ts`,
+// обход дерева и только среди поданных ему строк (`src/kernel/load.ts`,
 // Решение 3). Отдельный поиск по одному `BUILTIN_ROWS` вёл бы мимо настоящего
 // пути разрешения — мимо строк вызывающего и мимо замены строки патчем.
 
@@ -57,7 +57,7 @@ import { BUILTIN_ROWS } from './rows.js';
  * `BUILTIN_ROWS` не вызвана — сборка ядра не занимает ни одного имени
  * предиката сама (`builtin-predicates-as-row`, design.md, Решение 1) и ни
  * одного имени команды (`cli-commands-as-rows`, Решение 1): команды —
- * строки того же встроенного слоя, вносимые точкой входа (`src/cli/rows.ts`),
+ * строки того же встроенного слоя, вносимые точкой входа (`src/parts/cli/rows.ts`),
  * а не параметр сборки. Ядро (`createKernel()`) не принимает опций вовсе:
  * проверка имени вида шага — доменное знание, которое сегодня несёт строка
  * `pipeline` (`src/parts/pipeline/row.ts`), а не сборка ядра
@@ -104,7 +104,7 @@ export function applyRowOnRoot(kernel: Kernel, row: PartRow): void {
 
 /**
  * Ядро со всеми встроенными вкладами движка — без команд: они живут в
- * `src/cli/rows.ts`, а ядру запрещено зависеть от поверхности
+ * `src/parts/cli/rows.ts`, а ядру запрещено зависеть от поверхности
  * (`cli-commands-as-rows`, Решение 2). Вызывающий, которому нужны и команды
  * (`src/parts/load.ts`, `defaultComposition`), подаёт их строками обхода
  * дерева, а не параметром этой функции.

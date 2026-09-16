@@ -4,22 +4,22 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import type { CliIo } from '../src/cli/args.js';
-import { CACHED_REGISTRY_ATTRIBUTION, outcomeWithoutLoad, runPluginsCommand } from '../src/cli/commands/plugins.js';
-import { run as runCli } from '../src/cli/main.js';
-import { COMMAND_ROWS } from '../src/cli/rows.js';
-import { ExitCode, type ExitCodeValue } from '../src/core/errors.js';
+import type { CliIo } from '../src/kernel/cli/args.js';
+import { CACHED_REGISTRY_ATTRIBUTION, outcomeWithoutLoad, runPluginsCommand } from '../src/parts/cli/commands/plugins.js';
+import { run as runCli } from '../src/parts/cli/main.js';
+import { COMMAND_ROWS } from '../src/parts/cli/rows.js';
+import { ExitCode, type ExitCodeValue } from '../src/kernel/errors.js';
 import { createBuiltinKernel } from '../src/parts/builtin.js';
 import { BUILTIN_ROW_IDS } from '../src/parts/rows.js';
-import type { TreeRow } from '../src/core/plugins/tree.js';
-import { daemonPaths, writeRecord } from '../src/ui/daemon.js';
+import type { TreeRow } from '../src/kernel/tree/tree.js';
+import { daemonPaths, writeRecord } from '../src/parts/ui/daemon/daemon.js';
 import { makeProject, MINIMAL_PIPELINE, withHome, type Project } from './helpers.js';
 
 /**
  * Строки доменных команд (design.md изменения `cli-commands-as-rows`,
  * Решение 3) — те, чья строка объявляет `inject` на сервисы движка
  * пайплайнов и потому печатает строку «сервисы запрошены». Список — тот же,
- * что называет комментарий у `COMMAND_ROWS` (`src/cli/rows.ts`).
+ * что называет комментарий у `COMMAND_ROWS` (`src/parts/cli/rows.ts`).
  */
 const DOMAIN_COMMAND_NAMES = new Set([
   'run', 'resume', 'lint', 'status', 'logs', 'diff', 'decide', 'usage',
@@ -29,7 +29,7 @@ const DOMAIN_COMMAND_NAMES = new Set([
 
 /**
  * Строки дополнений печати ровно одной строки команды (`renderIntrospectionRows`,
- * `src/cli/commands/plugins.ts`): заголовок, затем «сервисы запрошены» —
+ * `src/parts/cli/commands/plugins.ts`): заголовок, затем «сервисы запрошены» —
  * только у доменной команды, — затем «вклады: commands: <имя>» всегда.
  * Помощник читает их из `lines`, начиная с `index`, и возвращает индекс сразу
  * за прочитанным блоком — вызывающий тест проверяет дерево построчно, не

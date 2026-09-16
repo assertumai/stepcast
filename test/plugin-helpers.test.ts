@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { z } from 'zod';
 
-import { definePlugin } from '../src/plugin.js';
-import type { StepcastPlugin } from '../src/core/plugins/contract.js';
+import { definePlugin } from '../src/plugin/index.js';
+import type { StepcastPlugin } from '../src/kernel/contract.js';
 import {
   DECLARATIVE_CONTRIBUTION_FIELDS,
   defineBackend,
@@ -13,10 +13,10 @@ import {
   StepcastPluginSchema,
   type PipelinePlugin,
   type StepKindInput,
-} from '../src/core/plugins/pipeline-contract.js';
+} from '../src/parts/pipeline/contract.js';
 import type { PipelinePlugin as PublishedPipelinePlugin } from '../src/parts/pipeline/surface.js';
-import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
-import { availableNames, predicateNames, registryFromKernel, stepKindNames } from '../src/core/plugins/registry.js';
+import { applyDeclarativePlugin } from '../src/kernel/load.js';
+import { availableNames, predicateNames, registryFromKernel, stepKindNames } from '../src/kernel/registry.js';
 import { createPipelineKernel } from './helpers.js';
 
 /**

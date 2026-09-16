@@ -3,16 +3,16 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { runInitCommand } from '../src/cli/commands/init.js';
-import { runProposeCommand } from '../src/cli/commands/propose.js';
-import { resolveConfig } from '../src/core/config/resolve.js';
-import { createKnowledgeSource } from '../src/core/knowledge/source.js';
-import { assertCleanTree } from '../src/core/lanes/tree.js';
-import type { ParsedArgs } from '../src/cli/args.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { hasErrors, lintPipeline } from '../src/core/lint.js';
-import { runPipeline } from '../src/core/run/runner.js';
-import { ExitCode, StepcastError } from '../src/core/errors.js';
+import { runInitCommand } from '../src/parts/pipeline/commands/init.js';
+import { runProposeCommand } from '../src/parts/pipeline/commands/propose.js';
+import { resolveConfig } from '../src/parts/pipeline/config/resolve.js';
+import { createKnowledgeSource } from '../src/parts/pipeline/domain/knowledge/source.js';
+import { assertCleanTree } from '../src/parts/pipeline/domain/lanes/tree.js';
+import type { ParsedArgs } from '../src/kernel/cli/args.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { hasErrors, lintPipeline } from '../src/parts/pipeline/domain/lint.js';
+import { runPipeline } from '../src/parts/pipeline/run/runner.js';
+import { ExitCode, StepcastError } from '../src/kernel/errors.js';
 import { gitCommit, gitInit, makeProject, withHome } from './helpers.js';
 import { tempDir } from './tmp.js';
 

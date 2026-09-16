@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 
-import { MODEL_TIERS, type ModelTier } from '../../../src/core/config/modelTiers';
+import { MODEL_TIERS, type ModelTier } from '../../../src/parts/pipeline/config/modelTiers';
 import {
   fetchModels, fetchSettings, saveSettings,
   type ModelOption, type ModelsForBackend, type ModelsResult, type Settings, type SettingsPatch,

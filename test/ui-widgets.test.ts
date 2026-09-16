@@ -20,7 +20,7 @@ import {
   resolveWidgetFile,
   widgetsDirPath,
   type CompileOutcome,
-} from '../src/ui/widgets.js';
+} from '../src/parts/ui/widgets.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 import { tempDir } from './tmp.js';
 

@@ -5,11 +5,11 @@ import { dirname, join } from 'node:path';
 
 import assert from 'node:assert/strict';
 
-import { resolveConfig, type Config } from '../src/core/config/resolve.js';
-import { RunJournal } from '../src/core/journal/writer.js';
-import type { RunManifest, RunStatus, StatusValue, UsageReport } from '../src/core/journal/schema.js';
-import type { AgentStep, RunStep, ScriptStep, Step } from '../src/core/pipeline/model.js';
-import { createKernel, type Kernel } from '../src/core/plugins/kernel.js';
+import { resolveConfig, type Config } from '../src/parts/pipeline/config/resolve.js';
+import { RunJournal } from '../src/parts/pipeline/run/journal/writer.js';
+import type { RunManifest, RunStatus, StatusValue, UsageReport } from '../src/parts/pipeline/run/journal/schema.js';
+import type { AgentStep, RunStep, ScriptStep, Step } from '../src/parts/pipeline/document/model.js';
+import { createKernel, type Kernel } from '../src/kernel/kernel.js';
 import { row as pipelineRow } from '../src/parts/pipeline/row.js';
 import { tempDir } from './tmp.js';
 
@@ -89,7 +89,7 @@ export function gitInit(dir: string): void {
 
 /**
  * Дайджест закрепления для фикстур: та же формула, какой считает его источник
- * `fs` (`contentHash` в `src/core/knowledge/fs.ts`) — sha256 по байтам файла,
+ * `fs` (`contentHash` в `src/parts/pipeline/domain/knowledge/fs.ts`) — sha256 по байтам файла,
  * первые 16 шестнадцатеричных символов. Дублируется здесь намеренно, а не
  * импортируется: тест обязан вычислить ожидаемое значение независимо от
  * реализации, а не переиспользовать её же код как оракул.

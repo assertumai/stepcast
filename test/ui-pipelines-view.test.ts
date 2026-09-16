@@ -3,8 +3,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { resolveConfig } from '../src/core/config/resolve.js';
-import { buildPipelines } from '../src/ui/pipelines.js';
+import { resolveConfig } from '../src/parts/pipeline/config/resolve.js';
+import { buildPipelines } from '../src/parts/ui/pipelines.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 
 /**

@@ -7,7 +7,7 @@ import * as CordisNamespace from 'cordis';
 import * as SharedSlotsNamespace from '@stepcast/slots';
 import * as SharedUiNamespace from '@stepcast/ui';
 
-import { WIDGET_RUNTIME_GLOBAL } from '../../src/ui/sharedModules';
+import { WIDGET_RUNTIME_GLOBAL } from '../../src/parts/ui/daemon/sharedModules';
 import { createBrowserKernel } from './kernel';
 import { bindRouterKernel } from './router';
 import { KernelRoot } from './slots.tsx';
@@ -24,9 +24,9 @@ import './styles.css';
  * импортирующий, получивший свой React или свой cordis, молча ломает хуки
  * или заводит сервис в чужом контексте.
  *
- * Таблица общих модулей (`src/ui/sharedModules.ts`) достигла всех шести
+ * Таблица общих модулей (`src/parts/ui/daemon/sharedModules.ts`) достигла всех шести
  * имён здесь — объект публикации растёт вместе с самими модулями поверхности
- * (`ui/src/sharedSlots.ts`, `ui/src/ui/index.ts`), а не раньше их появления.
+ * (`ui/src/sharedSlots.ts`, `ui/src/parts/ui/index.ts`), а не раньше их появления.
  */
 (globalThis as Record<string, unknown>)[WIDGET_RUNTIME_GLOBAL] = {
   react: ReactNamespace,

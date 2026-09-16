@@ -8,8 +8,8 @@ import {
   type ReactNode,
 } from 'react';
 
-import { widgetModuleHref } from '../../src/ui/routes';
-import { WIDGET_ERROR_EXPORT } from '../../src/ui/sharedModules';
+import { widgetModuleHref } from '../../src/parts/ui/routes';
+import { WIDGET_ERROR_EXPORT } from '../../src/parts/ui/daemon/sharedModules';
 import type { WidgetCompileFailure } from './api';
 
 /**
@@ -19,7 +19,7 @@ import type { WidgetCompileFailure } from './api';
  * `ui-runtime-widget-spike`, Решения 8 и 9).
  *
  * Ошибка компиляции — не исключение `import()`, а поле экспорта: демон
- * всегда отвечает 200 и рабочим JS (`errorModuleText`, `src/ui/widgets.ts`),
+ * всегда отвечает 200 и рабочим JS (`errorModuleText`, `src/parts/ui/widgets.ts`),
  * поэтому хост различает исходы уже после успешного импорта, читая
  * `mod[WIDGET_ERROR_EXPORT]`. Настоящее исключение `import()` — либо сеть,
  * либо голое имя, которого нет в карте: оба показаны карточкой «неразрешённый

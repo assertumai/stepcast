@@ -15,12 +15,12 @@ import {
   selectCandidates,
   selectOlderThan,
   type RemovalSummary,
-} from '../src/core/run/cleanup.js';
-import { projectKey, usageStorePath } from '../src/core/journal/paths.js';
-import { listRunsByKey } from '../src/core/journal/reader.js';
-import { ensureUsageRecord, readUsageStore } from '../src/core/journal/usageStore.js';
-import { RunJournal } from '../src/core/journal/writer.js';
-import type { RunManifest, StatusValue } from '../src/core/journal/schema.js';
+} from '../src/parts/pipeline/run/cleanup.js';
+import { projectKey, usageStorePath } from '../src/parts/pipeline/run/journal/paths.js';
+import { listRunsByKey } from '../src/parts/pipeline/run/journal/reader.js';
+import { ensureUsageRecord, readUsageStore } from '../src/parts/pipeline/run/journal/usageStore.js';
+import { RunJournal } from '../src/parts/pipeline/run/journal/writer.js';
+import type { RunManifest, StatusValue } from '../src/parts/pipeline/run/journal/schema.js';
 import { tempDir } from './tmp.js';
 
 function bed(): { runsRoot: string; projectRoot: string } {

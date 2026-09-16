@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { groupProjects, type PipelineLike, type RunLike } from '../src/ui/grouping.js';
+import { groupProjects, type PipelineLike, type RunLike } from '../src/parts/ui/grouping.js';
 
 /** Найденный файл пайплайна: разобранный, если не сказано иное. */
 function pipeline(file: string, name: string, error?: string): PipelineLike {

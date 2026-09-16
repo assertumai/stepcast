@@ -1,7 +1,7 @@
 import { useEffect, useState, type JSX } from 'react';
 import type { Context } from 'cordis';
 
-import { declaration } from '../../../src/ui/screens/proposals/declaration.ts';
+import { declaration } from '../../../src/parts/ui/screens/proposals/declaration.ts';
 import { fetchProposals, type ProposalsOverview, type ProposalsStreamEvent } from '../api';
 import { Proposals } from '../pages/Proposals';
 import { SCREEN } from '@stepcast/slots';

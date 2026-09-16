@@ -3,10 +3,10 @@ import { chmodSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { readEvents, readManifest, readStatus, readUsage } from '../src/core/journal/reader.js';
-import { projectKey, runPaths } from '../src/core/journal/paths.js';
-import { finalizeInterruptedRun } from '../src/core/journal/recover.js';
-import { launchRun, retryInterruptedRunRecovery } from '../src/ui/runLaunch.js';
+import { readEvents, readManifest, readStatus, readUsage } from '../src/parts/pipeline/run/journal/reader.js';
+import { projectKey, runPaths } from '../src/parts/pipeline/run/journal/paths.js';
+import { finalizeInterruptedRun } from '../src/parts/pipeline/run/journal/recover.js';
+import { launchRun, retryInterruptedRunRecovery } from '../src/parts/ui/runLaunch.js';
 import { makeJournalBed, seedRun } from './helpers.js';
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5_000): Promise<void> {

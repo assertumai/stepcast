@@ -4,16 +4,16 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { ExitCode } from '../src/core/errors.js';
-import { runPaths } from '../src/core/journal/paths.js';
-import { listRuns, readStatus } from '../src/core/journal/reader.js';
-import { writeDecisionRecord } from '../src/core/journal/writer.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
+import { ExitCode } from '../src/kernel/errors.js';
+import { runPaths } from '../src/parts/pipeline/run/journal/paths.js';
+import { listRuns, readStatus } from '../src/parts/pipeline/run/journal/reader.js';
+import { writeDecisionRecord } from '../src/parts/pipeline/run/journal/writer.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
 import { builtinRegistry } from '../src/parts/builtin.js';
-import { runPipeline } from '../src/core/run/runner.js';
-import { continueRestartChain } from '../src/cli/commands/resume.js';
-import { runRunCommand } from '../src/cli/commands/run.js';
-import type { ParsedArgs } from '../src/core/plugins/cli-types.js';
+import { runPipeline } from '../src/parts/pipeline/run/runner.js';
+import { continueRestartChain } from '../src/parts/pipeline/commands/resume.js';
+import { runRunCommand } from '../src/parts/pipeline/commands/run.js';
+import type { ParsedArgs } from '../src/kernel/cli/types.js';
 import { makeProject, withHome, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 
@@ -218,7 +218,7 @@ describe('resume-chain: восстановление по просьбе о пе
 
     await waitUntil(() => listRuns(runsRoot, project.root).length === 1);
     const firstRunId = listRuns(runsRoot, project.root)[0] as string;
-    const { projectKey } = await import('../src/core/journal/paths.js');
+    const { projectKey } = await import('../src/parts/pipeline/run/journal/paths.js');
     const firstPaths = runPaths(runsRoot, projectKey(project.root), firstRunId);
     await waitUntil(() => (readStatus(firstPaths).awaiting?.length ?? 0) > 0);
     writeDecisionRecord(firstPaths, readStatus(firstPaths).awaiting?.[0]?.wait_id as string, {

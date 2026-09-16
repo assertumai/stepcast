@@ -1,9 +1,9 @@
-import type { ResolvedConfig } from '../core/config/resolve.js';
-import { StepcastError } from '../core/errors.js';
-import { applyPluginTree, walkPluginTree, type LoadOptions, type LoadResult, type RowOutcome } from '../core/plugins/load.js';
-import type { Introspection } from '../core/plugins/introspect.js';
-import type { Kernel } from '../core/plugins/kernel.js';
-import { DECLARATIVE_CONTRIBUTION_FIELDS } from '../core/plugins/pipeline-contract.js';
+import type { ResolvedConfig } from './pipeline/config/resolve.js';
+import { StepcastError } from '../kernel/errors.js';
+import { applyPluginTree, walkPluginTree, type LoadOptions, type LoadResult, type RowOutcome } from '../kernel/load.js';
+import type { Introspection } from '../kernel/introspect.js';
+import type { Kernel } from '../kernel/kernel.js';
+import { DECLARATIVE_CONTRIBUTION_FIELDS } from './pipeline/contract.js';
 import { createKernelShell } from './builtin.js';
 import { BUILTIN_ROWS } from './rows.js';
 
@@ -19,14 +19,14 @@ import { BUILTIN_ROWS } from './rows.js';
  * строки движка, затем строки вызывающего (`load.ts`, `unknownBuiltinRow`).
  *
  * Наборы входов различаются только строками вызывающего: команды CLI
- * (`src/cli/main.ts`) зовут `loadPlugins`/`inspectPluginTree` без
+ * (`src/parts/cli/main.ts`) зовут `loadPlugins`/`inspectPluginTree` без
  * `builtinRows` и состава у себя не называют — им достаётся перечень дефолта
- * `src/parts/rows.ts` и ничего сверх него; `stepcast up` (`src/ui/kernel.ts`)
+ * `src/parts/rows.ts` и ничего сверх него; `stepcast up` (`src/parts/ui/daemon/kernel.ts`)
  * подаёт поверх него `UI_ROWS` параметром. Поэтому строки витрины не попадают
  * в дерево команд CLI, а добавление и изъятие строки дефолта — правка
  * `src/parts/rows.ts`, и только её: ни этот модуль, ни обход
- * (`src/core/plugins/load.ts`), ни разрешение конфигурации
- * (`src/core/config/resolve.ts`) состава не знают.
+ * (`src/kernel/load.ts`), ни разрешение конфигурации
+ * (`src/parts/pipeline/config/resolve.ts`) состава не знают.
  */
 
 /**

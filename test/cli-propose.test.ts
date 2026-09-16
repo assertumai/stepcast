@@ -3,9 +3,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { ExitCode } from '../src/core/errors.js';
-import { runProposeCommand } from '../src/cli/commands/propose.js';
-import { proposalsDirPath, readProposalsDir } from '../src/core/proposals/store.js';
+import { ExitCode } from '../src/kernel/errors.js';
+import { runProposeCommand } from '../src/parts/pipeline/commands/propose.js';
+import { proposalsDirPath, readProposalsDir } from '../src/parts/pipeline/domain/proposals/store.js';
 import { makeJournalBed, seedRun, withHome } from './helpers.js';
 import { tempDir } from './tmp.js';
 

@@ -3,10 +3,10 @@ id: process-kill-is-posix-only
 title: Убийство дерева процессов сделано группой POSIX, и на Windows движок не
   проверяется
 scope:
-  - src/core/exec/**
-  - src/core/run/**
+  - src/parts/pipeline/run/exec/**
+  - src/parts/pipeline/run/**
 anchors:
-  - path: src/core/exec/process.ts
+  - path: src/parts/pipeline/run/exec/process.ts
     hash: '58babded4381a588'
 status: active
 ---

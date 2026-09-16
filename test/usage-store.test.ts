@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { appendFileSync, chmodSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
-import { projectKey, usageStorePath } from '../src/core/journal/paths.js';
-import { readUsage } from '../src/core/journal/reader.js';
-import type { RunManifest, RunStatus, UsageReport } from '../src/core/journal/schema.js';
+import { projectKey, usageStorePath } from '../src/parts/pipeline/run/journal/paths.js';
+import { readUsage } from '../src/parts/pipeline/run/journal/reader.js';
+import type { RunManifest, RunStatus, UsageReport } from '../src/parts/pipeline/run/journal/schema.js';
 import {
   appendUsageRecord,
   backfillUsageStore,
@@ -17,10 +17,10 @@ import {
   selectUsageRecords,
   usageRecord,
   usageRecordAddress,
-} from '../src/core/journal/usageStore.js';
-import { USAGE_STORE_FORMAT } from '../src/core/journal/format.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { runPipeline } from '../src/core/run/runner.js';
+} from '../src/parts/pipeline/run/journal/usageStore.js';
+import { USAGE_STORE_FORMAT } from '../src/parts/pipeline/run/journal/format.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { runPipeline } from '../src/parts/pipeline/run/runner.js';
 import { makeJournalBed, makeProject, MINIMAL_PIPELINE, seedRun } from './helpers.js';
 import { tempDir } from './tmp.js';
 

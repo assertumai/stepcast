@@ -10,9 +10,9 @@ import {
   detectAnchorKind,
   sameAnchor,
   splitCompositeAnchorId,
-} from '../src/core/anchor/index.js';
-import { loadIgnoreRules } from '../src/core/anchor/ignore.js';
-import { StepcastError } from '../src/core/errors.js';
+} from '../src/parts/pipeline/domain/anchor/index.js';
+import { loadIgnoreRules } from '../src/parts/pipeline/domain/anchor/ignore.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import { tempDir } from './tmp.js';
 
 interface Bed {

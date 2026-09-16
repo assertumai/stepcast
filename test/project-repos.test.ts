@@ -3,9 +3,9 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { resolveConfig } from '../src/core/config/resolve.js';
-import { resolveItemRepo } from '../src/core/project/repos.js';
-import { StepcastError } from '../src/core/errors.js';
+import { resolveConfig } from '../src/parts/pipeline/config/resolve.js';
+import { resolveItemRepo } from '../src/parts/pipeline/domain/project/repos.js';
+import { StepcastError } from '../src/kernel/errors.js';
 import { tempDir } from './tmp.js';
 
 /**

@@ -3,11 +3,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import type { Config } from '../src/core/config/resolve.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { findStepDir, readStatus } from '../src/core/journal/reader.js';
-import { evaluatePredicates } from '../src/core/expect/evaluate.js';
-import { runPipeline, type RunResult } from '../src/core/run/runner.js';
+import type { Config } from '../src/parts/pipeline/config/resolve.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { findStepDir, readStatus } from '../src/parts/pipeline/run/journal/reader.js';
+import { evaluatePredicates } from '../src/parts/pipeline/expect/evaluate.js';
+import { runPipeline, type RunResult } from '../src/parts/pipeline/run/runner.js';
 import { gitCommit, gitInit, makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 

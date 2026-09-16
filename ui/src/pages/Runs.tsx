@@ -13,7 +13,7 @@ import {
 import { fmtBytes, fmtDuration, fmtMoney, fmtTime, fmtTokens, pluralRuns } from '../format';
 import { TargetLink } from '../routeLink';
 import { RUN_TARGET } from '../screens/run';
-import { withCurrentOption } from '../../../src/ui/filters';
+import { withCurrentOption } from '../../../src/parts/ui/filters';
 import {
   collectFilterValues,
   describePipelineFilterValue,
@@ -24,7 +24,7 @@ import {
   type RunFilters,
   type SortMetric,
   type SortOrder,
-} from '../../../src/ui/runsView';
+} from '../../../src/parts/ui/runsView';
 import { SortHeader } from '../SortHeader';
 
 /**
@@ -37,7 +37,7 @@ import { SortHeader } from '../SortHeader';
  * несовместимы (design.md изменения ui-runs-list-controls, Решение 1).
  *
  * Отбор, порядок и состав значений фильтров считает чистый модуль
- * `src/ui/runsView.ts` — здесь только состояние экрана (что выбрано) и
+ * `src/parts/ui/runsView.ts` — здесь только состояние экрана (что выбрано) и
  * отрисовка.
  *
  * Настоящая `<table>`, а не сетка из блоков: у таблицы есть шапка, которую

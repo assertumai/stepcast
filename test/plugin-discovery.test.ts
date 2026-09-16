@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
-import { discoverPluginDirectories, pluginsDirPath } from '../src/core/plugins/discover.js';
+import { discoverPluginDirectories, pluginsDirPath } from '../src/kernel/tree/discover.js';
 import { tempDir } from './tmp.js';
 
 describe('plugin-discovery: обход каталога плагинов слоя', () => {

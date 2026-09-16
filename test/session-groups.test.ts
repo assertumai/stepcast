@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { parse as parseYaml } from 'yaml';
 
-import { createFakeBackend, initLine, resultLine } from '../src/core/backend/fake.js';
-import { lintPipeline } from '../src/core/lint.js';
-import { expandPipeline } from '../src/core/pipeline/expand.js';
-import { jobLockHash, pipelineLockHash, serializeLock } from '../src/core/pipeline/lock.js';
-import type { Job, Pipeline } from '../src/core/pipeline/model.js';
-import { computeStepKey } from '../src/core/run/stepKey.js';
-import { runPipeline } from '../src/core/run/runner.js';
+import { createFakeBackend, initLine, resultLine } from '../src/parts/pipeline/backend/fake.js';
+import { lintPipeline } from '../src/parts/pipeline/domain/lint.js';
+import { expandPipeline } from '../src/parts/pipeline/document/expand.js';
+import { jobLockHash, pipelineLockHash, serializeLock } from '../src/parts/pipeline/document/lock.js';
+import type { Job, Pipeline } from '../src/parts/pipeline/document/model.js';
+import { computeStepKey } from '../src/parts/pipeline/run/stepKey.js';
+import { runPipeline } from '../src/parts/pipeline/run/runner.js';
 import { makeProject, type Project } from './helpers.js';
 import { tempDir } from './tmp.js';
 
