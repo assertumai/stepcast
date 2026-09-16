@@ -9,6 +9,7 @@ import { createKernel } from '../src/core/plugins/kernel.js';
 import { walkPluginTree } from '../src/core/plugins/load.js';
 import { availableNames, contributionOwner } from '../src/core/plugins/registry.js';
 import { loadPlugins } from '../src/parts/load.js';
+import { BUILTIN_ROWS, BUILTIN_ROW_IDS } from '../src/parts/rows.js';
 import { tempDir } from './tmp.js';
 
 interface Bed {
@@ -133,6 +134,41 @@ describe('plugin-tree: свёртка трёх слоёв', () => {
 
     assert.deepEqual(config.pluginTree.map((row) => row.id), ['backend-claude', 'step-decision', 'home-only']);
   });
+});
+
+// Задача 1.2 (row-module-convention): у строк встроенного слоя две формы — id
+// в семени дерева (`ResolveOptions.builtinRows`) и фабрика при обходе
+// (`LoadOptions.builtinRows`). У строк движка развести их нечем: обе идут из
+// одного перечня `src/parts/rows.ts` (`BUILTIN_ROW_IDS` выведен из
+// `BUILTIN_ROWS`), и проверять тут можно лишь то, что перечень действительно
+// сеет дерево — весь и в своём порядке. Развести формы способен только
+// вызывающий, подающий их двумя параметрами (`src/ui/kernel.ts:126` и `:128`),
+// — эта ветвь и проверяется отдельно.
+describe('plugin-tree: две формы набора строк — id в семени и фабрика при обходе', () => {
+  it('перечень движка сеет встроенный слой дефолтной сборки целиком и в своём порядке', () => {
+    const place = bed();
+    const config = resolved(place);
+
+    assert.deepEqual(config.pluginTree.map((row) => row.id), [...BUILTIN_ROW_IDS]);
+    assert.deepEqual([...BUILTIN_ROW_IDS], BUILTIN_ROWS.map((row) => row.id));
+  });
+
+  it('вызывающий, назвавший id семени и не подавший фабрику, получает отказ, называющий эту строку', async () => {
+    const place = bed();
+    // Перекос ровно тот, которого не бывает у строк движка: id строки витрины
+    // назван разрешению, а обходу тот же перечень не подан.
+    const config = resolved(place, {}, ['ui-shell']);
+
+    await assert.rejects(
+      () => loadPlugins(config, { projectRoot: place.root }),
+      (error: unknown) =>
+        error instanceof StepcastError && /несуществующую встроенную строку stepcast:ui-shell/.test(error.message),
+    );
+  });
+
+  // Сошедшиеся формы — «applyTreeRow ищет фабрику строки поставки среди
+  // builtinRows» ниже: тот же `ui-shell` обеими формами применяется и дерево
+  // собирается.
 });
 
 describe('plugin-tree: строки поставки вызывающего', () => {
@@ -490,6 +526,50 @@ describe('plugin-tree: фабрики строк поставки при заг�
     });
 
     assert.equal(called, false);
+  });
+});
+
+// Задача 5 (row-module-convention): пересечение перечня движка и перечня
+// вызывающего по `id` — сегодня это не бывает успешным (`builtinSeedRows` не
+// снимает дублей, семя получает две одноимённые строки, обход применяет
+// первую найденную и упирается в отказ о занятом имени, где обе стороны
+// зовутся «встроенный вклад» — причина не названа), и отказ состава заменяет
+// этот молчаливый исход именованным.
+describe('plugin-tree: пересечение перечней строк — именованный отказ', () => {
+  it('вызывающий подаёт строку с id встроенной строки движка — отказ называет id, строки не применены', async () => {
+    const place = bed();
+    const config = resolved(place);
+    const applied: string[] = [];
+
+    await assert.rejects(
+      () =>
+        loadPlugins(config, {
+          projectRoot: place.root,
+          builtinRows: [{ id: 'backend-claude', apply: () => { applied.push('backend-claude'); } }],
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof StepcastError);
+        assert.match(error.message, /backend-claude/);
+        return true;
+      },
+    );
+
+    // Отказ рождается до сборки ядра и обхода дерева: даже фабрика
+    // вызывающего, которая должна была бы конфликтовать со встроенной, ни
+    // разу не вызвана.
+    assert.deepEqual(applied, []);
+  });
+
+  it('замена backend-claude патчем состава по-прежнему проходит, отказ о пересечении её не задевает', async () => {
+    const place = bed();
+    writeModule(join(place.root, '.stepcast', 'claude.mjs'), REPLACEMENT_CLAUDE);
+    const config = resolved(place, {
+      projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: backend-claude\n    use: ./claude.mjs\n',
+    });
+
+    const { registry } = await loadPlugins(config, { projectRoot: place.root });
+
+    assert.equal(contributionOwner(registry, 'backends', 'claude'), 'user-claude');
   });
 });
 

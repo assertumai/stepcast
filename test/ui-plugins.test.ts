@@ -10,7 +10,7 @@ import { loadPlugins } from '../src/parts/load.js';
 import type { KernelCache } from '../src/ui/pipelines.js';
 import { createUiServer, LOOPBACK, type UiServer } from '../src/ui/server.js';
 import { createWatcher, type Watcher } from '../src/ui/watcher.js';
-import { UI_ROWS } from '../src/ui/screens/rows.js';
+import { UI_ROWS } from '../src/ui/rows.js';
 import { buildHomePlugins, directoryFingerprint, pluginDirPath } from '../src/ui/plugins.js';
 import { createWidgetCompiler, type EsbuildTransformApi, type WidgetCompiler } from '../src/ui/widgets.js';
 import { pluginModuleHref } from '../src/ui/routes.js';

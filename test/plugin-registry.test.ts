@@ -5,7 +5,7 @@ import { StepcastError } from '../src/core/errors.js';
 import { BUILTIN_PREDICATE_NAMES, builtinRegistry, createBuiltinKernel } from '../src/parts/builtin.js';
 import { applyDeclarativePlugin } from '../src/core/plugins/load.js';
 import { createKernel } from '../src/core/plugins/kernel.js';
-import { availableNames, predicateNames, registryFromKernel } from '../src/core/plugins/registry.js';
+import { availableNames, contributionOwner, predicateNames, registryFromKernel } from '../src/core/plugins/registry.js';
 import type { PredicateContribution, StepcastPlugin, StepKindContribution } from '../src/core/plugins/contract.js';
 import { ExitCode } from '../src/core/errors.js';
 
@@ -205,5 +205,16 @@ describe('plugin-registry: снимок дефолтного дерева', () =
     // затем decision (первая строка встроенного слоя, `BUILTIN_ROWS`).
     assert.deepEqual([...kernel.ctx.steps.contributions.keys()], ['run', 'uses', 'script', 'agent', 'decision']);
     assert.deepEqual([...kernel.ctx.predicates.reserved].sort(), [...BUILTIN_PREDICATE_NAMES].sort());
+  });
+
+  // Задача 1 (row-module-convention): переезд строк движка в модули
+  // (`src/parts/backends/claude/row.ts`, `src/parts/steps/decision/row.ts`)
+  // не вправе сменить владельца вклада — вклад остаётся внесённым на
+  // корневой области ядра, а не через `kernel.ctx.plugin`, и это видно
+  // снаружи только тут: по признаку области, а не по имени строки.
+  it('владелец встроенного вклада бэкенда claude остаётся «встроенный»', () => {
+    const registry = builtinRegistry();
+
+    assert.equal(contributionOwner(registry, 'backends', 'claude'), 'встроенный');
   });
 });

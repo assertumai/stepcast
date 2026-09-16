@@ -6,7 +6,7 @@ import { parse as parseYaml } from 'yaml';
 import { StepcastError } from '../errors.js';
 import { packagedWrapperNames } from '../package-schema.js';
 import { describeSchemaFailure } from '../pipeline/load.js';
-import { BUILTIN_ROW_IDS } from '../../parts/builtin.js';
+import { BUILTIN_ROW_IDS } from '../../parts/rows.js';
 import { discoverPluginDirectories, pluginsDirPath } from '../plugins/discover.js';
 import {
   applyOperations,

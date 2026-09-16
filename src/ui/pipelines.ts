@@ -503,7 +503,7 @@ async function disposeKernel(kernel: Kernel, cache: KernelCache): Promise<void> 
  * чтения слоёв не делается: промах всё равно ведёт к полной сборке.
  *
  * `builtinRows` — строки поставки витрины (`ui-shell` и по строке на экран,
- * `src/ui/screens/rows.ts`): доезжают до обоих проходов разрешения — их `id`
+ * `src/ui/rows.ts`): доезжают до обоих проходов разрешения — их `id`
  * встают в семя встроенного слоя (`ResolveOptions.builtinRows`), их фабрики
  * ищет загрузчик (`LoadOptions.builtinRows`) — и входят в ключ пригодности
  * удержанного ядра наравне с деревом, потому что сам список строк поставки

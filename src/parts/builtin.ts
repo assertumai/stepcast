@@ -1,4 +1,3 @@
-import { claudeModelDiscovery, createClaudeAdapter } from '../core/backend/claude.js';
 // Связь с разбором взаимная и остаётся таковой: отсюда берётся
 // `registerBuiltinStepKinds`, а `pipeline/expand.ts` читает здешний
 // `builtinRegistry`. Цикл держится тем, что оба обращения происходят внутри
@@ -11,11 +10,10 @@ import { claudeModelDiscovery, createClaudeAdapter } from '../core/backend/claud
 // виды шага станут строками и `registerBuiltinStepKinds` исчезнет вовсе.
 import { registerBuiltinStepKinds } from '../core/pipeline/expand.js';
 import { assertStepKindNameAvailable } from '../core/pipeline/schema.js';
-import { stepDecisionContribution } from '../steps/decision/index.js';
 import type { CommandContribution } from '../core/plugins/contract.js';
 import { createKernel, type Kernel } from '../core/plugins/kernel.js';
-import type { BuiltinRow } from '../core/plugins/load.js';
 import { registryFromKernel, type Registry } from '../core/plugins/registry.js';
+import { BUILTIN_ROWS } from './rows.js';
 
 /**
  * Встроенные вклады движка.
@@ -29,11 +27,14 @@ import { registryFromKernel, type Registry } from '../core/plugins/registry.js';
  * корневой области).
  *
  * Встроенные вклады описываются строками того же формата, что и вклады
- * плагинов (`plugin-tree`, design.md, Решение 5): таблица `id → фабрика`
- * ниже — и есть встроенный слой дерева. Загрузчик (`src/core/plugins/load.ts`)
- * находит фабрику по имени формы `use: stepcast:<id>` среди строк, поданных
- * ему параметром (`kernel-domain-free-imports`, Решение 3), а не по диску и
- * не по собственной таблице — единственный, кто эту таблицу знает, это состав
+ * плагинов (`plugin-tree`, design.md, Решение 1): каждая строка — модуль,
+ * экспортирующий `row` (`src/parts/backends/claude/row.ts`,
+ * `src/parts/steps/decision/row.ts`), а перечень `BUILTIN_ROWS` (`./rows.js`)
+ * только называет эти модули — встроенный слой дерева. Загрузчик
+ * (`src/core/plugins/load.ts`) находит фабрику по имени формы
+ * `use: stepcast:<id>` среди строк, поданных ему параметром
+ * (`kernel-domain-free-imports`, Решение 3), а не по диску и не по
+ * собственной таблице — единственный, кто эту таблицу знает, это состав
  * дефолта (`src/parts/load.ts`).
  *
  * Встроенные предикаты — исключение, и оно осознанное. Их модель
@@ -66,30 +67,6 @@ export const BUILTIN_PREDICATE_NAMES: readonly string[] = [
   'cmd',
   'judge',
 ];
-
-export const BUILTIN_ROWS: readonly BuiltinRow[] = [
-  {
-    id: 'backend-claude',
-    apply(kernel) {
-      kernel.ctx.backends.register('claude', {
-        create: (config) => createClaudeAdapter(config),
-        models: claudeModelDiscovery,
-      });
-    },
-  },
-  {
-    // Первый плагинный вид шага в поставке (`user-decision-steps`, design.md):
-    // остановка прогона на решении человека. Строка, а не вид ядра, — её
-    // отключение патчем снимает вид `decision`, освобождая имя.
-    id: 'step-decision',
-    apply(kernel) {
-      kernel.ctx.steps.register('decision', stepDecisionContribution);
-    },
-  },
-];
-
-/** Id встроенных строк — то, чем `config/resolve.ts` заводит семя дерева (design.md, Решение 5). */
-export const BUILTIN_ROW_IDS: readonly string[] = BUILTIN_ROWS.map((row) => row.id);
 
 // Поиска фабрики по имени здесь больше нет (`findBuiltinRow` до
 // `kernel-domain-free-imports`): фабрику строки формы `stepcast:<имя>` ищет

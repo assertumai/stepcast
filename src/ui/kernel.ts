@@ -6,14 +6,14 @@ import type { RowOutcome } from '../core/plugins/load.js';
 import { loadPlugins } from '../parts/load.js';
 import { kernelFromRegistry, type Registry } from '../core/plugins/registry.js';
 import { resolveWithCachedKernel, type KernelCache } from './pipelines.js';
-import { UI_ROWS, UI_SHELL_ROW } from './screens/rows.js';
+import { UI_ROWS, UI_SHELL_ROW } from './rows.js';
 import { NO_ROUTES, type ActiveScreen, type ApiRoutes, type ApiService, type ScreensService } from './screens/registry.js';
 import type { ActivePluginRow } from './plugins.js';
 
 /**
  * Единственная точка получения действующего ядра демона (`ui-daemon`,
  * design.md Решение 6): ключ кеша `home:<home>`, строки поставки витрины —
- * `ui-shell` и по строке на экран (`src/ui/screens/rows.ts`). Ею пользуются и
+ * `ui-shell` и по строке на экран (`src/ui/rows.ts`). Ею пользуются и
  * диспетчер маршрутов (`src/ui/server.ts`), и `readSettings`, и `readModels`:
  * ключ кеша один, и разрешать его разными наборами строк поставки нельзя —
  * второй вызов снял бы ядро первого как «разошедшееся».
