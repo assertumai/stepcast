@@ -20,13 +20,14 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 
 import {
-  DROPPABLE_COLUMNS,
   columnOf,
   insertionBefore,
+  isDroppable,
   viewBoard,
   type ScrumColumn,
 } from '../../../src/parts/ui/scrumView';
 import {
+  addBoardColumn,
   editBacklogItem,
   fetchPipelines,
   launchRun,
@@ -49,7 +50,12 @@ import {
 import './scrum.css';
 
 /**
- * Доска очереди: пять колонок, карточки перетаскиваются.
+ * Доска очереди: встроенные колонки плюс заведённые проектом
+ * (`.stepcast/board.yml`), карточки перетаскиваются.
+ *
+ * Пункт со статусом, под который колонки нет, доску не ломает и в чужую
+ * колонку не подкладывается: он показан полосой над доской с предложением
+ * завести колонку, и место новой колонки выбирает человек.
  *
  * Данные — тот же живой поток, что у экрана «Бэклог» (событие `backlog`):
  * своего запроса доска не делает, и после правки файла в редакторе карточки
@@ -307,6 +313,126 @@ function LaunchDialog({
   );
 }
 
+/** Статус без колонки, для которого открыт диалог добавления. */
+interface ColumnIntent {
+  readonly status: string;
+  readonly projectKey: string;
+}
+
+/**
+ * Диалог «завести колонку»: название и место среди колонок доски.
+ *
+ * Место выбирается промежутком между соседями, а не номером: «между „К
+ * работе“ и „В работе“» читается сразу, номер пришлось бы пересчитывать по
+ * доске глазами.
+ */
+function AddColumnDialog({
+  intent,
+  columns,
+  onClose,
+}: {
+  readonly intent: ColumnIntent | undefined;
+  readonly columns: readonly { readonly id: string; readonly title: string }[];
+  readonly onClose: () => void;
+}): JSX.Element {
+  const [title, setTitle] = useState('');
+  const [index, setIndex] = useState(1);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (intent === undefined) return;
+    setTitle(intent.status);
+    setError(undefined);
+    // По умолчанию — сразу за «К работе»: незнакомый статус чаще всего
+    // открытый («отложено», «ждёт»), и рядом с очередью ему самое место.
+    const todo = columns.findIndex((column) => column.id === 'todo');
+    setIndex(todo < 0 ? 0 : todo + 1);
+  }, [intent?.status, intent?.projectKey]);
+
+  const quote = (text: string): string => `«${text}»`;
+  const placeLabel = (at: number): string => {
+    const left = columns[at - 1];
+    const right = columns[at];
+    if (left === undefined && right !== undefined) return `Первой, перед ${quote(right.title)}`;
+    if (right === undefined && left !== undefined) return `Последней, после ${quote(left.title)}`;
+    if (left !== undefined && right !== undefined) return `Между ${quote(left.title)} и ${quote(right.title)}`;
+    return 'Единственной';
+  };
+
+  const add = async (): Promise<void> => {
+    if (intent === undefined) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      const trimmed = title.trim();
+      await addBoardColumn({
+        project: intent.projectKey,
+        id: intent.status,
+        index,
+        ...(trimmed === '' || trimmed === intent.status ? {} : { title: trimmed }),
+      });
+      onClose();
+    } catch (cause) {
+      setError((cause as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Dialog open={intent !== undefined} onOpenChange={(open) => (open ? undefined : onClose())}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Добавить колонку</DialogTitle>
+          <DialogDescription>
+            {intent === undefined ? null : (
+              <>
+                Под статус <span className="mono">{intent.status}</span>. Раскладка запишется в{' '}
+                <span className="mono">.stepcast/board.yml</span> проекта.
+              </>
+            )}
+          </DialogDescription>
+        </DialogHeader>
+
+        <label className="scrum-field">
+          <span className="small dim">Название колонки</span>
+          <Input value={title} onChange={(event) => setTitle(event.target.value)} />
+        </label>
+
+        <p className="small dim">На какое место поставить?</p>
+        <ul className="scrum-pipelines">
+          {Array.from({ length: columns.length + 1 }, (_, at) => (
+            <li key={at}>
+              <label className="scrum-pipeline">
+                <input
+                  type="radio"
+                  name="scrum-column-place"
+                  value={at}
+                  checked={at === index}
+                  onChange={() => setIndex(at)}
+                />
+                <span className="scrum-pipeline-body">{placeLabel(at)}</span>
+              </label>
+            </li>
+          ))}
+        </ul>
+
+        {error === undefined ? null : <p className="error">{error}</p>}
+
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
+            Отмена
+          </Button>
+          <Button disabled={busy} onClick={() => void add()}>
+            Добавить
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /** Поля пункта, которые правит панель: те же, что принимает `POST /api/backlog/item`. */
 interface ItemFields {
   title: string;
@@ -478,6 +604,7 @@ export function Scrum({ backlog }: { readonly backlog: BacklogOverview | undefin
   const [dragging, setDragging] = useState<string | undefined>(undefined);
   const [failure, setFailure] = useState<string | undefined>(undefined);
   const [intent, setIntent] = useState<LaunchIntent | undefined>(undefined);
+  const [columnIntent, setColumnIntent] = useState<ColumnIntent | undefined>(undefined);
   const [pipelines, setPipelines] = useState<readonly PipelineView[]>([]);
 
   // Пайплайны нужны только диалогу и меняются редко — они приходят разовым
@@ -518,7 +645,10 @@ export function Scrum({ backlog }: { readonly backlog: BacklogOverview | undefin
     );
   }
 
-  const itemBySlug = new Map(view.columns.flatMap((column) => column.items.map((item) => [item.slug, item])));
+  const itemBySlug = new Map(
+    [...view.columns, ...view.unplaced].flatMap((group) => group.items.map((item) => [item.slug, item] as const)),
+  );
+  const columnIds = view.columns.map((column) => column.id);
   const draggedItem = dragging === undefined ? undefined : itemBySlug.get(dragging);
   // Выбранный пункт мог уехать из кадра — например, его убрали из файла
   // руками: панель тогда закрывается сама, а не показывает былое значение.
@@ -528,7 +658,7 @@ export function Scrum({ backlog }: { readonly backlog: BacklogOverview | undefin
   const columnOfDrop = (id: string): ScrumColumn | undefined => {
     if (id.startsWith('column:')) return id.slice('column:'.length) as ScrumColumn;
     const over = itemBySlug.get(id);
-    return over === undefined ? undefined : columnOf(over);
+    return over === undefined ? undefined : columnOf(over, columnIds);
   };
 
   const onDragEnd = (event: DragEndEvent): void => {
@@ -547,7 +677,7 @@ export function Scrum({ backlog }: { readonly backlog: BacklogOverview | undefin
       setIntent({ item, projectKey: view.projectKey });
       return;
     }
-    if (!DROPPABLE_COLUMNS.includes(target)) return;
+    if (!isDroppable(target)) return;
     // Идущую работу доска не трогает: её состояние ведёт прогон, и перенос
     // карточки посреди захода разошёлся бы с тем, что пишет `backlog finish`.
     if (item.status === 'in_progress') {
@@ -607,6 +737,25 @@ export function Scrum({ backlog }: { readonly backlog: BacklogOverview | undefin
 
       {failure === undefined ? null : <p className="error">{failure}</p>}
 
+      {view.unplaced.map((entry) => (
+        <div className="scrum-unplaced" key={entry.status}>
+          <p className="small">
+            Статус <span className="mono">{entry.status}</span> на доске без колонки:{' '}
+            {entry.items.map((item, index) => (
+              <span key={item.slug}>
+                {index === 0 ? null : ', '}
+                <button className="plain mono" onClick={() => setOpenItem(item.slug)} title={item.title}>
+                  {item.slug}
+                </button>
+              </span>
+            ))}
+          </p>
+          <Button onClick={() => setColumnIntent({ status: entry.status, projectKey: view.projectKey })}>
+            Добавить колонку
+          </Button>
+        </div>
+      ))}
+
       <div className="scrum-layout">
         <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={onDragStart} onDragEnd={onDragEnd}>
           <div className="scrum-board">
@@ -634,6 +783,11 @@ export function Scrum({ backlog }: { readonly backlog: BacklogOverview | undefin
       </div>
 
       <LaunchDialog intent={intent} pipelines={pipelines} onClose={() => setIntent(undefined)} />
+      <AddColumnDialog
+        intent={columnIntent}
+        columns={view.columns}
+        onClose={() => setColumnIntent(undefined)}
+      />
     </>
   );
 }

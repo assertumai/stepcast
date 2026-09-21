@@ -85,7 +85,15 @@ describe('backlog: разбор', () => {
     assert.deepEqual(parse(text).map((entry) => entry.slug), ['real-item']);
   });
 
-  it('отказывает на неизвестном статусе, называя перечень допустимых', () => {
+  it('принимает статус, незнакомый движку, если он словом: пункт не свободен', () => {
+    const text = backlogText(item('later-item', { ...COMPLETE, status: 'postponed' }));
+
+    const entries = parse(text);
+    assert.equal(entryOf(entries, 'later-item').data.status, 'postponed');
+    assert.equal(isFree(entryOf(entries, 'later-item'), Date.now(), 6 * 3600_000), false);
+  });
+
+  it('отказывает на статусе не той формы, называя известные движку', () => {
     const text = backlogText(item('broken-item', { ...COMPLETE, status: 'постановлено' }));
 
     assert.throws(() => parse(text), (error: unknown) => {

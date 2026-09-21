@@ -142,7 +142,7 @@ function describeFailure(
 
   if (field === 'status') {
     return new StepcastError(
-      `пункт «${raw.slug}»: неизвестный status «${String(candidate.status)}», ожидался один из ${BACKLOG_STATUSES.join(', ')}${suffix}`,
+      `пункт «${raw.slug}»: status «${String(candidate.status)}» не является словом из строчных латинских букв, цифр и _ (известные движку: ${BACKLOG_STATUSES.join(', ')})${suffix}`,
       { at: raw.slug },
     );
   }

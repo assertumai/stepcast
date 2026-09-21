@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { listProjects, listRunsByKey } from '../../pipeline/run/journal/reader.js';
 import { runPaths, usageStorePath } from '../../pipeline/run/journal/paths.js';
 import { buildBacklog, type BacklogOverview } from '../backlog.js';
+import { BOARD_FILE } from '../boardFile.js';
 import { buildOverview, type Overview, type RunOverview } from '../overview.js';
 import { buildWidgets, projectWidgetVersions, type WidgetsOverview } from '../widgets.js';
 import { buildProposals, proposalsDirFingerprint, type ProposalsOverview } from '../proposals.js';
@@ -259,7 +260,11 @@ function fingerprint(
       // архива обязана доехать до вкладки тем же тактом. Отпечаток по одному
       // файлу оставлял бы перенесённый пункт видимым на прежнем месте до
       // следующей правки очереди.
-      for (const name of ['backlog.md', 'archived.md']) {
+      //
+      // Раскладка колонок доски (`.stepcast/board.yml`) едет тем же отпечатком:
+      // колонка, заведённая с доски, обязана появиться тем же тактом, что и
+      // перенос карточки, а вид очереди несёт её вместе с пунктами.
+      for (const name of ['backlog.md', 'archived.md', BOARD_FILE]) {
         try {
           const file = statSync(join(project.path, name));
           backlogParts.push(`${project.key}/${name}:${file.mtimeMs}:${file.size}`);

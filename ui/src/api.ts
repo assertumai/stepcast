@@ -513,14 +513,24 @@ export interface WidgetCompileFailure {
 /** Файл, из которого пришёл пункт очереди — открытые либо решённые (`docs/backlog.md`). */
 export type BacklogSourceFile = 'backlog.md' | 'archived.md';
 
-/** Состояния пункта очереди — сверено с `BACKLOG_STATUSES` (`src/parts/pipeline/domain/backlog/schema.ts`). */
-export type BacklogStatus = 'todo' | 'in_progress' | 'done' | 'failed';
+/**
+ * Состояние пункта очереди: любое слово формы `BACKLOG_STATUS_PATTERN`
+ * (`src/parts/pipeline/domain/backlog/schema.ts`). Смысл движок знает только у
+ * `todo`, `in_progress`, `done` и `failed`.
+ */
+export type BacklogStatus = string;
 
 /**
- * Колонка доски: три состояния формата плюс `archive` — не состояние, а файл
- * `archived.md` (`docs/backlog.md`).
+ * Колонка доски: статус, под который она заведена, либо `archive` — не
+ * состояние, а файл `archived.md` (`docs/backlog.md`).
  */
-export type ScrumColumn = 'todo' | 'in_progress' | 'done' | 'archive';
+export type ScrumColumn = string;
+
+/** Колонка в раскладке доски проекта — сверено с `BoardColumnSpec` (`src/parts/ui/scrumView.ts`). */
+export interface BoardColumnSpec {
+  readonly id: string;
+  readonly title?: string;
+}
 
 /** Сверено построчно с `src/parts/ui/backlog.ts`. */
 export interface BacklogItemView {
@@ -545,7 +555,8 @@ export interface BacklogItemView {
  * очереди её не даёт.
  */
 export interface BacklogFailure {
-  readonly sourceFile: BacklogSourceFile;
+  /** Файл очереди либо раскладка колонок доски. */
+  readonly sourceFile: BacklogSourceFile | '.stepcast/board.yml';
   readonly error: string;
   readonly errorAt?: string;
 }
@@ -557,6 +568,8 @@ export interface BacklogProjectView {
   readonly items: readonly BacklogItemView[];
   /** Отказ разбора — по одному на не разобравшийся файл; пустой список — оба разобрались (или отсутствуют). */
   readonly failures: readonly BacklogFailure[];
+  /** Раскладка колонок доски (`.stepcast/board.yml`); без файла — встроенная. */
+  readonly columns: readonly BoardColumnSpec[];
 }
 
 export interface BacklogOverview {
@@ -861,6 +874,26 @@ export async function moveBacklogItem(payload: {
 }): Promise<{ readonly ok: true }> {
   return json(
     await fetch('/api/backlog/move', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
+/**
+ * Завести на доске проекта колонку под статус, которого она не знает, на
+ * место `index` (0 — самая левая). Колонка появится следующим кадром потока
+ * `backlog`, а не ответом.
+ */
+export async function addBoardColumn(payload: {
+  readonly project: string;
+  readonly id: string;
+  readonly title?: string;
+  readonly index: number;
+}): Promise<{ readonly ok: true }> {
+  return json(
+    await fetch('/api/board/columns', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),

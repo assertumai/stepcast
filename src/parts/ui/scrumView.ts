@@ -12,27 +12,99 @@ import { withCurrentOption, type FilterOption } from './filters.js';
  */
 
 /**
- * Колонки доски слева направо. Три из четырёх — состояния формата очереди
+ * Встроенные колонки доски. Три — состояния формата очереди
  * (`BACKLOG_STATUSES`), четвёртая — не состояние, а файл: архив
  * (`archived.md`) хранит пункты с их исходом, каким он был.
  *
- * Отдельной колонки `failed` нет: отказ — не место в работе, а исход, и
- * показывается он меткой на карточке в колонке `done`. Колонок, различающих
- * два конца одной и той же завершённости, на доске было бы две почти пустых
- * вместо одной читаемой.
+ * Отдельной колонки `failed` по умолчанию нет: отказ — не место в работе, а
+ * исход, и показывается он меткой на карточке в колонке `done`. Колонок,
+ * различающих два конца одной и той же завершённости, на доске было бы две
+ * почти пустых вместо одной читаемой.
+ *
+ * Прочие колонки проект заводит сам — по одной на свой статус, в файле
+ * `.stepcast/board.yml` (`src/parts/ui/boardFile.ts`). Встроенные в этом
+ * файле обязаны быть все: без `todo` некуда было бы положить новый пункт, без
+ * `archive` — вынести решённый.
  */
 export const SCRUM_COLUMNS = ['todo', 'in_progress', 'done', 'archive'] as const;
-export type ScrumColumn = (typeof SCRUM_COLUMNS)[number];
+export type BuiltinScrumColumn = (typeof SCRUM_COLUMNS)[number];
 
-export const COLUMN_TITLES: Readonly<Record<ScrumColumn, string>> = {
+/** Колонка доски: встроенная либо заведённая проектом под свой статус. */
+export type ScrumColumn = string;
+
+export const COLUMN_TITLES: Readonly<Record<BuiltinScrumColumn, string>> = {
   todo: 'К работе',
   in_progress: 'В работе',
   done: 'Сделано',
   archive: 'Архив',
 };
 
-/** Колонки, в которые доска вправе перенести карточку: в работу переводит запуск пайплайна, а не перенос. */
-export const DROPPABLE_COLUMNS: readonly ScrumColumn[] = ['todo', 'done', 'archive'];
+const ARCHIVE_COLUMN = 'archive';
+
+/**
+ * Форма статуса — копия `BACKLOG_STATUS_PATTERN`
+ * (`src/parts/pipeline/domain/backlog/schema.ts`), не импортированная оттуда
+ * по той же причине, что `BACKLOG_STATUSES` в `backlogView.ts`: схема тянет
+ * `node:path`. Сверку держит `test/ui-scrum-view.test.ts`.
+ */
+export const STATUS_PATTERN = /^[a-z][a-z0-9_]*$/;
+
+/** Колонка в раскладке проекта: имя статуса (либо `archive`) и необязательное название. */
+export interface BoardColumnSpec {
+  readonly id: string;
+  readonly title?: string;
+}
+
+export const DEFAULT_BOARD_COLUMNS: readonly BoardColumnSpec[] = SCRUM_COLUMNS.map((id) => ({ id }));
+
+function isBuiltin(id: string): id is BuiltinScrumColumn {
+  return (SCRUM_COLUMNS as readonly string[]).includes(id);
+}
+
+export function columnTitle(spec: BoardColumnSpec): string {
+  if (spec.title !== undefined && spec.title !== '') return spec.title;
+  return isBuiltin(spec.id) ? COLUMN_TITLES[spec.id] : spec.id;
+}
+
+/** Колонка, в которую доска вправе перенести карточку: в работу переводит запуск пайплайна, а не перенос. */
+export function isDroppable(id: ScrumColumn): boolean {
+  return id !== 'in_progress';
+}
+
+/**
+ * Изъян раскладки колонок либо `undefined`, если раскладка годна. Одна и та
+ * же проверка стоит и на чтении файла, и перед его записью.
+ */
+export function columnsProblem(columns: readonly BoardColumnSpec[]): string | undefined {
+  const seen = new Set<string>();
+  for (const column of columns) {
+    if (!STATUS_PATTERN.test(column.id)) {
+      return `колонка «${column.id}» названа не словом из строчных латинских букв, цифр и _`;
+    }
+    if (seen.has(column.id)) return `колонка «${column.id}» объявлена дважды`;
+    seen.add(column.id);
+  }
+  const missing = SCRUM_COLUMNS.filter((id) => !seen.has(id));
+  if (missing.length > 0) return `нет встроенных колонок: ${missing.join(', ')}`;
+  return undefined;
+}
+
+/**
+ * Раскладка с новой колонкой на месте `index` (0 — самой левой). Отказ — текст
+ * причины: вызывающий показывает его человеку, а не падает.
+ */
+export function withColumn(
+  columns: readonly BoardColumnSpec[],
+  column: BoardColumnSpec,
+  index: number,
+): readonly BoardColumnSpec[] | string {
+  if (column.id === ARCHIVE_COLUMN) return 'имя archive занято колонкой архива';
+  if (!Number.isInteger(index) || index < 0 || index > columns.length) {
+    return `место ${index} вне доски из ${columns.length} колонок`;
+  }
+  const next = [...columns.slice(0, index), column, ...columns.slice(index)];
+  return columnsProblem(next) ?? next;
+}
 
 /** То немногое из пункта очереди, что нужно раскладке: остальное вид не смотрит. */
 export interface BoardItemLike {
@@ -46,11 +118,19 @@ export interface BoardProjectLike<Item extends BoardItemLike, Failure> {
   readonly projectPath: string;
   readonly items: readonly Item[];
   readonly failures: readonly Failure[];
+  /** Раскладка колонок проекта; отсутствие — встроенная (`DEFAULT_BOARD_COLUMNS`). */
+  readonly columns?: readonly BoardColumnSpec[];
 }
 
 export interface BoardColumn<Item> {
   readonly id: ScrumColumn;
   readonly title: string;
+  readonly items: readonly Item[];
+}
+
+/** Пункты со статусом, под который на доске нет колонки. */
+export interface UnplacedStatus<Item> {
+  readonly status: string;
   readonly items: readonly Item[];
 }
 
@@ -60,6 +140,14 @@ export interface BoardView<Item, Failure> {
   readonly projectPath: string;
   readonly projectOptions: readonly FilterOption[];
   readonly columns: readonly BoardColumn<Item>[];
+  /** Раскладка, по которой построены колонки, — от неё считается место новой. */
+  readonly columnSpecs: readonly BoardColumnSpec[];
+  /**
+   * Статусы без колонки, в порядке первого появления в файле. Пункты с ними не
+   * прячутся и не подменяются соседней колонкой: доска показывает их отдельно
+   * и предлагает колонку завести.
+   */
+  readonly unplaced: readonly UnplacedStatus<Item>[];
   readonly failures: readonly Failure[];
   /** Порядок слагов в `backlog.md` — им считается место вставки при переносе между колонками. */
   readonly tasksOrder: readonly string[];
@@ -70,23 +158,23 @@ export interface BoardView<Item, Failure> {
 const ARCHIVE_FILE = 'archived.md';
 
 /**
- * Колонка, в которой пункт виден.
+ * Колонка, в которой пункт виден, либо `undefined`, когда колонки под его
+ * статус на доске нет.
  *
  * Файл решает раньше статуса: пункт, вынесенный в архив, показывается в
  * архиве, каким бы ни был его исход, — иначе доска противоречила бы файлу,
- * который человек видит в редакторе.
+ * который человек видит в редакторе. `failed` без собственной колонки
+ * показывается в `done` меткой отказа.
  */
-export function columnOf(item: BoardItemLike): ScrumColumn {
-  if (item.sourceFile === ARCHIVE_FILE) return 'archive';
-  switch (item.status) {
-    case 'in_progress':
-      return 'in_progress';
-    case 'done':
-    case 'failed':
-      return 'done';
-    default:
-      return 'todo';
-  }
+export function columnOf(
+  item: BoardItemLike,
+  columnIds: readonly string[] = SCRUM_COLUMNS,
+): ScrumColumn | undefined {
+  if (item.sourceFile === ARCHIVE_FILE) return ARCHIVE_COLUMN;
+  // Статус `archive` в `backlog.md` колонкой архива не является: архив — файл.
+  if (item.status !== ARCHIVE_COLUMN && columnIds.includes(item.status)) return item.status;
+  if (item.status === 'failed' && columnIds.includes('done')) return 'done';
+  return undefined;
 }
 
 /**
@@ -104,11 +192,21 @@ export function viewBoard<Item extends BoardItemLike, Failure>(
   const current = projects.find((project) => project.projectKey === selected) ?? projects[0];
 
   const items = current?.items ?? [];
-  const columns = SCRUM_COLUMNS.map((id) => ({
-    id,
-    title: COLUMN_TITLES[id],
-    items: items.filter((item) => columnOf(item) === id),
+  const specs = current?.columns ?? DEFAULT_BOARD_COLUMNS;
+  const ids = specs.map((spec) => spec.id);
+  const columns = specs.map((spec) => ({
+    id: spec.id,
+    title: columnTitle(spec),
+    items: items.filter((item) => columnOf(item, ids) === spec.id),
   }));
+
+  const unplacedByStatus = new Map<string, Item[]>();
+  for (const item of items) {
+    if (columnOf(item, ids) !== undefined) continue;
+    const bucket = unplacedByStatus.get(item.status);
+    if (bucket === undefined) unplacedByStatus.set(item.status, [item]);
+    else bucket.push(item);
+  }
 
   return {
     projectKey: current?.projectKey ?? '',
@@ -117,6 +215,8 @@ export function viewBoard<Item extends BoardItemLike, Failure>(
     // кадра, — тем же правилом, что у прочих фильтров витрины.
     projectOptions: withCurrentOption(options, selected, (value) => `${value} (очередь не видна)`),
     columns,
+    columnSpecs: specs,
+    unplaced: [...unplacedByStatus].map(([status, entries]) => ({ status, items: entries })),
     failures: current?.failures ?? [],
     tasksOrder: items.filter((item) => item.sourceFile !== ARCHIVE_FILE).map((item) => item.slug),
     archiveOrder: items.filter((item) => item.sourceFile === ARCHIVE_FILE).map((item) => item.slug),

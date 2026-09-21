@@ -139,3 +139,19 @@
 }
 .scrum-pipeline-body { display: flex; flex-direction: column; gap: .1rem; min-width: 0; }
 .scrum-pipeline-name { font-weight: 600; }
+
+/* Статус без колонки: полоса над доской с предложением завести колонку. */
+.scrum-unplaced {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .8rem;
+  margin: .5rem 0;
+  padding: .5rem .8rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.scrum-unplaced p {
+  margin: 0;
+}

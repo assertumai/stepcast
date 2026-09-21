@@ -1,7 +1,7 @@
 import { withCurrentOption, type FilterOption } from './filters.js';
 
 /**
- * Тот же закрытый перечень, что `BACKLOG_STATUSES`
+ * Тот же перечень известных движку статусов, что `BACKLOG_STATUSES`
  * (`src/parts/pipeline/domain/backlog/schema.ts:19`), не импортированный оттуда: та схема тянет
  * `node:path` для проверки других полей, а этот модуль обязан собираться в
  * браузер (`vite.config.ts`) без модулей рантайма Node.
@@ -136,17 +136,17 @@ export function viewBacklog<I extends BacklogItemLike, F extends BacklogFailureL
   // иначе каждое значение меню называло бы число только себе самому. Пункты
   // берутся как есть: раздел с отказом одного файла несёт пункты другого, и
   // они считаются наравне с прочими.
+  //
+  // Статус вне `BACKLOG_STATUSES` формату не противоречит: такой получает своё
+  // значение меню вслед за известными, в порядке первого появления, — иначе
+  // пункт со своим статусом был бы виден в умолчании, но фильтром не выбирался.
   const countsByStatus = new Map<string, number>(BACKLOG_STATUSES.map((status) => [status, 0]));
   for (const section of inScope) {
     for (const item of section.items) {
-      const count = countsByStatus.get(item.status);
-      if (count !== undefined) countsByStatus.set(item.status, count + 1);
+      countsByStatus.set(item.status, (countsByStatus.get(item.status) ?? 0) + 1);
     }
   }
-  const statusCounts: StatusCount[] = BACKLOG_STATUSES.map((status) => ({
-    status,
-    count: countsByStatus.get(status) ?? 0,
-  }));
+  const statusCounts: StatusCount[] = [...countsByStatus].map(([status, count]) => ({ status, count }));
 
   // Знаменатель «показано N из M» — все пункты всех пришедших очередей, до
   // всякого отбора, в том числе отсечённых фильтром по проекту: эта пара чисел

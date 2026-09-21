@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, it } from 'node:test';
 
 import { buildBacklog } from '../src/parts/ui/backlog.js';
+import { writeBoardColumns } from '../src/parts/ui/boardFile.js';
 import { buildOverview } from '../src/parts/ui/overview.js';
 import { projectKey } from '../src/parts/pipeline/run/journal/paths.js';
 import { makeJournalBed, seedRun } from './helpers.js';
@@ -264,5 +265,42 @@ describe('ui-dashboard: сборка вида очереди (src/parts/ui/backl
       backlog.projects[0]?.items.map((entry) => entry.slug),
       ['odd'],
     );
+  });
+  it('несёт раскладку колонок доски: без файла — встроенную, с файлом — его', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText(item('later', { ...BASE, status: 'postponed' })));
+
+    let backlog = buildBacklog(buildOverview(runsRoot));
+    assert.deepEqual(
+      backlog.projects[0]?.columns.map((column) => column.id),
+      ['todo', 'in_progress', 'done', 'archive'],
+    );
+    assert.equal(backlog.projects[0]?.items[0]?.status, 'postponed', 'незнакомый статус не ломает разбор');
+
+    writeBoardColumns(projectRoot, [
+      { id: 'todo' },
+      { id: 'postponed', title: 'Отложено' },
+      { id: 'in_progress' },
+      { id: 'done' },
+      { id: 'archive' },
+    ]);
+    backlog = buildBacklog(buildOverview(runsRoot));
+    assert.deepEqual(backlog.projects[0]?.columns[1], { id: 'postponed', title: 'Отложено' });
+    assert.deepEqual(backlog.projects[0]?.failures, []);
+  });
+
+  it('сломанная раскладка колонок — отказ рядом с очередью и встроенные колонки', () => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'backlog.md'), backlogText(item('one', BASE)));
+    mkdirSync(join(projectRoot, '.stepcast'), { recursive: true });
+    writeFileSync(join(projectRoot, '.stepcast', 'board.yml'), 'columns:\n  - id: todo\n');
+
+    const backlog = buildBacklog(buildOverview(runsRoot));
+    assert.equal(backlog.projects[0]?.failures[0]?.sourceFile, '.stepcast/board.yml');
+    assert.match(backlog.projects[0]?.failures[0]?.error ?? '', /in_progress/);
+    assert.equal(backlog.projects[0]?.columns.length, 4);
+    assert.deepEqual(backlog.projects[0]?.items.map((entry) => entry.slug), ['one']);
   });
 });

@@ -231,4 +231,17 @@ describe('backlogView: «показано N из M»', () => {
     assert.equal(view.shown, 2);
     assert.equal(view.statusCounts.find((entry) => entry.status === 'todo')?.count, 1);
   });
+  it('статус вне известных получает своё значение меню вслед за ними', () => {
+    const view = viewBacklog([{ projectKey: 'p1', projectPath: '/p1', items: [item('a', 'postponed'), item('b')] }], {});
+    assert.deepEqual(
+      view.statusCounts.map((entry) => [entry.status, entry.count]),
+      [
+        ['todo', 1],
+        ['in_progress', 0],
+        ['done', 0],
+        ['failed', 0],
+        ['postponed', 1],
+      ],
+    );
+  });
 });

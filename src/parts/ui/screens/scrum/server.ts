@@ -15,7 +15,9 @@ import {
 } from '../../../pipeline/domain/backlog/index.js';
 import { isStepcastError } from '../../../../kernel/errors.js';
 import { listProjects } from '../../../pipeline/run/journal/reader.js';
+import { readBoardColumns, writeBoardColumns, BOARD_FILE } from '../../boardFile.js';
 import { readBody, sendJson } from '../../daemon/http.js';
+import { STATUS_PATTERN, isDroppable, withColumn } from '../../scrumView.js';
 import { screenRow, type ApiHandler } from '../registry.js';
 import { declaration } from './declaration.js';
 
@@ -31,18 +33,17 @@ import { declaration } from './declaration.js';
  * то есть карточка, вернувшаяся на место без объяснения.
  *
  * Колонки доски и состояния формата — одни и те же слова (`todo`,
- * `in_progress`, `done`), четвёртая колонка `archive` — не состояние, а файл:
- * `archived.md` рядом с `backlog.md` (`docs/backlog.md`). Поэтому перенос в
- * архив статус пункта не трогает: архив хранит исход таким, каким он был.
+ * `in_progress`, `done` и заведённые проектом в `.stepcast/board.yml`),
+ * колонка `archive` — не состояние, а файл: `archived.md` рядом с
+ * `backlog.md` (`docs/backlog.md`). Поэтому перенос в архив статус пункта не
+ * трогает: архив хранит исход таким, каким он был.
  */
-
-const COLUMNS = ['todo', 'in_progress', 'done', 'archive'] as const;
 
 const PostBodySchema = z
   .object({
     project: z.string().min(1),
     slug: z.string().min(1),
-    column: z.enum(COLUMNS),
+    column: z.string().regex(STATUS_PATTERN, 'колонка названа не словом статуса'),
     /**
      * Слаг пункта, перед которым встать в колонке-получателе. Отсутствие
      * значит «в конец»: доска шлёт положение, посчитанное по своей колонке, и
@@ -113,6 +114,13 @@ const handleMove: ApiHandler = async (req, res, env) => {
   const archiveFile = join(project.path, ARCHIVE_FILE);
 
   try {
+    // Писать статус, под который на доске нет колонки, доска не вправе: пункт
+    // пропал бы из колонок на глазах у того, кто его бросил.
+    if (!readBoardColumns(project.path).some((entry) => entry.id === column) || !isDroppable(column)) {
+      sendJson(res, 400, { error: `Колонки ${column} на доске проекта нет (${BOARD_FILE})` });
+      return;
+    }
+
     const tasksText = readOrEmpty(tasksFile);
     const archiveText = readOrEmpty(archiveFile);
 
@@ -283,8 +291,83 @@ const handleEdit: ApiHandler = async (req, res, env) => {
   sendJson(res, 200, { ok: true });
 };
 
+const AddColumnBodySchema = z
+  .object({
+    project: z.string().min(1),
+    /** Статус, под который заводится колонка. */
+    id: z.string().regex(STATUS_PATTERN, 'статус должен быть словом из строчных латинских букв, цифр и _'),
+    title: z.string().trim().optional(),
+    /** Место в раскладке: 0 — самая левая, длина раскладки — самая правая. */
+    index: z.number().int().min(0),
+  })
+  .strict();
+
+/**
+ * Завести колонку под статус, которого доска не знает, — ответ на пункт с
+ * незнакомым `status` в очереди. Пишет всю раскладку в `.stepcast/board.yml`:
+ * файла могло не быть, и порядок колонок после первой же добавленной обязан
+ * читаться из одного места. Новый вид придёт тактом наблюдателя, как и после
+ * переноса.
+ */
+const handleAddColumn: ApiHandler = async (req, res, env) => {
+  let body: string;
+  try {
+    body = await readBody(req);
+  } catch {
+    sendJson(res, 413, { error: 'Тело запроса слишком велико' });
+    return;
+  }
+
+  let raw: unknown;
+  try {
+    raw = JSON.parse(body === '' ? '{}' : body) as unknown;
+  } catch {
+    sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
+    return;
+  }
+
+  const parsed = AddColumnBodySchema.safeParse(raw);
+  if (!parsed.success) {
+    sendJson(res, 400, {
+      error: `Тело запроса не соответствует формату: ${parsed.error.issues[0]?.message ?? 'project, id, index и необязательный title'}`,
+    });
+    return;
+  }
+
+  const { project: projectKey, id, title, index } = parsed.data;
+
+  const project = listProjects(env.runsRoot).find((entry) => entry.key === projectKey);
+  if (project?.path === undefined) {
+    sendJson(res, 400, { error: `Проект ${projectKey} неизвестен указателю projects.json` });
+    return;
+  }
+
+  try {
+    const next = withColumn(
+      readBoardColumns(project.path),
+      title === undefined || title === '' ? { id } : { id, title },
+      index,
+    );
+    if (typeof next === 'string') {
+      sendJson(res, 400, { error: `Колонка не добавлена: ${next}` });
+      return;
+    }
+    writeBoardColumns(project.path, next);
+  } catch (error) {
+    if (isStepcastError(error)) {
+      sendJson(res, 400, { error: error.message });
+      return;
+    }
+    sendJson(res, 500, { error: `Не удалось записать колонки доски: ${(error as Error).message}` });
+    return;
+  }
+
+  sendJson(res, 200, { ok: true });
+};
+
 export const row = screenRow(declaration.id, ['screens', 'api'], (ctx) => {
   ctx.screens.register(declaration);
   ctx.api.register('POST', '/api/backlog/move', handleMove);
   ctx.api.register('POST', '/api/backlog/item', handleEdit);
+  ctx.api.register('POST', '/api/board/columns', handleAddColumn);
 });

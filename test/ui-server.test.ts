@@ -666,6 +666,40 @@ describe('screen-scrum: перенос пункта доской', () => {
     assert.equal(fieldOf(archive, 'done-item', 'status'), 'done');
   });
 
+  it('заводит колонку под незнакомый статус на названном месте и переносит в неё', async (t) => {
+    const { runsRoot, projectRoot } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    const tasks = join(projectRoot, 'backlog.md');
+    writeFileSync(tasks, ITEMS(ITEM('one', 'todo'), ITEM('later', 'postponed')));
+    const server = await startServer(t, { runsRoot });
+    const key = projectKey(projectRoot);
+
+    // Колонки ещё нет — писать её статус доска не вправе.
+    const refused = await sendJson(server, movePayload({ project: key, slug: 'one', column: 'postponed' }));
+    assert.equal(refused.code, 400);
+
+    const added = await sendJson(server, {
+      method: 'POST',
+      path: '/api/board/columns',
+      body: JSON.stringify({ project: key, id: 'postponed', title: 'Отложено', index: 1 }),
+    });
+    assert.equal(added.code, 200);
+    const board = readFileSync(join(projectRoot, '.stepcast', 'board.yml'), 'utf8');
+    assert.ok(board.indexOf('postponed') > board.indexOf('todo'));
+    assert.ok(board.indexOf('postponed') < board.indexOf('in_progress'));
+
+    const again = await sendJson(server, {
+      method: 'POST',
+      path: '/api/board/columns',
+      body: JSON.stringify({ project: key, id: 'postponed', index: 0 }),
+    });
+    assert.equal(again.code, 400, 'повтор колонки — отказ');
+
+    const moved = await sendJson(server, movePayload({ project: key, slug: 'one', column: 'postponed' }));
+    assert.equal(moved.code, 200);
+    assert.equal(fieldOf(readFileSync(tasks, 'utf8'), 'one', 'status'), 'postponed');
+  });
+
   it('возвращает пункт из архива в очередь с новым статусом', async (t) => {
     const { runsRoot, projectRoot } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });

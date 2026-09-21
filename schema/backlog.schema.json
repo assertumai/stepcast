@@ -9,12 +9,7 @@
     },
     "status": {
       "type": "string",
-      "enum": [
-        "todo",
-        "in_progress",
-        "done",
-        "failed"
-      ]
+      "pattern": "^[a-z][a-z0-9_]*$"
     },
     "title": {
       "type": "string"

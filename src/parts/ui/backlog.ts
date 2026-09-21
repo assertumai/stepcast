@@ -8,7 +8,9 @@ import {
   type BacklogStatus,
 } from '../pipeline/domain/backlog/index.js';
 import { isStepcastError } from '../../kernel/errors.js';
+import { BOARD_FILE, readBoardColumns } from './boardFile.js';
 import type { Overview } from './overview.js';
+import { DEFAULT_BOARD_COLUMNS, type BoardColumnSpec } from './scrumView.js';
 
 /**
  * Вид очереди улучшений по проектам, видимым в обзоре.
@@ -66,7 +68,8 @@ export interface BacklogItemView {
  * поля несли бы одно и то же значение.
  */
 export interface BacklogFailure {
-  readonly sourceFile: BacklogSourceFile;
+  /** Файл очереди либо раскладка колонок доски (`.stepcast/board.yml`). */
+  readonly sourceFile: BacklogSourceFile | typeof BOARD_FILE;
   readonly error: string;
   readonly errorAt?: string;
 }
@@ -81,6 +84,12 @@ export interface BacklogProjectView {
   readonly items: readonly BacklogItemView[];
   /** Отказ разбора — по одному на файл, не разобравшийся по формату; пустой список — оба разобрались (или отсутствуют). */
   readonly failures: readonly BacklogFailure[];
+  /**
+   * Раскладка колонок доски (`.stepcast/board.yml`); без файла — встроенная.
+   * Несётся вместе с пунктами, а не отдельным запросом: колонка и пункты
+   * одного статуса обязаны появиться на доске одним кадром.
+   */
+  readonly columns: readonly BoardColumnSpec[];
 }
 
 export interface BacklogOverview {
@@ -95,7 +104,7 @@ function isMissingFile(error: unknown): boolean {
 }
 
 /** Место внутри документа — половина объяснения; файл называет вызывающий по своему `sourceFile`. */
-function toFailure(error: unknown, sourceFile: BacklogSourceFile): BacklogFailure {
+function toFailure(error: unknown, sourceFile: BacklogFailure['sourceFile']): BacklogFailure {
   if (!isStepcastError(error)) return { sourceFile, error: (error as Error).message };
   return { sourceFile, error: error.message, ...(error.at === undefined ? {} : { errorAt: error.at }) };
 }
@@ -152,7 +161,17 @@ export function buildBacklog(overview: Overview): BacklogOverview {
     }
 
     if (!anyFilePresent) continue;
-    projects.push({ projectKey: project.key, projectPath: project.path, items, failures });
+
+    // Сломанная раскладка не гасит доску: колонки встают встроенные, а отказ
+    // виден рядом с отказами файлов очереди.
+    let columns: readonly BoardColumnSpec[] = DEFAULT_BOARD_COLUMNS;
+    try {
+      columns = readBoardColumns(project.path);
+    } catch (error) {
+      failures.push(toFailure(error, BOARD_FILE));
+    }
+
+    projects.push({ projectKey: project.key, projectPath: project.path, items, failures, columns });
   }
 
   return { projects, generatedAt: overview.generatedAt };
