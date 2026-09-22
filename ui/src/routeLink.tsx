@@ -18,7 +18,7 @@ import { hrefForTarget } from './router';
 
 /** Причина отсутствия ссылки — называет цель, маршрута к которой нет. */
 export function missingRouteReason(target: RouteTarget): string {
-  return `маршрута нет: ни один действующий маршрут не ведёт к цели ${target.kind}:${target.id}`;
+  return `no route: no active route leads to target ${target.kind}:${target.id}`;
 }
 
 export interface TargetLinkProps {

@@ -32,7 +32,10 @@ import * as esbuild from 'esbuild';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const TEST_DIR = join(ROOT, 'ui', 'test');
-const OUT_DIR = join(ROOT, 'dist', 'ui-test');
+// Каталог вывода переопределяется переменной окружения: параллельные
+// сборки (несколько заходов агента в одном дереве) не должны стирать друг
+// друга — `rmSync` ниже чистит именно этот каталог.
+const OUT_DIR = process.env.STEPCAST_UI_TEST_OUT ?? join(ROOT, 'dist', 'ui-test');
 
 function collectTestFiles(dir) {
   let entries;

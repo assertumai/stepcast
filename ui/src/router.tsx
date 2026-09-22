@@ -42,7 +42,7 @@ export function bindRouterKernel(ctx: Context): void {
 /** Действующая таблица маршрутов — читается напрямую, без подписки: для мест, которым реактивность не нужна (`hrefForTarget` и подобные). */
 function currentRoutesTable() {
   if (boundCtx === undefined) {
-    throw new Error('Маршрутизатор использован до bindRouterKernel(): ядро ещё не поднято');
+    throw new Error('Router used before bindRouterKernel(): the kernel is not up yet');
   }
   return boundCtx.routes.get().table;
 }
@@ -59,7 +59,7 @@ export function hrefForTarget(target: RouteTarget, params: Readonly<Record<strin
 
 function useKernelContext(): Context {
   const ctx = useContext(KernelContext);
-  if (ctx === undefined) throw new Error('Маршрутизатор вызван вне дерева ядра витрины');
+  if (ctx === undefined) throw new Error('Router used outside the dashboard kernel tree');
   return ctx;
 }
 

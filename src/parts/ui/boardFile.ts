@@ -58,7 +58,7 @@ export function readBoardColumns(projectRoot: string): readonly BoardColumnSpec[
   try {
     raw = parseYaml(readFileSync(path, 'utf8'));
   } catch (error) {
-    throw new StepcastError(`Файл колонок доски не читается как YAML: ${(error as Error).message}`, {
+    throw new StepcastError(`Board columns file is not valid YAML: ${(error as Error).message}`, {
       file: path,
       cause: error,
     });
@@ -67,7 +67,7 @@ export function readBoardColumns(projectRoot: string): readonly BoardColumnSpec[
   const parsed = BoardDocumentSchema.safeParse(raw);
   if (!parsed.success) {
     const failure = describeSchemaFailure(parsed.error);
-    throw new StepcastError(`Файл колонок доски не соответствует формату: ${failure.message}`, {
+    throw new StepcastError(`Board columns file does not match the format: ${failure.message}`, {
       file: path,
       ...(failure.at === undefined ? {} : { at: failure.at }),
     });
@@ -78,14 +78,14 @@ export function readBoardColumns(projectRoot: string): readonly BoardColumnSpec[
   );
   const problem = columnsProblem(columns);
   if (problem !== undefined) {
-    throw new StepcastError(`Файл колонок доски: ${problem}`, { file: path });
+    throw new StepcastError(`Board columns file: ${problem}`, { file: path });
   }
   return columns;
 }
 
 export function writeBoardColumns(projectRoot: string, columns: readonly BoardColumnSpec[]): void {
   const problem = columnsProblem(columns);
-  if (problem !== undefined) throw new StepcastError(`Раскладка колонок не записана: ${problem}`);
+  if (problem !== undefined) throw new StepcastError(`Column layout not written: ${problem}`);
 
   const path = boardFilePath(projectRoot);
   mkdirSync(dirname(path), { recursive: true });

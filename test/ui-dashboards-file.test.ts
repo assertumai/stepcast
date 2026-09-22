@@ -242,7 +242,7 @@ describe('ui-dashboards-file: запись документа через Documen
       () => writeDashboard('home', 'release', overlapping, dashboardFingerprint(path), { home }),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
-        assert.match(error.message, /накладываются/);
+        assert.match(error.message, /overlap/);
         return true;
       },
     );
@@ -258,13 +258,13 @@ describe('ui-dashboards-file: запись документа через Documen
         { id: 'a', widget: 'usage', at: { column: 4, row: 0, width: 4, height: 2 } },
       ],
     };
-    assert.throws(() => writeDashboard('home', 'twice', twice, undefined, { home }), /повторяется/);
+    assert.throws(() => writeDashboard('home', 'twice', twice, undefined, { home }), /is repeated/);
 
     const wide: DashboardFileDocument = {
       grid: { columns: 6 },
       cells: [{ id: 'a', widget: 'runs', at: { column: 4, row: 0, width: 4, height: 2 } }],
     };
-    assert.throws(() => writeDashboard('home', 'wide', wide, undefined, { home }), /выходит за пределы сетки/);
+    assert.throws(() => writeDashboard('home', 'wide', wide, undefined, { home }), /exceeds the grid/);
 
     assert.deepEqual(buildDashboards({ home }).dashboards, []);
   });
@@ -287,8 +287,8 @@ describe('ui-dashboards-file: запись документа через Documen
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.equal(error.file, path);
-        assert.match(error.message, /не разбирается как YAML/);
-        assert.match(String(error.at), /строка 7/);
+        assert.match(error.message, /is not valid YAML/);
+        assert.match(String(error.at), /line 7/);
         return true;
       },
     );
@@ -326,7 +326,7 @@ describe('ui-dashboards-file: запись документа через Documen
         writeDashboard('home', 'release', { ...document, title: 'Другое' }, { mtimeMs: 0, size: 0 }, { home }),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
-        assert.match(error.message, /изменился с момента открытия/);
+        assert.match(error.message, /has changed since it was opened/);
         return true;
       },
     );
@@ -339,7 +339,7 @@ describe('ui-dashboards-file: запись документа через Documen
       () => writeDashboard('project', 'release', document, undefined, { home }),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
-        assert.match(error.message, /корень проекта/);
+        assert.match(error.message, /project root/);
         return true;
       },
     );

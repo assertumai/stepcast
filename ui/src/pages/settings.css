@@ -1,0 +1,8 @@
+/*
+ * Экран настроек: две карточки библиотеки одна под другой; сетка полей
+ * остаётся на прежних `.field` / `.label` / `.field-body` из `styles.css`.
+ */
+.settings-card { margin-bottom: .8rem; }
+.settings-card .sc-card-content > .field:first-child { margin-top: 0; }
+.settings-agent { min-width: 12rem; }
+.settings-error { margin-top: .8rem; margin-bottom: 0; }

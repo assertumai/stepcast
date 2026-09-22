@@ -411,7 +411,7 @@ describe('hot-swap: отказы замены', () => {
     assert.ok(failed, 'ошибка сборки обязана быть названа, а не применена пустой');
     assert.match(failed!.message, /Expected identifier/);
     assert.match(failed!.message, /index\.tsx:3:5/);
-    assert.match(failed!.message, /работает прежняя 1/);
+    assert.match(failed!.message, /previous edition 1 is still running/);
   });
 
   it('половина без экспорта по умолчанию не применяется пустой, а называется отказом', async () => {
@@ -430,7 +430,7 @@ describe('hot-swap: отказы замены', () => {
     assert.equal(kernel.ctx.slots.getEntries(LIST.name).length, 1);
     const failed = diagnostics.find((d) => d.plugin === 'a');
     assert.ok(failed);
-    assert.match(failed!.message, /не экспортирует применение по умолчанию/);
+    assert.match(failed!.message, /has no default apply export/);
   });
 
   it('отказ замены уведомляет подписчика ядра — полоса диагностик узнаёт о нём, а не один `console.error`', async () => {

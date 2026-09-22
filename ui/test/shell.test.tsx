@@ -168,7 +168,7 @@ describe('shell: настоящий каркас на настоящем ядр�
       // Название пункта меню — из заголовка цели: маршрут не объявил своё
       // `nav.title` (`ui-routes`, «Название пункта берётся из заголовка цели»).
       assert.match(markup, /Пример/);
-      assert.match(markup, /подключение к демону/);
+      assert.match(markup, /connecting to daemon/);
       assert.match(markup, /id="sample"/);
     } finally {
       restore();
@@ -200,7 +200,7 @@ describe('shell: настоящий каркас на настоящем ядр�
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
       assert.doesNotMatch(markup, /id="sample"/);
       assert.match(markup, /screen-orphan/);
-      assert.match(markup, /не найден в действующем составе/);
+      assert.match(markup, /is not in the active composition/);
     } finally {
       restore();
     }

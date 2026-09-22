@@ -1,0 +1,23 @@
+.widget-section { margin-bottom: 1.6rem; }
+.widget-section-title {
+  font-size: .78rem;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  margin: 0 0 .6rem;
+}
+.widget-catalog {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
+  gap: .8rem;
+}
+.widget-catalog-card { margin-bottom: 0; }
+.widget-preview { margin-top: 0; }
+.widget-install { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: .7rem; }
+.widget-install-project { min-width: 10rem; }
+.widget-install-error, .widget-migrate-error { margin: .6rem 0 0; }
+.widget-project { margin-bottom: .8rem; }
+.widget-frame-head { display: flex; gap: .5rem; align-items: center; margin-bottom: .4rem; }
+.widget-migrate { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin-top: .6rem; }
+.widget-deprecated { margin: 0 0 .5rem; }

@@ -54,7 +54,7 @@ function WidgetCard({
 
 function CompileFailureCard({ failure }: { readonly failure: WidgetCompileFailure }): JSX.Element {
   return (
-    <WidgetCard title="Ошибка компиляции">
+    <WidgetCard title="Compile error">
       <div className="dim mono">
         {failure.file}:{failure.line}:{failure.column}
       </div>
@@ -66,7 +66,7 @@ function CompileFailureCard({ failure }: { readonly failure: WidgetCompileFailur
 function ImportErrorCard({ message }: { readonly message: string }): JSX.Element {
   const name = unresolvedImportName(message);
   return (
-    <WidgetCard title="Неразрешённый импорт">
+    <WidgetCard title="Unresolved import">
       {name === undefined ? <pre className="widget-card-detail">{message}</pre> : <div className="mono">{name}</div>}
     </WidgetCard>
   );
@@ -106,14 +106,14 @@ class WidgetErrorBoundary extends Component<BoundaryProps, BoundaryState> {
 
   override render(): ReactNode {
     if (this.state.error !== undefined) {
-      return <WidgetCard title="Виджет упал при отрисовке">{this.state.error.message}</WidgetCard>;
+      return <WidgetCard title="Widget crashed while rendering">{this.state.error.message}</WidgetCard>;
     }
     return this.props.children;
   }
 }
 
 function WidgetModuleView({ state }: { readonly state: LoadState }): JSX.Element {
-  if (state.kind === 'loading') return <div className="widget-card dim">Загрузка…</div>;
+  if (state.kind === 'loading') return <div className="widget-card dim">Loading…</div>;
   if (state.kind === 'compile-error') return <CompileFailureCard failure={state.failure} />;
   if (state.kind === 'import-error') return <ImportErrorCard message={state.message} />;
   const Widget = state.Widget;
@@ -147,7 +147,7 @@ export function WidgetHost({ projectKey, id, version }: WidgetHostProps): JSX.El
         }
         const exported = mod.default;
         if (typeof exported !== 'function') {
-          setState({ kind: 'import-error', message: 'Модуль не экспортирует компонент по умолчанию' });
+          setState({ kind: 'import-error', message: 'Module has no default export' });
           return;
         }
         setState({ kind: 'ready', Widget: exported as ComponentType });

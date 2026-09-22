@@ -1,0 +1,15 @@
+/*
+ * Экран уборки: карточки библиотеки, внутри — прежняя сетка `.field` и
+ * список `.cleanup-list .run-row` из `styles.css`. Здесь только то, чего
+ * прежним классам не хватает под новые компоненты.
+ */
+.cleanup-card { margin-bottom: .8rem; }
+.cleanup-card .sc-card-content > .field:first-child { margin-top: 0; }
+.cleanup-intro { margin-bottom: 1rem; }
+
+/* Поле срока короче обычного поля: значение вроде `7d` не нуждается в 14rem. */
+.cleanup-age { min-width: 0; width: 8rem; }
+.cleanup-project { min-width: 14rem; }
+
+/* Подзаголовок отбора и итога внутри карточки — отступ от полей сверху. */
+.cleanup-subhead { margin-top: 1rem; }

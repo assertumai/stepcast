@@ -17,7 +17,7 @@ const handleUsage: ApiHandler = (req, res, env) => {
   const url = new URL(req.url ?? '/', 'http://internal');
   const days = readNonNegativeInt(url, 'days');
   if (days === INVALID || days === 0 || (days !== undefined && days > MAX_USAGE_DAYS)) {
-    sendJson(res, 400, { error: `days должен быть натуральным числом не больше ${MAX_USAGE_DAYS}` });
+    sendJson(res, 400, { error: `days must be a positive integer not greater than ${MAX_USAGE_DAYS}` });
     return;
   }
   sendJson(res, 200, buildUsage(env.runsRoot, env.watcher.current(), days === undefined ? {} : { days }));

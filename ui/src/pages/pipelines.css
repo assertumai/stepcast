@@ -1,0 +1,27 @@
+/*
+ * Экран пайплайнов поверх библиотеки `@stepcast/ui`: заголовок проекта —
+ * последний сегмент пути, полный путь под ним приглушённым моноширинным.
+ */
+
+.pipelines-project { margin: 1.4rem 0 .6rem; }
+.pipelines-project:first-of-type { margin-top: 0; }
+.pipelines-project-title {
+  font-size: .95rem;
+  font-weight: 650;
+  margin: 0;
+  letter-spacing: -.01em;
+}
+.pipelines-project-path {
+  font-family: var(--mono);
+  font-size: .78rem;
+  color: var(--muted-foreground);
+  word-break: break-all;
+  margin-top: .1rem;
+}
+.pipelines-project-path.unknown-path { font-style: italic; }
+
+.pipeline-card { margin-bottom: .8rem; }
+.pipeline-card .sc-card-header .mono { font-size: .8rem; }
+
+/* Строка про прогоны под карточкой: подчинена содержимому карточки. */
+.pipeline-card .sc-card-footer.runs-note { flex-wrap: wrap; gap: .3rem; font-size: .85rem; color: var(--muted-foreground); }

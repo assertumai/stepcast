@@ -1,0 +1,67 @@
+.sc-combobox { position: relative; min-width: 0; }
+.sc-combobox-field { display: flex; align-items: stretch; min-width: 0; }
+.sc-combobox-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: .86rem;
+  background: var(--card);
+  border: 1px solid var(--input);
+  border-right: none;
+  border-radius: var(--radius) 0 0 var(--radius);
+  color: var(--foreground);
+  padding: .2rem .4rem;
+}
+.sc-combobox-input--mono { font-family: var(--mono); }
+.sc-combobox-input:focus { outline: 2px solid var(--ring); outline-offset: -1px; }
+.sc-combobox-input::placeholder { color: var(--muted-foreground); }
+.sc-combobox-toggle {
+  font: inherit;
+  font-size: .75rem;
+  padding: 0 .45rem;
+  border: 1px solid var(--input);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  background: var(--card);
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.sc-combobox-toggle:disabled { opacity: .5; cursor: default; }
+.sc-combobox-list {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 16rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: .25rem;
+  list-style: none;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--popover-shadow);
+}
+.sc-combobox-option {
+  display: flex;
+  align-items: flex-start;
+  gap: .4rem;
+  font-size: .86rem;
+  padding: .3rem .5rem;
+  border-radius: calc(var(--radius) - 2px);
+  cursor: pointer;
+}
+.sc-combobox-option[data-highlighted] { background: var(--accent); color: var(--accent-foreground); }
+.sc-combobox-option-check { width: .8rem; flex: none; color: var(--primary); }
+.sc-combobox-option-text { display: flex; flex-direction: column; min-width: 0; }
+.sc-combobox-option-label { font-family: var(--mono); overflow-wrap: anywhere; }
+.sc-combobox-option-description { font-size: .76rem; color: var(--muted-foreground); }
+.sc-combobox-option--custom { justify-content: space-between; color: var(--muted-foreground); }
+.sc-combobox-option-badge {
+  font-size: .68rem;
+  padding: 0 .4rem;
+  border: 1px solid var(--border);
+  border-radius: 99px;
+}
+.sc-combobox-empty { font-size: .82rem; color: var(--muted-foreground); padding: .4rem .5rem; }

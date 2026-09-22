@@ -1,6 +1,21 @@
 import { useEffect, useState, type JSX } from 'react';
 
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  Badge,
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+  EmptyState,
+  PageHeader,
+  statusBadgeVariant,
+} from '@stepcast/ui';
 import { groupProjects } from '../../../src/parts/ui/grouping';
+import { lastPathSegment, unknownPathLabel } from '../../../src/parts/ui/runsView';
 import {
   fetchPipelines,
   type Overview,
@@ -13,6 +28,7 @@ import { fmtTime } from '../format';
 import { JobGraph } from '../components/JobGraph';
 import { TargetLink } from '../routeLink';
 import { RUN_TARGET } from '../screens/run';
+import './pipelines.css';
 
 /**
  * Пайплайны проектов — их устройство, а не их прогоны.
@@ -28,6 +44,10 @@ import { RUN_TARGET } from '../screens/run';
  * которым прогон запущен.
  */
 
+const PAGE_TITLE = 'Pipelines';
+const PAGE_DESCRIPTION =
+  'How each project’s pipelines are wired: the job graph, transitions and steps. Click a job in the graph to inspect it.';
+
 /**
  * Подпись под именем работы в графе: первый шаг и счёт остальных.
  *
@@ -36,7 +56,7 @@ import { RUN_TARGET } from '../screens/run';
  */
 function stepsOf(job: PipelineJobView): string {
   const [first, ...rest] = job.steps;
-  if (first === undefined) return 'шагов нет';
+  if (first === undefined) return 'no steps';
   return rest.length === 0 ? first.id : `${first.id} +${rest.length}`;
 }
 
@@ -49,19 +69,19 @@ function stepsOf(job: PipelineJobView): string {
 function modelOriginLabel(origin: PipelineModelOrigin): string {
   switch (origin.layer) {
     case 'job':
-      return 'модель работы';
+      return 'job model';
     case 'tier':
-      return `tier ${origin.tier} (${origin.tierLayer}, ${origin.backend})${origin.fallback ? ' → модель агента по умолчанию' : ''}`;
+      return `tier ${origin.tier} (${origin.tierLayer}, ${origin.backend})${origin.fallback ? ' → agent default model' : ''}`;
     case 'step':
-      return 'объявлена шагом';
+      return 'declared by the step';
     case 'pipeline':
-      return 'умолчание пайплайна';
+      return 'pipeline default';
     case 'config':
-      return `настройки · ${origin.file}`;
+      return `settings · ${origin.file}`;
     case 'backend':
-      return `модель бэкенда ${origin.backend}`;
+      return `backend model ${origin.backend}`;
     case 'none':
-      return 'модель не задана — выберет бэкенд';
+      return 'no model set — the backend picks one';
   }
 }
 
@@ -71,13 +91,13 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
       <div className="job-head">
         <span className="job-name">{job.id}</span>
         {job.needs.length === 0 ? (
-          <span className="kind">без предшественников</span>
+          <span className="kind">no upstream jobs</span>
         ) : (
           <span className="kind">needs: {job.needs.join(', ')}</span>
         )}
         {job.on === 'success' ? null : <span className="kind">on: {job.on}</span>}
         {job.if === undefined ? null : <span className="kind">if: {job.if}</span>}
-        {job.publishesOutput ? <span className="badge">публикует выход</span> : null}
+        {job.publishesOutput ? <Badge>publishes output</Badge> : null}
       </div>
       {job.description === undefined ? null : <div className="desc">{job.description}</div>}
 
@@ -92,7 +112,7 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
               <span className="kind">{step.pluginKindTitle}</span>
             )}
             {step.pluginHasOutput !== true ? null : (
-              <span className="kind dim">есть output</span>
+              <span className="kind dim">has output</span>
             )}
             {step.agent === undefined ? null : (
               <span className="kind">
@@ -102,10 +122,10 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
             )}
             {step.scriptRunner === undefined ? null : <span className="kind">{step.scriptRunner}</span>}
             {step.usesName === undefined ? null : (
-              <span className="badge">
+              <Badge>
                 uses: {step.usesName}
                 {step.usesLayer === undefined ? '' : ` · ${step.usesLayer}`}
-              </span>
+              </Badge>
             )}
             {step.modelOrigin === undefined ? null : (
               <span className="kind dim model-origin">{modelOriginLabel(step.modelOrigin)}</span>
@@ -118,7 +138,7 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
           {step.usesParams === undefined ? null : (
             <div className="ctx dim">with: {JSON.stringify(step.usesParams)}</div>
           )}
-          {step.hasScriptInput !== true ? null : <div className="ctx dim">input объявлен</div>}
+          {step.hasScriptInput !== true ? null : <div className="ctx dim">input declared</div>}
           {step.scriptOutputSchemaPath === undefined ? null : (
             <div className="ctx dim">output_schema: {step.scriptOutputSchemaPath}</div>
           )}
@@ -133,7 +153,7 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
                 <li key={field.name}>
                   <span className="job-name">{field.name}</span>
                   {field.type === undefined ? null : <span className="kind">{field.type}</span>}
-                  {field.required ? <span className="badge">обязательно</span> : null}
+                  {field.required ? <Badge>required</Badge> : null}
                   {field.description === undefined ? null : (
                     <div className="dim">{field.description}</div>
                   )}
@@ -162,17 +182,17 @@ function PipelineError({ pipeline }: { readonly pipeline: PipelineView }): JSX.E
       ? undefined
       : pipeline.errorFile;
   return (
-    <>
-      <p className="error">{pipeline.error}</p>
+    <Alert variant="destructive">
+      <AlertTitle>{pipeline.error}</AlertTitle>
       {where === undefined && pipeline.errorAt === undefined ? null : (
-        <p className="note dim">
-          где: {where === undefined ? null : <span className="mono">{where}</span>}
+        <AlertDescription>
+          where: {where === undefined ? null : <span className="mono">{where}</span>}
           {where === undefined || pipeline.errorAt === undefined ? null : ' · '}
           {pipeline.errorAt === undefined ? null : <span className="mono">{pipeline.errorAt}</span>}
-        </p>
+        </AlertDescription>
       )}
-      {pipeline.errorHint === undefined ? null : <p className="note dim">{pipeline.errorHint}</p>}
-    </>
+      {pipeline.errorHint === undefined ? null : <AlertDescription>{pipeline.errorHint}</AlertDescription>}
+    </Alert>
   );
 }
 
@@ -192,13 +212,15 @@ function PipelineCard({
 
   if (pipeline.error !== undefined) {
     return (
-      <div className="card">
-        <div className="card-head">
-          <span className="card-title">{pipeline.name}</span>
+      <Card className="pipeline-card">
+        <CardHeader>
+          <CardTitle>{pipeline.name}</CardTitle>
           <span className="mono small dim">{pipeline.file}</span>
-        </div>
-        <PipelineError pipeline={pipeline} />
-      </div>
+        </CardHeader>
+        <CardContent>
+          <PipelineError pipeline={pipeline} />
+        </CardContent>
+      </Card>
     );
   }
 
@@ -206,55 +228,57 @@ function PipelineCard({
   const last = runs[0];
 
   return (
-    <div className="card">
-      <div className="card-head">
-        <span className="card-title">{pipeline.name}</span>
+    <Card className="pipeline-card">
+      <CardHeader>
+        <CardTitle>{pipeline.name}</CardTitle>
         <span className="mono small dim">{pipeline.file}</span>
-      </div>
+      </CardHeader>
 
-      <div className="meta">
-        <span>
-          работ <b>{pipeline.jobs.length}</b>
-        </span>
-        {pipeline.concurrency === undefined ? null : (
+      <CardContent>
+        <div className="meta">
           <span>
-            параллельно <b>{pipeline.concurrency}</b>
+            jobs <b>{pipeline.jobs.length}</b>
           </span>
-        )}
-        {pipeline.failFast === undefined ? null : (
-          <span>
-            fail_fast <b>{pipeline.failFast ? 'да' : 'нет'}</b>
-          </span>
-        )}
-        <span className="mono">stepcast run {pipeline.file}</span>
-      </div>
+          {pipeline.concurrency === undefined ? null : (
+            <span>
+              concurrency <b>{pipeline.concurrency}</b>
+            </span>
+          )}
+          {pipeline.failFast === undefined ? null : (
+            <span>
+              fail_fast <b>{pipeline.failFast ? 'yes' : 'no'}</b>
+            </span>
+          )}
+          <span className="mono">stepcast run {pipeline.file}</span>
+        </div>
 
-      {pipeline.graph === undefined ? null : (
-        <JobGraph
-          graph={pipeline.graph}
-          {...(job === undefined ? {} : { selected: job.id })}
-          onSelect={setSelected}
-          subtitle={(node) => {
-            const found = pipeline.jobs.find((item) => item.id === node.id);
-            return found === undefined ? undefined : stepsOf(found);
-          }}
-        />
-      )}
+        {pipeline.graph === undefined ? null : (
+          <JobGraph
+            graph={pipeline.graph}
+            {...(job === undefined ? {} : { selected: job.id })}
+            onSelect={setSelected}
+            subtitle={(node) => {
+              const found = pipeline.jobs.find((item) => item.id === node.id);
+              return found === undefined ? undefined : stepsOf(found);
+            }}
+          />
+        )}
 
-      {job === undefined ? <p className="note dim">Работ в этом пайплайне нет.</p> : <JobCard job={job} />}
+        {job === undefined ? <p className="note dim">This pipeline has no jobs.</p> : <JobCard job={job} />}
+      </CardContent>
 
       {/* Прогоны — на своём экране; здесь довольно счёта и последнего исхода. */}
-      <p className="note dim runs-note">
+      <CardFooter className="runs-note">
         {!runsKnown ? (
-          'прогоны ещё не загружены'
+          'runs not loaded yet'
         ) : runs.length === 0 ? (
-          'прогонов пока нет'
+          'no runs yet'
         ) : (
           <>
-            прогонов {runs.length}
+            <span>{runs.length === 1 ? '1 run' : `${runs.length} runs`}</span>
             {last === undefined ? null : (
               <>
-                {' · последний '}
+                <span>· latest</span>
                 {/* Маршрут страницы прогона отключён — не-ссылка с названной
                     причиной, общий вид витрины (`ui-routes`, Решение 8). */}
                 <TargetLink
@@ -263,15 +287,15 @@ function PipelineCard({
                   navigate={navigate}
                 >
                   <span className="run-id">{last.shortId}</span>
-                </TargetLink>{' '}
-                <span className={`badge ${last.status ?? ''}`}>{last.status ?? 'неизвестно'}</span>{' '}
-                {fmtTime(last.startedAt)}
+                </TargetLink>
+                <Badge variant={statusBadgeVariant(last.status)}>{last.status ?? 'unknown'}</Badge>
+                <span>{fmtTime(last.startedAt)}</span>
               </>
             )}
           </>
         )}
-      </p>
-    </div>
+      </CardFooter>
+    </Card>
   );
 }
 
@@ -293,8 +317,25 @@ export function Pipelines({
       .catch((failure: Error) => setError(failure.message));
   }, []);
 
-  if (error !== undefined) return <p className="error">{error}</p>;
-  if (pipelines === undefined) return <p className="empty">Загрузка…</p>;
+  if (error !== undefined) {
+    return (
+      <>
+        <PageHeader title={PAGE_TITLE} description={PAGE_DESCRIPTION} />
+        <Alert variant="destructive">
+          <AlertTitle>Could not load pipelines</AlertTitle>
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      </>
+    );
+  }
+  if (pipelines === undefined) {
+    return (
+      <>
+        <PageHeader title={PAGE_TITLE} description={PAGE_DESCRIPTION} />
+        <EmptyState title="Loading…" />
+      </>
+    );
+  }
 
   const groups = groupProjects(pipelines, overview?.projects ?? []);
   // Прогоны без найденного пайплайна на этом экране не показываются: экран про
@@ -303,21 +344,39 @@ export function Pipelines({
 
   if (withPipelines.length === 0) {
     return (
-      <p className="empty">
-        Пайплайнов не найдено. Демон ищет <code>stepcast.yml</code> и{' '}
-        <code>.stepcast/pipelines/*.yml</code> у проектов, чьи прогоны он видит.
-      </p>
+      <>
+        <PageHeader title={PAGE_TITLE} description={PAGE_DESCRIPTION} />
+        <EmptyState
+          title="No pipelines found"
+          description={
+            <>
+              The daemon looks for <code>stepcast.yml</code> and <code>.stepcast/pipelines/*.yml</code> in the
+              projects whose runs it can see.
+            </>
+          }
+        />
+      </>
     );
   }
 
   return (
     <>
-      <h1>Пайплайны</h1>
+      <PageHeader title={PAGE_TITLE} description={PAGE_DESCRIPTION} />
       {withPipelines.map((group) => (
-        <section key={group.projectKey}>
-          <h2 className={group.projectPath === undefined ? 'project unknown-path' : 'project'}>
-            {group.projectPath ?? `${group.projectKey} — путь неизвестен`}
-          </h2>
+        <section key={group.projectKey} className="pipelines-project">
+          {group.projectPath === undefined ? (
+            <>
+              <h2 className="pipelines-project-title">{group.projectKey}</h2>
+              <div className="pipelines-project-path unknown-path">{unknownPathLabel(group.projectKey)}</div>
+            </>
+          ) : (
+            <>
+              <h2 className="pipelines-project-title">{lastPathSegment(group.projectPath)}</h2>
+              <div className="pipelines-project-path" title={group.projectPath}>
+                {group.projectPath}
+              </div>
+            </>
+          )}
 
           {group.pipelines.map((pipelineGroup) => (
             <PipelineCard

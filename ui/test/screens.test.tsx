@@ -95,12 +95,12 @@ describe('screens: состав применяется по ответу дем�
   it('навигация собрана из маршрутов в порядке nav.order, а не в порядке ответа демона', async () => {
     const restoreFetch = installFetch(
       [
-        { id: 'screen-steps', title: 'Шаги', params: [] },
+        { id: 'screen-backlog', title: 'Шаги', params: [] },
         { id: 'screen-pipelines', title: 'Пайплайны', params: [] },
         { id: 'screen-runs', title: 'Прогоны', params: [] },
       ],
       [
-        { id: 'route-steps', path: '/steps', target: { kind: 'screen', id: 'screen-steps' }, nav: { order: 2 } },
+        { id: 'route-steps', path: '/backlog', target: { kind: 'screen', id: 'screen-backlog' }, nav: { order: 2 } },
         { id: 'route-pipelines', path: '/pipelines', target: { kind: 'screen', id: 'screen-pipelines' }, nav: { order: 1 } },
         { id: 'route-runs', path: '/', target: { kind: 'screen', id: 'screen-runs' }, nav: { order: 0 } },
       ],
@@ -141,7 +141,7 @@ describe('screens: состав применяется по ответу дем�
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
       // Экран очереди без данных показывает свою «Загрузка», как и до перевода.
-      assert.match(markup, /Демон ищет файл|class="empty">Загрузка/);
+      assert.match(markup, /looks for a <code>backlog\.md<\/code>|sc-empty-title">Loading|Loading…/);
     } finally {
       restoreWindow();
       restoreFetch();
@@ -162,7 +162,7 @@ describe('screens: состав применяется по ответу дем�
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
       assert.doesNotMatch(markup, /Настройки/);
       // Путь /settings не разобран ни одним действующим маршрутом (`ui-routes», «Адрес без маршрута показывает перечень объявленных маршрутов»).
-      assert.match(markup, /Адрес не разобран/);
+      assert.match(markup, /No route matches this address/);
     } finally {
       restoreWindow();
       restoreFetch();
@@ -189,7 +189,7 @@ describe('screens: состав применяется по ответу дем�
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
       assert.match(markup, /Загадка/);
       assert.match(markup, /screen-mystery/);
-      assert.match(markup, /браузерная половина недоступна/);
+      assert.match(markup, /browser half is unavailable/);
     } finally {
       restoreWindow();
       restoreFetch();
@@ -217,12 +217,12 @@ describe('screens: состав применяется по ответу дем�
       const diagnostics = await kernel.settle();
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
-      assert.match(markup, /браузерная половина недоступна/);
+      assert.match(markup, /browser half is unavailable/);
       assert.match(markup, /screen-backlog/);
       // Пункт меню заменённого экрана на месте и несёт его заголовок.
       assert.match(markup, /Бэклог \(свой\)/);
       // Встроенная половина бэклога не применена: её «Загрузка» не показана.
-      assert.doesNotMatch(markup, /Демон ищет файл/);
+      assert.doesNotMatch(markup, /looks for a <code>backlog\.md<\/code>/);
     } finally {
       restoreWindow();
       restoreFetch();
@@ -242,10 +242,10 @@ describe('screens: состав применяется по ответу дем�
       const diagnostics = await kernel.settle();
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
-      assert.match(markup, /Состав экранов не пересобран/);
+      assert.match(markup, /Screen composition was not rebuilt/);
       assert.match(markup, /my-screen\.mjs не загружается/);
       // Прежний состав при этом работает: экран прогонов на месте.
-      assert.match(markup, /class="empty">Загрузка/);
+      assert.match(markup, /sc-empty-title">Loading…/);
     } finally {
       restoreWindow();
       restoreFetch();
@@ -264,7 +264,7 @@ describe('screens: состав применяется по ответу дем�
       const diagnostics = await kernel.settle();
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
-      assert.doesNotMatch(markup, /Состав экранов не пересобран/);
+      assert.doesNotMatch(markup, /Screen composition was not rebuilt/);
     } finally {
       restoreWindow();
       restoreFetch();
@@ -300,7 +300,7 @@ describe('screens: состав применяется по ответу дем�
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
       assert.match(markup, /id="impostor"/);
-      assert.doesNotMatch(markup, /class="empty">Загрузка/);
+      assert.doesNotMatch(markup, /sc-empty-title">Loading…/);
     } finally {
       restoreWindow();
       restoreFetch();
@@ -343,7 +343,7 @@ describe('screens: вид цели route.target напрямую, вне мар�
         </KernelContext.Provider>,
       );
       assert.match(markup, /screen-riddle/);
-      assert.match(markup, /браузерная половина недоступна/);
+      assert.match(markup, /browser half is unavailable/);
     } finally {
       restoreFetch();
     }
@@ -383,7 +383,7 @@ describe('screens: вид цели route.target напрямую, вне мар�
         </KernelContext.Provider>,
       );
       assert.match(markup, /screen-nowhere/);
-      assert.match(markup, /не найден в действующем составе/);
+      assert.match(markup, /is not in the active composition/);
     } finally {
       restoreFetch();
     }

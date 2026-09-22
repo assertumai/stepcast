@@ -21,7 +21,7 @@ interface RoutesResponse {
 async function fetchRoutes(): Promise<RoutesResponse> {
   const response = await fetch('/api/routes');
   const data = (await response.json()) as RoutesResponse & { error?: string };
-  if (!response.ok) throw new Error(data.error ?? `Демон ответил ${response.status}`);
+  if (!response.ok) throw new Error(data.error ?? `Daemon responded ${response.status}`);
   return data;
 }
 
@@ -33,7 +33,7 @@ export default function routes(ctx: Context): void {
   void fetchRoutes()
     .then(apply)
     .catch((error: Error) => {
-      console.error(`[stepcast] не удалось получить таблицу маршрутов: ${error.message}`);
+      console.error(`[stepcast] failed to fetch route table: ${error.message}`);
     });
 
   let last: RoutesResponse | undefined;

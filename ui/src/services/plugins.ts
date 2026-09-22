@@ -114,10 +114,10 @@ export class PluginsService extends Service {
         out.push({
           plugin: id,
           message:
-            `Новая редакция ${row.state.failedVersion} не загрузилась — работает прежняя ${row.state.workingVersion}: ${row.state.reason}`,
+            `New edition ${row.state.failedVersion} failed to load — previous edition ${row.state.workingVersion} is still running: ${row.state.reason}`,
         });
       } else if (row.state.status === 'failed') {
-        out.push({ plugin: id, message: `Редакция ${row.state.version} не применилась: ${row.state.reason}` });
+        out.push({ plugin: id, message: `Edition ${row.state.version} failed to apply: ${row.state.reason}` });
       }
     }
     return out;
@@ -174,7 +174,7 @@ export class PluginsService extends Service {
       existing?.appliedVersion !== undefined
         ? { status: 'stale', workingVersion: existing.appliedVersion, failedVersion: version, reason }
         : { status: 'failed', version, reason };
-    console.error(`[stepcast] строка ${id}: ${reason}`);
+    console.error(`[stepcast] row ${id}: ${reason}`);
     this.rows.set(id, {
       fiber: existing?.fiber,
       appliedVersion: existing?.appliedVersion,
@@ -228,7 +228,7 @@ export class PluginsService extends Service {
         id,
         view.version,
         existing,
-        'модуль браузерной половины не экспортирует применение по умолчанию',
+        'browser-side module has no default apply export',
       );
       return;
     }
@@ -259,7 +259,7 @@ export class PluginsService extends Service {
       } catch (error) {
         await fiber.dispose().catch(() => undefined);
         const reason = reasonOf(error);
-        console.error(`[stepcast] строка ${id}: ${reason}`);
+        console.error(`[stepcast] row ${id}: ${reason}`);
         this.rows.set(id, {
           fiber: undefined,
           appliedVersion: undefined,

@@ -14,13 +14,13 @@ const handleSnapshot: ApiHandler = (req, res, env) => {
   const url = new URL(req.url ?? '/', 'http://internal');
   const parsed = parseRunAddress(url.searchParams.get('run'));
   if (parsed === undefined) {
-    sendJson(res, 400, { error: 'Адрес прогона должен иметь вид <проект>/<прогон>' });
+    sendJson(res, 400, { error: 'Run address must look like <project>/<run>' });
     return;
   }
 
   const snapshot = snapshotOrRecord(env.runsRoot, parsed.key, parsed.runId);
   if (snapshot === undefined) {
-    sendJson(res, 404, { error: `Прогон ${parsed.runId} не найден` });
+    sendJson(res, 404, { error: `Run ${parsed.runId} not found` });
     return;
   }
 
@@ -33,13 +33,13 @@ const handleFile: ApiHandler = (req, res, env) => {
   const requested = url.searchParams.get('path');
 
   if (parsed === undefined || requested === null) {
-    sendJson(res, 400, { error: 'Нужны параметры run=<проект>/<прогон> и path' });
+    sendJson(res, 400, { error: 'Parameters run=<project>/<run> and path are required' });
     return;
   }
 
   const paths = runPaths(env.runsRoot, parsed.key, parsed.runId);
   if (!existsSync(paths.dir)) {
-    sendJson(res, 404, { error: `Прогон ${parsed.runId} не найден` });
+    sendJson(res, 404, { error: `Run ${parsed.runId} not found` });
     return;
   }
 
@@ -50,7 +50,7 @@ const handleFile: ApiHandler = (req, res, env) => {
     sendJson(res, 200, readJournalFile(paths.dir, requested, side));
   } catch (error) {
     // Выход за каталог прогона — ошибка клиента, а не сбой сервера.
-    const message = isStepcastError(error) ? error.message : 'Файл не читается';
+    const message = isStepcastError(error) ? error.message : 'File cannot be read';
     sendJson(res, isStepcastError(error) ? 400 : 404, { error: message });
   }
 };
@@ -78,27 +78,27 @@ const handleStepOutput: ApiHandler = (req, res, env) => {
     !isSafeSegment(stepId)
   ) {
     sendJson(res, 400, {
-      error: 'Нужны параметры run=<проект>/<прогон>, job и step одним сегментом раскладки',
+      error: 'Parameters run=<project>/<run>, job and step (single layout segments) are required',
     });
     return;
   }
 
   const paths = runPaths(env.runsRoot, parsed.key, parsed.runId);
   if (!existsSync(paths.dir)) {
-    sendJson(res, 404, { error: `Прогон ${parsed.runId} не найден` });
+    sendJson(res, 404, { error: `Run ${parsed.runId} not found` });
     return;
   }
 
   const attempt = readNonNegativeInt(url, 'attempt');
   if (attempt === INVALID || attempt === 0) {
-    sendJson(res, 400, { error: 'attempt должен быть натуральным числом' });
+    sendJson(res, 400, { error: 'attempt must be a positive integer' });
     return;
   }
 
   const stdoutOffset = readNonNegativeInt(url, 'stdoutOffset');
   const stderrOffset = readNonNegativeInt(url, 'stderrOffset');
   if (stdoutOffset === INVALID || stderrOffset === INVALID) {
-    sendJson(res, 400, { error: 'stdoutOffset и stderrOffset должны быть неотрицательными числами' });
+    sendJson(res, 400, { error: 'stdoutOffset and stderrOffset must be non-negative numbers' });
     return;
   }
 
@@ -118,7 +118,7 @@ const handleStepOutput: ApiHandler = (req, res, env) => {
     // раз в секунду на каждое раскрытое окно делает эту гонку рядовой, а
     // необработанное исключение в слушателе запроса роняет весь демон —
     // отвечать надо одному запросу, как это делает `handleFile`.
-    const message = isStepcastError(error) ? error.message : 'Вывод шага не читается';
+    const message = isStepcastError(error) ? error.message : 'Step output cannot be read';
     sendJson(res, isStepcastError(error) ? 400 : 404, { error: message });
   }
 };

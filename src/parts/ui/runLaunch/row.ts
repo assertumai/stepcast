@@ -33,8 +33,8 @@ import { screenRow, type ApiHandler } from '../screens/registry.js';
  * невесть чем.
  */
 const InputsSchema = z.record(
-  z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]*$/, 'имя входа: буквы, цифры, дефис и подчёркивание'),
-  z.string().max(500).refine((value) => !/[\n\r]/.test(value), 'значение входа обязано занимать одну строку'),
+  z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]*$/, 'input name: letters, digits, hyphen and underscore'),
+  z.string().max(500).refine((value) => !/[\n\r]/.test(value), 'input value must fit on a single line'),
 );
 
 const PostBodySchema = z
@@ -55,7 +55,7 @@ const handlePost: ApiHandler = async (req, res, env) => {
   try {
     body = await readBody(req);
   } catch {
-    sendJson(res, 413, { error: 'Тело запроса слишком велико' });
+    sendJson(res, 413, { error: 'Request body is too large' });
     return;
   }
 
@@ -63,21 +63,21 @@ const handlePost: ApiHandler = async (req, res, env) => {
   try {
     raw = JSON.parse(body === '' ? '{}' : body) as unknown;
   } catch {
-    sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
+    sendJson(res, 400, { error: 'Request body is not valid JSON' });
     return;
   }
 
   const parsed = PostBodySchema.safeParse(raw);
   if (!parsed.success) {
     sendJson(res, 400, {
-      error: `Тело запроса не соответствует формату: ${parsed.error.issues[0]?.message ?? 'только project, pipeline и inputs'}`,
+      error: `Request body does not match the format: ${parsed.error.issues[0]?.message ?? 'only project, pipeline and inputs'}`,
     });
     return;
   }
 
   const project = listProjects(env.runsRoot).find((entry) => entry.key === parsed.data.project);
   if (project?.path === undefined) {
-    sendJson(res, 400, { error: `Проект ${parsed.data.project} неизвестен указателю projects.json` });
+    sendJson(res, 400, { error: `Project ${parsed.data.project} is unknown to the projects.json index` });
     return;
   }
 
@@ -85,14 +85,14 @@ const handlePost: ApiHandler = async (req, res, env) => {
     const name = parsed.data.pipeline.slice(STEPCAST_PIPELINE_PREFIX.length);
     const known = packagedPipelineNames();
     if (!known.includes(name)) {
-      sendJson(res, 400, { error: `Пайплайн stepcast:${name} не поставляется пакетом stepcast. Пакет поставляет: ${known.join(', ')}` });
+      sendJson(res, 400, { error: `Pipeline stepcast:${name} is not shipped by the stepcast package. The package ships: ${known.join(', ')}` });
       return;
     }
   } else {
     const files = listPipelineFiles(project.path).map((file) => relative(project.path as string, file).replace(/\\/g, '/'));
     if (!files.includes(parsed.data.pipeline)) {
       sendJson(res, 400, {
-        error: `Пайплайн ${parsed.data.pipeline} не найден среди файлов проекта ${parsed.data.project}`,
+        error: `Pipeline ${parsed.data.pipeline} not found among the files of project ${parsed.data.project}`,
       });
       return;
     }

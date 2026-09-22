@@ -232,7 +232,7 @@ export class SlotsService extends Service {
             this.mismatched.delete(seq);
             this.notify();
           };
-        }, `slots.contribute(${parentName}) — вид не совпал с объявлением`);
+        }, `slots.contribute(${parentName}) — kind did not match the declaration`);
         return;
       }
 
@@ -421,7 +421,7 @@ export function translateSlotNameConflict(error: unknown, claimant: string): Slo
   if (fullName === undefined || firstOwner === undefined || !isSlotServiceName(fullName)) return undefined;
   const slotName = slotNameFromServiceName(fullName);
   return {
-    message: `Слот ${slotName} уже объявлен: его объявляют ${firstOwner} и ${claimant}`,
+    message: `Slot ${slotName} is already declared: both ${firstOwner} and ${claimant} declare it`,
     conflict: { slotName, owners: [firstOwner, claimant] },
   };
 }

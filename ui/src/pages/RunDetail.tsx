@@ -1,5 +1,19 @@
 import { useEffect, useState, type JSX } from 'react';
 
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  EmptyState,
+  PageHeader,
+  statusBadgeVariant,
+} from '@stepcast/ui';
 import { fetchRun, type JobSnapshot, type JournalProblem, type RunSnapshot, type StepSnapshot } from '../api';
 import { fmtDuration, fmtMoney, fmtSpan, fmtTime, fmtTokens } from '../format';
 import { FileView } from '../components/FileView';
@@ -7,6 +21,7 @@ import { JobGraph } from '../components/JobGraph';
 import { StepOutput } from '../components/StepOutput';
 import { TargetLink } from '../routeLink';
 import { DECISIONS_TARGET } from '../screens/decisions';
+import './runDetail.css';
 
 /**
  * Страница прогона: граф связей в шапке, под ним — выбранная работа.
@@ -23,9 +38,12 @@ import { DECISIONS_TARGET } from '../screens/decisions';
  * что в обычной жизни этот срок не истекает и лишнего круга по сети не
  * возникает вовсе. Он нужен на случаи, когда события не будет: прогона нет,
  * поток не установился, демон занят, — там читателю нужен внятный ответ, а не
- * вечное «Загрузка…».
+ * вечное «Loading…».
  */
 const FALLBACK_DELAY_MS = 400;
+
+const PAGE_DESCRIPTION =
+  'Job graph on top — click a job to see its inputs, outputs, steps and their live output below.';
 
 /**
  * Расхождение объявленной и исполнявшейся моделей — либо `undefined`, когда
@@ -43,7 +61,7 @@ const FALLBACK_DELAY_MS = 400;
  */
 function attemptModelsNote(step: StepSnapshot): string | undefined {
   if (step.attemptModels.length === 0) return undefined;
-  const NO_MODEL = 'модель не названа';
+  const NO_MODEL = 'model not named';
   const executed: string[] = [];
   for (const attempt of step.attemptModels) {
     const label = attempt.model ?? NO_MODEL;
@@ -53,8 +71,8 @@ function attemptModelsNote(step: StepSnapshot): string | undefined {
 
   const executedLabel = executed.join(' → ');
   return step.model === undefined
-    ? `исполнилось: ${executedLabel} (модель не объявлена)`
-    : `объявлено ${step.model} · исполнилось: ${executedLabel}`;
+    ? `executed with: ${executedLabel} (no model declared)`
+    : `declared ${step.model} · executed with: ${executedLabel}`;
 }
 
 function Step({
@@ -75,12 +93,8 @@ function Step({
         {/* Шаг плагинного вида называется именем своего вида — тем же, каким
             он объявлен в документе, — а не словом «plugin». */}
         <span className="kind">{step.pluginKindName ?? step.kind}</span>
-        {step.pluginPlugin === undefined ? null : (
-          <span className="badge">плагин: {step.pluginPlugin}</span>
-        )}
-        {step.status === undefined ? null : (
-          <span className={`badge ${step.status}`}>{step.status}</span>
-        )}
+        {step.pluginPlugin === undefined ? null : <Badge>plugin: {step.pluginPlugin}</Badge>}
+        {step.status === undefined ? null : <Badge variant={statusBadgeVariant(step.status)}>{step.status}</Badge>}
         {step.agent === undefined ? null : (
           <span className="kind">
             {step.agent}
@@ -89,15 +103,15 @@ function Step({
         )}
         {step.scriptRunner === undefined ? null : <span className="kind">{step.scriptRunner}</span>}
         {step.usesName === undefined ? null : (
-          <span className="badge">
+          <Badge>
             uses: {step.usesName}
             {step.usesLayer === undefined ? '' : ` · ${step.usesLayer}`}
-          </span>
+          </Badge>
         )}
         {attemptModelsNote(step) === undefined ? null : (
           <span className="kind dim">{attemptModelsNote(step)}</span>
         )}
-        {step.attempts > 1 ? <span className="kind">попыток: {step.attempts}</span> : null}
+        {step.attempts > 1 ? <span className="kind">attempts: {step.attempts}</span> : null}
         {/*
           Длительность шага и его расход — разные величины: первая говорит,
           сколько шаг занял часов, второй — сколько за него заплачено.
@@ -120,18 +134,18 @@ function Step({
       */}
       {step.awaiting === undefined ? null : (
         <div className="ctx">
-          ждёт решения: {step.awaiting.prompt ?? Object.keys(step.awaiting.outcomes).join(', ')}
-          {step.awaiting.deadline === undefined ? '' : ` · срок: ${fmtTime(step.awaiting.deadline)}`}
+          awaiting a decision: {step.awaiting.prompt ?? Object.keys(step.awaiting.outcomes).join(', ')}
+          {step.awaiting.deadline === undefined ? '' : ` · deadline: ${fmtTime(step.awaiting.deadline)}`}
           {' — '}
           <TargetLink target={DECISIONS_TARGET} navigate={navigate}>
-            решить
+            decide
           </TargetLink>
         </div>
       )}
       {step.decision === undefined ? null : (
         <div className="ctx dim">
-          решение: {step.decision.outcome} ({step.decision.effect}
-          {step.decision.by === 'deadline' ? ', по истечении срока' : ''})
+          decision: {step.decision.outcome} ({step.decision.effect}
+          {step.decision.by === 'deadline' ? ', by deadline' : ''})
           {step.decision.reason === undefined ? '' : ` — ${step.decision.reason}`}
         </div>
       )}
@@ -140,7 +154,7 @@ function Step({
       {step.usesParams === undefined ? null : (
         <div className="ctx dim">with: {JSON.stringify(step.usesParams)}</div>
       )}
-      {step.hasScriptInput !== true ? null : <div className="ctx dim">input объявлен</div>}
+      {step.hasScriptInput !== true ? null : <div className="ctx dim">input declared</div>}
       {step.scriptOutputSchemaPath === undefined ? null : (
         <div className="ctx dim">output_schema: {step.scriptOutputSchemaPath}</div>
       )}
@@ -151,15 +165,15 @@ function Step({
 
       {step.contextBreakdown === undefined ? null : (
         <div className="ctx">
-          предшественники {step.contextBreakdown.levels.upstream} · пайплайн{' '}
-          {step.contextBreakdown.levels.pipeline} · работа {step.contextBreakdown.levels.job} · шаг{' '}
-          {step.contextBreakdown.levels.step} · <b>итого {step.contextBreakdown.total} ток.</b>
+          upstream {step.contextBreakdown.levels.upstream} · pipeline{' '}
+          {step.contextBreakdown.levels.pipeline} · job {step.contextBreakdown.levels.job} · step{' '}
+          {step.contextBreakdown.levels.step} · <b>total {step.contextBreakdown.total} tokens</b>
         </div>
       )}
 
       {step.files.length === 0 ? null : (
         <div className="row">
-          <span className="label">файлы</span>
+          <span className="label">files</span>
           {step.files.map((file) => (
             <FileView key={file.path} address={address} file={file} />
           ))}
@@ -212,30 +226,37 @@ function ProblemNotice({ problem }: { readonly problem: JournalProblem }): JSX.E
   const place = `${problem.file}${at}: ${problem.detail}`;
 
   if (problem.kind === 'version-skew') {
-    const journal = problem.journalFormat === undefined ? 'новее известной' : `версии ${problem.journalFormat}`;
+    const journal =
+      problem.journalFormat === undefined ? 'a newer journal format than known' : `journal format ${problem.journalFormat}`;
     return (
-      <p className="notice">
-        Прогон записан журналом {journal}, а витрина знает версию {problem.readerFormat}: читатель
-        устарел ({place}). Перезапустите демон командой{' '}
-        <code>stepcast down && stepcast up</code>.
-      </p>
+      <Alert variant="warning" className="notice">
+        <AlertTitle>Reader is out of date</AlertTitle>
+        <AlertDescription>
+          This run was written with {journal}, but this dashboard only knows format {problem.readerFormat} (
+          {place}). Restart the daemon with <code>stepcast down && stepcast up</code>.
+        </AlertDescription>
+      </Alert>
     );
   }
 
   if (problem.kind === 'legacy-journal') {
     return (
-      <p className="notice">
-        Прогон записан журналом версии {problem.journalFormat}, а витрина знает версию{' '}
-        {problem.readerFormat}: этой записи в нынешних схемах уже нет ({place}). Прогон записан
-        прежней сборкой — перезапуск демона его не прочитает.
-      </p>
+      <Alert variant="warning" className="notice">
+        <AlertTitle>Legacy journal</AlertTitle>
+        <AlertDescription>
+          This run was written with journal format {problem.journalFormat}, but this dashboard knows format{' '}
+          {problem.readerFormat}: that record no longer exists in the current schemas ({place}). The run was
+          written by an older build — restarting the daemon will not make it readable.
+        </AlertDescription>
+      </Alert>
     );
   }
 
   return (
-    <p className="error">
-      {problem.kind === 'missing' ? 'Файл не найден' : 'Файл повреждён'} ({place}).
-    </p>
+    <Alert variant="destructive">
+      <AlertTitle>{problem.kind === 'missing' ? 'File not found' : 'File is corrupted'}</AlertTitle>
+      <AlertDescription>{place}</AlertDescription>
+    </Alert>
   );
 }
 
@@ -252,7 +273,7 @@ function Job({
     <div className="job">
       <div className="job-head">
         <span className="job-name">{job.id}</span>
-        {job.status === undefined ? null : <span className={`badge ${job.status}`}>{job.status}</span>}
+        {job.status === undefined ? null : <Badge variant={statusBadgeVariant(job.status)}>{job.status}</Badge>}
         {job.needs.length === 0 ? null : <span className="kind">needs: {job.needs.join(', ')}</span>}
         {job.on === 'success' ? null : <span className="kind">on: {job.on}</span>}
         {job.if === undefined ? null : <span className="kind">if: {job.if}</span>}
@@ -272,24 +293,22 @@ function Job({
       {job.reason === undefined ? null : <div className="desc">{job.reason}</div>}
 
       <div className="row">
-        <span className="label">вход</span>
+        <span className="label">input</span>
         {job.inputs.length > 0 ? (
           job.inputs.map((file) => <FileView key={file.path} address={address} file={file} />)
         ) : (
           <span className="desc">
-            {job.needs.length > 0 ? 'предшественники ничего не опубликовали' : 'предшественников нет'}
+            {job.needs.length > 0 ? 'upstream jobs published nothing' : 'no upstream jobs'}
           </span>
         )}
       </div>
 
       <div className="row">
-        <span className="label">выход</span>
+        <span className="label">output</span>
         {job.output !== undefined ? (
           <FileView address={address} file={job.output} />
         ) : (
-          <span className="desc">
-            {job.outputDeclared ? 'объявлен, ещё не опубликован' : 'не объявлен'}
-          </span>
+          <span className="desc">{job.outputDeclared ? 'declared, not published yet' : 'not declared'}</span>
         )}
       </div>
 
@@ -298,14 +317,26 @@ function Job({
         работа опубликовала сама. Обе строки показываются здесь целиком:
         в узле графа умещается один ключ и одна строка.
       */}
-      {job.display === undefined ? null : <Pairs label="подпись" pairs={job.display} />}
+      {job.display === undefined ? null : <Pairs label="display" pairs={job.display} />}
 
-      {job.data === undefined ? null : <Pairs label="данные" pairs={job.data} />}
+      {job.data === undefined ? null : <Pairs label="data" pairs={job.data} />}
 
       {job.steps.map((step) => (
         <Step key={step.id} address={address} jobId={job.id} step={step} navigate={navigate} />
       ))}
     </div>
+  );
+}
+
+function BackToRuns({ navigate }: { readonly navigate: (href: string) => void }): JSX.Element {
+  return (
+    <Button
+      variant="link"
+      size="sm"
+      onClick={() => navigate('/')}
+    >
+      ← Back to runs
+    </Button>
   );
 }
 
@@ -360,79 +391,79 @@ export function RunDetail({
     if (error !== undefined) {
       return (
         <>
-          <p className="error">{error}</p>
-          <p>
-            <a
-              href="/"
-              onClick={(event) => {
-                event.preventDefault();
-                navigate('/');
-              }}
-            >
-              ← к прогонам
-            </a>
-          </p>
+          <PageHeader title="Run" description={PAGE_DESCRIPTION} actions={<BackToRuns navigate={navigate} />} />
+          <Alert variant="destructive">
+            <AlertTitle>Could not load the run</AlertTitle>
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
         </>
       );
     }
-    return <p className="empty">Загрузка…</p>;
+    return (
+      <>
+        <PageHeader title="Run" description={PAGE_DESCRIPTION} actions={<BackToRuns navigate={navigate} />} />
+        <EmptyState title="Loading…" />
+      </>
+    );
   }
 
   const job = current.jobs.find((item) => item.id === selected) ?? current.jobs[0];
 
   return (
     <>
-      <p>
-        <a
-          href="/"
-          onClick={(event) => {
-            event.preventDefault();
-            navigate('/');
-          }}
-        >
-          ← к прогонам
-        </a>
-      </p>
-      <h1>
-        {current.pipeline || 'прогон'}{' '}
-        <span className="run-id">{runId.slice(runId.lastIndexOf('-') + 1)}</span>{' '}
-        {current.status === undefined ? null : (
-          <span className={`badge ${current.status}`}>{current.status}</span>
-        )}
-      </h1>
+      <PageHeader
+        title={
+          <>
+            {current.pipeline || 'run'} <span className="run-id">{runId.slice(runId.lastIndexOf('-') + 1)}</span>{' '}
+            {current.status === undefined ? null : (
+              <Badge variant={statusBadgeVariant(current.status)}>{current.status}</Badge>
+            )}
+          </>
+        }
+        description={PAGE_DESCRIPTION}
+        actions={<BackToRuns navigate={navigate} />}
+      />
 
       {current.swept ? (
-        <p className="note dim">
-          Прогон убран: остались только манифест, состояние и расход. Подробностей больше нет.
-        </p>
+        <Alert className="run-note">
+          <AlertTitle>Run was swept</AlertTitle>
+          <AlertDescription>
+            Only the manifest, state and usage remain — there are no further details.
+          </AlertDescription>
+        </Alert>
       ) : null}
 
       {current.filesGone ? (
         <>
-          <p className="note dim">
-            Файлы прогона удалены. Показана сводка расхода, сохранённая в хранилище: логи, промпты и
-            диффы не восстановить — этого хранилище и не обещает.
-          </p>
+          <Alert className="run-note">
+            <AlertTitle>Run files were deleted</AlertTitle>
+            <AlertDescription>
+              Showing the usage summary kept in the store: logs, prompts and diffs cannot be recovered — the
+              store never promised that.
+            </AlertDescription>
+          </Alert>
           {current.total === undefined ? null : (
-            <div className="card">
-              <div className="card-head">
-                <span className="card-title">Сохранённый итог</span>
+            <Card className="run-card">
+              <CardHeader>
+                <CardTitle>Saved totals</CardTitle>
                 <span className="kind">
                   {fmtTokens(current.total.billableTokens)} · {fmtDuration(current.total.wallclockMs)} ·{' '}
                   {fmtMoney(current.total.costUsd)}
                 </span>
-              </div>
+              </CardHeader>
               {current.models === undefined || current.models.length === 0 ? null : (
-                <div className="row">
-                  <span className="label">модели</span>
-                  <span className="desc">
-                    {current.models
-                      .map((slice) => `${slice.model}: ${fmtTokens(slice.billableTokens)} · ${fmtMoney(slice.costUsd)}`)
-                      .join('; ')}
-                  </span>
-                </div>
+                <CardContent>
+                  <div className="row">
+                    <span className="label">models</span>
+                    <span className="desc">
+                      {current.models
+                        .map((slice) => `${slice.model}: ${fmtTokens(slice.billableTokens)} · ${fmtMoney(slice.costUsd)}`)
+                        .join('; ')}
+                    </span>
+                  </div>
+                </CardContent>
               )}
-            </div>
+            </Card>
           )}
         </>
       ) : null}
@@ -445,17 +476,19 @@ export function RunDetail({
         onSelect={setSelected}
         subtitle={(node) =>
           node.blockedBy.length > 0
-            ? `отменена: ${node.blockedBy.join(', ')}`
-            : (node.status ?? 'не начиналась')
+            ? `canceled: ${node.blockedBy.join(', ')}`
+            : (node.status ?? 'not started')
         }
       />
 
       {job === undefined ? (
-        <p className="note dim">Работ в этом прогоне не записано.</p>
+        <EmptyState title="No jobs recorded" description="This run has no jobs in its journal." />
       ) : (
-        <div className="card">
-          <Job address={address} job={job} navigate={navigate} />
-        </div>
+        <Card className="run-card">
+          <CardContent>
+            <Job address={address} job={job} navigate={navigate} />
+          </CardContent>
+        </Card>
       )}
     </>
   );

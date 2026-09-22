@@ -353,13 +353,7 @@ export interface PipelineView {
   readonly errorHint?: string;
 }
 
-export interface PipelinesOverview {
-  readonly pipelines: readonly PipelineView[];
-  readonly generatedAt: string;
-}
-
-export type StepLayerName = 'project' | 'home' | 'builtin';
-
+/** Сверено с `StepParamView` (`src/parts/ui/steps.ts`). */
 export interface StepParamView {
   readonly name: string;
   readonly type?: string;
@@ -368,25 +362,8 @@ export interface StepParamView {
   readonly description?: string;
 }
 
-export interface StepCatalogEntry {
-  readonly name: string;
-  readonly layer: StepLayerName;
-  readonly manifestPath: string;
-  readonly description?: string;
-  readonly params: readonly StepParamView[];
-  readonly hasOutputSchema: boolean;
-  readonly overridden: boolean;
-  readonly error?: string;
-}
-
-export interface ProjectStepsView {
-  readonly projectKey: string;
-  readonly projectPath: string;
-  readonly steps: readonly StepCatalogEntry[];
-}
-
-export interface StepsOverview {
-  readonly projects: readonly ProjectStepsView[];
+export interface PipelinesOverview {
+  readonly pipelines: readonly PipelineView[];
   readonly generatedAt: string;
 }
 
@@ -457,6 +434,7 @@ export interface ProposalApiRecord extends ProposalRecord {
 
 export interface ProjectProposalsPayload {
   readonly projectKey: string;
+  readonly projectPath: string;
   /** Действующий режим доставки этого проекта — виден на экране (`ui-proposals`, «Действующий режим доставки MUST быть виден на экране»). */
   readonly mode: 'queue' | 'direct';
   readonly records: readonly ProposalApiRecord[];
@@ -639,7 +617,7 @@ export interface UsageResult {
  * `reader.js` и живёт только в демоне (см. заголовок этого файла), а значение
  * сверяется тестами сервера.
  */
-export const UNKNOWN_MODEL = 'модель не сообщена';
+export const UNKNOWN_MODEL = 'model not reported';
 
 /** Какой конец крупного файла запрошен и показан. */
 export type FileSide = 'head' | 'tail';
@@ -816,7 +794,7 @@ export interface UsageRecordRemovalSummary {
 /** Ответ демона с внятной ошибкой: её текст показывается как есть. */
 async function json<T>(response: Response): Promise<T> {
   const data = (await response.json()) as T & { error?: string };
-  if (!response.ok) throw new Error(data.error ?? `Демон ответил ${response.status}`);
+  if (!response.ok) throw new Error(data.error ?? `Daemon responded ${response.status}`);
   return data;
 }
 
@@ -986,10 +964,6 @@ export async function fetchPipelines(): Promise<PipelinesOverview> {
   return json<PipelinesOverview>(await fetch('/api/pipelines'));
 }
 
-export async function fetchSteps(): Promise<StepsOverview> {
-  return json<StepsOverview>(await fetch('/api/steps'));
-}
-
 /**
  * Прямой запрос очереди: типизированный клиент маршрута. Экран очереди его
  * не зовёт — живой поток (`live.ts`) присылает то же самое событием `backlog`
@@ -1004,6 +978,33 @@ export async function fetchBacklog(): Promise<BacklogOverview> {
  * его в поток обзора незачем (`ui-proposals`, Решение 15) — событие `proposals`
  * лишь будит экран перечитать этот маршрут.
  */
+/** Ключ каталога поставки в адресе модуля виджета — сверено с `BUILTIN_WIDGETS_KEY` (`src/parts/ui/widgets.ts`). */
+export const BUILTIN_WIDGETS_KEY = 'builtin';
+
+/** Сверено с `BuiltinWidgetView` (`src/parts/ui/widgets.ts`). */
+export interface BuiltinWidgetView {
+  readonly id: string;
+  readonly description: string;
+  readonly version: string;
+}
+
+export async function fetchWidgetCatalog(): Promise<{ readonly widgets: readonly BuiltinWidgetView[] }> {
+  return json(await fetch('/api/widgets/catalog'));
+}
+
+export async function installWidget(payload: {
+  readonly projectKey: string;
+  readonly id: string;
+}): Promise<{ readonly installed: { readonly projectKey: string; readonly id: string; readonly file: string } }> {
+  return json(
+    await fetch('/api/widgets/install', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
 export async function fetchProposals(): Promise<ProposalsOverview> {
   return json<ProposalsOverview>(await fetch('/api/proposals'));
 }

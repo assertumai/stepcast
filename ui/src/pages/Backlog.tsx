@@ -11,6 +11,28 @@ import {
   type BacklogOrderDirection,
   type BacklogSectionView,
 } from '../../../src/parts/ui/backlogView';
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  Badge,
+  Button,
+  EmptyState,
+  PageHeader,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  statusBadgeVariant,
+} from '@stepcast/ui';
+import './backlog.css';
 
 /**
  * Экран очереди улучшений: раздел на проект, внутри — пункты в порядке
@@ -29,6 +51,19 @@ import {
 const PLAN_METRIC = 'plan';
 
 /**
+ * Значение «все» у меню Radix: пустая строка там запрещена (она значит
+ * «ничего не выбрано»), поэтому «все статусы» и «все проекты» несут своё
+ * служебное значение, которое обратно превращается в снятый фильтр.
+ */
+const ALL = '__all__';
+
+/** Последний сегмент пути проекта — короткое имя для меню и заголовка; полный путь остаётся подсказкой. */
+function projectName(path: string): string {
+  const segments = path.split('/').filter((segment) => segment !== '');
+  return segments[segments.length - 1] ?? path;
+}
+
+/**
  * Отказы разбора раздела — по одному на не разобравшийся файл: текст, файл и
  * место, тем же приёмом, каким показана карточка неразбираемого пайплайна
  * (`src/parts/ui/pipelines.ts`, `PipelineError`). Подсказки в этом составе нет: ядро
@@ -38,18 +73,18 @@ function BacklogFailures({ failures }: { readonly failures: readonly BacklogFail
   return (
     <>
       {failures.map((failure) => (
-        <div key={failure.sourceFile}>
-          <p className="error">{failure.error}</p>
-          <p className="note dim">
-            где: <span className="mono">{failure.sourceFile}</span>
+        <Alert variant="destructive" key={failure.sourceFile}>
+          <AlertTitle>{failure.error}</AlertTitle>
+          <AlertDescription>
+            at <span className="mono">{failure.sourceFile}</span>
             {failure.errorAt === undefined ? null : (
               <>
                 {' · '}
                 <span className="mono">{failure.errorAt}</span>
               </>
             )}
-          </p>
-        </div>
+          </AlertDescription>
+        </Alert>
       ))}
     </>
   );
@@ -63,10 +98,10 @@ function BacklogFailures({ failures }: { readonly failures: readonly BacklogFail
  */
 function TitleCell({ item }: { readonly item: BacklogItemView }): JSX.Element {
   return (
-    <details>
+    <details className="backlog-title">
       <summary>{item.title}</summary>
       <p className="note">{item.why}</p>
-      <p className="note dim">готово, когда: {item.doneWhen}</p>
+      <p className="note dim">done when: {item.doneWhen}</p>
     </details>
   );
 }
@@ -74,7 +109,7 @@ function TitleCell({ item }: { readonly item: BacklogItemView }): JSX.Element {
 /** Момент взятия у идущего пункта, причина отказа у отказавшего — остальным сказать нечего. */
 function OutcomeCell({ item }: { readonly item: BacklogItemView }): JSX.Element | null {
   if (item.status === 'in_progress' && item.startedAt !== undefined) {
-    return <span className="small dim">взят {fmtTime(item.startedAt)}</span>;
+    return <span className="small dim">picked up {fmtTime(item.startedAt)}</span>;
   }
   if (item.status === 'failed' && item.reason !== undefined) {
     return <span className="small dim">{item.reason}</span>;
@@ -92,8 +127,11 @@ function ProjectSection({
   readonly onSort: () => void;
 }): JSX.Element {
   return (
-    <section>
-      <h2 className="project">{section.projectPath}</h2>
+    <section className="backlog-section">
+      <header className="backlog-section-head">
+        <h2 className="backlog-section-title">{projectName(section.projectPath)}</h2>
+        <span className="mono small dim backlog-section-path">{section.projectPath}</span>
+      </header>
 
       {section.failures.length > 0 ? <BacklogFailures failures={section.failures} /> : null}
 
@@ -102,51 +140,49 @@ function ProjectSection({
         // в архив. Раздел с отказом уже объяснил себя выше и второго сообщения
         // не получает — «пусто» верно только когда ни один файл не отказал.
         section.failures.length === 0 ? (
-          <p className="empty">Очередь пуста: в файле нет ни одного пункта.</p>
+          <EmptyState title="Queue is empty" description="The backlog file has no items." />
         ) : null
       ) : (
-        <div className="table-scroll">
-          <table className="runs">
-            <thead>
-              <tr>
-                <SortHeader
-                  label="План"
-                  metric={PLAN_METRIC}
-                  order={{ metric: PLAN_METRIC, direction: order }}
-                  onSort={onSort}
-                  className="num plan-no"
-                />
-                <th>Слаг</th>
-                <th>Файл</th>
-                <th>Статус</th>
-                <th>Заголовок</th>
-                <th>Группа</th>
-                <th>Дорожка</th>
-                <th>Взятие / причина</th>
-              </tr>
-            </thead>
-            <tbody>
-              {section.items.map(({ planNumber, item }) => (
-                <tr key={item.slug}>
-                  <td className="num mono small plan-no">{planNumber}</td>
-                  <td className="mono small">{item.slug}</td>
-                  <td className="mono small dim">{item.sourceFile}</td>
-                  <td>
-                    <span className={`badge ${item.status}`}>{item.status}</span>
-                  </td>
-                  <td>
-                    <TitleCell item={item} />
-                  </td>
-                  <td className="mono small dim">{item.group}</td>
-                  <td className="mono small dim">{item.track}</td>
-                  <td>
-                    <OutcomeCell item={item} />
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <Table className="runs backlog-table">
+          <TableHeader>
+            <TableRow>
+              <SortHeader
+                label="Plan"
+                metric={PLAN_METRIC}
+                order={{ metric: PLAN_METRIC, direction: order }}
+                onSort={onSort}
+                className="sc-table-head num plan-no"
+              />
+              <TableHead>Slug</TableHead>
+              <TableHead>File</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Title</TableHead>
+              <TableHead>Group</TableHead>
+              <TableHead>Track</TableHead>
+              <TableHead>Picked up / reason</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {section.items.map(({ planNumber, item }) => (
+              <TableRow key={item.slug}>
+                <TableCell className="num mono small plan-no">{planNumber}</TableCell>
+                <TableCell className="mono small">{item.slug}</TableCell>
+                <TableCell className="mono small dim">{item.sourceFile}</TableCell>
+                <TableCell>
+                  <Badge variant={statusBadgeVariant(item.status)}>{item.status}</Badge>
+                </TableCell>
+                <TableCell>
+                  <TitleCell item={item} />
+                </TableCell>
+                <TableCell className="mono small dim">{item.group}</TableCell>
+                <TableCell className="mono small dim">{item.track}</TableCell>
+                <TableCell>
+                  <OutcomeCell item={item} />
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       )}
     </section>
   );
@@ -155,7 +191,7 @@ function ProjectSection({
 // Поле фильтра не пишет `undefined` явно (`exactOptionalPropertyTypes`):
 // пустой выбор убирает ключ через деструктуризацию, а не обнуляет значение.
 function setStatusFilter(filters: BacklogFilters, value: string): BacklogFilters {
-  if (value === '') {
+  if (value === ALL) {
     const { status: _status, ...rest } = filters;
     return rest;
   }
@@ -163,7 +199,7 @@ function setStatusFilter(filters: BacklogFilters, value: string): BacklogFilters
 }
 
 function setProjectFilter(filters: BacklogFilters, value: string): BacklogFilters {
-  if (value === '') {
+  if (value === ALL) {
     const { project: _project, ...rest } = filters;
     return rest;
   }
@@ -177,14 +213,35 @@ export function Backlog({ backlog }: { readonly backlog: BacklogOverview | undef
   const projects = backlog?.projects ?? [];
   const view = useMemo(() => viewBacklog(projects, filters, order), [projects, filters, order]);
 
-  if (backlog === undefined) return <p className="empty">Загрузка…</p>;
+  const header = (
+    <PageHeader
+      title="Backlog"
+      description="Improvement queue of every project the daemon sees, in file order; filter by status or project and click the Plan column to flip the order."
+    />
+  );
+
+  if (backlog === undefined) {
+    return (
+      <>
+        {header}
+        <EmptyState title="Loading…" />
+      </>
+    );
+  }
 
   if (backlog.projects.length === 0) {
     return (
-      <p className="empty">
-        Очередей не найдено. Демон ищет файл <code>backlog.md</code> в корне каждого проекта, чьи прогоны
-        он видит.
-      </p>
+      <>
+        {header}
+        <EmptyState
+          title="No queues found"
+          description={
+            <>
+              The daemon looks for a <code>backlog.md</code> file in the root of every project whose runs it sees.
+            </>
+          }
+        />
+      </>
     );
   }
 
@@ -200,33 +257,41 @@ export function Backlog({ backlog }: { readonly backlog: BacklogOverview | undef
 
   return (
     <>
-      <h1>Бэклог</h1>
+      {header}
 
-      <div className="filters">
-        <select
-          aria-label="Статус"
-          value={filters.status ?? ''}
-          onChange={(event) => setFilters((current) => setStatusFilter(current, event.target.value))}
+      <div className="filters backlog-filters">
+        <Select
+          value={filters.status ?? ALL}
+          onValueChange={(value) => setFilters((current) => setStatusFilter(current, value))}
         >
-          <option value="">все статусы</option>
-          {view.statusCounts.map((entry) => (
-            <option key={entry.status} value={entry.status}>
-              {entry.status} ({entry.count})
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="Проект"
-          value={filters.project ?? ''}
-          onChange={(event) => setFilters((current) => setProjectFilter(current, event.target.value))}
+          <SelectTrigger aria-label="Status" className="backlog-filter">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>all statuses</SelectItem>
+            {view.statusCounts.map((entry) => (
+              <SelectItem key={entry.status} value={entry.status}>
+                {entry.status} ({entry.count})
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={filters.project ?? ALL}
+          onValueChange={(value) => setFilters((current) => setProjectFilter(current, value))}
         >
-          <option value="">все проекты</option>
-          {view.projectOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          <SelectTrigger aria-label="Project" className="backlog-filter">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>all projects</SelectItem>
+            {view.projectOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value} title={option.label}>
+                {projectName(option.label)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         {isDefaultView ? null : (
           <>
             {/* Сброс стоит, пока вид не умолчание; числа — пока список и вправду
@@ -234,23 +299,25 @@ export function Backlog({ backlog }: { readonly backlog: BacklogOverview | undef
                 сообщает ничего (design.md, Решение 6). */}
             {view.shown === view.total ? null : (
               <span className="small dim">
-                показано {view.shown} из {view.total}
+                showing {view.shown} of {view.total}
               </span>
             )}
-            <button className="plain" onClick={resetView} title="Снять фильтры и вернуть порядок файла">
-              сбросить
-            </button>
+            <Button variant="ghost" size="sm" onClick={resetView} title="Clear filters and restore file order">
+              reset
+            </Button>
           </>
         )}
       </div>
 
       {view.sections.length === 0 ? (
-        <p className="empty">
-          Под фильтры не подошёл ни один пункт.{' '}
-          <button className="plain" onClick={resetView}>
-            Сбросить фильтры
-          </button>
-        </p>
+        <EmptyState
+          title="No items match the filters"
+          action={
+            <Button variant="outline" size="sm" onClick={resetView}>
+              Reset filters
+            </Button>
+          }
+        />
       ) : (
         view.sections.map((section) => (
           <ProjectSection key={section.projectKey} section={section} order={order} onSort={onSort} />

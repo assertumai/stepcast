@@ -56,10 +56,10 @@ const AWAITING = {
   step: 'gate',
   outcomes: {
     approve: { effect: 'continue' as const },
-    deny: { effect: 'reject' as const, label: 'Отклонить' },
-    redo: { effect: 'restart' as const, label: 'Перезапустить' },
+    deny: { effect: 'reject' as const, label: 'Reject' },
+    redo: { effect: 'restart' as const, label: 'Restart' },
   },
-  prompt: 'слить в main?',
+  prompt: 'merge into main?',
   since: '2026-01-01T00:00:00.000Z',
   deadline: '2026-01-02T00:00:00.000Z',
 };
@@ -188,18 +188,18 @@ describe('user-decision-steps: экран «Решения» — кандида�
 describe('user-decision-steps: экран «Решения» — статический рендер', () => {
   it('таблица пуста — сообщение о том, что решений не ждут', () => {
     const html = renderToStaticMarkup(<Decisions overview={overviewWith([])} navigate={() => {}} />);
-    assert.match(html, /не ждёт/);
+    assert.match(html, /waiting for a decision/);
   });
 
   it('кнопки строятся только по объявленным исходам, подписями из ожидания', () => {
     const overview = overviewWith([run({ runId: 'r1', awaiting: [AWAITING] })]);
     const html = renderToStaticMarkup(<Decisions overview={overview} navigate={() => {}} />);
 
-    assert.match(html, /Отклонить/);
-    assert.match(html, /Перезапустить/);
+    assert.match(html, />Reject</);
+    assert.match(html, />Restart</);
     // continue без label — подписан именем исхода.
     assert.match(html, />approve</);
-    assert.match(html, /слить в main\?/);
+    assert.match(html, /merge into main\?/);
     assert.match(html, /apply\/gate/);
   });
 
@@ -207,7 +207,7 @@ describe('user-decision-steps: экран «Решения» — статиче�
     const overview = overviewWith([run({ runId: 'r1', abandoned: true, awaiting: [AWAITING] })]);
     const html = renderToStaticMarkup(<Decisions overview={overview} navigate={() => {}} />);
 
-    assert.match(html, /процесс не отвечает/);
+    assert.match(html, /process is not responding/);
     assert.match(html, /stepcast resume/);
     assert.match(html, /--from apply\/gate/);
   });

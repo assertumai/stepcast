@@ -1,6 +1,32 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from 'react';
 
 import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+  CardTitle,
+  EmptyState,
+  PageHeader,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  statusBadgeVariant,
+} from '@stepcast/ui';
+import {
   deleteRun,
   deleteRuns,
   selectRunsByAddresses,
@@ -17,7 +43,9 @@ import { withCurrentOption } from '../../../src/parts/ui/filters';
 import {
   collectFilterValues,
   describePipelineFilterValue,
+  lastPathSegment,
   runDuration,
+  unknownPathLabel,
   viewRuns,
   DEFAULT_SORT,
   EMPTY_FILTERS,
@@ -26,6 +54,7 @@ import {
   type SortOrder,
 } from '../../../src/parts/ui/runsView';
 import { SortHeader } from '../SortHeader';
+import './runs.css';
 
 /**
  * Прогоны таблицей — всех проектов разом.
@@ -77,29 +106,27 @@ function versionSkewSummary(overview: Overview): VersionSkewSummary | undefined 
 }
 
 /**
- * «1 прогон записан», «2 прогона записаны», «5 прогонов записаны». Склонение
- * числа — общий с подтверждением группового удаления `pluralRuns`; форма
- * сказуемого («записан» / «записаны») нужна только этой полосе и остаётся
- * здесь (design.md изменения ui-runs-list-controls, Решение 13).
+ * «1 run was written», «2 runs were written». Число — общий с подтверждением
+ * группового удаления `pluralRuns`; форма сказуемого нужна только этой полосе
+ * и остаётся здесь (design.md изменения ui-runs-list-controls, Решение 13).
  */
 function affectedRuns(count: number): string {
-  const teens = count % 100;
-  const last = count % 10;
-  const one = last === 1 && teens !== 11;
-  return `${pluralRuns(count)} ${one ? 'записан' : 'записаны'}`;
+  return `${pluralRuns(count)} ${count === 1 ? 'was' : 'were'} written`;
 }
 
 function VersionSkewBanner({ overview }: { readonly overview: Overview }): JSX.Element | null {
   const summary = versionSkewSummary(overview);
   if (summary === undefined) return null;
 
-  const journal = summary.journalFormat === undefined ? 'новее' : `версии ${summary.journalFormat}`;
+  const journal = summary.journalFormat === undefined ? 'a newer journal format' : `journal format ${summary.journalFormat}`;
   return (
-    <p className="notice">
-      {affectedRuns(summary.count)} журналом {journal}, а витрина знает версию{' '}
-      {summary.readerFormat}: читатель устарел. Перезапустите демон командой{' '}
-      <code>stepcast down && stepcast up</code>.
-    </p>
+    <Alert variant="warning" className="notice">
+      <AlertTitle>Reader is out of date</AlertTitle>
+      <AlertDescription>
+        {affectedRuns(summary.count)} with {journal}, but this dashboard only knows format{' '}
+        {summary.readerFormat}. Restart the daemon with <code>stepcast down && stepcast up</code>.
+      </AlertDescription>
+    </Alert>
   );
 }
 
@@ -107,44 +134,46 @@ function TokenCell({ run }: { readonly run: RunOverview }): JSX.Element {
   const [open, setOpen] = useState(false);
   const usage = run.usage;
 
-  if (usage === undefined) return <span className="dim">не сообщено</span>;
+  if (usage === undefined) return <span className="dim">not reported</span>;
 
   const breakdown = usage.breakdown;
   return (
     <>
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
         className="tokens"
         onClick={() => setOpen(!open)}
         disabled={breakdown === undefined}
         title={
           breakdown === undefined
-            ? 'Разрез по видам токенов появится, когда сводка расхода будет прочитана'
+            ? 'Token breakdown appears once the usage summary has been read'
             : usage.partial
-              ? 'Разрез по видам токенов (накоплено на текущий момент, прогон идёт)'
-              : 'Разрез по видам токенов'
+              ? 'Token breakdown (accumulated so far, run in progress)'
+              : 'Token breakdown'
         }
       >
         {fmtTokens(usage.billableTokens)}
-      </button>
+      </Button>
       {open && breakdown !== undefined ? (
         <div className="breakdown">
-          ввод {fmtTokens(breakdown.tokensIn)}
+          input {fmtTokens(breakdown.tokensIn)}
           <br />
-          вывод {fmtTokens(breakdown.tokensOut)}
+          output {fmtTokens(breakdown.tokensOut)}
           <br />
-          чтение кеша {fmtTokens(breakdown.cacheRead)}
+          cache read {fmtTokens(breakdown.cacheRead)}
           <br />
-          запись кеша {fmtTokens(breakdown.cacheWrite)}
+          cache write {fmtTokens(breakdown.cacheWrite)}
           {usage.unreported.length > 0 ? (
             <>
               <br />
-              не сообщено: {usage.unreported.length}
+              not reported: {usage.unreported.length}
             </>
           ) : null}
           {usage.partial ? (
             <>
               <br />
-              накоплено на текущий момент — прогон идёт
+              accumulated so far — run in progress
             </>
           ) : null}
         </div>
@@ -190,7 +219,7 @@ function DeleteCell({
 
   if (isAliveRun(run)) {
     return (
-      <span className="dim small" title="Идущий прогон сначала останавливают">
+      <span className="dim small" title="Stop the run before deleting it">
         —
       </span>
     );
@@ -200,7 +229,7 @@ function DeleteCell({
     return (
       <span
         className="dim small"
-        title="Файлов у прогона уже нет: осталась запись хранилища расхода — снять её можно на вкладке «Уборка»"
+        title="The run's files are already gone: only the usage record remains — remove it on the “Cleanup” tab"
       >
         —
       </span>
@@ -210,14 +239,20 @@ function DeleteCell({
   if (!asking) {
     return (
       <>
-        <button
-          className="plain danger"
-          title={`Удалить прогон ${run.shortId} из истории`}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="runs-delete"
+          title={`Delete run ${run.shortId} from history`}
           onClick={() => setAsking(true)}
         >
           🗑
-        </button>
-        {error === undefined ? null : <div className="error small">{error}</div>}
+        </Button>
+        {error === undefined ? null : (
+          <Alert variant="destructive" className="small">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
       </>
     );
   }
@@ -238,24 +273,17 @@ function DeleteCell({
 
   return (
     <div className="confirm">
-      <span className="question" title="Статистика расхода останется в истории — снять её можно на вкладке «Уборка»">
-        удалить файлы?
+      <span className="question" title="Usage statistics stay in history — remove them on the “Cleanup” tab">
+        delete files?
       </span>
-      <button className="danger" disabled={busy} onClick={remove}>
-        да
-      </button>
-      <button disabled={busy} onClick={() => setAsking(false)}>
-        нет
-      </button>
+      <Button variant="destructive" size="sm" disabled={busy} onClick={remove}>
+        yes
+      </Button>
+      <Button variant="outline" size="sm" disabled={busy} onClick={() => setAsking(false)}>
+        no
+      </Button>
     </div>
   );
-}
-
-/** Последний сегмент пути — для колонки проекта: полный путь остаётся в `title`. */
-function lastSegment(path: string): string {
-  const trimmed = path.replace(/\/+$/, '');
-  const idx = trimmed.lastIndexOf('/');
-  return idx === -1 ? trimmed : trimmed.slice(idx + 1);
 }
 
 // Поле фильтра не пишет `undefined` явно (`exactOptionalPropertyTypes`):
@@ -284,18 +312,29 @@ function setStatusFilter(filters: RunFilters, value: string): RunFilters {
   return { ...filters, status: value };
 }
 
+/**
+ * Значение пункта «все» в выпадающем списке: Radix не принимает пустую строку
+ * значением пункта, и «все» кодируется своим словом, а в состояние фильтра
+ * переводится обратно в пустую строку — ключом ниже.
+ */
+const ALL = '__all__';
+
+function fromSelectValue(value: string): string {
+  return value === ALL ? '' : value;
+}
+
 const OUTCOME_TITLE: Readonly<Record<string, string>> = {
-  removed: 'удалён',
-  skipped_missing: 'уже исчез',
-  skipped_alive: 'идёт — не тронут',
-  failed: 'не удалось',
+  removed: 'removed',
+  skipped_missing: 'already gone',
+  skipped_alive: 'running — untouched',
+  failed: 'failed',
 };
 
 /** Судьба записи хранилища расхода — тот же словарь, что на экране уборки. */
 const STATS_TITLE: Readonly<Record<StatsOutcome, string>> = {
-  kept: 'сохранена',
-  removed: 'снята',
-  missing: 'записи не было',
+  kept: 'kept',
+  removed: 'removed',
+  missing: 'no record',
 };
 
 /** Прогон в адресе `<проект>/<прогон>` — короткий вид для строки исхода. */
@@ -311,7 +350,7 @@ function runIdOf(address: string): string {
  *
  * Состав строки — тот же, что на экране уборки (`Cleanup.tsx`): исход файлов и
  * судьба статистики. Второй бейдж не украшение: групповое удаление из списка
- * идёт без снятия статистики (Решение 11), и «сохранена» в каждой строке —
+ * идёт без снятия статистики (Решение 11), и «kept» в каждой строке —
  * единственное, чем экран это доказывает.
  */
 function RemovalOutcomes({
@@ -322,40 +361,55 @@ function RemovalOutcomes({
   readonly onClose: () => void;
 }): JSX.Element {
   return (
-    <div className="card selected-bar">
-      <div className="card-head">
-        <span className="card-title">Освобождено {fmtBytes(summary.freedBytes)}</span>
+    <Card className="selected-bar">
+      <CardHeader>
+        <CardTitle>Freed {fmtBytes(summary.freedBytes)}</CardTitle>
         <span className="small dim">
-          удалено {summary.outcomes.filter((item) => item.outcome === 'removed').length} из{' '}
+          removed {summary.outcomes.filter((item) => item.outcome === 'removed').length} of{' '}
           {summary.outcomes.length}
         </span>
-        <button className="plain" onClick={onClose}>
-          закрыть
-        </button>
-      </div>
-      <div className="run-list outcome-list">
-        {summary.outcomes.map((item) => (
-          <div key={item.address} className="run-row" title={item.address}>
-            <span className="run-id">{runIdOf(item.address)}</span>
-            <span className="marks">
-              <span className={item.outcome === 'removed' ? 'badge success' : 'badge'}>
-                файлы: {OUTCOME_TITLE[item.outcome] ?? item.outcome}
-              </span>
-              {item.stats === undefined ? null : (
-                <span className={item.stats === 'kept' ? 'badge success' : 'badge'}>
-                  статистика: {STATS_TITLE[item.stats]}
-                </span>
-              )}
-            </span>
-            <span className="small dim">{item.reason ?? ''}</span>
-            <span className="small dim mono">{item.sizeBytes === undefined ? '' : fmtBytes(item.sizeBytes)}</span>
-          </div>
-        ))}
-      </div>
-      <p className="small dim">
-        Сводка расхода этих прогонов сохранена: снять её можно на вкладке «Уборка».
-      </p>
-    </div>
+        <Button variant="ghost" size="sm" onClick={onClose}>
+          close
+        </Button>
+      </CardHeader>
+      <CardContent>
+        <Table className="outcomes">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Run</TableHead>
+              <TableHead>Files</TableHead>
+              <TableHead>Statistics</TableHead>
+              <TableHead>Reason</TableHead>
+              <TableHead className="num">Size</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {summary.outcomes.map((item) => (
+              <TableRow key={item.address} title={item.address}>
+                <TableCell className="run-id">{runIdOf(item.address)}</TableCell>
+                <TableCell>
+                  <Badge variant={item.outcome === 'removed' ? 'success' : 'outline'}>
+                    {OUTCOME_TITLE[item.outcome] ?? item.outcome}
+                  </Badge>
+                </TableCell>
+                <TableCell>
+                  {item.stats === undefined ? null : (
+                    <Badge variant={item.stats === 'kept' ? 'success' : 'outline'}>{STATS_TITLE[item.stats]}</Badge>
+                  )}
+                </TableCell>
+                <TableCell className="small dim">{item.reason ?? ''}</TableCell>
+                <TableCell className="small dim mono num">
+                  {item.sizeBytes === undefined ? '' : fmtBytes(item.sizeBytes)}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </CardContent>
+      <CardFooter className="small dim">
+        The usage summary of these runs was kept — remove it on the “Cleanup” tab.
+      </CardFooter>
+    </Card>
   );
 }
 
@@ -412,28 +466,36 @@ function SelectedBar({
 
   return (
     <div className="selected-bar">
-      <span>{pluralRuns(addresses.length)} отмечено</span>
-      {error === undefined ? null : <span className="error small">{error}</span>}
+      <span>{pluralRuns(addresses.length)} selected</span>
+      {error === undefined ? null : (
+        <Alert variant="destructive" className="small">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
       {selection === undefined ? (
-        <button disabled={busy} onClick={askVolume}>
-          {busy ? 'подсчёт…' : 'удалить отмеченные'}
-        </button>
+        <Button variant="outline" size="sm" disabled={busy} onClick={askVolume}>
+          {busy ? 'measuring…' : 'delete selected'}
+        </Button>
       ) : (
         <div className="confirm">
           <span className="question">
-            удалить {pluralRuns(selection.count)} и освободить {fmtBytes(selection.totalBytes)}?
+            delete {pluralRuns(selection.count)} and free {fmtBytes(selection.totalBytes)}?
           </span>
-          <button className="danger" disabled={busy} onClick={confirmDelete}>
-            да
-          </button>
-          <button disabled={busy} onClick={() => setSelection(undefined)}>
-            нет
-          </button>
+          <Button variant="destructive" size="sm" disabled={busy} onClick={confirmDelete}>
+            yes
+          </Button>
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => setSelection(undefined)}>
+            no
+          </Button>
         </div>
       )}
     </div>
   );
 }
+
+const PAGE_TITLE = 'Runs';
+const PAGE_DESCRIPTION =
+  'Every run across all projects: filter and sort the table, open a run for its jobs and steps, or tick runs to delete their files.';
 
 export function Runs({
   overview,
@@ -454,6 +516,12 @@ export function Runs({
   const total = useMemo(() => projects.reduce((sum, project) => sum + project.runs.length, 0), [projects]);
   const filterValues = useMemo(() => collectFilterValues(projects), [projects]);
   const rows = useMemo(() => viewRuns(projects, filters, order, now), [projects, filters, order, now]);
+  // Путь проекта по ключу — для подписи пункта фильтра: заголовком последний
+  // сегмент, полный путь подсказкой (тот же вид, что у колонки).
+  const projectPaths = useMemo(
+    () => new Map(projects.map((project) => [project.key, project.path] as const)),
+    [projects],
+  );
 
   // Прогон, ушедший из обзора или из-под фильтров, выпадает из отметки
   // (Решение 10): удалить можно только то, что человек видит сейчас.
@@ -481,12 +549,27 @@ export function Runs({
     if (headerCheckboxRef.current !== null) headerCheckboxRef.current.indeterminate = someSelected && !allSelected;
   }, [someSelected, allSelected]);
 
-  if (overview === undefined) return <p className="empty">Загрузка…</p>;
+  if (overview === undefined) {
+    return (
+      <>
+        <PageHeader title={PAGE_TITLE} description={PAGE_DESCRIPTION} />
+        <EmptyState title="Loading…" />
+      </>
+    );
+  }
   if (total === 0) {
     return (
-      <p className="empty">
-        Прогонов пока нет. Запустите <code>stepcast run</code>.
-      </p>
+      <>
+        <PageHeader title={PAGE_TITLE} description={PAGE_DESCRIPTION} />
+        <EmptyState
+          title="No runs yet"
+          description={
+            <>
+              Start one with <code>stepcast run</code> — it appears here as soon as the daemon sees it.
+            </>
+          }
+        />
+      </>
     );
   }
 
@@ -542,60 +625,80 @@ export function Runs({
 
   return (
     <>
-      <h1>Прогоны</h1>
+      <PageHeader
+        title={PAGE_TITLE}
+        description={PAGE_DESCRIPTION}
+        actions={
+          isDefaultView ? undefined : (
+            <>
+              {/* Число показанных — про сужение: при одном лишь ином порядке
+                  состав списка тот же, и «showing 12 of 12» ничего не сообщает. */}
+              {rows.length === total ? null : (
+                <span className="small dim">
+                  showing {rows.length} of {total}
+                </span>
+              )}
+              <Button variant="ghost" size="sm" onClick={resetView} title="Clear filters and return to newest first">
+                reset
+              </Button>
+            </>
+          )
+        }
+      />
       <VersionSkewBanner overview={overview} />
 
       <div className="filters">
-        <select
-          aria-label="Проект"
-          value={filters.project ?? ''}
-          onChange={(event) => setFilters((current) => setProjectFilter(current, event.target.value))}
+        <Select
+          value={filters.project ?? ALL}
+          onValueChange={(value) => setFilters((current) => setProjectFilter(current, fromSelectValue(value)))}
         >
-          <option value="">все проекты</option>
-          {projectOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="Пайплайн"
-          value={filters.pipeline ?? ''}
-          onChange={(event) => setFilters((current) => setPipelineFilter(current, event.target.value))}
+          <SelectTrigger aria-label="Project">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All projects</SelectItem>
+            {projectOptions.map((option) => {
+              const path = projectPaths.get(option.value);
+              return (
+                <SelectItem key={option.value} value={option.value} title={path ?? option.label}>
+                  {path === undefined ? option.label : lastPathSegment(path)}
+                </SelectItem>
+              );
+            })}
+          </SelectContent>
+        </Select>
+        <Select
+          value={filters.pipeline ?? ALL}
+          onValueChange={(value) => setFilters((current) => setPipelineFilter(current, fromSelectValue(value)))}
         >
-          <option value="">все пайплайны</option>
-          {pipelineOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label="Статус"
-          value={filters.status ?? ''}
-          onChange={(event) => setFilters((current) => setStatusFilter(current, event.target.value))}
+          <SelectTrigger aria-label="Pipeline">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All pipelines</SelectItem>
+            {pipelineOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={filters.status ?? ALL}
+          onValueChange={(value) => setFilters((current) => setStatusFilter(current, fromSelectValue(value)))}
         >
-          <option value="">все статусы</option>
-          {statusOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        {isDefaultView ? null : (
-          <>
-            {/* Число показанных — про сужение: при одном лишь ином порядке
-                состав списка тот же, и «показано 12 из 12» ничего не сообщает. */}
-            {rows.length === total ? null : (
-              <span className="small dim">
-                показано {rows.length} из {total}
-              </span>
-            )}
-            <button className="plain" onClick={resetView} title="Снять фильтры и вернуть порядок новейшими первыми">
-              сбросить
-            </button>
-          </>
-        )}
+          <SelectTrigger aria-label="Status">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value={ALL}>All statuses</SelectItem>
+            {statusOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
 
       {summary === undefined ? null : (
@@ -613,122 +716,118 @@ export function Runs({
       )}
 
       {rows.length === 0 ? (
-        <p className="empty">
-          Под фильтры не подошёл ни один прогон.{' '}
-          <button className="plain" onClick={resetView}>
-            Сбросить фильтры
-          </button>
-        </p>
+        <EmptyState
+          title="No runs match the filters"
+          action={
+            <Button variant="outline" size="sm" onClick={resetView}>
+              Clear filters
+            </Button>
+          }
+        />
       ) : (
-        <div className="table-scroll">
-          <table className="runs">
-            <thead>
-              <tr>
-                <th className="check-cell">
-                  <input
-                    ref={headerCheckboxRef}
-                    type="checkbox"
-                    checked={allSelected}
-                    disabled={selectableAddresses.length === 0}
-                    onChange={toggleAll}
-                    aria-label="Отметить все видимые прогоны"
-                  />
-                </th>
-                <th>Проект</th>
-                <th>Имя</th>
-                <th>Статус</th>
-                <SortHeader label="Начало" metric="startedAt" order={order} onSort={onSort} />
-                <SortHeader label="Длительность" metric="duration" order={order} onSort={onSort} className="num" />
-                <SortHeader label="Стоимость" metric="cost" order={order} onSort={onSort} className="num" />
-                <SortHeader label="Токены" metric="tokens" order={order} onSort={onSort} className="num" />
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => {
-                const run = row.run;
-                return (
-                  <tr key={row.address}>
-                    <td className="check-cell">
-                      {canRemove(run) ? (
-                        <input
-                          type="checkbox"
-                          checked={selected.has(row.address)}
-                          onChange={() => toggleOne(row.address)}
-                          aria-label={`Отметить прогон ${run.shortId}`}
-                        />
-                      ) : null}
-                    </td>
-                    <td
-                      className={row.projectPath === undefined ? 'project unknown-path' : 'project'}
-                      title={row.projectPath ?? `${row.projectKey} — путь неизвестен`}
+        <Table className="runs">
+          <TableHeader>
+            <TableRow>
+              <TableHead className="check-cell">
+                <input
+                  ref={headerCheckboxRef}
+                  type="checkbox"
+                  checked={allSelected}
+                  disabled={selectableAddresses.length === 0}
+                  onChange={toggleAll}
+                  aria-label="Select all visible runs"
+                />
+              </TableHead>
+              <TableHead>Project</TableHead>
+              <TableHead>Name</TableHead>
+              <TableHead>Status</TableHead>
+              <SortHeader label="Started" metric="startedAt" order={order} onSort={onSort} />
+              <SortHeader label="Duration" metric="duration" order={order} onSort={onSort} className="num" />
+              <SortHeader label="Cost" metric="cost" order={order} onSort={onSort} className="num" />
+              <SortHeader label="Tokens" metric="tokens" order={order} onSort={onSort} className="num" />
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row) => {
+              const run = row.run;
+              return (
+                <TableRow key={row.address}>
+                  <TableCell className="check-cell">
+                    {canRemove(run) ? (
+                      <input
+                        type="checkbox"
+                        checked={selected.has(row.address)}
+                        onChange={() => toggleOne(row.address)}
+                        aria-label={`Select run ${run.shortId}`}
+                      />
+                    ) : null}
+                  </TableCell>
+                  <TableCell
+                    className={row.projectPath === undefined ? 'project unknown-path' : 'project'}
+                    title={row.projectPath ?? unknownPathLabel(row.projectKey)}
+                  >
+                    {/* Сокращение живёт на блоке внутри ячейки, а не на самой
+                        ячейке: ширину колонки таблица считает по содержимому,
+                        и `max-width` на `td` она не соблюдает — длинная
+                        подпись растянула бы колонку вместо многоточия. */}
+                    <span className="clip">
+                      {row.projectPath === undefined
+                        ? unknownPathLabel(row.projectKey)
+                        : lastPathSegment(row.projectPath)}
+                    </span>
+                  </TableCell>
+                  <TableCell>
+                    {/* Маршрут страницы прогона отключён — строка остаётся
+                        на месте не-ссылкой с названной причиной, общим видом
+                        витрины (`ui-routes`, Решение 8). */}
+                    <TargetLink
+                      target={RUN_TARGET}
+                      params={{ projectKey: row.projectKey, runId: run.runId }}
+                      navigate={navigate}
                     >
-                      {/* Сокращение живёт на блоке внутри ячейки, а не на самой
-                          ячейке: ширину колонки таблица считает по содержимому,
-                          и `max-width` на `td` она не соблюдает — длинная
-                          подпись растянула бы колонку вместо многоточия. */}
-                      <span className="clip">
-                        {row.projectPath === undefined
-                          ? `${row.projectKey} — путь неизвестен`
-                          : lastSegment(row.projectPath)}
-                      </span>
-                    </td>
-                    <td>
-                      {/* Маршрут страницы прогона отключён — строка остаётся
-                          на месте не-ссылкой с названной причиной, общим видом
-                          витрины (`ui-routes`, Решение 8). */}
-                      <TargetLink
-                        target={RUN_TARGET}
-                        params={{ projectKey: row.projectKey, runId: run.runId }}
-                        navigate={navigate}
-                      >
-                        <div className="run-name">{run.pipeline || 'без имени'}</div>
-                        {run.problem === undefined ? null : (
-                          <div className="run-problem">
-                            {run.problem.file}
-                            {run.problem.at === undefined ? '' : `, ${run.problem.at}`}: {run.problem.detail}
-                          </div>
-                        )}
-                        <div className="run-id">{run.shortId}</div>
-                      </TargetLink>
-                    </td>
-                    <td>
-                      <div className="marks">
-                        <span className={`badge ${run.status ?? ''}`}>
-                          {run.status ?? 'неизвестно'}
-                        </span>
-                        {run.swept ? <span className="badge">убран</span> : null}
-                        {run.filesGone ? <span className="badge">файлов нет</span> : null}
-                        {run.problem?.kind === 'version-skew' ? (
-                          <span className="badge">читатель устарел</span>
-                        ) : run.problem?.kind === 'legacy-journal' ? (
-                          <span className="badge">журнал прежней формы</span>
-                        ) : run.unreadable ? (
-                          <span className="badge">не читается</span>
-                        ) : null}
-                        {run.abandoned ? <span className="badge">оборван</span> : null}
-                        {run.wakeAt === undefined ? null : (
-                          <span className="badge" title={`сон до ${fmtTime(run.wakeAt)}`}>
-                            спит
-                          </span>
-                        )}
-                      </div>
-                    </td>
-                    <td className="small">{fmtTime(run.startedAt)}</td>
-                    <td className="num">{fmtDuration(runDuration(run, now))}</td>
-                    <td className="num">{fmtMoney(run.usage?.costUsd ?? null)}</td>
-                    <td className="num">
-                      <TokenCell run={run} />
-                    </td>
-                    <td className="num">
-                      <DeleteCell address={row.address} run={run} />
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                      <div className="run-name">{run.pipeline || 'unnamed'}</div>
+                      {run.problem === undefined ? null : (
+                        <div className="run-problem">
+                          {run.problem.file}
+                          {run.problem.at === undefined ? '' : `, ${run.problem.at}`}: {run.problem.detail}
+                        </div>
+                      )}
+                      <div className="run-id">{run.shortId}</div>
+                    </TargetLink>
+                  </TableCell>
+                  <TableCell>
+                    <div className="marks">
+                      <Badge variant={statusBadgeVariant(run.status)}>{run.status ?? 'unknown'}</Badge>
+                      {run.swept ? <Badge>swept</Badge> : null}
+                      {run.filesGone ? <Badge>files gone</Badge> : null}
+                      {run.problem?.kind === 'version-skew' ? (
+                        <Badge>reader out of date</Badge>
+                      ) : run.problem?.kind === 'legacy-journal' ? (
+                        <Badge>legacy journal</Badge>
+                      ) : run.unreadable ? (
+                        <Badge>unreadable</Badge>
+                      ) : null}
+                      {run.abandoned ? <Badge>abandoned</Badge> : null}
+                      {run.wakeAt === undefined ? null : (
+                        <Badge title={`sleeping until ${fmtTime(run.wakeAt)}`}>sleeping</Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell className="small">{fmtTime(run.startedAt)}</TableCell>
+                  <TableCell className="num">{fmtDuration(runDuration(run, now))}</TableCell>
+                  <TableCell className="num">{fmtMoney(run.usage?.costUsd ?? null)}</TableCell>
+                  <TableCell className="num">
+                    <TokenCell run={run} />
+                  </TableCell>
+                  <TableCell className="num">
+                    <DeleteCell address={row.address} run={run} />
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
       )}
     </>
   );

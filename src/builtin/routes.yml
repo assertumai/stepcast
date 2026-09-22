@@ -9,7 +9,7 @@ routes:
   - id: screen-runs
     path: /
     target: { screen: screen-runs }
-    nav: { order: 0, active_for: [screen-run] }
+    nav: { order: 0, active_for: [screen-run], group: work }
 
   - id: screen-run
     path: /runs/:projectKey/:runId
@@ -18,60 +18,55 @@ routes:
   - id: screen-pipelines
     path: /pipelines
     target: { screen: screen-pipelines }
-    nav: { order: 1 }
-
-  - id: screen-steps
-    path: /steps
-    target: { screen: screen-steps }
-    nav: { order: 2 }
+    nav: { order: 1, group: work }
 
   - id: screen-widgets
     path: /widgets
     target: { screen: screen-widgets }
-    nav: { order: 3 }
+    nav: { order: 2, group: extend }
 
   - id: screen-backlog
     path: /backlog
     target: { screen: screen-backlog }
-    nav: { order: 4 }
+    nav: { order: 3, group: work }
 
   - id: screen-scrum
     path: /scrum
     target: { screen: screen-scrum }
-    nav: { order: 5 }
+    nav: { order: 4, group: work }
 
   - id: screen-usage
     path: /usage/:period?
     target: { screen: screen-usage }
     values: { period: [7d, 30d, 90d, all] }
-    nav: { order: 6 }
+    nav: { order: 5, group: system }
 
   - id: screen-cleanup
     path: /cleanup
     target: { screen: screen-cleanup }
-    nav: { order: 7 }
+    nav: { order: 6, group: system }
 
   - id: screen-agents
     path: /agents
     target: { screen: screen-agents }
-    nav: { order: 8 }
+    nav: { order: 7, group: system }
 
   - id: screen-settings
     path: /settings
     target: { screen: screen-settings }
-    nav: { order: 9 }
+    nav: { order: 8, group: system }
 
   - id: screen-routes
     path: /routes
     target: { screen: screen-routes }
-    nav: { order: 10 }
+    nav: { order: 9, group: extend }
 
   - id: screen-decisions
     path: /decisions
     target: { screen: screen-decisions }
-    nav: { order: 11 }
+    nav: { order: 10, group: extend }
 
   - id: screen-proposals
     path: /proposals
     target: { screen: screen-proposals }
-    nav: { order: 12 }
+    nav: { order: 11, group: extend }

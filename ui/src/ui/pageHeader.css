@@ -1,0 +1,24 @@
+.sc-page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 0 0 1.2rem;
+}
+.sc-page-header-text { min-width: 0; }
+.sc-page-title {
+  font-size: 1.25rem;
+  font-weight: 650;
+  letter-spacing: -.01em;
+  margin: 0;
+  line-height: 1.3;
+}
+.sc-page-description {
+  margin: .25rem 0 0;
+  font-size: .88rem;
+  color: var(--muted-foreground);
+  max-width: 64rem;
+}
+.sc-page-description code { font-family: var(--mono); }
+.sc-page-actions { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }

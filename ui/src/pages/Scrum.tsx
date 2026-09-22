@@ -38,6 +38,9 @@ import {
 } from '../api';
 import { fmtTime } from '../format';
 import {
+  Alert,
+  AlertDescription,
+  Badge,
   Button,
   Dialog,
   DialogContent,
@@ -45,7 +48,16 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  EmptyState,
   Input,
+  Label,
+  PageHeader,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  statusBadgeVariant,
 } from '@stepcast/ui';
 import './scrum.css';
 
@@ -76,6 +88,12 @@ import './scrum.css';
 /** Название входа, которым пайплайн принимает слаг пункта: доска ищет именно его. */
 const ITEM_INPUT = 'item';
 
+/** Последний сегмент пути проекта — короткое имя для меню; полный путь остаётся подсказкой. */
+function projectName(path: string): string {
+  const segments = path.split('/').filter((segment) => segment !== '');
+  return segments[segments.length - 1] ?? path;
+}
+
 function Card({
   item,
   dragging,
@@ -95,9 +113,9 @@ function Card({
       </header>
       <p className="scrum-card-title">{item.title}</p>
       <footer className="scrum-card-foot small dim">
-        {item.status === 'failed' ? <span className="badge failed">failed</span> : null}
+        {item.status === 'failed' ? <Badge variant="destructive">failed</Badge> : null}
         {item.status === 'in_progress' && item.startedAt !== undefined ? (
-          <span>взят {fmtTime(item.startedAt)}</span>
+          <span>picked up {fmtTime(item.startedAt)}</span>
         ) : null}
         {item.group === item.slug ? null : <span className="mono">{item.group}</span>}
       </footer>
@@ -247,18 +265,18 @@ function LaunchDialog({
     <Dialog open={intent !== undefined} onOpenChange={(open) => (open ? undefined : onClose())}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Взять в работу</DialogTitle>
+          <DialogTitle>Start work</DialogTitle>
           <DialogDescription>
             {intent === undefined ? null : (
               <>
-                Пункт <span className="mono">{intent.item.slug}</span>: {intent.item.title}
+                Item <span className="mono">{intent.item.slug}</span>: {intent.item.title}
               </>
             )}
           </DialogDescription>
         </DialogHeader>
 
         {own.length === 0 ? (
-          <p className="empty">В каталоге пайплайнов этого проекта не найдено ни одного файла.</p>
+          <EmptyState title="No pipelines" description="No pipeline files were found in this project’s pipeline directory." />
         ) : (
           <ul className="scrum-pipelines">
             {runnable.map((pipeline) => (
@@ -275,13 +293,13 @@ function LaunchDialog({
                     <span className="scrum-pipeline-name">{pipeline.name}</span>
                     <span className="small dim mono">{pipeline.file}</span>
                     <span className="small dim">
-                      {pipeline.jobs.length} работ
+                      {pipeline.jobs.length} jobs
                       {pipeline.inputs.includes(ITEM_INPUT)
                         ? null
                         : // Честнее сказать заранее, чем показать прогон, взявший
                           // не тот пункт: пайплайн без входа отбирает очередной
                           // свободный сам.
-                          ' · пункт не принимает: отберёт очередной свободный сам'}
+                          ' · does not accept an item: picks the next free one itself'}
                     </span>
                   </span>
                 </label>
@@ -291,21 +309,25 @@ function LaunchDialog({
               <li key={pipeline.file}>
                 <span className="scrum-pipeline-body">
                   <span className="scrum-pipeline-name dim">{pipeline.name}</span>
-                  <span className="small error">{pipeline.error}</span>
+                  <span className="small scrum-pipeline-error">{pipeline.error}</span>
                 </span>
               </li>
             ))}
           </ul>
         )}
 
-        {error === undefined ? null : <p className="error">{error}</p>}
+        {error === undefined ? null : (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
 
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>
-            Отмена
+            Cancel
           </Button>
           <Button disabled={busy || selected === undefined} onClick={() => void start()}>
-            Запустить
+            Start
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -350,14 +372,14 @@ function AddColumnDialog({
     setIndex(todo < 0 ? 0 : todo + 1);
   }, [intent?.status, intent?.projectKey]);
 
-  const quote = (text: string): string => `«${text}»`;
+  const quote = (text: string): string => `“${text}”`;
   const placeLabel = (at: number): string => {
     const left = columns[at - 1];
     const right = columns[at];
-    if (left === undefined && right !== undefined) return `Первой, перед ${quote(right.title)}`;
-    if (right === undefined && left !== undefined) return `Последней, после ${quote(left.title)}`;
-    if (left !== undefined && right !== undefined) return `Между ${quote(left.title)} и ${quote(right.title)}`;
-    return 'Единственной';
+    if (left === undefined && right !== undefined) return `First, before ${quote(right.title)}`;
+    if (right === undefined && left !== undefined) return `Last, after ${quote(left.title)}`;
+    if (left !== undefined && right !== undefined) return `Between ${quote(left.title)} and ${quote(right.title)}`;
+    return 'The only one';
   };
 
   const add = async (): Promise<void> => {
@@ -384,23 +406,23 @@ function AddColumnDialog({
     <Dialog open={intent !== undefined} onOpenChange={(open) => (open ? undefined : onClose())}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Добавить колонку</DialogTitle>
+          <DialogTitle>Add column</DialogTitle>
           <DialogDescription>
             {intent === undefined ? null : (
               <>
-                Под статус <span className="mono">{intent.status}</span>. Раскладка запишется в{' '}
-                <span className="mono">.stepcast/board.yml</span> проекта.
+                For status <span className="mono">{intent.status}</span>. The layout is written to the project’s{' '}
+                <span className="mono">.stepcast/board.yml</span>.
               </>
             )}
           </DialogDescription>
         </DialogHeader>
 
-        <label className="scrum-field">
-          <span className="small dim">Название колонки</span>
+        <Label className="scrum-field">
+          <span>Column title</span>
           <Input value={title} onChange={(event) => setTitle(event.target.value)} />
-        </label>
+        </Label>
 
-        <p className="small dim">На какое место поставить?</p>
+        <p className="small dim">Where should it go?</p>
         <ul className="scrum-pipelines">
           {Array.from({ length: columns.length + 1 }, (_, at) => (
             <li key={at}>
@@ -418,14 +440,18 @@ function AddColumnDialog({
           ))}
         </ul>
 
-        {error === undefined ? null : <p className="error">{error}</p>}
+        {error === undefined ? null : (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
 
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>
-            Отмена
+            Cancel
           </Button>
           <Button disabled={busy} onClick={() => void add()}>
-            Добавить
+            Add
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -532,67 +558,71 @@ function ItemDetails({
     <aside className="scrum-details">
       <header className="scrum-details-head">
         <span className="mono small">{item.slug}</span>
-        <button className="plain" onClick={onClose} title="Закрыть детали">
+        <Button variant="ghost" size="sm" onClick={onClose} title="Close details" aria-label="Close details">
           ×
-        </button>
+        </Button>
       </header>
 
       <p className="small dim scrum-details-meta">
-        <span className={`badge ${item.status}`}>{item.status}</span>
+        <Badge variant={statusBadgeVariant(item.status)}>{item.status}</Badge>
         <span className="mono">{item.sourceFile}</span>
-        {item.startedAt === undefined ? null : <span>взят {fmtTime(item.startedAt)}</span>}
+        {item.startedAt === undefined ? null : <span>picked up {fmtTime(item.startedAt)}</span>}
       </p>
 
-      {item.reason === undefined ? null : <p className="small">причина отказа: {item.reason}</p>}
+      {item.reason === undefined ? null : <p className="small">failure reason: {item.reason}</p>}
 
-      <label className="scrum-field">
-        <span className="small dim">Заголовок</span>
+      <Label className="scrum-field">
+        <span>Title</span>
         <Input value={fields.title} onChange={(event) => set('title', event.target.value)} />
-      </label>
+      </Label>
 
-      <label className="scrum-field">
-        <span className="small dim">Зачем</span>
+      <Label className="scrum-field">
+        <span>Why</span>
         <textarea className="sc-input" rows={5} value={fields.why} onChange={(event) => set('why', event.target.value)} />
-      </label>
+      </Label>
 
-      <label className="scrum-field">
-        <span className="small dim">Готово, когда</span>
+      <Label className="scrum-field">
+        <span>Done when</span>
         <textarea
           className="sc-input"
           rows={5}
           value={fields.done_when}
           onChange={(event) => set('done_when', event.target.value)}
         />
-      </label>
+      </Label>
 
-      <label className="scrum-field">
-        <span className="small dim">Группа</span>
+      <Label className="scrum-field">
+        <span>Group</span>
         <Input
           value={fields.group}
           placeholder={item.slug}
           onChange={(event) => set('group', event.target.value)}
         />
-      </label>
+      </Label>
 
-      <label className="scrum-field">
-        <span className="small dim">Вес (track)</span>
+      <Label className="scrum-field">
+        <span>Track</span>
         <Input value={fields.track} onChange={(event) => set('track', event.target.value)} />
-      </label>
+      </Label>
 
-      <label className="scrum-field">
+      <Label className="scrum-field">
         {/* Пустое поле значит «не трогать»: перечень репозиториев вид пункта не
             несёт, и подставить сюда прежнее значение неоткуда. */}
-        <span className="small dim">Репозитории (через запятую)</span>
+        <span>Repositories (comma-separated)</span>
         <Input value={fields.repos} onChange={(event) => set('repos', event.target.value)} />
-      </label>
+      </Label>
 
-      {error === undefined ? null : <p className="error">{error}</p>}
+      {error === undefined ? null : (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       <div className="scrum-details-foot">
         <Button disabled={busy} onClick={() => void save()}>
-          Сохранить
+          Save
         </Button>
-        {saved ? <span className="small dim">сохранено</span> : null}
+        {saved ? <span className="small dim">saved</span> : null}
       </div>
     </aside>
   );
@@ -634,14 +664,35 @@ export function Scrum({ backlog }: { readonly backlog: BacklogOverview | undefin
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  if (backlog === undefined) return <p className="empty">Загрузка…</p>;
+  const header = (
+    <PageHeader
+      title="Board"
+      description="One project’s queue laid out in columns; drag a card to change its status or order, click it to edit the item, drop it on In progress to start a pipeline."
+    />
+  );
+
+  if (backlog === undefined) {
+    return (
+      <>
+        {header}
+        <EmptyState title="Loading…" />
+      </>
+    );
+  }
 
   if (projects.length === 0) {
     return (
-      <p className="empty">
-        Очередей не найдено. Демон ищет файл <code>backlog.md</code> в корне каждого проекта, чьи прогоны он
-        видит.
-      </p>
+      <>
+        {header}
+        <EmptyState
+          title="No queues found"
+          description={
+            <>
+              The daemon looks for a <code>backlog.md</code> file in the root of every project whose runs it sees.
+            </>
+          }
+        />
+      </>
     );
   }
 
@@ -681,7 +732,7 @@ export function Scrum({ backlog }: { readonly backlog: BacklogOverview | undefin
     // Идущую работу доска не трогает: её состояние ведёт прогон, и перенос
     // карточки посреди захода разошёлся бы с тем, что пишет `backlog finish`.
     if (item.status === 'in_progress') {
-      setFailure('Пункт в работе: его исход проставит идущий прогон, а не доска');
+      setFailure('Item is in progress: its outcome is set by the running pipeline, not by the board');
       return;
     }
 
@@ -708,50 +759,53 @@ export function Scrum({ backlog }: { readonly backlog: BacklogOverview | undefin
 
   return (
     <>
-      <h1>Доска</h1>
+      {header}
 
-      <div className="filters">
-        <select
-          aria-label="Проект"
-          value={view.projectKey}
-          onChange={(event) => setSelected(event.target.value)}
-        >
-          {view.projectOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-        <span className="small dim">{view.projectPath}</span>
+      <div className="filters scrum-filters">
+        <Select value={view.projectKey} onValueChange={setSelected}>
+          <SelectTrigger aria-label="Project" className="scrum-project-select">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {view.projectOptions.map((option) => (
+              <SelectItem key={option.value} value={option.value} title={option.label}>
+                {projectName(option.label)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <span className="mono small dim scrum-project-path">{view.projectPath}</span>
       </div>
 
-      {view.failures.length > 0 ? (
-        <div>
-          {view.failures.map((entry) => (
-            <p className="error" key={entry.sourceFile}>
-              {entry.sourceFile}: {entry.error}
-            </p>
-          ))}
-        </div>
-      ) : null}
+      {view.failures.map((entry) => (
+        <Alert variant="destructive" key={entry.sourceFile}>
+          <AlertDescription>
+            <span className="mono">{entry.sourceFile}</span>: {entry.error}
+          </AlertDescription>
+        </Alert>
+      ))}
 
-      {failure === undefined ? null : <p className="error">{failure}</p>}
+      {failure === undefined ? null : (
+        <Alert variant="destructive">
+          <AlertDescription>{failure}</AlertDescription>
+        </Alert>
+      )}
 
       {view.unplaced.map((entry) => (
         <div className="scrum-unplaced" key={entry.status}>
           <p className="small">
-            Статус <span className="mono">{entry.status}</span> на доске без колонки:{' '}
+            Status <span className="mono">{entry.status}</span> has no column on the board:{' '}
             {entry.items.map((item, index) => (
               <span key={item.slug}>
                 {index === 0 ? null : ', '}
-                <button className="plain mono" onClick={() => setOpenItem(item.slug)} title={item.title}>
+                <Button variant="ghost" size="sm" className="mono" onClick={() => setOpenItem(item.slug)} title={item.title}>
                   {item.slug}
-                </button>
+                </Button>
               </span>
             ))}
           </p>
-          <Button onClick={() => setColumnIntent({ status: entry.status, projectKey: view.projectKey })}>
-            Добавить колонку
+          <Button variant="outline" onClick={() => setColumnIntent({ status: entry.status, projectKey: view.projectKey })}>
+            Add column
           </Button>
         </div>
       ))}
@@ -767,7 +821,7 @@ export function Scrum({ backlog }: { readonly backlog: BacklogOverview | undefin
                 items={column.items}
                 selected={openItem}
                 onSelect={setOpenItem}
-                {...(column.id === 'in_progress' ? { note: 'берёт в работу запуск пайплайна' } : {})}
+                {...(column.id === 'in_progress' ? { note: 'filled by launching a pipeline' } : {})}
               />
             ))}
           </div>

@@ -8,6 +8,7 @@ import {
   cleanupRun,
   dirSize,
   listCandidates,
+  pruneOrphanProjects,
   removeRun,
   removeRunWithStats,
   removeRuns,
@@ -21,6 +22,7 @@ import { listRunsByKey } from '../src/parts/pipeline/run/journal/reader.js';
 import { ensureUsageRecord, readUsageStore } from '../src/parts/pipeline/run/journal/usageStore.js';
 import { RunJournal } from '../src/parts/pipeline/run/journal/writer.js';
 import type { RunManifest, StatusValue } from '../src/parts/pipeline/run/journal/schema.js';
+import { seedRun } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 function bed(): { runsRoot: string; projectRoot: string } {
@@ -1288,5 +1290,35 @@ describe('run-cleanup: удаление файлов и хранилище ра�
       readUsageStore(runsRoot).records.has(`${key}/run-b`),
       'запись остаётся, когда снятие файлов отказало',
     );
+  });
+});
+
+describe('cleanup: проекты-призраки', () => {
+  it('вычёркивает проект с несуществующим путём вместе с каталогом и записями расхода, а существующий и безымянный оставляет', () => {
+    const { runsRoot, projectRoot } = bed();
+    const ghostRoot = otherProject();
+    seedRun(runsRoot, projectRoot, { runId: 'alive' });
+    seedRun(runsRoot, ghostRoot, { runId: 'ghost' });
+    const ghostKey = projectKey(ghostRoot);
+    const aliveKey = projectKey(projectRoot);
+    ensureUsageRecord(runsRoot, ghostKey, 'ghost');
+    ensureUsageRecord(runsRoot, aliveKey, 'alive');
+    // Каталог без записи указателя: путь неизвестен, читатель не вправе его вычеркнуть.
+    mkdirSync(join(runsRoot, 'nameless'), { recursive: true });
+    rmSync(ghostRoot, { recursive: true, force: true });
+
+    const pruned = pruneOrphanProjects(runsRoot);
+
+    assert.deepEqual(pruned, [{ key: ghostKey, path: ghostRoot }]);
+    assert.ok(!existsSync(join(runsRoot, ghostKey)));
+    assert.ok(existsSync(join(runsRoot, aliveKey)));
+    assert.ok(existsSync(join(runsRoot, 'nameless')));
+    const index = JSON.parse(readFileSync(join(runsRoot, 'projects.json'), 'utf8')) as Record<string, unknown>;
+    assert.ok(!(ghostKey in index));
+    assert.ok(aliveKey in index);
+    const { records } = readUsageStore(runsRoot);
+    assert.ok(!records.has(`${ghostKey}/ghost`));
+    assert.ok(records.has(`${aliveKey}/alive`));
+    assert.deepEqual(pruneOrphanProjects(runsRoot), []);
   });
 });

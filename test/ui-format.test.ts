@@ -7,26 +7,26 @@ describe('ui-format: длительность', () => {
   it('не показывает разрядов, которых на часах не бывает', () => {
     // Разряды, округлённые порознь, складываются в «52м 60с»: 3 179 600 мс —
     // это 52 минуты и 59.6 секунды, и каждый разряд по отдельности честен.
-    assert.equal(fmtDuration(3_179_600), '53м');
+    assert.equal(fmtDuration(3_179_600), '53m');
     // То же на границе часа: 1 час 59 минут 59 секунд.
-    assert.equal(fmtDuration(7_199_000), '2ч');
+    assert.equal(fmtDuration(7_199_000), '2h');
   });
 
   it('старший разряд без младшего не тянет за собой ноль', () => {
-    assert.equal(fmtDuration(3_600_000), '1ч');
-    assert.equal(fmtDuration(60_000), '1м');
+    assert.equal(fmtDuration(3_600_000), '1h');
+    assert.equal(fmtDuration(60_000), '1m');
   });
 
   it('считает двумя старшими разрядами', () => {
-    assert.equal(fmtDuration(3_179_000), '52м 59с');
-    assert.equal(fmtDuration(4_920_000), '1ч 22м');
-    assert.equal(fmtDuration(1_000), '1с');
+    assert.equal(fmtDuration(3_179_000), '52m 59s');
+    assert.equal(fmtDuration(4_920_000), '1h 22m');
+    assert.equal(fmtDuration(1_000), '1s');
   });
 
   it('несообщённая длительность — прочерк, а не ноль', () => {
     assert.equal(fmtDuration(undefined), '—');
     assert.equal(fmtDuration(null), '—');
-    assert.equal(fmtDuration(0), '0с');
+    assert.equal(fmtDuration(0), '0s');
   });
 });
 
@@ -46,9 +46,9 @@ describe('ui-format: величины расхода', () => {
   });
 
   it('размер файла растёт единицами, а не порядками', () => {
-    assert.equal(fmtBytes(512), '512 Б');
-    assert.equal(fmtBytes(2048), '2.0 КБ');
-    assert.equal(fmtBytes(3 * 1024 * 1024), '3.0 МБ');
+    assert.equal(fmtBytes(512), '512 B');
+    assert.equal(fmtBytes(2048), '2.0 KB');
+    assert.equal(fmtBytes(3 * 1024 * 1024), '3.0 MB');
   });
 });
 
@@ -57,8 +57,8 @@ describe('ui-format: отрезок исполнения', () => {
   const NOW = Date.parse('2026-08-01T00:05:00.000Z');
 
   it('у завершённого — фактическая длительность, у идущего — сколько идёт', () => {
-    assert.equal(fmtSpan(START, '2026-08-01T00:02:00.000Z', NOW), '2м');
-    assert.equal(fmtSpan(START, undefined, NOW), 'идёт 5м');
+    assert.equal(fmtSpan(START, '2026-08-01T00:02:00.000Z', NOW), '2m');
+    assert.equal(fmtSpan(START, undefined, NOW), 'running 5m');
   });
 
   it('без начала отрезка нет вовсе: работа ещё не начиналась', () => {
@@ -67,7 +67,7 @@ describe('ui-format: отрезок исполнения', () => {
   });
 
   it('расходящиеся часы витрины и прогона не дают отрицательного отрезка', () => {
-    assert.equal(fmtSpan('2026-08-01T00:10:00.000Z', undefined, NOW), 'идёт 0с');
+    assert.equal(fmtSpan('2026-08-01T00:10:00.000Z', undefined, NOW), 'running 0s');
   });
 
   it('нечитаемое время — не отрезок, а его отсутствие', () => {
@@ -76,21 +76,17 @@ describe('ui-format: отрезок исполнения', () => {
   });
 });
 
-describe('ui-format: склонение «прогон»', () => {
-  it('различает единственное число, «пару-тройку-четвёрку» и остальное', () => {
-    assert.equal(pluralRuns(1), '1 прогон');
-    assert.equal(pluralRuns(2), '2 прогона');
-    assert.equal(pluralRuns(5), '5 прогонов');
+describe('ui-format: число «run»', () => {
+  it('единственное число только у единицы', () => {
+    assert.equal(pluralRuns(1), '1 run');
+    assert.equal(pluralRuns(2), '2 runs');
+    assert.equal(pluralRuns(5), '5 runs');
+    assert.equal(pluralRuns(0), '0 runs');
   });
 
-  it('11–14 и их сотенные повторы склоняются как «прогонов», а не как единицы', () => {
-    assert.equal(pluralRuns(11), '11 прогонов');
-    assert.equal(pluralRuns(12), '12 прогонов');
-    assert.equal(pluralRuns(111), '111 прогонов');
-    assert.equal(pluralRuns(114), '114 прогонов');
-  });
-
-  it('21 склоняется как единица, а не как «одиннадцать»', () => {
-    assert.equal(pluralRuns(21), '21 прогон');
+  it('11 и 21 — множественное: английское число не смотрит на последнюю цифру', () => {
+    assert.equal(pluralRuns(11), '11 runs');
+    assert.equal(pluralRuns(21), '21 runs');
+    assert.equal(pluralRuns(111), '111 runs');
   });
 });

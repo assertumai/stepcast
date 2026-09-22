@@ -1,0 +1,21 @@
+/*
+ * Экран расхода поверх `@stepcast/ui`: карточка пайплайна — библиотечная
+ * `Card`, у которой, в отличие от прежней `.card`, нет собственного отступа
+ * снизу; список карточек задаёт его здесь. Столбцы графика и палитра рядов
+ * по-прежнему живут в `styles.css`.
+ */
+.usage-pipeline { margin-bottom: .8rem; }
+.usage-pipeline-meta { align-items: center; }
+
+/* Переключатель меры: вкладки без содержимого — содержимым служит сам график ниже. */
+.usage-measure { margin: .8rem 0 .5rem; }
+
+.usage-narrowed { display: flex; align-items: center; gap: .3rem; flex-wrap: wrap; }
+
+.usage-section-title {
+  font-size: .95rem;
+  font-weight: 650;
+  margin: 1.4rem 0 .6rem;
+  padding-top: .6rem;
+  border-top: 1px solid var(--border);
+}

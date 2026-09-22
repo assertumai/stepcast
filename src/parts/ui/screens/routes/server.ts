@@ -41,7 +41,7 @@ const handlePost: ApiHandler = async (req, res, env) => {
   try {
     body = await readBody(req);
   } catch {
-    sendJson(res, 413, { error: 'Тело запроса слишком велико' });
+    sendJson(res, 413, { error: 'Request body is too large' });
     return;
   }
 
@@ -49,13 +49,13 @@ const handlePost: ApiHandler = async (req, res, env) => {
   try {
     raw = JSON.parse(body === '' ? '{}' : body) as unknown;
   } catch {
-    sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
+    sendJson(res, 400, { error: 'Request body is not valid JSON' });
     return;
   }
 
   const parsed = PostBodySchema.safeParse(raw);
   if (!parsed.success) {
-    sendJson(res, 400, { error: 'Тело запроса не соответствует формату строки маршрута и слоя' });
+    sendJson(res, 400, { error: 'Request body does not match the format of a route row and layer' });
     return;
   }
 

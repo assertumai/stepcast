@@ -192,9 +192,9 @@ describe('plugin-tree: строки поставки вызывающего', ()
       place,
       {
         homePatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: screen-usage\n    use: ./my-usage.mjs\n',
-        projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: screen-steps\n    use: irrelevant\n    enabled: false\n',
+        projectPatch: 'version: 1\nkind: plugins-patch\nplugins:\n  - id: screen-widgets\n    use: irrelevant\n    enabled: false\n',
       },
-      ['ui-shell', 'screen-usage', 'screen-steps'],
+      ['ui-shell', 'screen-usage', 'screen-widgets'],
     );
 
     assert.deepEqual(config.pluginTree.map((row) => [row.id, row.use, row.enabled]), [
@@ -208,7 +208,7 @@ describe('plugin-tree: строки поставки вызывающего', ()
       ['step-decision', 'stepcast:step-decision', true],
       ['ui-shell', 'stepcast:ui-shell', true],
       ['screen-usage', './my-usage.mjs', true],
-      ['screen-steps', 'irrelevant', false],
+      ['screen-widgets', 'irrelevant', false],
     ]);
   });
 

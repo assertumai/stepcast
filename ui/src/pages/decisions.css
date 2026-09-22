@@ -1,0 +1,19 @@
+/*
+ * Экран решений: строка действий — кнопки исходов в ряд, под ними форма
+ * причины или выбора шага, появляющаяся по нажатию. Отказ маршрута показан
+ * полосой на месте этой же записи, не гася остальные строки таблицы.
+ */
+.decision-actions { display: flex; flex-direction: column; gap: .5rem; min-width: 16rem; }
+.decision-buttons { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+.decision-run-link { color: var(--muted-foreground); text-decoration: underline; }
+.decision-run-link:hover { color: var(--foreground); }
+
+.decision-form { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+.decision-form .sc-input { min-width: 12rem; flex: 1; }
+.decision-step-select { min-width: 12rem; }
+
+.decision-actions .sc-alert { margin: 0; }
+
+/* Метка мёртвого процесса стоит под адресом шага, а не вместо него. */
+.decision-abandoned { margin: .4rem 0 0; }
+.decision-abandoned code { display: block; margin-top: .2rem; overflow-wrap: anywhere; }

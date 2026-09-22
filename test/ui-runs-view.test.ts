@@ -3,7 +3,9 @@ import { describe, it } from 'node:test';
 
 import {
   collectFilterValues,
+  lastPathSegment,
   runDuration,
+  unknownPathLabel,
   viewRuns,
   DEFAULT_SORT,
   type ProjectLike,
@@ -69,7 +71,7 @@ describe('runsView: фильтры', () => {
     ];
 
     const values = collectFilterValues(projects);
-    assert.equal(values.pipelines.length, 2, '«named» и «без имени» — два разных значения');
+    assert.equal(values.pipelines.length, 2, '«named» и «unnamed» — два разных значения');
 
     const named = values.pipelines.find((option) => option.label === 'named');
     assert.ok(named !== undefined);
@@ -242,5 +244,19 @@ describe('runsView: длительность идущего прогона', () 
 
   it('у завершённого — готовое значение обзора', () => {
     assert.equal(runDuration(run({ runId: 'a', running: false, durationMs: 42 }), 999), 42);
+  });
+});
+
+describe('ui-runs-view: подпись проекта', () => {
+  it('заголовок — последний сегмент пути, хвостовой слэш не считается', () => {
+    assert.equal(lastPathSegment('/Users/me/stepcast'), 'stepcast');
+    assert.equal(lastPathSegment('/Users/me/stepcast/'), 'stepcast');
+    assert.equal(lastPathSegment('stepcast'), 'stepcast');
+  });
+
+  it('проект без пути подписан ключом и пометкой — той же в фильтре и в колонке', () => {
+    assert.equal(unknownPathLabel('p1'), 'p1 (path unknown)');
+    const values = collectFilterValues([project('p1', [run({ runId: 'a' })])]);
+    assert.equal(values.projects[0]?.label, 'p1 (path unknown)');
   });
 });

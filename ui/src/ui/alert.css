@@ -1,0 +1,15 @@
+.sc-alert {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--card-foreground);
+  padding: .6rem .8rem;
+  font-size: .85rem;
+  margin: 0 0 .8rem;
+}
+.sc-alert--destructive { border-color: var(--status-failed); color: var(--status-failed); }
+.sc-alert--warning { border-color: var(--status-running); color: var(--status-running); }
+.sc-alert-title { font-weight: 600; margin-bottom: .15rem; }
+.sc-alert-description { color: inherit; opacity: .9; overflow-wrap: anywhere; }
+.sc-alert-description code, .sc-alert code { font-family: var(--mono); }

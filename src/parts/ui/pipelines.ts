@@ -175,13 +175,13 @@ function toModelOriginView(
   modelConfigFile: string | undefined,
   at: string,
 ): PipelineModelOrigin {
-  const hint = 'Это расхождение внутри демона: перезапустите `stepcast up` и сообщите о нём';
+  const hint = 'This is an inconsistency inside the daemon: restart `stepcast up` and report it';
   if (origin === undefined) {
-    throw new StepcastError('Раскрытие не назвало слой, давший модель шага', { at, hint });
+    throw new StepcastError('Resolution did not name the layer that supplied the step model', { at, hint });
   }
   if (origin.layer !== 'config') return origin;
   if (modelConfigFile === undefined) {
-    throw new StepcastError('Модель шага пришла из настроек, но файл, задавший её, не известен', {
+    throw new StepcastError('The step model came from settings, but the file that set it is unknown', {
       at,
       hint,
     });
@@ -254,7 +254,7 @@ function pluginStepView(
   if (contribution === undefined || !hasStepExecutor(contribution)) {
     return {
       pluginKindName: step.name,
-      pluginUnknownReason: `вид шага ${step.name} действующему реестру неизвестен`,
+      pluginUnknownReason: `step kind ${step.name} is unknown to the active registry`,
     };
   }
   return {
@@ -668,7 +668,7 @@ export async function buildPipelines(
               project.key,
               project.path,
               relative(project.path, file).replace(/\\/g, '/'),
-              failure ?? { error: 'Конфигурация проекта не читается' },
+              failure ?? { error: 'Project configuration cannot be read' },
             )
           : readPipeline(project.key, project.path, file, forProject, registry, modelConfigFile),
       );

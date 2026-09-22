@@ -33,10 +33,10 @@ export type BuiltinScrumColumn = (typeof SCRUM_COLUMNS)[number];
 export type ScrumColumn = string;
 
 export const COLUMN_TITLES: Readonly<Record<BuiltinScrumColumn, string>> = {
-  todo: 'К работе',
-  in_progress: 'В работе',
-  done: 'Сделано',
-  archive: 'Архив',
+  todo: 'To do',
+  in_progress: 'In progress',
+  done: 'Done',
+  archive: 'Archive',
 };
 
 const ARCHIVE_COLUMN = 'archive';
@@ -79,13 +79,13 @@ export function columnsProblem(columns: readonly BoardColumnSpec[]): string | un
   const seen = new Set<string>();
   for (const column of columns) {
     if (!STATUS_PATTERN.test(column.id)) {
-      return `колонка «${column.id}» названа не словом из строчных латинских букв, цифр и _`;
+      return `column “${column.id}” must be a word of lowercase latin letters, digits and _`;
     }
-    if (seen.has(column.id)) return `колонка «${column.id}» объявлена дважды`;
+    if (seen.has(column.id)) return `column “${column.id}” is declared twice`;
     seen.add(column.id);
   }
   const missing = SCRUM_COLUMNS.filter((id) => !seen.has(id));
-  if (missing.length > 0) return `нет встроенных колонок: ${missing.join(', ')}`;
+  if (missing.length > 0) return `built-in columns missing: ${missing.join(', ')}`;
   return undefined;
 }
 
@@ -98,9 +98,9 @@ export function withColumn(
   column: BoardColumnSpec,
   index: number,
 ): readonly BoardColumnSpec[] | string {
-  if (column.id === ARCHIVE_COLUMN) return 'имя archive занято колонкой архива';
+  if (column.id === ARCHIVE_COLUMN) return 'the name archive is taken by the archive column';
   if (!Number.isInteger(index) || index < 0 || index > columns.length) {
-    return `место ${index} вне доски из ${columns.length} колонок`;
+    return `position ${index} is outside a board of ${columns.length} columns`;
   }
   const next = [...columns.slice(0, index), column, ...columns.slice(index)];
   return columnsProblem(next) ?? next;
@@ -213,7 +213,7 @@ export function viewBoard<Item extends BoardItemLike, Failure>(
     projectPath: current?.projectPath ?? '',
     // Выбранный проект не исчезает из меню, даже когда его очередь пропала из
     // кадра, — тем же правилом, что у прочих фильтров витрины.
-    projectOptions: withCurrentOption(options, selected, (value) => `${value} (очередь не видна)`),
+    projectOptions: withCurrentOption(options, selected, (value) => `${value} (queue not visible)`),
     columns,
     columnSpecs: specs,
     unplaced: [...unplacedByStatus].map(([status, entries]) => ({ status, items: entries })),

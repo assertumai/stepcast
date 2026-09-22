@@ -33,6 +33,7 @@ const RouteNavSchema = z
   .object({
     title: z.string().min(1).optional(),
     order: z.number().optional(),
+    group: z.string().min(1).optional(),
     active_for: z.array(z.string().min(1)).optional(),
   })
   .strict();
@@ -46,7 +47,7 @@ const RouteTargetSchema = z.union([
 export const RouteRowSchema = z
   .object({
     id: z.string().min(1),
-    path: z.string().regex(/^\//, 'путь обязан начинаться с /').optional(),
+    path: z.string().regex(/^\//, 'path must start with /').optional(),
     target: RouteTargetSchema.optional(),
     params: z.record(z.string().regex(ROUTE_NAME), z.string()).optional(),
     values: z.record(z.string().regex(ROUTE_NAME), z.array(z.string().min(1)).min(1)).optional(),
@@ -85,7 +86,7 @@ function readRoutesDocument(path: string): readonly RouteRowDocument[] {
   try {
     text = readFileSync(path, 'utf8');
   } catch (error) {
-    throw new StepcastError(`Файл маршрутов не читается: ${path}`, {
+    throw new StepcastError(`Routes file cannot be read: ${path}`, {
       file: path,
       hint: (error as NodeJS.ErrnoException).message,
       cause: error,
@@ -96,16 +97,16 @@ function readRoutesDocument(path: string): readonly RouteRowDocument[] {
   try {
     raw = parseYaml(text);
   } catch (error) {
-    throw new StepcastError(`Файл маршрутов не разбирается как YAML: ${path}`, { file: path, cause: error });
+    throw new StepcastError(`Routes file is not valid YAML: ${path}`, { file: path, cause: error });
   }
 
   const parsed = RouteDocumentSchema.safeParse(raw);
   if (!parsed.success) {
     const failure = describeSchemaFailure(parsed.error);
-    throw new StepcastError(`Файл маршрутов ${path} не соответствует формату: ${failure.message}`, {
+    throw new StepcastError(`Routes file ${path} does not match the format: ${failure.message}`, {
       file: path,
       ...(failure.at === undefined ? {} : { at: failure.at }),
-      hint: 'Формат описан в docs/routes.md; схема — schema/routes.schema.json',
+      hint: 'The format is described in docs/routes.md; schema: schema/routes.schema.json',
     });
   }
   return parsed.data.routes;
@@ -143,6 +144,7 @@ interface MergedFields {
   values?: FieldSlot<Readonly<Record<string, readonly string[]>>>;
   navTitle?: FieldSlot<string>;
   navOrder?: FieldSlot<number>;
+  navGroup?: FieldSlot<string>;
   navActiveFor?: FieldSlot<readonly string[]>;
   enabled?: FieldSlot<boolean>;
 }
@@ -176,6 +178,7 @@ function mergeRows(layers: readonly LayerFile[]): readonly MergedRow[] {
       if (raw.enabled !== undefined) entry.fields.enabled = { value: raw.enabled, source };
       if (raw.nav?.title !== undefined) entry.fields.navTitle = { value: raw.nav.title, source };
       if (raw.nav?.order !== undefined) entry.fields.navOrder = { value: raw.nav.order, source };
+      if (raw.nav?.group !== undefined) entry.fields.navGroup = { value: raw.nav.group, source };
       if (raw.nav?.active_for !== undefined) entry.fields.navActiveFor = { value: raw.nav.active_for, source };
     }
   }
@@ -200,6 +203,7 @@ export interface RouteEntry {
     readonly values?: RouteFieldSource;
     readonly navTitle?: RouteFieldSource;
     readonly navOrder?: RouteFieldSource;
+    readonly navGroup?: RouteFieldSource;
     readonly navActiveFor?: RouteFieldSource;
     readonly enabled?: RouteFieldSource;
   };
@@ -251,12 +255,18 @@ export interface RouteBuildOptions {
 }
 
 function buildNav(fields: MergedFields): RouteNav | undefined {
-  if (fields.navTitle === undefined && fields.navOrder === undefined && fields.navActiveFor === undefined) {
+  if (
+    fields.navTitle === undefined &&
+    fields.navOrder === undefined &&
+    fields.navGroup === undefined &&
+    fields.navActiveFor === undefined
+  ) {
     return undefined;
   }
   return {
     ...(fields.navTitle === undefined ? {} : { title: fields.navTitle.value }),
     ...(fields.navOrder === undefined ? {} : { order: fields.navOrder.value }),
+    ...(fields.navGroup === undefined ? {} : { group: fields.navGroup.value }),
     ...(fields.navActiveFor === undefined ? {} : { activeFor: fields.navActiveFor.value }),
   };
 }
@@ -267,14 +277,14 @@ function validateParamPlaceholders(id: string, path: string, params: FieldSlot<R
     for (const name of paramPlaceholderNames(value)) {
       if (names.has(name)) continue;
       throw new StepcastError(
-        `Маршрут ${id}: параметр цели ${key} ссылается на \${params.${name}}, которого нет в пути ${path}`,
+        `Route ${id}: target parameter ${key} references \${params.${name}}, which is absent from path ${path}`,
         {
           file: params.source.file,
           at: `${id}.params.${key}`,
           hint:
             names.size === 0
-              ? `Путь маршрута ${path} не объявляет ни одного параметра`
-              : `Путь маршрута объявляет параметры: ${[...names].join(', ')}`,
+              ? `Route path ${path} declares no parameters`
+              : `Route path declares parameters: ${[...names].join(', ')}`,
         },
       );
     }
@@ -320,19 +330,19 @@ export function buildRouteTable(options: RouteBuildOptions): RouteBuildResult {
     }
 
     if (row.fields.path === undefined || row.fields.target === undefined) {
-      throw new StepcastError(`Маршрут ${row.id} не объявляет путь и цель ни в одном слое`, {
+      throw new StepcastError(`Route ${row.id} declares neither path nor target in any layer`, {
         file: row.touchedFiles[row.touchedFiles.length - 1] as string,
         at: row.id,
-        hint: 'Маршрут, добавляющий новый id, обязан объявить path и target — слить их неоткуда',
+        hint: 'A route that adds a new id must declare path and target: there is nothing to merge them from',
       });
     }
 
     const path = row.fields.path.value;
     if (isReservedPath(path)) {
-      throw new StepcastError(`Маршрут ${row.id} объявляет зарезервированный путь ${path}`, {
+      throw new StepcastError(`Route ${row.id} declares a reserved path ${path}`, {
         file: row.fields.path.source.file,
         at: row.id,
-        hint: 'Пути /api, /widgets/, /plugins/ и /shared/ разбирает демон — страница по ним не открывается',
+        hint: 'Paths /api, /widgets/, /plugins/ and /shared/ are handled by the daemon: no page opens at them',
       });
     }
 
@@ -358,6 +368,7 @@ export function buildRouteTable(options: RouteBuildOptions): RouteBuildResult {
         ...(row.fields.values === undefined ? {} : { values: row.fields.values.source }),
         ...(row.fields.navTitle === undefined ? {} : { navTitle: row.fields.navTitle.source }),
         ...(row.fields.navOrder === undefined ? {} : { navOrder: row.fields.navOrder.source }),
+        ...(row.fields.navGroup === undefined ? {} : { navGroup: row.fields.navGroup.source }),
         ...(row.fields.navActiveFor === undefined ? {} : { navActiveFor: row.fields.navActiveFor.source }),
         ...(row.fields.enabled === undefined ? {} : { enabled: row.fields.enabled.source }),
       },
@@ -372,10 +383,10 @@ export function buildRouteTable(options: RouteBuildOptions): RouteBuildResult {
     const existing = byNormalized.get(key);
     if (existing !== undefined) {
       throw new StepcastError(
-        `Путь ${entry.definition.path} занят маршрутами ${existing.id} (${existing.sources.path.file}) и ${entry.id} (${entry.sources.path.file})`,
+        `Path ${entry.definition.path} is taken by routes ${existing.id} (${existing.sources.path.file}) and ${entry.id} (${entry.sources.path.file})`,
         {
           at: entry.id,
-          hint: `Один путь — один маршрут: поправьте строку ${existing.id} своим id, вместо второй строки на тот же путь`,
+          hint: `One path, one route: edit row ${existing.id} under its own id instead of adding a second row for the same path`,
         },
       );
     }
@@ -391,8 +402,8 @@ export type WritableRouteLayer = 'home' | 'project';
 export function writableLayerPath(layer: WritableRouteLayer, options: RouteBuildOptions): string {
   if (layer === 'home') return homeRoutesPath(options.home);
   if (options.projectRoot === undefined) {
-    throw new StepcastError('Демон не знает корень проекта — записать проектный слой маршрутов некуда', {
-      hint: 'Поднимите витрину в каталоге проекта (stepcast up) либо сохраните маршрут в домашний слой',
+    throw new StepcastError('The daemon does not know the project root: there is nowhere to write the project routes layer', {
+      hint: 'Start the dashboard in the project directory (stepcast up) or save the route to the home layer',
     });
   }
   return projectRoutesPath(options.projectRoot);
@@ -413,7 +424,7 @@ export function writeRouteRow(layer: WritableRouteLayer, row: RouteRowDocument, 
     try {
       text = readFileSync(path, 'utf8');
     } catch (error) {
-      throw new StepcastError(`Файл маршрутов не читается: ${path}`, {
+      throw new StepcastError(`Routes file cannot be read: ${path}`, {
         file: path,
         hint: (error as NodeJS.ErrnoException).message,
         cause: error,
@@ -429,21 +440,21 @@ export function writeRouteRow(layer: WritableRouteLayer, row: RouteRowDocument, 
     if (parseFailure !== undefined) {
       const pos = parseFailure.linePos?.[0];
       throw new StepcastError(
-        `Файл маршрутов ${path} не разбирается как YAML — запись отменена: ${parseFailure.message}`,
+        `Routes file ${path} is not valid YAML, write cancelled: ${parseFailure.message}`,
         {
           file: path,
-          ...(pos === undefined ? {} : { at: `строка ${pos.line}, колонка ${pos.col}` }),
-          hint: 'Почините файл вручную, прежде чем сохранять маршрут из витрины',
+          ...(pos === undefined ? {} : { at: `line ${pos.line}, column ${pos.col}` }),
+          hint: 'Fix the file by hand before saving a route from the dashboard',
         },
       );
     }
     const existing = RouteDocumentSchema.safeParse(doc.toJS());
     if (!existing.success) {
       const failure = describeSchemaFailure(existing.error);
-      throw new StepcastError(`Файл маршрутов ${path} не соответствует формату — запись отменена: ${failure.message}`, {
+      throw new StepcastError(`Routes file ${path} does not match the format, write cancelled: ${failure.message}`, {
         file: path,
         ...(failure.at === undefined ? {} : { at: failure.at }),
-        hint: 'Почините файл вручную, прежде чем сохранять маршрут из витрины',
+        hint: 'Fix the file by hand before saving a route from the dashboard',
       });
     }
     if (doc.get('routes') === undefined) doc.set('routes', []);

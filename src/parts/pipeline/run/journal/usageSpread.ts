@@ -9,7 +9,7 @@ import type { UsageAttemptReport, UsageReport } from './schema.js';
  */
 
 /** Доля расхода, чью модель назвать нечем. */
-export const UNKNOWN_MODEL = 'модель не сообщена';
+export const UNKNOWN_MODEL = 'model not reported';
 
 /**
  * Разложить известный итог по долям попыток — по одной мере.

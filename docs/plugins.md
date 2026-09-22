@@ -1240,7 +1240,7 @@ diff` называет различие в составе плагинов за�
 | `react/jsx-runtime` | `jsx`/`jsxs` — то, во что компилируется JSX |
 | `cordis` | `Context`, `Service`, `Fiber` — контекст и сервис плагина |
 | `@stepcast/slots` | `slot()`, дескрипторы встроенных слотов (`ROOT`, `NAV`, `SCREEN`, `SCREEN_FRAME`), адаптер веб-компонента (`docs/ui-plugins.md`) |
-| `@stepcast/ui` | компоненты витрины исходниками — Button, Card, Table, Dialog, Tabs, Select, Input (`docs/ui-plugins.md`) |
+| `@stepcast/ui` | компоненты витрины исходниками — Button, Card, Table, Dialog, Tabs, Select, Input, Badge, Label, Separator, Alert, Switch, Combobox, PageHeader, EmptyState (`docs/ui-plugins.md`) |
 
 **Критерий членства — ломается ли поведение от второго экземпляра, а не вес
 или удобство.** Два экземпляра `react` на странице дают «invalid hook call»

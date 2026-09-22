@@ -58,7 +58,7 @@ describe('kernel: свежее ядро', () => {
     assert.equal(diagnostics.length, 1);
     assert.equal(diagnostics[0]!.kind, 'failed');
     assert.equal(diagnostics[0]!.plugin, 'evil');
-    assert.match(diagnostics[0]!.message, /принадлежит ядру/);
+    assert.match(diagnostics[0]!.message, /belongs to the kernel/);
   });
 
   it('сервис живых данных заведён самим ядром и уже открыл свою единственную подписку', () => {
@@ -85,7 +85,7 @@ describe('kernel: свежее ядро', () => {
     const diagnostics = await kernel.settle();
     assert.equal(diagnostics.length, 1);
     assert.equal(diagnostics[0]!.plugin, 'evil');
-    assert.match(diagnostics[0]!.message, /живые данные витрины/);
+    assert.match(diagnostics[0]!.message, /live dashboard data/);
   });
 
   it('плагин, объявляющий сервис состава браузерных строк, получает отказ, называющий имя и принадлежность ядру', async () => {
@@ -101,7 +101,7 @@ describe('kernel: свежее ядро', () => {
     assert.equal(diagnostics.length, 1);
     assert.equal(diagnostics[0]!.kind, 'failed');
     assert.equal(diagnostics[0]!.plugin, 'evil');
-    assert.match(diagnostics[0]!.message, /состав браузерных строк/);
+    assert.match(diagnostics[0]!.message, /browser row composition/);
   });
 
   it('состав браузерных строк приходит событием `plugins` потока и запускает сверку сам', async () => {
@@ -273,7 +273,7 @@ describe('kernel: рендерер <Slot>', () => {
     const diagnostics = await kernel.settle();
 
     const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
-    assert.match(markup, /каркас/);
+    assert.match(markup, /No plugin contributed a dashboard shell/);
   });
 
   it('вкладчик дочернего слота виден в разметке; снятие убирает его из следующей отрисовки', async () => {

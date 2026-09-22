@@ -135,9 +135,9 @@ export class ScreensService extends Service {
     const existing = this.entries.get(declaration.id);
     if (existing !== undefined) {
       throw new StepcastError(
-        `Экран ${declaration.id} объявлен дважды: его объявляют ${existing.owner} и ${owner}`,
+        `Screen ${declaration.id} is declared twice: by ${existing.owner} and ${owner}`,
         {
-          hint: 'Переопределение экрана не предусмотрено: снимите одну из строк либо назовите экран иначе',
+          hint: 'Overriding a screen is not supported: remove one of the rows or name the screen differently',
         },
       );
     }
@@ -199,9 +199,9 @@ export class ApiService extends Service implements ApiRoutes {
     const existing = this.routes.get(key);
     if (existing !== undefined) {
       throw new StepcastError(
-        `Маршрут ${method} ${path} занят: его объявляют ${existing.owner} и ${owner}`,
+        `Route ${method} ${path} is taken: it is declared by ${existing.owner} and ${owner}`,
         {
-          hint: 'Переопределение маршрута не предусмотрено: снимите одну из строк либо назовите путь иначе',
+          hint: 'Overriding a route is not supported: remove one of the rows or name the path differently',
         },
       );
     }

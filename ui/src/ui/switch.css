@@ -1,0 +1,26 @@
+.sc-switch {
+  display: inline-flex;
+  align-items: center;
+  width: 2.1rem;
+  height: 1.2rem;
+  padding: 2px;
+  border-radius: 99px;
+  border: 1px solid transparent;
+  background: var(--input);
+  cursor: pointer;
+  transition: background .12s;
+  flex: none;
+}
+.sc-switch[data-state='checked'] { background: var(--primary); }
+.sc-switch:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+.sc-switch:disabled { opacity: .5; cursor: default; }
+.sc-switch-thumb {
+  display: block;
+  width: calc(1.2rem - 6px);
+  height: calc(1.2rem - 6px);
+  border-radius: 99px;
+  background: var(--card);
+  box-shadow: var(--popover-shadow);
+  transition: transform .12s;
+}
+.sc-switch[data-state='checked'] .sc-switch-thumb { transform: translateX(.9rem); }

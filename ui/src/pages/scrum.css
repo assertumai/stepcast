@@ -101,8 +101,10 @@
 .scrum-details-meta { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; margin: .4rem 0 .8rem; }
 .scrum-details-foot { display: flex; gap: .6rem; align-items: center; margin-top: 1rem; }
 
+/* Поле панели — подпись витрины (`Label`) с полем внутри: подпись строкой над полем. */
 .scrum-field { display: block; margin-bottom: .9rem; }
 .scrum-field > span { display: block; margin-bottom: .25rem; }
+.scrum-field .sc-input { color: var(--foreground); }
 
 /*
  * Поля панели крупнее общих: `.sc-input` рассчитан на строку фильтра, где
@@ -139,6 +141,11 @@
 }
 .scrum-pipeline-body { display: flex; flex-direction: column; gap: .1rem; min-width: 0; }
 .scrum-pipeline-name { font-weight: 600; }
+.scrum-pipeline-error { color: var(--status-failed); }
+
+/* Выбор проекта над доской: короткое имя в меню, полный путь рядом моноширинной строкой. */
+.scrum-project-select { max-width: 14rem; }
+.scrum-project-path { overflow-wrap: anywhere; }
 
 /* Статус без колонки: полоса над доской с предложением завести колонку. */
 .scrum-unplaced {

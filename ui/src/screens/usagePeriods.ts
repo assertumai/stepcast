@@ -23,10 +23,10 @@ export const DEFAULT_USAGE_DAYS = 30;
 
 /** Подпись и длительность пресета. Пресет без `days` — «всё время». */
 const PRESETS: Readonly<Record<string, { readonly days?: number; readonly label: string }>> = {
-  '7d': { days: 7, label: '7 дней' },
-  '30d': { days: DEFAULT_USAGE_DAYS, label: '30 дней' },
-  '90d': { days: 90, label: '90 дней' },
-  all: { label: 'всё время' },
+  '7d': { days: 7, label: '7 days' },
+  '30d': { days: DEFAULT_USAGE_DAYS, label: '30 days' },
+  '90d': { days: 90, label: '90 days' },
+  all: { label: 'all time' },
 };
 
 /**

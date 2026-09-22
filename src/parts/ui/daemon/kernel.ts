@@ -188,7 +188,7 @@ export async function currentDaemonKernel(
       // успешно собранным составом» становится запасной встроенный — витрина
       // обязана открыться хотя бы затем, чтобы назвать причину (Решение 7).
       state.last = undefined;
-      buildError = `Строка ${UI_SHELL_ROW.id} не применена: без неё у демона нет ни реестра экранов, ни реестра маршрутов`;
+      buildError = `Row ${UI_SHELL_ROW.id} is not applied: without it the daemon has neither a screen registry nor a route registry`;
     } else {
       // Итоги приходят `undefined`, когда реестр взят из кеша (дерево совпало,
       // `loadPlugins` не звался): описывают тот же состав прежние итоги, и

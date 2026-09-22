@@ -100,7 +100,7 @@ function parseDashboardDocument(path: string): DashboardFileDocument {
   try {
     text = readFileSync(path, 'utf8');
   } catch (error) {
-    throw new StepcastError(`Файл дашборда не читается: ${path}`, {
+    throw new StepcastError(`Dashboard file cannot be read: ${path}`, {
       file: path,
       hint: (error as NodeJS.ErrnoException).message,
       cause: error,
@@ -111,16 +111,16 @@ function parseDashboardDocument(path: string): DashboardFileDocument {
   try {
     raw = parseYaml(text);
   } catch (error) {
-    throw new StepcastError(`Файл дашборда не разбирается как YAML: ${path}`, { file: path, cause: error });
+    throw new StepcastError(`Dashboard file is not valid YAML: ${path}`, { file: path, cause: error });
   }
 
   const parsed = DashboardDocumentSchema.safeParse(raw);
   if (!parsed.success) {
     const failure = describeSchemaFailure(parsed.error);
-    throw new StepcastError(`Файл дашборда ${path} не соответствует формату: ${failure.message}`, {
+    throw new StepcastError(`Dashboard file ${path} does not match the format: ${failure.message}`, {
       file: path,
       ...(failure.at === undefined ? {} : { at: failure.at }),
-      hint: 'Формат описан в docs/dashboards.md; схема — schema/dashboard.schema.json',
+      hint: 'The format is described in docs/dashboards.md; schema: schema/dashboard.schema.json',
     });
   }
   return parsed.data;
@@ -172,7 +172,7 @@ function buildOneDashboard(id: string, layer: DashboardLayerName, path: string):
     checkDashboardDocument(document);
   } catch (error) {
     if (error instanceof DashboardDocumentError) {
-      throw new StepcastError(`Дашборд ${id} (${path}): ${error.message}`, {
+      throw new StepcastError(`Dashboard ${id} (${path}): ${error.message}`, {
         file: path,
         at: error.cellIds.join(', '),
       });
@@ -232,14 +232,14 @@ export function buildDashboards(options: DashboardBuildOptions): DashboardsBuild
 
 export function writableDashboardPath(layer: DashboardLayerName, id: string, options: DashboardBuildOptions): string {
   if (!isSafeSegment(id)) {
-    throw new StepcastError(`Идентификатор дашборда ${id} недопустим`, {
-      hint: 'id — один безопасный сегмент пути, без разделителей и без шага вверх по дереву',
+    throw new StepcastError(`Dashboard id ${id} is invalid`, {
+      hint: 'id is a single safe path segment, without separators and without stepping up the tree',
     });
   }
   if (layer === 'home') return dashboardPath(homeDashboardsDirPath(options.home), id);
   if (options.projectRoot === undefined) {
-    throw new StepcastError('Демон не знает корень проекта — записать проектный слой дашбордов некуда', {
-      hint: 'Поднимите витрину в каталоге проекта (stepcast up) либо сохраните дашборд в домашний слой',
+    throw new StepcastError('The daemon does not know the project root: there is nowhere to write the project dashboards layer', {
+      hint: 'Start the dashboard in the project directory (stepcast up) or save the dashboard to the home layer',
     });
   }
   return dashboardPath(projectDashboardsDirPath(options.projectRoot), id);
@@ -391,9 +391,9 @@ export function writeDashboard(
     checkDashboardDocument(toDefinition(document));
   } catch (error) {
     if (error instanceof DashboardDocumentError) {
-      throw new StepcastError(`Дашборд ${id} не сохранён: ${error.message}`, {
+      throw new StepcastError(`Dashboard ${id} not saved: ${error.message}`, {
         at: error.cellIds.join(', '),
-        hint: 'Поправьте раскладку: ячейки не должны повторяться, выходить за колонки сетки и накладываться',
+        hint: 'Fix the layout: cells must not repeat, exceed the grid columns or overlap',
       });
     }
     throw error;
@@ -403,9 +403,9 @@ export function writeDashboard(
 
   const currentFingerprint = dashboardFingerprint(path);
   if (!fingerprintsEqual(baseFingerprint, currentFingerprint)) {
-    throw new StepcastError(`Файл дашборда ${id} изменился с момента открытия`, {
+    throw new StepcastError(`Dashboard file ${id} has changed since it was opened`, {
       file: path,
-      hint: 'Перечитайте дашборд и повторите правку',
+      hint: 'Reload the dashboard and repeat the edit',
     });
   }
 
@@ -415,7 +415,7 @@ export function writeDashboard(
     try {
       text = readFileSync(path, 'utf8');
     } catch (error) {
-      throw new StepcastError(`Файл дашборда не читается: ${path}`, {
+      throw new StepcastError(`Dashboard file cannot be read: ${path}`, {
         file: path,
         hint: (error as NodeJS.ErrnoException).message,
         cause: error,
@@ -432,21 +432,21 @@ export function writeDashboard(
     if (parseFailure !== undefined) {
       const pos = parseFailure.linePos?.[0];
       throw new StepcastError(
-        `Файл дашборда ${path} не разбирается как YAML — запись отменена: ${parseFailure.message}`,
+        `Dashboard file ${path} is not valid YAML, write cancelled: ${parseFailure.message}`,
         {
           file: path,
-          ...(pos === undefined ? {} : { at: `строка ${pos.line}, колонка ${pos.col}` }),
-          hint: 'Почините файл вручную, прежде чем сохранять дашборд из витрины',
+          ...(pos === undefined ? {} : { at: `line ${pos.line}, column ${pos.col}` }),
+          hint: 'Fix the file by hand before saving a dashboard from the dashboard editor',
         },
       );
     }
     const existing = DashboardDocumentSchema.safeParse(doc.toJS());
     if (!existing.success) {
       const failure = describeSchemaFailure(existing.error);
-      throw new StepcastError(`Файл дашборда ${path} не соответствует формату — запись отменена: ${failure.message}`, {
+      throw new StepcastError(`Dashboard file ${path} does not match the format, write cancelled: ${failure.message}`, {
         file: path,
         ...(failure.at === undefined ? {} : { at: failure.at }),
-        hint: 'Почините файл вручную, прежде чем сохранять дашборд из витрины',
+        hint: 'Fix the file by hand before saving a dashboard from the dashboard editor',
       });
     }
   } else {

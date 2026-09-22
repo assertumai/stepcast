@@ -61,7 +61,7 @@ export interface JobGraphProps {
 
 export function JobGraph({ graph, selected, onSelect, subtitle }: JobGraphProps): JSX.Element {
   if (graph.nodes.length === 0) {
-    return <p className="note dim">Работ в этом графе нет.</p>;
+    return <p className="note dim">This graph has no jobs.</p>;
   }
 
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
@@ -74,7 +74,7 @@ export function JobGraph({ graph, selected, onSelect, subtitle }: JobGraphProps)
 
   return (
     <div className="graph">
-      <svg width={width} height={height} role="img" aria-label="Граф работ">
+      <svg width={width} height={height} role="img" aria-label="Job graph">
         {/*
          * Обрезка по рамке узла. Ни имя работы, ни подпись под ним не
          * ограничены длиной: имя приходит из пайплайна, подпись — из статуса
@@ -100,8 +100,8 @@ export function JobGraph({ graph, selected, onSelect, subtitle }: JobGraphProps)
               {/* Ребро к пропущенной работе называет виновника прямо в подсказке. */}
               <title>
                 {edge.blocking
-                  ? `${edge.to} отменена исходом ${edge.from}`
-                  : `${edge.to} ждёт ${edge.from}`}
+                  ? `${edge.to} canceled by the outcome of ${edge.from}`
+                  : `${edge.to} waits for ${edge.from}`}
               </title>
             </path>
           );
@@ -139,12 +139,12 @@ export function JobGraph({ graph, selected, onSelect, subtitle }: JobGraphProps)
               <title>
                 {[
                   title === undefined ? undefined : title,
-                  node.needs.length === 0 ? 'без зависимостей' : `needs: ${node.needs.join(', ')}`,
+                  node.needs.length === 0 ? 'no dependencies' : `needs: ${node.needs.join(', ')}`,
                   node.on === 'success' ? undefined : `on: ${node.on}`,
                   node.if === undefined ? undefined : `if: ${node.if}`,
                   node.blockedBy.length === 0
                     ? undefined
-                    : `отменена исходом: ${node.blockedBy.join(', ')}`,
+                    : `canceled by the outcome of: ${node.blockedBy.join(', ')}`,
                 ]
                   .filter((line): line is string => line !== undefined)
                   .join('\n')}

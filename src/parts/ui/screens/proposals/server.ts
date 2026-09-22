@@ -26,6 +26,8 @@ interface ProposalApiRecord extends ProposalRecord {
 
 interface ProjectProposalsPayload {
   readonly projectKey: string;
+  /** Путь проекта — для подписи раздела на экране; ключ — sha256 и человеку ничего не говорит. */
+  readonly projectPath: string;
   /** Действующий режим доставки этого проекта — виден на экране, чтобы «прямая запись» не было тихим состоянием (`ui-proposals`, «Действующий режим доставки MUST быть виден на экране»). */
   readonly mode: 'queue' | 'direct';
   readonly records: readonly ProposalApiRecord[];
@@ -64,7 +66,7 @@ function deliveryMode(
       mode: 'queue',
       failure: {
         file: '.stepcast/config.yml',
-        reason: `конфигурация проекта не разбирается, режим доставки считается умолчанием queue: ${message}`,
+        reason: `project configuration cannot be parsed, delivery mode falls back to queue: ${message}`,
       },
     };
   }
@@ -85,6 +87,7 @@ const handleGet: ApiHandler = (_req, res, env) => {
     const delivery = deliveryMode(path, env.home ?? homedir());
     projects.push({
       projectKey: projectOverview.projectKey,
+      projectPath: path,
       mode: delivery.mode,
       records: projectOverview.records.map((record) => ({
         ...record,
@@ -110,7 +113,7 @@ const handlePost: ApiHandler = async (req, res, env) => {
   try {
     body = await readBody(req);
   } catch {
-    sendJson(res, 413, { error: 'Тело запроса слишком велико' });
+    sendJson(res, 413, { error: 'Request body is too large' });
     return;
   }
 
@@ -118,19 +121,19 @@ const handlePost: ApiHandler = async (req, res, env) => {
   try {
     raw = JSON.parse(body === '' ? '{}' : body) as unknown;
   } catch {
-    sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
+    sendJson(res, 400, { error: 'Request body is not valid JSON' });
     return;
   }
 
   const parsed = PostBodySchema.safeParse(raw);
   if (!parsed.success) {
-    sendJson(res, 400, { error: 'Тело запроса не соответствует формату: project, id и decision (accept|reject)' });
+    sendJson(res, 400, { error: 'Request body does not match the format: project, id and decision (accept|reject)' });
     return;
   }
 
   const project = listProjects(env.runsRoot).find((entry) => entry.key === parsed.data.project);
   if (project?.path === undefined) {
-    sendJson(res, 400, { error: `Проект ${parsed.data.project} неизвестен указателю projects.json` });
+    sendJson(res, 400, { error: `Project ${parsed.data.project} is unknown to the projects.json index` });
     return;
   }
 

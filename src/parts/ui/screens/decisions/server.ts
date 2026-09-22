@@ -37,7 +37,7 @@ const handlePost: ApiHandler = async (req, res, env) => {
   try {
     body = await readBody(req);
   } catch {
-    sendJson(res, 413, { error: 'Тело запроса слишком велико' });
+    sendJson(res, 413, { error: 'Request body is too large' });
     return;
   }
 
@@ -45,25 +45,25 @@ const handlePost: ApiHandler = async (req, res, env) => {
   try {
     raw = JSON.parse(body === '' ? '{}' : body) as unknown;
   } catch {
-    sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
+    sendJson(res, 400, { error: 'Request body is not valid JSON' });
     return;
   }
 
   const parsed = PostBodySchema.safeParse(raw);
   if (!parsed.success) {
-    sendJson(res, 400, { error: 'Тело запроса не соответствует формату: run, outcome и, по надобности, step, reason, from' });
+    sendJson(res, 400, { error: 'Request body does not match the format: run, outcome and, optionally, step, reason, from' });
     return;
   }
 
   const address = parseRunAddress(parsed.data.run);
   if (address === undefined) {
-    sendJson(res, 400, { error: 'run должен иметь вид <проект>/<прогон>' });
+    sendJson(res, 400, { error: 'run must look like <project>/<run>' });
     return;
   }
 
   const project = listProjects(env.runsRoot).find((entry) => entry.key === address.key);
   if (project?.path === undefined) {
-    sendJson(res, 400, { error: `Проект ${address.key} неизвестен указателю projects.json` });
+    sendJson(res, 400, { error: `Project ${address.key} is unknown to the projects.json index` });
     return;
   }
 
@@ -72,7 +72,7 @@ const handlePost: ApiHandler = async (req, res, env) => {
   try {
     awaiting = readStatus(paths).awaiting;
   } catch {
-    sendJson(res, 404, { error: `Прогон ${address.runId} не найден` });
+    sendJson(res, 404, { error: `Run ${address.runId} not found` });
     return;
   }
 
@@ -89,7 +89,7 @@ const handlePost: ApiHandler = async (req, res, env) => {
       undefined,
     );
   } catch (error) {
-    sendJson(res, 400, { error: isStepcastError(error) ? error.message : 'Решение не проходит проверку' });
+    sendJson(res, 400, { error: isStepcastError(error) ? error.message : 'The decision fails validation' });
     return;
   }
 

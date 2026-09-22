@@ -11,7 +11,6 @@ import run from './run';
 import runs from './runs';
 import scrum from './scrum';
 import settings from './settings';
-import steps from './steps';
 import usage from './usage';
 import widgets from './widgets';
 
@@ -28,7 +27,6 @@ export const BUILTIN_SCREENS: Readonly<Record<string, ScreenPlugin>> = {
   'screen-runs': runs,
   'screen-run': run,
   'screen-pipelines': pipelines,
-  'screen-steps': steps,
   'screen-decisions': decisions,
   'screen-widgets': widgets,
   'screen-backlog': backlog,

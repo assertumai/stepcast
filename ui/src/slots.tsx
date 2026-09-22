@@ -36,7 +36,7 @@ export type SlotProps<Props, Kind extends SlotKind> = {
 function useKernelContext(): Context {
   const ctx = useContext(KernelContext);
   if (ctx === undefined) {
-    throw new Error('<Slot> вызван вне дерева ядра витрины: оберните разметку в <KernelRoot>');
+    throw new Error('<Slot> used outside the dashboard kernel tree: wrap the markup in <KernelRoot>');
   }
   return ctx;
 }
@@ -122,7 +122,7 @@ function DiagnosticsBar({ diagnostics }: { readonly diagnostics: readonly Diagno
         <div key={index} className={`kernel-diagnostic kernel-diagnostic-${diagnostic.kind}`}>
           <span className="kernel-diagnostic-plugin">{diagnostic.plugin}</span>
           {diagnostic.slot === undefined ? null : (
-            <span className="kernel-diagnostic-slot">{` → слот ${diagnostic.slot}`}</span>
+            <span className="kernel-diagnostic-slot">{` → slot ${diagnostic.slot}`}</span>
           )}
           {': '}
           <span className="kernel-diagnostic-message">{diagnostic.message}</span>
@@ -135,8 +135,8 @@ function DiagnosticsBar({ diagnostics }: { readonly diagnostics: readonly Diagno
 function NoRoot(): ReactElement {
   return (
     <div className="kernel-empty">
-      Ни один плагин не внёс каркас витрины в корневой слот — открывать
-      нечего.
+      No plugin contributed a dashboard shell to the root slot — there is
+      nothing to open.
     </div>
   );
 }
@@ -189,7 +189,7 @@ export function KernelRoot({ kernel }: { readonly kernel: BrowserKernel }): Reac
         setDiagnostics(result);
         for (const diagnostic of result) {
           const where =
-            diagnostic.slot === undefined ? diagnostic.plugin : `${diagnostic.plugin} → слот ${diagnostic.slot}`;
+            diagnostic.slot === undefined ? diagnostic.plugin : `${diagnostic.plugin} → slot ${diagnostic.slot}`;
           const line = `[stepcast] ${where}: ${diagnostic.message}`;
           if (logged.has(line)) continue;
           logged.add(line);

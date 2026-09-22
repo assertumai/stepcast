@@ -6,6 +6,7 @@ import { KernelContext, ROOT } from '../kernel';
 import { HOME_ROUTES_FILE, RoutesListing } from '../pages/Routes';
 import { useRoute, useRoutes, useScreens } from '../router';
 import { Slot } from '../slots.tsx';
+import { Alert } from '@stepcast/ui';
 import { WidgetHost } from '../widgetHost';
 import { GenericNavItem } from './navItem';
 import {
@@ -55,7 +56,7 @@ class ScreenErrorBoundary extends Component<ChainLinkProps<Record<string, never>
 
   override render(): ReactNode {
     if (this.state.error !== undefined) {
-      return <div className="screen-error">Экран упал: {this.state.error.message}</div>;
+      return <div className="screen-error">This screen crashed: {this.state.error.message}</div>;
     }
     return this.props.next;
   }
@@ -63,14 +64,21 @@ class ScreenErrorBoundary extends Component<ChainLinkProps<Record<string, never>
 
 function useKernelContext(): Context {
   const ctx = useContext(KernelContext);
-  if (ctx === undefined) throw new Error('Shell вызван вне дерева ядра витрины');
+  if (ctx === undefined) throw new Error('Shell rendered outside the kernel tree');
   return ctx;
 }
 
+/** Порядок групп поставки; незнакомая группа встаёт после них. */
+const NAV_GROUP_ORDER: readonly string[] = ['work', 'extend', 'system'];
+
+function navGroupLabel(group: string): string {
+  return group.charAt(0).toUpperCase() + group.slice(1);
+}
+
 const LIVE_LABEL = {
-  connecting: 'подключение к демону…',
-  live: 'живое обновление',
-  offline: 'нет связи с демоном',
+  connecting: 'connecting to daemon…',
+  live: 'live updates',
+  offline: 'daemon unreachable',
 } as const;
 
 /** Причина, по которой цель маршрута не показана, — общий вид для обоих встроенных видов цели (design.md, Решение 5). */
@@ -87,9 +95,9 @@ function MissingTarget({ reason }: { readonly reason: string }): JSX.Element {
  */
 function BuildErrorBar({ label, reason }: { readonly label: string; readonly reason: string }): JSX.Element {
   return (
-    <div className="screens-build-error" role="alert">
-      {label} не пересобран: {reason}
-    </div>
+    <Alert variant="destructive">
+      {label} was not rebuilt: {reason}
+    </Alert>
   );
 }
 
@@ -108,8 +116,8 @@ function ScreenTargetView({ target, pathParams, targetParams, ...live }: RouteTa
       <MissingTarget
         reason={
           buildError === undefined
-            ? `Экран «${target.id}» не найден в действующем составе`
-            : `Экран «${target.id}» не найден в действующем составе (сборка состава: ${buildError})`
+            ? `Screen “${target.id}” is not in the active composition`
+            : `Screen “${target.id}” is not in the active composition (composition build: ${buildError})`
         }
       />
     );
@@ -127,7 +135,7 @@ function ScreenTargetView({ target, pathParams, targetParams, ...live }: RouteTa
       of={SCREEN}
       k={target.id}
       props={{ ...live, params }}
-      default={<MissingTarget reason={`Экран «${target.id}» объявлен составом, но браузерная половина недоступна`} />}
+      default={<MissingTarget reason={`Screen “${target.id}” is declared, but its browser half is unavailable`} />}
     />
   );
 }
@@ -143,27 +151,27 @@ function WidgetTargetView({ target, targetParams, widgets }: RouteTargetSlotProp
   if (paramNames.length > 0) {
     return (
       <MissingTarget
-        reason={`Маршрут объявляет параметры цели виджета (${paramNames.join(', ')}) — контракта props у виджета пока нет`}
+        reason={`The route declares widget target params (${paramNames.join(', ')}), but widgets have no props contract yet`}
       />
     );
   }
 
   const parts = target.id.split('/');
   if (parts.length !== 2) {
-    return <MissingTarget reason={`Цель виджета «${target.id}» ожидает форму <проект>/<id>`} />;
+    return <MissingTarget reason={`Widget target “${target.id}” must have the form <project>/<id>`} />;
   }
   const [projectKey, id] = parts as [string, string];
   const found = widgets?.projects
     .find((project) => project.projectKey === projectKey)
     ?.widgets.find((widget) => widget.id === id);
   if (found === undefined) {
-    return <MissingTarget reason={`Виджет «${id}» проекта «${projectKey}» не найден в действующем составе`} />;
+    return <MissingTarget reason={`Widget “${id}” of project “${projectKey}” is not in the active composition`} />;
   }
   return <WidgetHost projectKey={projectKey} id={id} version={found.version} />;
 }
 
 function UnknownTargetKind({ kind }: { readonly kind: string }): JSX.Element {
-  return <MissingTarget reason={`Вид цели «${kind}» не знаком действующему составу витрины`} />;
+  return <MissingTarget reason={`Target kind “${kind}” is unknown to the active composition`} />;
 }
 
 function Shell(): JSX.Element {
@@ -205,6 +213,44 @@ function Shell(): JSX.Element {
 
   const activeRouteId = route?.route.id;
 
+  // Группы меню — по `nav.group` маршрута: известные группы поставки идут в
+  // объявленном порядке, незнакомая группа — после них, пункты без группы —
+  // последними без заголовка. Каркас не знает ни одного экрана, но порядок
+  // трёх групп поставки знает: иначе группы вставали бы по первому пункту.
+  const groups = new Map<string | undefined, typeof navRoutes>();
+  for (const known of NAV_GROUP_ORDER) groups.set(known, []);
+  for (const navRoute of navRoutes) {
+    const group = navRoute.nav?.group;
+    const bucket = groups.get(group);
+    if (bucket === undefined) groups.set(group, [navRoute]);
+    else bucket.push(navRoute);
+  }
+  const ungrouped = groups.get(undefined) ?? [];
+  groups.delete(undefined);
+
+  const renderNavItem = (navRoute: (typeof navRoutes)[number]): JSX.Element => {
+    const title =
+      navRoute.nav?.title ??
+      (navRoute.target.kind === 'screen' ? screensTable.get(navRoute.target.id)?.title : undefined) ??
+      navRoute.target.id;
+    const active =
+      activeRouteId !== undefined &&
+      (activeRouteId === navRoute.id || navRoute.nav?.activeFor?.includes(activeRouteId) === true);
+    // Ссылка пункта — адрес своего маршрута, а не поиск по цели: цель
+    // вправе иметь несколько маршрутов, и пункт обязан вести на тот, чей
+    // `nav` его и породил (`ui-routes`, Решение 13).
+    const href = hrefForRoute(navRoute);
+    return (
+      <Slot
+        key={navRoute.id}
+        of={NAV}
+        k={navRoute.id}
+        props={{ route: navRoute, title, href, active, navigate }}
+        default={<GenericNavItem route={navRoute} title={title} href={href} active={active} navigate={navigate} />}
+      />
+    );
+  };
+
   return (
     <div className="shell">
       <nav className="sidebar">
@@ -220,36 +266,21 @@ function Shell(): JSX.Element {
           stepcast
         </a>
 
-        {navRoutes.map((navRoute) => {
-          const title =
-            navRoute.nav?.title ??
-            (navRoute.target.kind === 'screen' ? screensTable.get(navRoute.target.id)?.title : undefined) ??
-            navRoute.target.id;
-          const active =
-            activeRouteId !== undefined &&
-            (activeRouteId === navRoute.id || navRoute.nav?.activeFor?.includes(activeRouteId) === true);
-          // Ссылка пункта — адрес своего маршрута, а не поиск по цели: цель
-          // вправе иметь несколько маршрутов, и пункт обязан вести на тот, чей
-          // `nav` его и породил (`ui-routes`, Решение 13).
-          const href = hrefForRoute(navRoute);
-          return (
-            <Slot
-              key={navRoute.id}
-              of={NAV}
-              k={navRoute.id}
-              props={{ route: navRoute, title, href, active, navigate }}
-              default={<GenericNavItem route={navRoute} title={title} href={href} active={active} navigate={navigate} />}
-            />
-          );
-        })}
+        {[...groups].filter(([, routes]) => routes.length > 0).map(([group, routes]) => (
+          <div className="nav-group" key={group}>
+            <div className="nav-group-label">{navGroupLabel(group as string)}</div>
+            {routes.map(renderNavItem)}
+          </div>
+        ))}
+        {ungrouped.length === 0 ? null : <div className="nav-group">{ungrouped.map(renderNavItem)}</div>}
 
         <div className={live.state === 'live' ? 'live on' : 'live off'}>{LIVE_LABEL[live.state]}</div>
       </nav>
 
       <main className="content">
-        {screensBuildError === undefined ? null : <BuildErrorBar label="Состав экранов" reason={screensBuildError} />}
+        {screensBuildError === undefined ? null : <BuildErrorBar label="Screen composition" reason={screensBuildError} />}
         {routesSnapshot.buildError === undefined ? null : (
-          <BuildErrorBar label="Таблица маршрутов" reason={routesSnapshot.buildError} />
+          <BuildErrorBar label="Route table" reason={routesSnapshot.buildError} />
         )}
         <Slot
           of={SCREEN_FRAME}

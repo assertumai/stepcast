@@ -23,6 +23,8 @@ export interface RouteTarget {
 export interface RouteNav {
   readonly title?: string;
   readonly order?: number;
+  /** Группа бокового меню; пункты одной группы стоят вместе под её заголовком. */
+  readonly group?: string;
   /** Маршруты, на которых пункт этого маршрута остаётся подсвеченным. */
   readonly activeFor?: readonly string[];
 }

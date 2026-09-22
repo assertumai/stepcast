@@ -198,6 +198,17 @@ export const SHARED_MODULES: Readonly<Record<SharedModuleSpecifier, SharedModule
       'SelectValue',
       'SelectContent',
       'SelectItem',
+      'Badge',
+      'statusBadgeVariant',
+      'Label',
+      'Separator',
+      'Alert',
+      'AlertTitle',
+      'AlertDescription',
+      'Switch',
+      'Combobox',
+      'PageHeader',
+      'EmptyState',
       'Input',
     ],
   },
@@ -210,7 +221,7 @@ export const SHARED_MODULES: Readonly<Record<SharedModuleSpecifier, SharedModule
  * этим числом: правка имён без поднятой версии красит проверку раньше, чем
  * расхождение уедет виджету пользователя карточкой «неразрешённый импорт».
  */
-export const SHARED_MODULE_TABLE_VERSION = 1;
+export const SHARED_MODULE_TABLE_VERSION = 2;
 
 export type SharedModuleChangeKind = 'removed' | 'renamed' | 'replaced';
 

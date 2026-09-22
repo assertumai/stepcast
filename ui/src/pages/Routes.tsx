@@ -1,6 +1,8 @@
 import type { JSX } from 'react';
 
 import type { RouteTable } from '../../../src/parts/ui/routes.ts';
+import { Alert, AlertDescription, AlertTitle, PageHeader } from '@stepcast/ui';
+import './routes.css';
 
 /** Файл слоя, в который витрина пишет маршруты по умолчанию, — для подсказок на странице. */
 export const HOME_ROUTES_FILE = '~/.stepcast/routes.yml';
@@ -24,24 +26,36 @@ export interface RoutesNoticeProps {
  * (`ui/src/screens/routes.tsx`). Причина обязана быть названа в обоих — иначе
  * в поставочной конфигурации, где строка включена, пользователь видел бы
  * экран «Маршруты» без единого слова о том, почему он на него попал.
+ *
+ * Полоса предупреждения, а не заголовок страницы: в поставочной конфигурации
+ * она стоит над экраном «Маршруты» с его собственной шапкой, и второй
+ * заголовок над первым читался бы как две страницы разом.
  */
 export function RoutesNotice({ pathname, table, buildError, layerFile }: RoutesNoticeProps): JSX.Element {
   const hasRoot = table.some((route) => route.path === '/');
   return (
     <div className="routes-notice">
-      <h1>Адрес не разобран ни одним маршрутом</h1>
-      <p className="dim">
-        Открыт <code>{pathname}</code>
-      </p>
+      <Alert variant="warning">
+        <AlertTitle>No route matches this address</AlertTitle>
+        <AlertDescription>
+          <p className="routes-notice-line">
+            Opened <code>{pathname}</code>
+          </p>
+          {pathname === '/' && !hasRoot ? (
+            <p className="routes-notice-line">No start page: no route declares the path “/”.</p>
+          ) : null}
+          {table.length === 0 ? (
+            <p className="routes-notice-line">
+              No active routes — all are disabled by user layers. Layer file: <code>{layerFile}</code>
+            </p>
+          ) : null}
+        </AlertDescription>
+      </Alert>
       {buildError === undefined ? null : (
-        <p className="routes-listing-error" role="alert">
-          Таблица маршрутов не пересобрана: {buildError}
-        </p>
+        <Alert variant="destructive" className="routes-listing-error">
+          Route table was not rebuilt: {buildError}
+        </Alert>
       )}
-      {pathname === '/' && !hasRoot ? <p>Стартовая страница не объявлена: ни один маршрут не назвал путь «/».</p> : null}
-      {table.length === 0 ? (
-        <p>Действующих маршрутов нет — все отключены слоями пользователя. Файл слоя: {layerFile}</p>
-      ) : null}
     </div>
   );
 }
@@ -60,9 +74,13 @@ export type RoutesListingProps = RoutesNoticeProps;
 export function RoutesListing({ pathname, table, buildError, layerFile }: RoutesListingProps): JSX.Element {
   return (
     <div className="routes-listing">
+      <PageHeader
+        title="Routes"
+        description="Every path the dashboard currently resolves and the target it opens; enable the Routes screen to edit them."
+      />
       <RoutesNotice pathname={pathname} table={table} buildError={buildError} layerFile={layerFile} />
       {table.length === 0 ? null : (
-        <ul>
+        <ul className="routes-plain-list">
           {table.map((route) => (
             <li key={route.id}>
               <code>{route.path}</code> → {route.target.kind}:{route.target.id}

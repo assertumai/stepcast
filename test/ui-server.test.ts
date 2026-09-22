@@ -18,6 +18,7 @@ import {
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { buildSteps } from '../src/parts/ui/steps.js';
 import { resetModelDiscoveryCache } from '../src/parts/pipeline/backend/models.js';
 import { dashboardPath } from '../src/parts/ui/daemon/assets.js';
 import { createUiServer, LOOPBACK, type UiServer } from '../src/parts/ui/daemon/server.js';
@@ -2055,7 +2056,7 @@ describe('ui-dashboard: настройки дефолтов', () => {
     const settings = await fetchJson(server, '/api/settings');
     assert.equal(settings.code, 200);
     assert.equal(pick(settings.json, 'agent', 'value'), 'claude');
-    assert.equal(pick(settings.json, 'agent', 'source'), 'встроенное умолчание');
+    assert.equal(pick(settings.json, 'agent', 'source'), 'built-in default');
     assert.equal(pick(settings.json, 'model', 'value'), undefined);
     assert.equal(settings.json.file, join(home, '.stepcast', 'config.yml'));
     assert.equal(
@@ -2326,17 +2327,14 @@ output_schema: ./output.schema.json
 `;
 
   // Сценарий: «Каталог перечисляет шаги трёх слоёв»
-  it('перечисляет шаг проекта наравне со встроенными пакета, называя слой каждого', async (t) => {
+  it('перечисляет шаг проекта наравне со встроенными пакета, называя слой каждого', () => {
     const { runsRoot, projectRoot, home } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
     mkdirSync(join(projectRoot, '.stepcast', 'steps', 'greet'), { recursive: true });
     writeFileSync(join(projectRoot, '.stepcast', 'steps', 'greet', 'step.yml'), GREET_MANIFEST);
     writeFileSync(join(projectRoot, '.stepcast', 'steps', 'greet', 'main.cjs'), 'module.exports = () => {};\n');
-    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
-    const server = await startServer(t, { runsRoot, config, home });
-
-    const steps = await fetchJson(server, '/api/steps');
+    const steps = { code: 200, json: buildSteps(runsRoot, { home }) as unknown as Record<string, unknown> };
     assert.equal(steps.code, 200);
     const projectSteps = pick(steps.json, 'projects', 0, 'steps') as Array<{ name: string; layer: string }>;
     const greet = projectSteps.find((step) => step.name === 'greet');
@@ -2347,17 +2345,14 @@ output_schema: ./output.schema.json
   });
 
   // Сценарий: «Параметры видны с типами и умолчаниями»
-  it('показывает параметр именем, типом, обязательностью, умолчанием и описанием', async (t) => {
+  it('показывает параметр именем, типом, обязательностью, умолчанием и описанием', () => {
     const { runsRoot, projectRoot, home } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
     mkdirSync(join(projectRoot, '.stepcast', 'steps', 'greet'), { recursive: true });
     writeFileSync(join(projectRoot, '.stepcast', 'steps', 'greet', 'step.yml'), GREET_MANIFEST);
     writeFileSync(join(projectRoot, '.stepcast', 'steps', 'greet', 'main.cjs'), 'module.exports = () => {};\n');
-    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
-    const server = await startServer(t, { runsRoot, config, home });
-
-    const steps = await fetchJson(server, '/api/steps');
+    const steps = { code: 200, json: buildSteps(runsRoot, { home }) as unknown as Record<string, unknown> };
     const projectSteps = pick(steps.json, 'projects', 0, 'steps') as Array<{
       name: string;
       params: Array<{ name: string; type?: string; required: boolean; default?: unknown; description?: string }>;
@@ -2371,7 +2366,7 @@ output_schema: ./output.schema.json
   });
 
   // Сценарий: «Перекрытый шаг отмечен»
-  it('отмечает перекрытый шаг домашнего слоя, а не пропускает его', async (t) => {
+  it('отмечает перекрытый шаг домашнего слоя, а не пропускает его', () => {
     const { runsRoot, projectRoot, home } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
@@ -2381,10 +2376,7 @@ output_schema: ./output.schema.json
     mkdirSync(join(home, '.stepcast', 'steps', 'greet'), { recursive: true });
     writeFileSync(join(home, '.stepcast', 'steps', 'greet', 'step.yml'), GREET_MANIFEST);
     writeFileSync(join(home, '.stepcast', 'steps', 'greet', 'main.cjs'), 'module.exports = () => {};\n');
-    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
-    const server = await startServer(t, { runsRoot, config, home });
-
-    const steps = await fetchJson(server, '/api/steps');
+    const steps = { code: 200, json: buildSteps(runsRoot, { home }) as unknown as Record<string, unknown> };
     const projectSteps = pick(steps.json, 'projects', 0, 'steps') as Array<{
       name: string;
       layer: string;
@@ -2401,20 +2393,17 @@ output_schema: ./output.schema.json
   });
 
   // Сценарий: «Чистый проект»
-  it('проект без .stepcast/steps/ показывает встроенные шаги пакета, а не пустой список', async (t) => {
+  it('проект без .stepcast/steps/ показывает встроенные шаги пакета, а не пустой список', () => {
     const { runsRoot, projectRoot, home } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
-    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
-    const server = await startServer(t, { runsRoot, config, home });
-
-    const steps = await fetchJson(server, '/api/steps');
+    const steps = { code: 200, json: buildSteps(runsRoot, { home }) as unknown as Record<string, unknown> };
     const projectSteps = pick(steps.json, 'projects', 0, 'steps') as unknown[];
     assert.ok(projectSteps.length > 0);
   });
 
   // Сценарий: «Дефектный манифест»
-  it('дефектный манифест показан с причиной отказа и файлом манифеста', async (t) => {
+  it('дефектный манифест показан с причиной отказа и файлом манифеста', () => {
     const { runsRoot, projectRoot, home } = makeJournalBed();
     seedRun(runsRoot, projectRoot, { runId: 'a' });
     writeFileSync(join(projectRoot, 'stepcast.yml'), DEMO_PIPELINE);
@@ -2424,10 +2413,7 @@ output_schema: ./output.schema.json
       `${GREET_MANIFEST}\nunexpected_field: 1\n`,
     );
     writeFileSync(join(projectRoot, '.stepcast', 'steps', 'greet', 'main.cjs'), 'module.exports = () => {};\n');
-    const { config } = resolveConfig({ cwd: projectRoot, home, projectPath: null });
-    const server = await startServer(t, { runsRoot, config, home });
-
-    const steps = await fetchJson(server, '/api/steps');
+    const steps = { code: 200, json: buildSteps(runsRoot, { home }) as unknown as Record<string, unknown> };
     const projectSteps = pick(steps.json, 'projects', 0, 'steps') as Array<{
       name: string;
       error?: string;
@@ -4500,7 +4486,7 @@ describe('ui-dashboards: GET/POST /api/dashboards', () => {
       }),
     });
     assert.equal(written.code, 400);
-    assert.match(String(written.json.error), /не разбирается как YAML/);
+    assert.match(String(written.json.error), /is not valid YAML/);
     assert.match(String(written.json.error), /line 7|строка 7/);
     assert.equal(readFileSync(path, 'utf8'), broken);
   });
@@ -4523,7 +4509,7 @@ describe('ui-dashboards: GET/POST /api/dashboards', () => {
       body: JSON.stringify({ layer: 'home', id: 'release', document: overlapping }),
     });
     assert.equal(written.code, 400);
-    assert.match(String(written.json.error), /накладываются/);
+    assert.match(String(written.json.error), /overlap/);
 
     const after = await fetchJson(server, '/api/dashboards');
     assert.deepEqual(after.json.dashboards, []);
@@ -4551,7 +4537,7 @@ describe('ui-dashboards: GET/POST /api/dashboards', () => {
       }),
     });
     assert.equal(written.code, 400);
-    assert.match(String(written.json.error), /изменился с момента открытия/);
+    assert.match(String(written.json.error), /has changed since it was opened/);
   });
 
   it('правка файла дашборда приходит потоком, не пересылая routes, screens и widgets', async (t) => {

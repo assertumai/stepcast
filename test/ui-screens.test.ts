@@ -78,7 +78,7 @@ describe('ui-screens: регистрация и снятие маршрута', 
 
     const after = await fetchJson(server, '/api/backlog');
     assert.equal(after.code, 404);
-    assert.match(String(after.json.error), /маршрут/i);
+    assert.match(String(after.json.error), /No such route/);
 
     // Демон не перезапускался — сосед отвечает по-прежнему.
     const sibling = await fetchJson(server, '/api/overview');
@@ -107,7 +107,6 @@ describe('ui-screens: состав экранов у демона', () => {
       'screen-runs',
       'screen-scrum',
       'screen-settings',
-      'screen-steps',
       'screen-usage',
       'screen-widgets',
     ]);
@@ -116,7 +115,6 @@ describe('ui-screens: состав экранов у демона', () => {
     const routed: Record<string, string> = {
       'screen-runs': '/api/runs',
       'screen-pipelines': '/api/pipelines',
-      'screen-steps': '/api/steps',
       'screen-backlog': '/api/backlog',
       'screen-usage': '/api/usage',
       'screen-cleanup': '/api/usage-records',
@@ -131,15 +129,15 @@ describe('ui-screens: состав экранов у демона', () => {
 
   it('домашний патч отключает экран: его нет в составе, маршрут отвечает 404, соседние экраны и их маршруты работают', async (t) => {
     const { runsRoot, home } = makeJournalBed();
-    writePatch(home, 'version: 1\nkind: plugins-patch\nplugins:\n  - id: screen-steps\n    use: stepcast:screen-steps\n    enabled: false\n');
+    writePatch(home, 'version: 1\nkind: plugins-patch\nplugins:\n  - id: screen-pipelines\n    use: stepcast:screen-pipelines\n    enabled: false\n');
     const server = await startServer(t, { runsRoot, home });
 
     const screens = await fetchJson(server, '/api/screens');
     const ids = (screens.json.screens as Array<{ id: string }>).map((screen) => screen.id);
-    assert.ok(!ids.includes('screen-steps'), ids.join(', '));
+    assert.ok(!ids.includes('screen-pipelines'), ids.join(', '));
     assert.ok(ids.includes('screen-runs'), ids.join(', '));
 
-    const disabled = await fetchJson(server, '/api/steps');
+    const disabled = await fetchJson(server, '/api/pipelines');
     assert.equal(disabled.code, 404);
 
     const sibling = await fetchJson(server, '/api/backlog');
@@ -289,7 +287,7 @@ describe('ui-screens: необъявленный адрес', () => {
 
     const missing = await fetchJson(server, `/api/${encodeURIComponent('нет-такого')}`);
     assert.equal(missing.code, 404);
-    assert.match(String(missing.json.error), /маршрут/i);
+    assert.match(String(missing.json.error), /No such route/);
   });
 });
 
@@ -335,7 +333,7 @@ describe('ui-screens: строка каркаса снята патчем', () =
     // сервисов некому, — но ни реестра экранов, ни реестра маршрутов в нём
     // нет. Без разбора этого случая первое же обращение к составу дало бы
     // `TypeError` мимо всякого разбора отказа и уронило бы демон.
-    const rows = ['ui-shell', 'screen-runs', 'screen-run', 'screen-pipelines', 'screen-steps', 'screen-widgets',
+    const rows = ['ui-shell', 'screen-runs', 'screen-run', 'screen-pipelines', 'screen-widgets',
       'screen-backlog', 'screen-scrum', 'screen-usage', 'screen-cleanup', 'screen-agents', 'screen-settings', 'screen-routes',
       'screen-decisions', 'screen-proposals', 'ui-dashboards', 'ui-run-launch'];
     writePatch(
@@ -369,7 +367,7 @@ describe('ui-screens: строка каркаса снята патчем', () =
 
     const settings = await fetchJson(server, '/api/settings');
     assert.equal(settings.code, 500);
-    assert.match(String(settings.json.error), /Настройки не читаются/);
+    assert.match(String(settings.json.error), /Settings cannot be read/);
 
     // Состав экранов при этом отдаётся: витрина открывается и называет причину.
     const screens = await fetchJson(server, '/api/screens');

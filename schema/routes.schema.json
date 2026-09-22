@@ -94,6 +94,10 @@
               "order": {
                 "type": "number"
               },
+              "group": {
+                "type": "string",
+                "minLength": 1
+              },
               "active_for": {
                 "type": "array",
                 "items": {

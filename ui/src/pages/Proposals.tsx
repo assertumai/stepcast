@@ -10,13 +10,41 @@ import {
 import { fmtTime } from '../format';
 import { TargetLink } from '../routeLink';
 import { RUN_TARGET } from '../screens/run';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  EmptyState,
+  PageHeader,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+  statusBadgeVariant,
+} from '@stepcast/ui';
+import './proposals.css';
 
 /**
- * Экран «Предложения» (`ui-proposals`, design.md Решение 8, 15): очередь всех
- * проектов дифом, сгруппированная по прогону-источнику; открытые записи
- * развёрнуты, решённые свёрнуты. Диф считает браузер построчным LCS
- * (`src/parts/pipeline/domain/textDiff.ts`) из содержимого цели на диске сейчас и предложенного
- * текста — оба уже пришли с `GET /api/proposals`.
+ * Экран «Proposals» (`ui-proposals`, design.md Решение 8, 15; `ui-overhaul`):
+ * правки файлов кабинета, предложенные агентом, дифом — по проектам и по
+ * прогону-источнику. Открытые записи развёрнуты с кнопками решения, решённые
+ * собраны таблицей на своей вкладке. Диф считает браузер построчным LCS
+ * (`src/parts/pipeline/domain/textDiff.ts`) из содержимого цели на диске сейчас
+ * и предложенного текста — оба уже пришли с `GET /api/proposals`.
+ *
+ * Проект без единой записи не показывается: раздел «queue is empty» на
+ * каждый известный демону каталог превращал экран в перечень хэшей.
  */
 
 export interface ProposalGroup {
@@ -38,6 +66,12 @@ export function groupByRun(records: readonly ProposalApiRecord[]): readonly Prop
     (byRun.get(key) as ProposalApiRecord[]).push(record);
   }
   return order.map((runId) => ({ runId, records: byRun.get(runId) as ProposalApiRecord[] }));
+}
+
+export function projectName(path: string | undefined, projectKey: string): string {
+  if (path === undefined) return projectKey;
+  const parts = path.split('/').filter((part) => part.length > 0);
+  return parts.length === 0 ? path : (parts[parts.length - 1] as string);
 }
 
 const DIFF_MARKER: Record<DiffLine['kind'], string> = { added: '+', removed: '-', same: ' ' };
@@ -89,18 +123,39 @@ export function ProposalActions({
 
   return (
     <div className="proposal-actions">
-      <button disabled={busy} onClick={() => decide('accept')}>
-        принять
-      </button>
-      <button disabled={busy} onClick={() => decide('reject')}>
-        отклонить
-      </button>
-      {error === undefined ? null : <p className="notice error">{error}</p>}
+      <Button size="sm" disabled={busy} onClick={() => decide('accept')}>
+        Accept
+      </Button>
+      <Button size="sm" variant="outline" disabled={busy} onClick={() => decide('reject')}>
+        Reject
+      </Button>
+      {error === undefined ? null : (
+        <Alert variant="destructive" className="proposal-error">
+          {error}
+        </Alert>
+      )}
     </div>
   );
 }
 
-function ProposalCard({
+function OriginLabel({
+  projectKey,
+  runId,
+  navigate,
+}: {
+  readonly projectKey: string;
+  readonly runId: string | undefined;
+  readonly navigate: (href: string) => void;
+}): JSX.Element {
+  if (runId === undefined) return <span className="dim">proposed manually</span>;
+  return (
+    <TargetLink target={RUN_TARGET} params={{ projectKey, runId }} navigate={navigate}>
+      run {runId}
+    </TargetLink>
+  );
+}
+
+function PendingCard({
   projectKey,
   record,
   onDecided,
@@ -109,24 +164,56 @@ function ProposalCard({
   readonly record: ProposalApiRecord;
   readonly onDecided: () => void;
 }): JSX.Element {
-  const open = record.state === 'pending';
   return (
-    <div className={`proposal-card ${open ? 'open' : 'decided'}`}>
+    <div className="proposal-card open">
       <div className="proposal-head">
         <code>{record.target}</code>
-        <span className={`badge state-${record.state}`}>{record.state}</span>
-        <span className="proposal-time">{fmtTime(record.createdAt)}</span>
+        <Badge variant="secondary">{record.action}</Badge>
+        <span className="proposal-time dim small">{fmtTime(record.createdAt)}</span>
       </div>
       {record.reason === undefined ? null : <p className="proposal-reason">{record.reason}</p>}
-      {open ? (
-        <>
-          <DiffView before={record.currentContent ?? ''} after={record.content} />
-          <ProposalActions projectKey={projectKey} record={record} onDecided={onDecided} />
-        </>
-      ) : (
-        <p className="note dim">решено{record.decidedAt === undefined ? '' : ` ${fmtTime(record.decidedAt)}`}</p>
-      )}
+      <DiffView before={record.currentContent ?? ''} after={record.content} />
+      <ProposalActions projectKey={projectKey} record={record} onDecided={onDecided} />
     </div>
+  );
+}
+
+function ResolvedTable({
+  projectKey,
+  records,
+  navigate,
+}: {
+  readonly projectKey: string;
+  readonly records: readonly ProposalApiRecord[];
+  readonly navigate: (href: string) => void;
+}): JSX.Element {
+  return (
+    <Table className="proposals-resolved">
+      <TableHeader>
+        <TableRow>
+          <TableHead>Target</TableHead>
+          <TableHead>Decision</TableHead>
+          <TableHead>Origin</TableHead>
+          <TableHead>Decided</TableHead>
+        </TableRow>
+      </TableHeader>
+      <TableBody>
+        {records.map((record) => (
+          <TableRow key={record.id}>
+            <TableCell>
+              <code>{record.target}</code>
+            </TableCell>
+            <TableCell>
+              <Badge variant={statusBadgeVariant(record.state)}>{record.state}</Badge>
+            </TableCell>
+            <TableCell>
+              <OriginLabel projectKey={projectKey} runId={record.origin.run} navigate={navigate} />
+            </TableCell>
+            <TableCell className="dim">{record.decidedAt === undefined ? '—' : fmtTime(record.decidedAt)}</TableCell>
+          </TableRow>
+        ))}
+      </TableBody>
+    </Table>
   );
 }
 
@@ -139,42 +226,56 @@ function ProjectProposals({
   readonly navigate: (href: string) => void;
   readonly onDecided: () => void;
 }): JSX.Element {
-  const groups = groupByRun(project.records);
+  const pending = project.records.filter((record) => record.state === 'pending');
+  const resolved = project.records.filter((record) => record.state !== 'pending');
+  const groups = groupByRun(pending);
+  const path: string | undefined = project.projectPath;
+
   return (
-    <section className="proposals-project">
-      <header className="proposals-project-head">
-        <h3>{project.projectKey}</h3>
-        <span className={`badge mode-${project.mode}`}>
-          {project.mode === 'direct' ? 'прямая запись' : 'очередь'}
-        </span>
-      </header>
-      {groups.length === 0 ? <p className="note dim">Очередь пуста.</p> : null}
-      {groups.map((group) => (
-        <div className="proposal-group" key={group.runId ?? 'manual'}>
-          <div className="proposal-group-head">
-            {group.runId === undefined ? (
-              <span>вручную</span>
-            ) : (
-              <TargetLink
-                target={RUN_TARGET}
-                params={{ projectKey: project.projectKey, runId: group.runId }}
-                navigate={navigate}
-              >
-                прогон {group.runId}
-              </TargetLink>
-            )}
-          </div>
-          {group.records.map((record) => (
-            <ProposalCard key={record.id} projectKey={project.projectKey} record={record} onDecided={onDecided} />
-          ))}
+    <Card className="proposals-project">
+      <CardHeader className="proposals-project-head">
+        <div>
+          <CardTitle title={path}>{projectName(path, project.projectKey)}</CardTitle>
+          {path === undefined ? null : <CardDescription className="mono">{path}</CardDescription>}
         </div>
-      ))}
-      {project.invalid.map((item) => (
-        <p className="notice error" key={item.file}>
-          негодная запись {item.file}: {item.reason}
-        </p>
-      ))}
-    </section>
+        <Badge variant={project.mode === 'direct' ? 'running' : 'outline'} title="Delivery mode: proposals are written straight to disk (direct) or wait for a decision here (queue)">
+          {project.mode === 'direct' ? 'direct write' : 'queue'}
+        </Badge>
+      </CardHeader>
+      <CardContent>
+        {project.invalid.map((item) => (
+          <Alert variant="destructive" key={item.file}>
+            Invalid entry {item.file}: {item.reason}
+          </Alert>
+        ))}
+        <Tabs defaultValue={pending.length > 0 || resolved.length === 0 ? 'pending' : 'resolved'}>
+          <TabsList>
+            <TabsTrigger value="pending">Pending ({pending.length})</TabsTrigger>
+            <TabsTrigger value="resolved">Resolved ({resolved.length})</TabsTrigger>
+          </TabsList>
+          <TabsContent value="pending">
+            {groups.length === 0 ? <p className="dim small proposals-empty">Nothing is waiting for a decision.</p> : null}
+            {groups.map((group) => (
+              <div className="proposal-group" key={group.runId ?? 'manual'}>
+                <div className="proposal-group-head small">
+                  <OriginLabel projectKey={project.projectKey} runId={group.runId} navigate={navigate} />
+                </div>
+                {group.records.map((record) => (
+                  <PendingCard key={record.id} projectKey={project.projectKey} record={record} onDecided={onDecided} />
+                ))}
+              </div>
+            ))}
+          </TabsContent>
+          <TabsContent value="resolved">
+            {resolved.length === 0 ? (
+              <p className="dim small proposals-empty">No decisions yet.</p>
+            ) : (
+              <ResolvedTable projectKey={project.projectKey} records={resolved} navigate={navigate} />
+            )}
+          </TabsContent>
+        </Tabs>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -187,17 +288,46 @@ export function Proposals({
   readonly navigate: (href: string) => void;
   readonly onDecided?: () => void;
 }): JSX.Element {
+  const header = (
+    <PageHeader
+      title="Proposals"
+      description={
+        <>
+          Changes an agent proposed to a project’s <code>.stepcast/</code> files — widgets, dashboards, plugins.
+          Nothing is written until you accept. Agents queue a change with{' '}
+          <code>stepcast propose &lt;target&gt; --from &lt;file&gt;</code>.
+        </>
+      }
+    />
+  );
   if (overview === undefined) {
-    return <p className="note dim">Загрузка…</p>;
+    return (
+      <>
+        {header}
+        <p className="dim">Loading…</p>
+      </>
+    );
   }
-  if (overview.projects.length === 0) {
-    return <p className="note dim">Ни один проект не предлагал правок.</p>;
+  const projects = overview.projects.filter((project) => project.records.length > 0 || project.invalid.length > 0);
+  if (projects.length === 0) {
+    return (
+      <>
+        {header}
+        <EmptyState
+          title="No proposals yet"
+          description="When an agent proposes a change to a project’s .stepcast/ files, it shows up here with a diff and Accept / Reject buttons."
+        />
+      </>
+    );
   }
   return (
-    <div className="proposals-screen">
-      {overview.projects.map((project) => (
-        <ProjectProposals key={project.projectKey} project={project} navigate={navigate} onDecided={onDecided} />
-      ))}
-    </div>
+    <>
+      {header}
+      <div className="proposals-screen">
+        {projects.map((project) => (
+          <ProjectProposals key={project.projectKey} project={project} navigate={navigate} onDecided={onDecided} />
+        ))}
+      </div>
+    </>
   );
 }

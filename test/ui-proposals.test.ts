@@ -119,7 +119,7 @@ describe('ui-proposals: GET /api/proposals', () => {
     const invalid = project.invalid as Array<Json>;
     assert.equal(invalid.length, 1);
     assert.equal(invalid[0]?.file, '.stepcast/config.yml');
-    assert.match(String(invalid[0]?.reason), /не разбирается/);
+    assert.match(String(invalid[0]?.reason), /cannot be parsed/);
   });
 
   it('предложение создания файла ещё не существующего — currentContent пуст (null)', async (t) => {

@@ -296,8 +296,8 @@ function pluginStepFields(
     ...(definition?.pluginFields === undefined ? {} : { pluginFields: definition.pluginFields }),
     pluginNote:
       plugin === undefined
-        ? `поля показаны из замка прогона: вид шага ${name} внесён плагином, которого журнал не называет`
-        : `поля показаны из замка прогона: вид шага ${name} внёс плагин ${plugin}`,
+        ? `fields shown from the run lock: step kind ${name} was contributed by a plugin the journal does not name`
+        : `fields shown from the run lock: step kind ${name} was contributed by plugin ${plugin}`,
   };
 }
 

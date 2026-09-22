@@ -12,7 +12,7 @@ import { basename, dirname, join } from 'node:path';
 import { isRunAlive, listProjects, listRuns, listRunsByKey, readManifest, readStatus } from './journal/reader.js';
 import { projectKey, runPaths, type RunPaths } from './journal/paths.js';
 import { isFailure, type StatusValue } from './journal/schema.js';
-import { ensureUsageRecord, removeUsageRecords, usageRecordAddresses } from './journal/usageStore.js';
+import { ensureUsageRecord, readUsageStore, removeUsageRecords, usageRecordAddresses } from './journal/usageStore.js';
 import { removeWorktree } from './worktrees.js';
 
 /**
@@ -760,6 +760,37 @@ function repointLatest(projectDir: string, runsRoot: string, key: string): void 
     // Платформа без символических ссылок: прогон адресуется идентификатором,
     // отсутствие ярлыка работе не мешает.
   }
+}
+
+/**
+ * Проект-призрак: запись указателя с путём, которого больше нет на диске, —
+ * след прогона из временного каталога (тесты, eval-раннер). Демон вычёркивает
+ * такие проекты сам: запись указателя, каталог прогонов и записи хранилища
+ * расхода (иначе обзор поднял бы проект заново из записей). Проект без пути в
+ * указателе не трогается — читатель не может доказать, что он мёртв.
+ *
+ * Возвращает вычеркнутые проекты, чтобы вызывающий мог их назвать в журнале.
+ */
+export interface OrphanProject {
+  readonly key: string;
+  readonly path: string;
+}
+
+export function pruneOrphanProjects(runsRoot: string): OrphanProject[] {
+  const orphans: OrphanProject[] = [];
+  for (const project of listProjects(runsRoot)) {
+    if (project.path === undefined || existsSync(project.path)) continue;
+    orphans.push({ key: project.key, path: project.path });
+  }
+  if (orphans.length === 0) return orphans;
+
+  const keys = new Set(orphans.map((orphan) => orphan.key));
+  const addresses = [...readUsageStore(runsRoot).records.values()]
+    .filter((record) => keys.has(record.project.key))
+    .map((record) => `${record.project.key}/${record.run_id}`);
+  if (addresses.length > 0) removeUsageRecords(runsRoot, addresses);
+  for (const orphan of orphans) dropProjectEntry(runsRoot, orphan.key);
+  return orphans;
 }
 
 /** Запись проекта в указателе: без прогонов она называет пустой каталог. */

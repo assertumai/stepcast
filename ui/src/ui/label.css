@@ -1,0 +1,7 @@
+.sc-label {
+  font-size: .85rem;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  line-height: 1.4;
+}
+.sc-label[data-disabled], .sc-label:has(+ :disabled) { opacity: .6; }

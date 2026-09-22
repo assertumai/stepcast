@@ -84,14 +84,14 @@ const handleSelectRuns: ApiHandler = (req, res, env) => {
   if (addressParams.length > 0) {
     if (hasTraitParams) {
       sendJson(res, 400, {
-        error: 'Параметр run не сочетается с trait, older-than или project: список адресов и признак — разные способы отбора',
+        error: 'The run parameter cannot be combined with trait, older-than or project: an address list and a trait are different selection modes',
       });
       return;
     }
 
     const distinct = [...new Set(addressParams)];
     if (distinct.length > MAX_RUN_ADDRESSES) {
-      sendJson(res, 413, { error: `Список адресов превышает предел в ${MAX_RUN_ADDRESSES}` });
+      sendJson(res, 413, { error: `The address list exceeds the limit of ${MAX_RUN_ADDRESSES}` });
       return;
     }
 
@@ -99,7 +99,7 @@ const handleSelectRuns: ApiHandler = (req, res, env) => {
     for (const value of distinct) {
       const address = parseRunAddress(value);
       if (address === undefined) {
-        sendJson(res, 400, { error: `Адрес прогона должен иметь вид <проект>/<прогон>: ${value}` });
+        sendJson(res, 400, { error: `Run address must look like <project>/<run>: ${value}` });
         return;
       }
       addresses.push(address);
@@ -115,8 +115,8 @@ const handleSelectRuns: ApiHandler = (req, res, env) => {
   for (const trait of url.searchParams.getAll('trait')) {
     if (!KNOWN_TRAITS.has(trait)) {
       sendJson(res, 400, {
-        error: `Неизвестный признак отбора: ${trait}`,
-        hint: 'Допустимые признаки: abandoned, failed',
+        error: `Unknown selection trait: ${trait}`,
+        hint: 'Allowed traits: abandoned, failed',
       });
       return;
     }
@@ -129,7 +129,7 @@ const handleSelectRuns: ApiHandler = (req, res, env) => {
     try {
       traits.olderThanMs = parseDuration(olderThan, 'older-than');
     } catch (error) {
-      const message = isStepcastError(error) ? error.message : 'Не удалось разобрать срок';
+      const message = isStepcastError(error) ? error.message : 'Could not parse the age';
       sendJson(res, 400, { error: message });
       return;
     }
@@ -139,7 +139,7 @@ const handleSelectRuns: ApiHandler = (req, res, env) => {
   // Ключ проекта уходит в путь так же, как ключ из адреса прогона: без этой
   // проверки `?project=../..` перечислял бы каталоги вне корня прогонов.
   if (project !== null && !isSafeSegment(project)) {
-    sendJson(res, 400, { error: 'Ключ проекта должен быть одним сегментом раскладки' });
+    sendJson(res, 400, { error: 'Project key must be a single layout segment' });
     return;
   }
 
@@ -159,24 +159,24 @@ const handleDelete: ApiHandler = (req, res, env) => {
   const url = new URL(req.url ?? '/', 'http://internal');
   const parsed = parseRunAddress(url.searchParams.get('run'));
   if (parsed === undefined) {
-    sendJson(res, 400, { error: 'Адрес прогона должен иметь вид <проект>/<прогон>' });
+    sendJson(res, 400, { error: 'Run address must look like <project>/<run>' });
     return;
   }
 
   const stats = readStatsDisposition(url);
   if (stats === INVALID) {
-    sendJson(res, 400, { error: 'stats должен быть keep или drop' });
+    sendJson(res, 400, { error: 'stats must be keep or drop' });
     return;
   }
 
   const paths = runPaths(env.runsRoot, parsed.key, parsed.runId);
   if (!existsSync(paths.dir)) {
-    sendJson(res, 404, { error: `Прогон ${parsed.runId} не найден` });
+    sendJson(res, 404, { error: `Run ${parsed.runId} not found` });
     return;
   }
 
   if (isRunAlive(paths)) {
-    sendJson(res, 409, { error: 'Прогон идёт: остановите его, прежде чем удалять' });
+    sendJson(res, 409, { error: 'The run is in progress: stop it before deleting' });
     return;
   }
 
@@ -204,7 +204,7 @@ const handleDeleteRuns: ApiHandler = async (req, res, env) => {
   try {
     body = await readBody(req);
   } catch {
-    sendJson(res, 413, { error: 'Тело запроса слишком велико' });
+    sendJson(res, 413, { error: 'Request body is too large' });
     return;
   }
 
@@ -212,25 +212,25 @@ const handleDeleteRuns: ApiHandler = async (req, res, env) => {
   try {
     parsed = JSON.parse(body === '' ? '{}' : body);
   } catch {
-    sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
+    sendJson(res, 400, { error: 'Request body is not valid JSON' });
     return;
   }
 
   const list = (parsed as { runs?: unknown }).runs;
   if (!Array.isArray(list) || list.some((item) => typeof item !== 'string')) {
-    sendJson(res, 400, { error: 'Тело запроса должно нести список адресов: { "runs": string[] }' });
+    sendJson(res, 400, { error: 'Request body must carry an address list: { "runs": string[] }' });
     return;
   }
 
   const statsField = (parsed as { stats?: unknown }).stats;
   if (statsField !== undefined && statsField !== 'keep' && statsField !== 'drop') {
-    sendJson(res, 400, { error: 'Поле stats должно быть keep или drop' });
+    sendJson(res, 400, { error: 'The stats field must be keep or drop' });
     return;
   }
   const stats: StatsDisposition = statsField === 'drop' ? 'drop' : 'keep';
 
   if (list.length > MAX_RUN_ADDRESSES) {
-    sendJson(res, 413, { error: `Список адресов превышает предел в ${MAX_RUN_ADDRESSES}` });
+    sendJson(res, 413, { error: `The address list exceeds the limit of ${MAX_RUN_ADDRESSES}` });
     return;
   }
 
@@ -238,7 +238,7 @@ const handleDeleteRuns: ApiHandler = async (req, res, env) => {
   for (const value of list as string[]) {
     const address = parseRunAddress(value);
     if (address === undefined) {
-      sendJson(res, 400, { error: `Адрес прогона должен иметь вид <проект>/<прогон>: ${value}` });
+      sendJson(res, 400, { error: `Run address must look like <project>/<run>: ${value}` });
       return;
     }
     addresses.push(address);

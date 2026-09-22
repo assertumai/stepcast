@@ -106,7 +106,8 @@ ctx.slots.contribute(ROOT, {
 поверхность, которой некому пользоваться.
 
 `@stepcast/ui` отдаёт компоненты витрины исходниками — Button, Card, Table,
-Dialog, Tabs, Select, Input (`ui/src/parts/ui/`) — тем же именем, каким пользуются
+Dialog, Tabs, Select, Input, Badge, Label, Separator, Alert, Switch, Combobox,
+PageHeader, EmptyState (`ui/src/ui/`) — тем же именем, каким пользуются
 встроенные экраны, и одним экземпляром со страницей: свой React, свой Radix,
 своя тема. API и имена компонентов — шадсновские (shadcn/ui), а вёрстка —
 обычный CSS на CSS-переменных, не Tailwind: демон собирает браузерную половину

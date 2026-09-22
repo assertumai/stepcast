@@ -1,0 +1,18 @@
+/*
+ * Экран очереди: раздел на проект — короткое имя проекта заголовком, полный
+ * путь моноширинной строкой под ним, чтобы одинаково названные каталоги
+ * разных корней различались, не занимая заголовок целым путём.
+ */
+.backlog-section { margin-top: 1.4rem; }
+.backlog-section:first-of-type { margin-top: 0; }
+
+.backlog-section-head { display: flex; flex-direction: column; gap: .15rem; margin-bottom: .6rem; }
+.backlog-section-title { font-size: .95rem; font-weight: 650; margin: 0; }
+.backlog-section-path { overflow-wrap: anywhere; }
+
+/* Меню фильтра ограничено той же шириной, что у прочих фильтров витрины (`.filters select`). */
+.backlog-filter { max-width: 14rem; }
+
+/* Свёрнутая подробность заголовка: сам заголовок — строка, `why` и `done_when` — под ним. */
+.backlog-title summary { cursor: pointer; }
+.backlog-title .note { margin-top: .3rem; }

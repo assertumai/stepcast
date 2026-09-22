@@ -1,6 +1,33 @@
 import { useEffect, useState, type FormEvent, type JSX } from 'react';
 
 import type { RouteDefinition } from '../../../src/parts/ui/routes.ts';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  EmptyState,
+  Input,
+  Label,
+  PageHeader,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@stepcast/ui';
+import './routes.css';
 
 /**
  * Экран «Маршруты»: перечень действующих маршрутов с источником каждого
@@ -22,6 +49,7 @@ interface RouteSources {
   readonly values?: RouteFieldSource;
   readonly navTitle?: RouteFieldSource;
   readonly navOrder?: RouteFieldSource;
+  readonly navGroup?: RouteFieldSource;
   readonly navActiveFor?: RouteFieldSource;
   readonly enabled?: RouteFieldSource;
 }
@@ -47,14 +75,15 @@ interface RoutesResponse {
 
 /** Подписи полей строки маршрута — перечень источников читается человеком, а не по именам ключей ответа. */
 const FIELD_LABEL: Readonly<Record<keyof RouteSources, string>> = {
-  path: 'путь',
-  target: 'цель',
-  params: 'параметры цели',
-  values: 'перечень значений',
-  navTitle: 'название пункта',
-  navOrder: 'порядок пункта',
-  navActiveFor: 'подсветка',
-  enabled: 'включённость',
+  path: 'path',
+  target: 'target',
+  params: 'target params',
+  values: 'value list',
+  navTitle: 'menu title',
+  navOrder: 'menu order',
+  navGroup: 'menu group',
+  navActiveFor: 'active for',
+  enabled: 'enabled',
 };
 
 const FIELD_ORDER: readonly (keyof RouteSources)[] = [
@@ -64,9 +93,19 @@ const FIELD_ORDER: readonly (keyof RouteSources)[] = [
   'values',
   'navTitle',
   'navOrder',
+  'navGroup',
   'navActiveFor',
   'enabled',
 ];
+
+/**
+ * Имя источника поля: встроенный слой — словом `bundled`, без пути к файлу
+ * поставки (путь внутри релиза ничего пользователю не говорит и меняется с
+ * каждой версией); домашний и проектный слои — файлом, который он правит.
+ */
+function sourceLabel(source: RouteFieldSource): string {
+  return source.layer === 'builtin' ? 'bundled' : `${source.file} (${source.layer})`;
+}
 
 /**
  * Источник каждого поля, а не одной лишь строки (`ui-routes`, «Перечень с
@@ -82,7 +121,7 @@ function FieldSources({ sources }: { readonly sources: RouteSources }): JSX.Elem
         return (
           <li key={field}>
             <span className="routes-source-field">{FIELD_LABEL[field]}</span>
-            <span className="dim"> — {source.file} ({source.layer})</span>
+            <span className="dim"> — {sourceLabel(source)}</span>
           </li>
         );
       })}
@@ -93,7 +132,7 @@ function FieldSources({ sources }: { readonly sources: RouteSources }): JSX.Elem
 async function fetchRoutes(): Promise<RoutesResponse> {
   const response = await fetch('/api/routes');
   const data = (await response.json()) as RoutesResponse & { error?: string };
-  if (!response.ok) throw new Error(data.error ?? `Демон ответил ${response.status}`);
+  if (!response.ok) throw new Error(data.error ?? `Daemon responded with ${response.status}`);
   return data;
 }
 
@@ -107,6 +146,7 @@ interface FormState {
   readonly targetId: string;
   readonly navTitle: string;
   readonly navOrder: string;
+  readonly navGroup: string;
   readonly enabled: boolean;
   readonly layer: Layer;
 }
@@ -118,6 +158,7 @@ const EMPTY_FORM: FormState = {
   targetId: '',
   navTitle: '',
   navOrder: '',
+  navGroup: '',
   enabled: true,
   layer: 'home',
 };
@@ -142,6 +183,7 @@ function formFor(route: RouteRow | DisabledRouteRow, enabled: boolean): FormStat
     targetId: target?.id ?? '',
     navTitle: nav?.title ?? '',
     navOrder: nav?.order === undefined ? '' : String(nav.order),
+    navGroup: nav?.group ?? '',
     enabled,
     layer: 'home',
   };
@@ -156,6 +198,20 @@ type LoadState =
   | { readonly kind: 'loading' }
   | { readonly kind: 'ready'; readonly data: RoutesResponse }
   | { readonly kind: 'error'; readonly message: string };
+
+function MenuCell({ route }: { readonly route: RouteRow }): JSX.Element {
+  const nav = route.nav;
+  if (nav === undefined) return <>—</>;
+  return (
+    <span className="routes-menu-cell">
+      <span>
+        {nav.title ?? route.target.id}
+        {nav.order === undefined ? '' : ` (${nav.order})`}
+      </span>
+      {nav.group === undefined ? null : <Badge variant="secondary">{nav.group}</Badge>}
+    </span>
+  );
+}
 
 export function RoutesEditor(): JSX.Element {
   const [state, setState] = useState<LoadState>({ kind: 'loading' });
@@ -174,13 +230,14 @@ export function RoutesEditor(): JSX.Element {
   const save = (event: FormEvent): void => {
     event.preventDefault();
     if (form.id.trim() === '' || form.path.trim() === '' || form.targetId.trim() === '') {
-      setSaveError('id, путь и цель обязательны');
+      setSaveError('ID, path and target are required');
       return;
     }
 
     const nav: Record<string, unknown> = {};
     if (form.navTitle.trim() !== '') nav.title = form.navTitle.trim();
     if (form.navOrder.trim() !== '') nav.order = Number(form.navOrder);
+    if (form.navGroup.trim() !== '') nav.group = form.navGroup.trim();
 
     const route: Record<string, unknown> = {
       id: form.id.trim(),
@@ -202,7 +259,7 @@ export function RoutesEditor(): JSX.Element {
     })
       .then(async (response) => {
         const data = (await response.json()) as { error?: string };
-        if (!response.ok) throw new Error(data.error ?? `Демон ответил ${response.status}`);
+        if (!response.ok) throw new Error(data.error ?? `Daemon responded with ${response.status}`);
         setForm(EMPTY_FORM);
         reload();
       })
@@ -210,151 +267,221 @@ export function RoutesEditor(): JSX.Element {
       .finally(() => setSaving(false));
   };
 
-  if (state.kind === 'loading') return <div className="routes-editor dim">Загрузка…</div>;
+  if (state.kind === 'loading') return <div className="routes-editor dim">Loading…</div>;
   if (state.kind === 'error') {
-    return <div className="routes-editor screen-error">Маршруты не получены: {state.message}</div>;
+    return (
+      <div className="routes-editor">
+        <Alert variant="destructive">Routes were not loaded: {state.message}</Alert>
+      </div>
+    );
   }
 
   const { routes, buildError } = state.data;
   const disabled = state.data.disabled ?? [];
+  const editing = form.id !== '';
 
   return (
     <div className="routes-editor">
-      <h1>Маршруты</h1>
+      <PageHeader
+        title="Routes"
+        description="Active routes merged from the bundled, home and project layers, with the source of every field; edit a row or add a new one to write it into a layer file."
+        actions={
+          editing ? (
+            <Button variant="outline" size="sm" onClick={() => setForm(EMPTY_FORM)}>
+              New route
+            </Button>
+          ) : undefined
+        }
+      />
       {buildError === undefined ? null : (
-        <p className="routes-listing-error" role="alert">
-          Таблица маршрутов не пересобрана: {buildError}
-        </p>
+        <Alert variant="destructive" className="routes-listing-error">
+          Route table was not rebuilt: {buildError}
+        </Alert>
       )}
-      <table className="routes-table">
-        <thead>
-          <tr>
-            <th>id</th>
-            <th>путь</th>
-            <th>цель</th>
-            <th>меню</th>
-            <th>источники полей</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {routes.map((route) => (
-            <tr key={route.id}>
-              <td>{route.id}</td>
-              <td>
-                <code>{route.path}</code>
-              </td>
-              <td>
-                {route.target.kind}:{route.target.id}
-              </td>
-              <td>
-                {route.nav === undefined
-                  ? '—'
-                  : `${route.nav.title ?? route.target.id}${route.nav.order === undefined ? '' : ` (${route.nav.order})`}`}
-              </td>
-              <td>
-                <FieldSources sources={route.sources} />
-              </td>
-              <td>
-                <button type="button" onClick={() => setForm(formFor(route, true))}>
-                  править
-                </button>
-              </td>
-            </tr>
-          ))}
-          {/* Отключённые строки — здесь же, а не спрятаны: маршрут,
-              выключенный из витрины, иначе исчезал бы из перечня совсем, и
-              включить его обратно можно было бы только правкой файла руками
-              (`ui-routes`, Решение 12). Слой формы — тот, в котором лежит
-              `enabled: false`: строка «включён» обязана лечь поверх той
-              самой, что выключила, а не под ней. */}
-          {disabled.map((route) => (
-            <tr key={`disabled:${route.id}`} className="routes-row-disabled">
-              <td>{route.id}</td>
-              <td>{route.path === undefined ? '—' : <code>{route.path}</code>}</td>
-              <td>{route.target === undefined ? '—' : `${route.target.kind}:${route.target.id}`}</td>
-              <td className="dim">отключён</td>
-              <td className="dim">
-                отключён файлом {route.disabledBy.file} ({route.disabledBy.layer})
-              </td>
-              <td>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setForm({
-                      ...formFor(route, true),
-                      layer: route.disabledBy.layer === 'project' ? 'project' : 'home',
-                    })
-                  }
-                >
-                  включить
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {routes.length === 0 && disabled.length === 0 ? (
+        <EmptyState
+          className="routes-empty"
+          title="No routes"
+          description="Nothing is declared in any layer; add the first route with the form below."
+        />
+      ) : (
+        <Table className="routes-table">
+          <TableHeader>
+            <TableRow>
+              <TableHead>ID</TableHead>
+              <TableHead>Path</TableHead>
+              <TableHead>Target</TableHead>
+              <TableHead>Menu</TableHead>
+              <TableHead>Field sources</TableHead>
+              <TableHead />
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {routes.map((route) => (
+              <TableRow key={route.id}>
+                <TableCell>{route.id}</TableCell>
+                <TableCell>
+                  <code>{route.path}</code>
+                </TableCell>
+                <TableCell>
+                  {route.target.kind}:{route.target.id}
+                </TableCell>
+                <TableCell>
+                  <MenuCell route={route} />
+                </TableCell>
+                <TableCell>
+                  <FieldSources sources={route.sources} />
+                </TableCell>
+                <TableCell>
+                  <Button variant="ghost" size="sm" onClick={() => setForm(formFor(route, true))}>
+                    Edit
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+            {/* Отключённые строки — здесь же, а не спрятаны: маршрут,
+                выключенный из витрины, иначе исчезал бы из перечня совсем, и
+                включить его обратно можно было бы только правкой файла руками
+                (`ui-routes`, Решение 12). Слой формы — тот, в котором лежит
+                `enabled: false`: строка «включён» обязана лечь поверх той
+                самой, что выключила, а не под ней. */}
+            {disabled.map((route) => (
+              <TableRow key={`disabled:${route.id}`} className="routes-row-disabled">
+                <TableCell>{route.id}</TableCell>
+                <TableCell>{route.path === undefined ? '—' : <code>{route.path}</code>}</TableCell>
+                <TableCell>{route.target === undefined ? '—' : `${route.target.kind}:${route.target.id}`}</TableCell>
+                <TableCell>
+                  <Badge variant="secondary">disabled</Badge>
+                </TableCell>
+                <TableCell className="dim">disabled by {sourceLabel(route.disabledBy)}</TableCell>
+                <TableCell>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      setForm({
+                        ...formFor(route, true),
+                        layer: route.disabledBy.layer === 'project' ? 'project' : 'home',
+                      })
+                    }
+                  >
+                    Enable
+                  </Button>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
 
-      <h2>{form.id === '' ? 'Новый маршрут' : `Правка ${form.id}`}</h2>
-      <form onSubmit={save} className="routes-form">
-        <label>
-          id
-          <input value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} />
-        </label>
-        <label>
-          путь
-          <input
-            value={form.path}
-            onChange={(event) => setForm({ ...form, path: event.target.value })}
-            placeholder="/мой/путь/:параметр"
-          />
-        </label>
-        <label>
-          цель
-          <select
-            value={form.targetKind}
-            onChange={(event) => setForm({ ...form, targetKind: event.target.value as TargetKind })}
-          >
-            <option value="screen">экран</option>
-            <option value="widget">виджет</option>
-          </select>
-        </label>
-        <label>
-          id цели
-          <input
-            value={form.targetId}
-            onChange={(event) => setForm({ ...form, targetId: event.target.value })}
-            placeholder={form.targetKind === 'widget' ? 'проект/id' : 'screen-id'}
-          />
-        </label>
-        <label>
-          название пункта меню
-          <input value={form.navTitle} onChange={(event) => setForm({ ...form, navTitle: event.target.value })} />
-        </label>
-        <label>
-          порядок пункта
-          <input value={form.navOrder} onChange={(event) => setForm({ ...form, navOrder: event.target.value })} />
-        </label>
-        <label>
-          <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
-          включён
-        </label>
-        <label>
-          слой
-          <select value={form.layer} onChange={(event) => setForm({ ...form, layer: event.target.value as Layer })}>
-            <option value="home">домашний ({LAYER_FILE.home})</option>
-            <option value="project">проектный ({LAYER_FILE.project})</option>
-          </select>
-        </label>
-        {saveError === undefined ? null : (
-          <p className="routes-listing-error" role="alert">
-            {saveError}
-          </p>
-        )}
-        <button type="submit" disabled={saving}>
-          Сохранить в {LAYER_FILE[form.layer]}
-        </button>
-      </form>
+      <Card className="routes-form-card">
+        <CardHeader>
+          <CardTitle>{editing ? `Edit ${form.id}` : 'New route'}</CardTitle>
+          <CardDescription>
+            {editing
+              ? 'The row is written under its own ID into the chosen layer; the bundled file is never touched.'
+              : 'Fill in the ID, the path and the target; the menu fields are optional.'}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <form onSubmit={save} className="routes-form">
+            <div className="routes-field">
+              <Label htmlFor="route-id">ID</Label>
+              <Input id="route-id" value={form.id} onChange={(event) => setForm({ ...form, id: event.target.value })} />
+            </div>
+            <div className="routes-field">
+              <Label htmlFor="route-path">Path</Label>
+              <Input
+                id="route-path"
+                className="mono"
+                value={form.path}
+                onChange={(event) => setForm({ ...form, path: event.target.value })}
+                placeholder="/my/path/:param"
+              />
+            </div>
+            <div className="routes-field">
+              <Label htmlFor="route-target-kind">Target</Label>
+              <Select
+                value={form.targetKind}
+                onValueChange={(value) => setForm({ ...form, targetKind: value as TargetKind })}
+              >
+                <SelectTrigger id="route-target-kind" aria-label="Target kind">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="screen">screen</SelectItem>
+                  <SelectItem value="widget">widget</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="routes-field">
+              <Label htmlFor="route-target-id">Target ID</Label>
+              <Input
+                id="route-target-id"
+                className="mono"
+                value={form.targetId}
+                onChange={(event) => setForm({ ...form, targetId: event.target.value })}
+                placeholder={form.targetKind === 'widget' ? 'project/id' : 'screen-id'}
+              />
+            </div>
+            <div className="routes-field">
+              <Label htmlFor="route-nav-title">Menu title</Label>
+              <Input
+                id="route-nav-title"
+                value={form.navTitle}
+                onChange={(event) => setForm({ ...form, navTitle: event.target.value })}
+              />
+            </div>
+            <div className="routes-field">
+              <Label htmlFor="route-nav-order">Menu order</Label>
+              <Input
+                id="route-nav-order"
+                value={form.navOrder}
+                onChange={(event) => setForm({ ...form, navOrder: event.target.value })}
+              />
+            </div>
+            <div className="routes-field">
+              <Label htmlFor="route-nav-group">Group</Label>
+              <Input
+                id="route-nav-group"
+                value={form.navGroup}
+                onChange={(event) => setForm({ ...form, navGroup: event.target.value })}
+                placeholder="menu group"
+              />
+            </div>
+            <div className="routes-field-inline">
+              <Switch
+                id="route-enabled"
+                checked={form.enabled}
+                onCheckedChange={(checked) => setForm({ ...form, enabled: checked })}
+              />
+              <Label htmlFor="route-enabled">Enabled</Label>
+            </div>
+            <div className="routes-field">
+              <Label htmlFor="route-layer">Layer</Label>
+              <Select value={form.layer} onValueChange={(value) => setForm({ ...form, layer: value as Layer })}>
+                <SelectTrigger id="route-layer" aria-label="Layer">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="home">home ({LAYER_FILE.home})</SelectItem>
+                  <SelectItem value="project">project ({LAYER_FILE.project})</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {saveError === undefined ? null : (
+              <Alert variant="destructive" className="routes-listing-error">
+                {saveError}
+              </Alert>
+            )}
+            <div className="routes-form-actions">
+              <Button type="submit" disabled={saving}>
+                Save to {LAYER_FILE[form.layer]}
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </Card>
     </div>
   );
 }

@@ -1,0 +1,23 @@
+/*
+ * Список прогонов поверх библиотеки `@stepcast/ui`: здесь только то, чего у
+ * компонентов нет, — раскладка таблицы прогонов держится прежними правилами
+ * `table.runs` в `styles.css`.
+ */
+
+/* Полоса фильтров: три выпадающих списка одной строкой, длинная подпись
+   пайплайна укорачивается в поле, а не растягивает его. */
+.filters .sc-select-trigger { max-width: 16rem; min-width: 9rem; }
+.filters .sc-select-trigger > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Корзинка в строке: без рамки, цветом отказа — удаление необратимо. */
+.sc-button.runs-delete { color: var(--status-failed); }
+.sc-button.runs-delete:hover:not(:disabled) { color: var(--status-failed); border-color: var(--status-failed); }
+
+/* Отказ запроса в строке или полосе отметки: полоса сообщения ужимается
+   до содержимого, а не растягивается на всю ширину ячейки. */
+.selected-bar .sc-alert,
+.sc-table-cell .sc-alert { display: inline-block; padding: .2rem .5rem; margin-top: .25rem; }
+
+/* Таблица исходов группового удаления: размер справа, моноширинным. */
+.sc-table.outcomes .num { text-align: right; white-space: nowrap; }
+.sc-table.outcomes .run-id { font-family: var(--mono); font-weight: 600; color: var(--foreground); }

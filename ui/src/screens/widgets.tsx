@@ -3,7 +3,7 @@ import type { Context } from 'cordis';
 
 import { declaration } from '../../../src/parts/ui/screens/widgets/declaration.ts';
 import type { Overview, WidgetsOverview } from '../api';
-import { Widgets } from '../pages/Widgets';
+import { WidgetsWithCatalog } from '../pages/Widgets';
 import { SCREEN } from '@stepcast/slots';
 
 function WidgetsScreen({
@@ -13,7 +13,7 @@ function WidgetsScreen({
   readonly overview: Overview | undefined;
   readonly widgets: WidgetsOverview | undefined;
 }): JSX.Element {
-  return <Widgets overview={overview} widgets={widgets} />;
+  return <WidgetsWithCatalog overview={overview} widgets={widgets} />;
 }
 
 export default function widgets(ctx: Context): void {

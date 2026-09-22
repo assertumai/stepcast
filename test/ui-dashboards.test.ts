@@ -56,7 +56,7 @@ describe('ui-dashboards: подстановка и приведение к ти�
       const result = resolveCellParam('usage', 'days', '${params.days}', { kind: 'number' }, { days: empty });
       assert.equal(result.ok, false, `пустое значение ${JSON.stringify(empty)} не число`);
       if (result.ok) throw new Error('unreachable');
-      assert.match(result.reason, /должен быть числом/);
+      assert.match(result.reason, /must be a number/);
     }
     const literal = resolveCellParam('usage', 'days', '', { kind: 'number' }, {});
     assert.equal(literal.ok, false);

@@ -1,0 +1,32 @@
+.proposals-screen { display: flex; flex-direction: column; gap: .8rem; }
+.proposals-project-head { display: flex; align-items: flex-start; justify-content: space-between; gap: .8rem; flex-wrap: wrap; }
+.proposals-empty { margin: .6rem 0 0; }
+.proposal-group { margin-top: .6rem; }
+.proposal-group-head { color: var(--muted-foreground); margin-bottom: .3rem; }
+.proposal-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .6rem .8rem;
+  margin-bottom: .6rem;
+  background: var(--background);
+}
+.proposal-head { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+.proposal-head code { font-family: var(--mono); font-weight: 600; }
+.proposal-reason { margin: .4rem 0 0; font-size: .88rem; }
+.proposal-diff {
+  margin-top: .5rem;
+  max-height: 24rem;
+  overflow: auto;
+  font-size: .78rem;
+  line-height: 1.45;
+  padding: .4rem 0;
+}
+.diff-line { display: flex; gap: .5rem; padding: 0 .5rem; white-space: pre; }
+.diff-marker { width: 1ch; flex: none; color: var(--muted-foreground); user-select: none; }
+.diff-added { background: color-mix(in srgb, var(--status-success) 14%, transparent); }
+.diff-removed { background: color-mix(in srgb, var(--status-failed) 14%, transparent); }
+.diff-added .diff-marker { color: var(--status-success); }
+.diff-removed .diff-marker { color: var(--status-failed); }
+.proposal-actions { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: .6rem; }
+.proposal-error { margin: .4rem 0 0; flex-basis: 100%; }
+.proposals-resolved { margin-top: .6rem; }

@@ -15,6 +15,18 @@
 import type { FilterOption } from './filters.js';
 export type { FilterOption } from './filters.js';
 
+/** Последний сегмент пути проекта — заголовок и подпись колонки; полный путь остаётся в `title`. */
+export function lastPathSegment(path: string): string {
+  const trimmed = path.replace(/\/+$/, '');
+  const idx = trimmed.lastIndexOf('/');
+  return idx === -1 ? trimmed : trimmed.slice(idx + 1);
+}
+
+/** Подпись проекта, чей путь обзору неизвестен: ключ и пометка, одна на всю витрину. */
+export function unknownPathLabel(projectKey: string): string {
+  return `${projectKey} (path unknown)`;
+}
+
 /** Прогон обзора — в объёме, нужном отбору и порядку. */
 export interface RunLike {
   readonly runId: string;
@@ -63,7 +75,7 @@ function pipelineFilterKey(run: RunLike): string {
 function pipelineFilterLabel(run: RunLike): string {
   if (run.pipelineFile !== undefined) return `${run.pipeline || run.pipelineFile} — ${run.pipelineFile}`;
   if (run.pipeline !== '') return run.pipeline;
-  return 'без имени';
+  return 'unnamed';
 }
 
 /**
@@ -72,7 +84,7 @@ function pipelineFilterLabel(run: RunLike): string {
  * кодирование, что и `pipelineFilterKey`, не имея под рукой прогона.
  */
 export function describePipelineFilterValue(value: string): string {
-  if (value === 'unnamed') return 'без имени';
+  if (value === 'unnamed') return 'unnamed';
   const sep = value.indexOf(':');
   return sep === -1 ? value : value.slice(sep + 1);
 }
@@ -97,7 +109,7 @@ export function collectFilterValues<R extends RunLike>(
 
   for (const project of projects) {
     if (!projectOptions.has(project.key)) {
-      projectOptions.set(project.key, project.path ?? `${project.key} — путь неизвестен`);
+      projectOptions.set(project.key, project.path ?? unknownPathLabel(project.key));
     }
     for (const run of project.runs) {
       const key = pipelineFilterKey(run);

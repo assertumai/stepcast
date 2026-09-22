@@ -5,6 +5,26 @@ import {
   fetchModels, fetchSettings, saveSettings,
   type ModelOption, type ModelsForBackend, type ModelsResult, type Settings, type SettingsPatch,
 } from '../api';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  Combobox,
+  Label,
+  PageHeader,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  type ComboboxOption,
+} from '@stepcast/ui';
+import './agents.css';
 
 type AgentDraft = { defaultModel: string; modelTiers: Partial<Record<ModelTier, string>> };
 
@@ -16,15 +36,15 @@ type AgentDraft = { defaultModel: string; modelTiers: Partial<Record<ModelTier, 
  * без единого байта вывода), оставил бы в карточке пустую строку — ни списка,
  * ни причины, ни следа того, что проба вообще была.
  */
-function unavailableReason(result: ModelsForBackend): string | undefined {
+export function unavailableReason(result: ModelsForBackend): string | undefined {
   switch (result.status) {
     case 'ok': return undefined;
-    case 'unsupported': return 'этот агент перечислять модели не умеет';
-    case 'not_installed': return `команда «${result.command}» не найдена`;
-    case 'timeout': return 'агент не ответил за отпущенное время';
-    case 'failed': return withText('агент ответил отказом', result.message, 'и ничего не сказал');
-    case 'unparsed': return 'ответ агента не разобран';
-    case 'probe_error': return withText('перечисление сорвалось', result.message, 'без объяснения');
+    case 'unsupported': return 'This agent cannot list its models — type a model name';
+    case 'not_installed': return `Command “${result.command}” not found`;
+    case 'timeout': return 'The agent did not answer in time';
+    case 'failed': return withText('The agent failed', result.message, 'without saying why');
+    case 'unparsed': return 'The agent’s answer could not be parsed';
+    case 'probe_error': return withText('Listing crashed', result.message, 'without explanation');
   }
 }
 
@@ -34,41 +54,25 @@ function withText(label: string, text: string, whenEmpty: string): string {
   return trimmed === '' ? `${label} ${whenEmpty}` : `${label}: ${trimmed}`;
 }
 
-/** Копирует имя модели в буфер обмена; отказ и успех сообщаются рядом с кнопкой, а не проглатываются. */
-function CopyButton({ value }: { readonly value: string }): JSX.Element {
-  const [state, setState] = useState<'idle' | 'ok' | 'error'>('idle');
-
-  // Ответ кнопки относится к тому значению, которое копировали: стоит поле
-  // поправить — и «скопировано» утверждало бы про буфер обмена то, что
-  // перестало быть правдой.
-  useEffect(() => setState('idle'), [value]);
-
-  const copy = (): void => {
-    // `navigator.clipboard` в незащищённом контексте и под запретом
-    // Permissions-Policy отсутствует вовсе: обращение к `writeText` бросает
-    // синхронно, и `.catch` такого отказа не увидел бы — он ушёл бы мимо
-    // страницы, оставив пользователя без ответа кнопки.
-    try {
-      const clipboard: Clipboard | undefined = navigator.clipboard;
-      if (clipboard === undefined) {
-        setState('error');
-        return;
-      }
-      clipboard.writeText(value).then(() => setState('ok'), () => setState('error'));
-    } catch {
-      setState('error');
-    }
-  };
-
-  return (
-    <span className="model-copy">
-      <button type="button" className="plain" onClick={copy} disabled={value === ''} title="скопировать имя модели">
-        копировать
-      </button>
-      {state === 'ok' ? <span className="small dim" role="status">скопировано</span> : null}
-      {state === 'error' ? <span className="small error" role="alert">буфер обмена недоступен — выделите значение и скопируйте вручную</span> : null}
-    </span>
-  );
+/**
+ * Варианты поля модели: перечисленные CLI плюс те имена, которые уже стоят в
+ * конфигурации, — модель по умолчанию и модели тиров. Перечень CLI заведомо
+ * неполон (design.md, решение 4), и сохранённое значение обязано оставаться
+ * выбираемым, а не только «custom».
+ */
+export function modelOptions(listed: readonly ModelOption[], configured: readonly (string | undefined)[]): readonly ComboboxOption[] {
+  const options: ComboboxOption[] = listed.map((option) => ({
+    value: option.name,
+    ...(option.title === undefined ? {} : { description: option.title }),
+  }));
+  const seen = new Set(options.map((option) => option.value));
+  for (const name of configured) {
+    const trimmed = name?.trim() ?? '';
+    if (trimmed === '' || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    options.push({ value: trimmed, description: 'from configuration' });
+  }
+  return options;
 }
 
 interface ModelFieldProps {
@@ -77,38 +81,38 @@ interface ModelFieldProps {
   readonly value: string;
   readonly placeholder: string;
   readonly sourceNote: string;
-  readonly options: readonly ModelOption[];
-  readonly listId: string;
+  readonly options: readonly ComboboxOption[];
   readonly onChange: (value: string) => void;
 }
 
 /**
- * Поле модели — свободный ввод со списком-подсказкой (`<datalist>`), а не
- * `<select>`: список неполон по устройству (design.md, решение 4), и
- * запирать в нём выбор значило бы сделать распознавание хуже свободного
- * ввода (решение 8). Сохранённое значение вне списка остаётся выбранным —
- * `<input>` его не теряет — и помечается отдельной строкой, отличимой от
- * ошибки.
- *
- * Сам `<datalist>` живёт в карточке, а не здесь: он один на агента, и шесть
- * его копий с одним `id` были бы невалидным DOM — браузер брал бы первую
- * попавшуюся, а обращение по `id` из теста или стиля попадало бы в случайную.
+ * Поле модели — Combobox со свободным вводом, а не закрытый список: перечень
+ * неполон по устройству (design.md, решение 4), и запирать в нём выбор
+ * значило бы сделать распознавание хуже свободного ввода (решение 8).
+ * Набранное имя вне списка — обычное состояние, отмеченное бейджем `custom`.
  */
-function ModelField({ id, label, value, placeholder, sourceNote, options, listId, onChange }: ModelFieldProps): JSX.Element {
+function ModelField({ id, label, value, placeholder, sourceNote, options, onChange }: ModelFieldProps): JSX.Element {
   const trimmed = value.trim();
-  const offList = trimmed !== '' && options.length > 0 && !options.some((option) => option.name === trimmed);
+  const custom = trimmed !== '' && !options.some((option) => option.value === trimmed);
 
   return (
-    <div className="field" key={id}>
-      <label className="label mono" htmlFor={id}>{label}</label>
-      <div className="field-body">
-        <div className="model-input">
-          <input id={id} className="mono" list={listId} value={value} placeholder={placeholder}
-            onChange={(event) => onChange(event.target.value)} />
-          <CopyButton value={trimmed} />
+    <div className="agent-field">
+      <Label htmlFor={id} className="agent-field-label mono">{label}</Label>
+      <div className="agent-field-body">
+        <div className="agent-field-row">
+          <Combobox
+            id={id}
+            mono
+            allowCustom
+            value={value}
+            options={options}
+            placeholder={placeholder}
+            emptyText="No listed model matches — the typed name is used as is"
+            onChange={onChange}
+          />
+          {custom ? <Badge variant="secondary">custom</Badge> : null}
         </div>
         <span className="small dim">{sourceNote}</span>
-        {offList ? <span className="badge">вне списка распознанных моделей</span> : null}
       </div>
     </div>
   );
@@ -161,7 +165,26 @@ export function Agents(): JSX.Element {
   // Один запрос на открытие страницы; дальше — только по кнопке.
   useEffect(() => loadModels(), []);
 
-  if (settings === undefined) return <p className={error ? 'error' : 'empty'}>{error ?? 'Загрузка…'}</p>;
+  const header = (
+    <PageHeader
+      title="Agents"
+      description="Default models for every project, per agent and per tier. Project settings may override these values."
+      actions={
+        <Button variant="outline" size="sm" onClick={() => loadModels(true)} disabled={modelsBusy}>
+          {modelsBusy ? 'Listing models…' : 'Reload models'}
+        </Button>
+      }
+    />
+  );
+
+  if (settings === undefined) {
+    return (
+      <>
+        {header}
+        {error === undefined ? <p className="dim">Loading…</p> : <Alert variant="destructive">{error}</Alert>}
+      </>
+    );
+  }
 
   const backendPatch: NonNullable<SettingsPatch['backends']> = Object.fromEntries(
     settings.backends.flatMap((backend) => {
@@ -205,115 +228,128 @@ export function Agents(): JSX.Element {
       .finally(() => setSaving(false));
   };
 
+  const codexOffered = settings.backends.some((backend) => backend.name === 'codex' && !backend.available);
+
   return (
     <>
-      <h1>Агенты</h1>
-      <p className="note dim">
-        Модели по умолчанию для всех проектов. Настройки проекта могут переопределить эти значения.
-        Файл: <span className="mono">{settings.file}</span>
-      </p>
+      {header}
       <fieldset className="agent-settings" disabled={saving}>
-        <div className="card">
-          <div className="field">
-            <label className="label" htmlFor="default-agent">агент по умолчанию</label>
-            <div className="field-body">
-              <select id="default-agent" value={agent} onChange={(event) => { setAgent(event.target.value); setSaved(false); }}>
-                {settings.backends.map((backend) => (
-                  <option key={backend.name} value={backend.name}
-                    disabled={!backend.enabled || (!backend.available && !(backend.name === 'codex' && connectCodex))}>
-                    {backend.name}{!backend.available ? ' — плагин не подключён' : !backend.enabled ? ' — выключен' : ''}
-                  </option>
-                ))}
-              </select>
-              <span className="small dim">Используется, если agent не задан в pipeline, job или step. {settings.agent.source}</span>
-            </div>
-          </div>
-          {settings.backends.some((backend) => backend.name === 'codex' && !backend.available) ? (
-            <div className="field">
-              <span className="label" />
-              <div className="field-body">
-                <label className="check"><input type="checkbox" checked={connectCodex} onChange={(event) => { setConnectCodex(event.target.checked); setSaved(false); }} /> подключить Codex</label>
-                <span className="small dim">Добавит плагин из поставки Stepcast. Для запуска нужен установленный и авторизованный Codex CLI.</span>
+        <Card>
+          <CardHeader>
+            <CardTitle>Default agent</CardTitle>
+            <CardDescription>
+              Used when a pipeline, job or step does not set <code>agent</code>. Written to{' '}
+              <span className="mono">{settings.file}</span>.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="agent-field">
+              <Label htmlFor="default-agent" className="agent-field-label">agent</Label>
+              <div className="agent-field-body">
+                <Select value={agent} onValueChange={(value) => { setAgent(value); setSaved(false); }}>
+                  <SelectTrigger id="default-agent" className="agent-select">
+                    <SelectValue placeholder="not set" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {settings.backends.map((backend) => (
+                      <SelectItem key={backend.name} value={backend.name}
+                        disabled={!backend.enabled || (!backend.available && !(backend.name === 'codex' && connectCodex))}>
+                        {backend.name}{!backend.available ? ' — plugin not connected' : !backend.enabled ? ' — disabled' : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <span className="small dim">{settings.agent.source}</span>
               </div>
             </div>
-          ) : null}
-        </div>
+            {codexOffered ? (
+              <div className="agent-field">
+                <span className="agent-field-label" />
+                <div className="agent-field-body">
+                  <label className="check">
+                    <input type="checkbox" checked={connectCodex} onChange={(event) => { setConnectCodex(event.target.checked); setSaved(false); }} />
+                    {' '}Connect Codex
+                  </label>
+                  <span className="small dim">Adds the Codex plugin shipped with Stepcast. Running it needs an installed and signed-in Codex CLI.</span>
+                </div>
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
 
         {settings.model.value === undefined ? null : (
-          <p className="note">
-            Общее переопределение model: <span className="mono">{settings.model.value}</span> ({settings.model.source}) имеет приоритет над tier и моделями агентов.
-            Его можно снять на странице <a href="/settings">«Настройки»</a>.
-          </p>
+          <Alert variant="warning">
+            A global <code>model</code> override <span className="mono">{settings.model.value}</span> ({settings.model.source}) takes
+            precedence over tiers and per-agent models. Remove it on the <a href="/settings">Settings</a> page.
+          </Alert>
         )}
 
-        <p className="note dim">
-          Поля agent, model и model_tier наследуются независимо: step → job → pipeline → настройки.
-          Явная model побеждает model_tier. Для незаполненного tier используется модель агента по умолчанию.
-          Список моделей у каждого поля — подсказка от CLI агента, а не перечень допустимого: имя вне списка
-          сохраняется как есть.
-        </p>
-
-        <p className="note dim model-refresh">
-          Списки распознаются один раз и держатся, пока демон жив. Установили агента, поправили команду или
-          авторизовались — <button type="button" className="plain" onClick={() => loadModels(true)} disabled={modelsBusy}>
-            {modelsBusy ? 'перечисление…' : 'перечислить заново'}
-          </button>.
+        <p className="small dim agent-note">
+          <code>agent</code>, <code>model</code> and <code>model_tier</code> are inherited independently: step → job → pipeline → settings.
+          An explicit <code>model</code> wins over <code>model_tier</code>; an empty tier falls back to the agent’s default model.
+          The dropdown lists what the agent’s CLI reports and is not exhaustive — a typed name is saved as is.
+          Lists are read once and kept while the daemon runs; after installing an agent or changing its command, reload them.
         </p>
 
         <div className="agent-cards">
           {settings.backends.map((backend) => {
             const discovery = models?.backends[backend.name];
             const reason = discovery === undefined
-              ? (modelsError ?? 'список распознаётся…')
+              ? (modelsError ?? 'Listing models…')
               : unavailableReason(discovery);
-            const options: readonly ModelOption[] = discovery?.status === 'ok' ? discovery.models : [];
-            const listId = `agent-${backend.name}-models`;
+            const listed: readonly ModelOption[] = discovery?.status === 'ok' ? discovery.models : [];
+            const current = draft[backend.name]!;
+            const options = modelOptions(listed, [
+              backend.defaultModel,
+              current.defaultModel,
+              ...MODEL_TIERS.map((tier) => backend.modelTiers[tier]),
+            ]);
 
             return (
-              <section className="card" key={backend.name}>
-                <div className="card-head">
-                  <h2 className="card-title">{backend.name}</h2>
-                  <span className="small dim mono">{backend.command}</span>
-                  {!backend.available ? <span className="badge">плагин не подключён</span> : !backend.enabled ? <span className="badge">выключен</span> : null}
-                </div>
-                {reason === undefined ? null : <p className="small dim">{reason}</p>}
-                <datalist id={listId}>
-                  {options.map((option) => <option key={option.name} value={option.name}>{option.title}</option>)}
-                </datalist>
-                <ModelField
-                  id={`agent-${backend.name}-model`}
-                  label="модель по умолчанию"
-                  value={draft[backend.name]!.defaultModel}
-                  placeholder="встроенная модель агента"
-                  sourceNote={`${backend.defaultModelSource}. Пустое поле снимает переопределение.`}
-                  options={options}
-                  listId={listId}
-                  onChange={(value) => updateModel(backend.name, value)}
-                />
-                {MODEL_TIERS.map((tier) => (
+              <Card key={backend.name} className="agent-card">
+                <CardHeader>
+                  <div className="agent-card-head">
+                    <CardTitle>{backend.name}</CardTitle>
+                    <span className="small dim mono">{backend.command}</span>
+                    {!backend.available ? <Badge>plugin not connected</Badge> : !backend.enabled ? <Badge>disabled</Badge> : null}
+                    {discovery?.status === 'ok' ? <Badge variant="success">{discovery.models.length} models listed</Badge> : null}
+                  </div>
+                  {reason === undefined ? null : <CardDescription>{reason}</CardDescription>}
+                </CardHeader>
+                <CardContent>
                   <ModelField
-                    key={tier}
-                    id={`agent-${backend.name}-${tier}`}
-                    label={tier}
-                    value={draft[backend.name]!.modelTiers[tier] ?? ''}
-                    placeholder={draft[backend.name]!.defaultModel.trim() || 'модель по умолчанию'}
-                    sourceNote={backend.modelTierSources[tier] ?? 'не задан — модель агента по умолчанию'}
+                    id={`agent-${backend.name}-model`}
+                    label="default model"
+                    value={current.defaultModel}
+                    placeholder="agent’s built-in model"
+                    sourceNote={`${backend.defaultModelSource}. An empty field removes the override.`}
                     options={options}
-                    listId={listId}
-                    onChange={(value) => updateModel(backend.name, value, tier)}
+                    onChange={(value) => updateModel(backend.name, value)}
                   />
-                ))}
-              </section>
+                  {MODEL_TIERS.map((tier) => (
+                    <ModelField
+                      key={tier}
+                      id={`agent-${backend.name}-${tier}`}
+                      label={tier}
+                      value={current.modelTiers[tier] ?? ''}
+                      placeholder={current.defaultModel.trim() || 'default model'}
+                      sourceNote={backend.modelTierSources[tier] ?? 'not set — falls back to the default model'}
+                      options={options}
+                      onChange={(value) => updateModel(backend.name, value, tier)}
+                    />
+                  ))}
+                </CardContent>
+              </Card>
             );
           })}
         </div>
 
         <div className="agent-actions">
-          <button disabled={!dirty || !canSelect} onClick={submit}>{saving ? 'сохранение…' : 'сохранить'}</button>
-          {dirty ? <button className="plain" onClick={() => { adopt(settings); setSaved(false); setError(undefined); }}>отменить правку</button> : null}
-          {saved && !dirty ? <span role="status" className="small dim">записано</span> : null}
-          {error === undefined ? null : <p role="alert" className="error">{error}</p>}
+          <Button disabled={!dirty || !canSelect} onClick={submit}>{saving ? 'Saving…' : 'Save'}</Button>
+          {dirty ? <Button variant="ghost" size="sm" onClick={() => { adopt(settings); setSaved(false); setError(undefined); }}>Discard changes</Button> : null}
+          {saved && !dirty ? <span role="status" className="small dim">Saved</span> : null}
         </div>
+        {error === undefined ? null : <Alert variant="destructive">{error}</Alert>}
       </fieldset>
     </>
   );

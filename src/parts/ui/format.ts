@@ -38,15 +38,15 @@ export function fmtDuration(ms: number | null | undefined): string {
     const hours = Math.floor(total / 3600);
     const minutes = Math.round((total % 3600) / 60);
     // Минуты округлены вверх до целого часа: разряд переносится, а не показывается.
-    if (minutes === 60) return `${hours + 1}ч`;
-    return minutes === 0 ? `${hours}ч` : `${hours}ч ${minutes}м`;
+    if (minutes === 60) return `${hours + 1}h`;
+    return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
   }
   if (total >= 60) {
     const minutes = Math.floor(total / 60);
     const seconds = total % 60;
-    return seconds === 0 ? `${minutes}м` : `${minutes}м ${seconds}с`;
+    return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
   }
-  return `${total}с`;
+  return `${total}s`;
 }
 
 /**
@@ -71,7 +71,7 @@ export function fmtSpan(
   if (Number.isNaN(start)) return undefined;
 
   // Часы витрины и часы прогона — разные; отрицательный отрезок не показываем.
-  if (finishedAt === undefined) return `идёт ${fmtDuration(Math.max(0, now - start))}`;
+  if (finishedAt === undefined) return `running ${fmtDuration(Math.max(0, now - start))}`;
 
   const end = new Date(finishedAt).getTime();
   if (Number.isNaN(end)) return undefined;
@@ -84,32 +84,22 @@ export function fmtMoney(usd: number | null | undefined): string {
 }
 
 export function fmtBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} МБ`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
-  return `${bytes} Б`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
 }
 
 export function fmtTime(iso: string | undefined): string {
   if (iso === undefined) return DASH;
   const date = new Date(iso);
-  return Number.isNaN(date.getTime()) ? DASH : date.toLocaleString('ru');
+  return Number.isNaN(date.getTime()) ? DASH : date.toLocaleString('en-GB');
 }
 
 /**
- * «1 прогон», «2 прогона», «5 прогонов» — число с русским склонением
- * существительного. Переехало из `Runs.tsx`: подтверждению группового
- * удаления нужно то же склонение, что и полосе расхождения версий, а
- * проверить его тестом можно только здесь.
- *
- * Форма сказуемого («записан» / «записаны») сюда не входит: она нужна только
- * полосе расхождения версий и остаётся там же, рядом с текстом, который её
- * использует.
+ * «1 run», «2 runs» — число с существительным в нужном числе. Переехало из
+ * `Runs.tsx`: подтверждению группового удаления нужна та же форма, что и
+ * полосе расхождения версий, а проверить её тестом можно только здесь.
  */
 export function pluralRuns(count: number): string {
-  const teens = count % 100;
-  const last = count % 10;
-  const one = last === 1 && teens !== 11;
-  const few = last >= 2 && last <= 4 && (teens < 12 || teens > 14);
-  const noun = one ? 'прогон' : few ? 'прогона' : 'прогонов';
-  return `${count} ${noun}`;
+  return `${count} ${count === 1 ? 'run' : 'runs'}`;
 }

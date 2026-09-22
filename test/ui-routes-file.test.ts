@@ -61,6 +61,20 @@ describe('ui-routes-file: сборка таблицы трёх слоёв', () =
     assert.equal(entry?.sources.path.layer, 'builtin');
   });
 
+  it('домашний слой переносит пункт в другую группу меню, встроенная группа видна у остальных', () => {
+    const { home } = layerDirs();
+    writeHomeRoutes(home, 'routes:\n  - id: screen-cleanup\n    nav:\n      group: work\n');
+
+    const result = buildRouteTable({ home });
+    const cleanup = result.entries.find((candidate) => candidate.id === 'screen-cleanup');
+    assert.equal(cleanup?.definition.nav?.group, 'work');
+    assert.equal(cleanup?.sources.navGroup?.layer, 'home');
+    assert.equal(cleanup?.definition.nav?.order, 6);
+    const agents = result.entries.find((candidate) => candidate.id === 'screen-agents');
+    assert.equal(agents?.definition.nav?.group, 'system');
+    assert.equal(agents?.sources.navGroup?.layer, 'builtin');
+  });
+
   it('enabled: false убирает маршрут из действующей таблицы целиком', () => {
     const { home } = layerDirs();
     writeHomeRoutes(home, 'routes:\n  - id: screen-agents\n    enabled: false\n');
@@ -109,7 +123,7 @@ describe('ui-routes-file: сборка таблицы трёх слоёв', () =
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.equal(error.file, missing);
-        assert.match(error.message, /не читается/);
+        assert.match(error.message, /cannot be read/);
         return true;
       },
     );
@@ -141,7 +155,7 @@ describe('ui-routes-file: сборка таблицы трёх слоёв', () =
     const result = buildRouteTable({ home, projectRoot });
     // 14 встроенных маршрутов (включая screen-scrum, screen-decisions и
     // screen-proposals) плюс этот новый.
-    assert.equal(result.entries.length, 15);
+    assert.equal(result.entries.length, 14);
     const entry = result.entries.find((candidate) => candidate.id === 'my-dashboard');
     assert.deepEqual(entry?.definition.target, { kind: 'widget', id: 'proj/team' });
     const runs = result.entries.find((candidate) => candidate.id === 'screen-runs');
@@ -188,7 +202,7 @@ describe('ui-routes-file: сборка таблицы трёх слоёв', () =
       () => buildRouteTable({ home, projectRoot }),
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
-        assert.match(error.message, /зарезервированный путь/);
+        assert.match(error.message, /reserved path/);
         return true;
       },
     );
@@ -339,8 +353,8 @@ describe('ui-routes-file: запись строки в слой через Docum
       (error: unknown) => {
         assert.ok(error instanceof StepcastError);
         assert.equal(error.file, path);
-        assert.match(error.message, /не разбирается как YAML/);
-        assert.match(String(error.at), /строка 5/);
+        assert.match(error.message, /is not valid YAML/);
+        assert.match(String(error.at), /line 5/);
         return true;
       },
     );

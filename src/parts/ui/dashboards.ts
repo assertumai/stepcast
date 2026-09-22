@@ -78,7 +78,7 @@ export function checkDashboardDocument(doc: DashboardDefinition): void {
   const seenIds = new Set<string>();
   for (const cell of doc.cells) {
     if (seenIds.has(cell.id)) {
-      throw new DashboardDocumentError(`Ячейка ${cell.id} повторяется`, [cell.id]);
+      throw new DashboardDocumentError(`Cell ${cell.id} is repeated`, [cell.id]);
     }
     seenIds.add(cell.id);
   }
@@ -86,7 +86,7 @@ export function checkDashboardDocument(doc: DashboardDefinition): void {
   for (const cell of doc.cells) {
     if (cell.at.column < 0 || cellRight(cell.at) > doc.grid.columns) {
       throw new DashboardDocumentError(
-        `Ячейка ${cell.id} (колонка ${cell.at.column}, ширина ${cell.at.width}) выходит за пределы сетки в ${doc.grid.columns} колонок`,
+        `Cell ${cell.id} (column ${cell.at.column}, width ${cell.at.width}) exceeds the grid of ${doc.grid.columns} columns`,
         [cell.id],
       );
     }
@@ -97,7 +97,7 @@ export function checkDashboardDocument(doc: DashboardDefinition): void {
       const a = doc.cells[i] as DashboardCellDefinition;
       const b = doc.cells[j] as DashboardCellDefinition;
       if (cellsOverlap(a.at, b.at)) {
-        throw new DashboardDocumentError(`Ячейки ${a.id} и ${b.id} накладываются в сетке`, [a.id, b.id]);
+        throw new DashboardDocumentError(`Cells ${a.id} and ${b.id} overlap in the grid`, [a.id, b.id]);
       }
     }
   }
@@ -122,13 +122,13 @@ export type ParamCoercionResult =
 function describeType(type: WidgetParamType): string {
   switch (type.kind) {
     case 'string':
-      return 'строкой';
+      return 'a string';
     case 'number':
-      return 'числом';
+      return 'a number';
     case 'boolean':
-      return 'логическим значением';
+      return 'a boolean';
     case 'enum':
-      return `одним из значений: ${type.values.join(', ')}`;
+      return `one of: ${type.values.join(', ')}`;
   }
 }
 
@@ -185,8 +185,8 @@ export function resolveCellParam(
       return {
         ok: false,
         reason:
-          `Виджет ${widgetName}: параметр ${paramName} ссылается на \${params.${name}}, ` +
-          `которого нет в параметрах открытого маршрута`,
+          `Widget ${widgetName}: parameter ${paramName} references \${params.${name}}, ` +
+          `which is absent from the parameters of the open route`,
       };
     }
     if (names.length > 0) {
@@ -197,12 +197,12 @@ export function resolveCellParam(
 
   const coerced = coerceToType(value, type);
   if (coerced === undefined) {
-    const fromExpression = expression === undefined ? '' : ` (из выражения ${expression})`;
+    const fromExpression = expression === undefined ? '' : ` (from expression ${expression})`;
     return {
       ok: false,
       reason:
-        `Виджет ${widgetName}: параметр ${paramName} должен быть ${describeType(type)}, ` +
-        `получено ${JSON.stringify(value)}${fromExpression}`,
+        `Widget ${widgetName}: parameter ${paramName} must be ${describeType(type)}, ` +
+        `got ${JSON.stringify(value)}${fromExpression}`,
     };
   }
   return { ok: true, value: coerced };

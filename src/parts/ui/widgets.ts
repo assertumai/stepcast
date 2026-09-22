@@ -1,5 +1,8 @@
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { basename, dirname, extname, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { findPackageRoot } from '../../kernel/packageRoot.js';
 
 import { listProjects } from '../pipeline/run/journal/reader.js';
 import { isSafeSegment } from './routes.js';
@@ -35,7 +38,10 @@ export function widgetsDirPath(projectPath: string): string {
  * `readdirSync` берётся не по её цели, а по самой записи каталога.
  */
 export function listProjectWidgetIds(projectPath: string): readonly string[] {
-  const dir = widgetsDirPath(projectPath);
+  return listWidgetIdsIn(widgetsDirPath(projectPath));
+}
+
+function listWidgetIdsIn(dir: string): readonly string[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && extname(entry.name) === WIDGET_EXTENSION)
@@ -196,6 +202,92 @@ export function buildWidgets(runsRoot: string): WidgetsOverview {
     projects.push({ projectKey: project.key, widgets: buildProjectWidgets(project.path) });
   }
   return { projects, generatedAt: new Date().toISOString() };
+}
+
+/*
+ * Каталог виджетов поставки — `src/builtin/widgets/*.tsx` (`ui-overhaul`):
+ * образцы, которые пользователь добавляет в проект с экрана «Widgets», а не
+ * копирует руками из `examples/`. Ключ проекта `builtin` зарезервирован за
+ * каталогом в адресе модуля (`/widgets/builtin/<id>.js`): настоящий ключ —
+ * шестнадцатеричный sha256 и с этим словом не совпадёт никогда.
+ */
+
+export const BUILTIN_WIDGETS_KEY = 'builtin';
+
+export function builtinWidgetsDir(): string {
+  return join(findPackageRoot(fileURLToPath(new URL('.', import.meta.url))), 'src', 'builtin', 'widgets');
+}
+
+export interface BuiltinWidgetView {
+  readonly id: string;
+  /** Первый абзац ведущего блочного комментария файла — что виджет показывает. */
+  readonly description: string;
+  readonly version: string;
+}
+
+/** Первый абзац первого блочного комментария `/** … *\/` файла без звёздочек; пусто, если комментария нет. */
+export function widgetDescription(source: string): string {
+  const found = /\/\*\*([\s\S]*?)\*\//.exec(source);
+  if (found === null) return '';
+  const lines = (found[1] as string)
+    .split('\n')
+    .map((line) => line.replace(/^\s*\*\s?/, '').trimEnd());
+  const paragraph: string[] = [];
+  for (const line of lines) {
+    if (line.trim() === '') {
+      if (paragraph.length > 0) break;
+      continue;
+    }
+    paragraph.push(line.trim());
+  }
+  return paragraph.join(' ');
+}
+
+/** Виджеты поставки, отсортированные по идентификатору. Каталога нет — пустой список, не отказ. */
+export function listBuiltinWidgets(dir: string = builtinWidgetsDir()): readonly BuiltinWidgetView[] {
+  if (!existsSync(dir)) return [];
+  const views: BuiltinWidgetView[] = [];
+  for (const id of listWidgetIdsIn(dir)) {
+    const file = join(dir, `${id}${WIDGET_EXTENSION}`);
+    const fingerprint = widgetFingerprint(file);
+    if (fingerprint === undefined) continue;
+    let source = '';
+    try {
+      source = readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+    views.push({ id, description: widgetDescription(source), version: fingerprintVersion(fingerprint) });
+  }
+  return views;
+}
+
+/** Файл виджета поставки по идентификатору — той же проверкой сегмента, что и у виджета проекта. */
+export function resolveBuiltinWidgetFile(id: string, dir: string = builtinWidgetsDir()): string | undefined {
+  if (!isSafeSegment(id)) return undefined;
+  const target = join(dir, `${id}${WIDGET_EXTENSION}`);
+  return existsSync(target) ? target : undefined;
+}
+
+export type InstallWidgetOutcome =
+  | { readonly status: 'installed'; readonly file: string }
+  | { readonly status: 'exists'; readonly file: string }
+  | { readonly status: 'unknown' };
+
+/**
+ * Копия виджета поставки в `<проект>/.stepcast/widgets/<id>.tsx`. Файл на
+ * месте не перезаписывается: пользователь мог его править, и «добавить» не
+ * значит «сбросить».
+ */
+export function installBuiltinWidget(projectPath: string, id: string, dir: string = builtinWidgetsDir()): InstallWidgetOutcome {
+  const source = resolveBuiltinWidgetFile(id, dir);
+  if (source === undefined) return { status: 'unknown' };
+  const targetDir = widgetsDirPath(projectPath);
+  const target = join(targetDir, `${id}${WIDGET_EXTENSION}`);
+  if (existsSync(target)) return { status: 'exists', file: target };
+  mkdirSync(targetDir, { recursive: true });
+  copyFileSync(source, target);
+  return { status: 'installed', file: target };
 }
 
 /** Разобранная ошибка компиляции: путь файла, строка, колонка, текст (design.md, Решение 8). */

@@ -291,6 +291,8 @@ describe('ui-shared-modules: версия таблицы сведена с пе�
   // новую запись со свежепосчитанным отпечатком, а не переписывает эту.
   const EXPECTED_FINGERPRINT_BY_VERSION: Readonly<Record<number, string>> = {
     1: '8faab4f53188792a8c9e7dd1ad86da3304085aaa655f3e4059beae28367aa42e',
+    // Версия 2 (`ui-overhaul`): добавлены Badge, statusBadgeVariant, Label, Separator, Alert*, Switch, Combobox, PageHeader, EmptyState.
+    2: '13fa6661e9e4d422fa7bae261dff780a81fd4f0a5e0b29f5400f831217f40241',
   };
 
   it('перечень имён при действующей версии совпадает с зафиксированным отпечатком', () => {

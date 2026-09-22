@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 
 import { listProjects } from '../../pipeline/run/journal/reader.js';
 import { backfillUsageStore } from '../../pipeline/run/journal/usageStore.js';
+import { pruneOrphanProjects } from '../../pipeline/run/cleanup.js';
 import type { Config } from '../../pipeline/config/resolve.js';
 import { dashboardHtml } from './assets.js';
 import { sendJson } from './http.js';
@@ -21,6 +22,8 @@ import { launchDecide as defaultLaunchDecide, launchRun as defaultLaunchRun, typ
 import {
   createWidgetCompiler,
   errorModuleText,
+  BUILTIN_WIDGETS_KEY,
+  resolveBuiltinWidgetFile,
   resolveWidgetFile,
   type WidgetCompiler,
 } from '../widgets.js';
@@ -139,7 +142,7 @@ function sendWidgetModule(res: ServerResponse, code: string, options: { readonly
  * Решение 5).
  */
 function sendWidgetNotFound(res: ServerResponse): void {
-  sendJson(res, 404, { error: 'Виджет не найден' });
+  sendJson(res, 404, { error: 'Widget not found' });
 }
 
 /** `<id>.js` → `<id>` — разобранный сегмент раскладки; расширение исходника фиксировано (design.md, Решение 10). */
@@ -173,13 +176,19 @@ async function handleWidgetModule(
     return;
   }
 
-  const project = listProjects(runsRoot).find((candidate) => candidate.key === key);
-  if (project?.path === undefined || !existsSync(project.path)) {
-    sendWidgetNotFound(res);
-    return;
+  // Ключ каталога поставки — не проект: файл берётся из пакета, той же
+  // компиляцией и тем же адресом с версией.
+  let file: string | undefined;
+  if (key === BUILTIN_WIDGETS_KEY) {
+    file = resolveBuiltinWidgetFile(id);
+  } else {
+    const project = listProjects(runsRoot).find((candidate) => candidate.key === key);
+    if (project?.path === undefined || !existsSync(project.path)) {
+      sendWidgetNotFound(res);
+      return;
+    }
+    file = resolveWidgetFile(project.path, id);
   }
-
-  const file = resolveWidgetFile(project.path, id);
   if (file === undefined) {
     sendWidgetNotFound(res);
     return;
@@ -223,7 +232,7 @@ async function handleWidgetRequest(
 
 /** Тот же отказ на все причины отсутствия под `/shared/` — сегмент вне таблицы, путь лишней вложенности. */
 function sendSharedNotFound(res: ServerResponse): void {
-  sendJson(res, 404, { error: 'Общий модуль не найден' });
+  sendJson(res, 404, { error: 'Shared module not found' });
 }
 
 /**
@@ -256,7 +265,7 @@ function handleSharedRequest(pathname: string, res: ServerResponse): void {
 
 /** Тот же отказ на все причины отсутствия плагина — небезопасный сегмент, неизвестный `id`, строка вне действующего состава, строка без браузерной половины. */
 function sendPluginNotFound(res: ServerResponse): void {
-  sendJson(res, 404, { error: 'Плагин не найден' });
+  sendJson(res, 404, { error: 'Plugin not found' });
 }
 
 /**
@@ -338,7 +347,7 @@ function handlePage(res: ServerResponse, dashboardFile: string | undefined): voi
   const html = dashboardFile === undefined ? dashboardHtml() : dashboardHtml(dashboardFile);
   if (html === undefined) {
     res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' });
-    res.end('Витрина не собрана. Соберите её командой npm run build:ui.\n');
+    res.end('The dashboard is not built. Run npm run build:ui.\n');
     return;
   }
 
@@ -357,6 +366,12 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
   // `GET /api/usage` и прочие читающие маршруты остаются чтением (design.md
   // изменения run-stats-retention, Решение 9).
   backfillUsageStore(runsRoot);
+  // Проекты-призраки вычёркиваются при старте, до первого обзора: след
+  // прогона из временного каталога иначе жил бы в каждом списке витрины.
+  const pruned = pruneOrphanProjects(runsRoot);
+  if (pruned.length > 0) {
+    options.log?.(`forgot ${pruned.length} orphaned project(s): ${pruned.map((orphan) => orphan.path).join(', ')}`);
+  }
   const watcher =
     options.watcher ??
     createWatcher({
@@ -431,9 +446,9 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
     const handler = daemon.api.find(method, url.pathname);
     if (handler === undefined) {
       if (daemon.api.hasAnyMethod(url.pathname)) {
-        sendJson(res, 405, { error: 'Такого действия у витрины нет' });
+        sendJson(res, 405, { error: 'The dashboard has no such action' });
       } else {
-        sendJson(res, 404, { error: `Нет такого маршрута: ${method} ${url.pathname}` });
+        sendJson(res, 404, { error: `No such route: ${method} ${url.pathname}` });
       }
       return;
     }
@@ -470,7 +485,7 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
         res.end();
         return;
       }
-      sendJson(res, 500, { error: `Отказ обработчика ${method} ${url.pathname}: ${message}` });
+      sendJson(res, 500, { error: `Handler failed for ${method} ${url.pathname}: ${message}` });
     });
   }
 
@@ -479,7 +494,7 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
     const method = req.method ?? 'GET';
 
     if (method !== 'GET' && !sameOrigin(req)) {
-      sendJson(res, 403, { error: 'Запрос пришёл со стороннего адреса' });
+      sendJson(res, 403, { error: 'Request came from a foreign origin' });
       return;
     }
 
@@ -489,7 +504,7 @@ export function createUiServer(options: UiServerOptions): Promise<UiServer> {
     }
 
     if (method !== 'GET') {
-      sendJson(res, 405, { error: 'Такого действия у витрины нет' });
+      sendJson(res, 405, { error: 'The dashboard has no such action' });
       return;
     }
 

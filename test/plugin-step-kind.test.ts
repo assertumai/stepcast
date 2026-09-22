@@ -710,7 +710,7 @@ jobs:
     assert.equal(step?.pluginKindName, 'http_probe');
     assert.equal(step?.pluginPlugin, 'example-steps');
     assert.deepEqual(step?.pluginFields, { url: 'https://example.org' });
-    assert.match(step?.pluginNote ?? '', /из замка прогона/);
+    assert.match(step?.pluginNote ?? '', /from the run lock/);
     assert.match(step?.pluginNote ?? '', /example-steps/);
     // Остальная карточка цела: статус, попытки и расход на месте.
     assert.equal(step?.status, 'success');

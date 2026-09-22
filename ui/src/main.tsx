@@ -62,7 +62,7 @@ kernel.ctx.plugin(routes);
 kernel.ctx.plugin(screens);
 
 const container = document.getElementById('root');
-if (container === null) throw new Error('Разметка витрины без корневого элемента');
+if (container === null) throw new Error('Dashboard markup has no root element');
 
 createRoot(container).render(
   <StrictMode>

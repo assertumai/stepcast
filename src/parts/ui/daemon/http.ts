@@ -28,7 +28,7 @@ export function readBody(req: IncomingMessage): Promise<string> {
     req.on('data', (chunk: string) => {
       body += chunk;
       if (Buffer.byteLength(body) > MAX_BODY_BYTES) {
-        reject(new Error('Тело запроса слишком велико'));
+        reject(new Error('Request body is too large'));
         req.destroy();
       }
     });

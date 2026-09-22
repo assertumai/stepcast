@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type JSX } from 'react';
 
-import { Button } from '@stepcast/ui';
+import { Alert, AlertDescription, Button, EmptyState } from '@stepcast/ui';
 import { fetchStepOutput, type StepOutputStream } from '../api';
 import { fmtBytes } from '../format';
 import { mergeToolOutcomes, parseTranscript, type TranscriptEntry } from '../transcript';
@@ -61,14 +61,14 @@ function TranscriptEntryRow({ entry }: { readonly entry: TranscriptEntry }): JSX
       const model = entry.data.model;
       return (
         <div className="transcript-entry session">
-          сессия начата{typeof model === 'string' ? ` · ${model}` : ''}
+          session started{typeof model === 'string' ? ` · ${model}` : ''}
         </div>
       );
     }
     case 'reply':
       return (
         <div className={entry.thinking ? 'transcript-entry reply thinking' : 'transcript-entry reply'}>
-          {entry.thinking ? <span className="kind">размышление</span> : null}
+          {entry.thinking ? <span className="kind">thinking</span> : null}
           <pre>{entry.text}</pre>
         </div>
       );
@@ -76,12 +76,12 @@ function TranscriptEntryRow({ entry }: { readonly entry: TranscriptEntry }): JSX
       return (
         <div className={entry.outcome?.isError === true ? 'transcript-entry tool-call error' : 'transcript-entry tool-call'}>
           <span className="tool-name mono">{entry.name}</span>
-          <ToolPayload label="вход" value={entry.input} />
+          <ToolPayload label="input" value={entry.input} />
           {entry.outcome === undefined ? (
-            <span className="kind dim">без исхода — оборвано</span>
+            <span className="kind dim">no outcome — cut off</span>
           ) : (
             <ToolPayload
-              label={entry.outcome.isError ? 'исход: ошибка' : 'исход'}
+              label={entry.outcome.isError ? 'outcome: error' : 'outcome'}
               value={entry.outcome.content}
             />
           )}
@@ -90,8 +90,8 @@ function TranscriptEntryRow({ entry }: { readonly entry: TranscriptEntry }): JSX
     case 'tool_result':
       return (
         <div className={entry.outcome.isError ? 'transcript-entry tool-result error' : 'transcript-entry tool-result'}>
-          <span className="kind dim">исход без вызова</span>
-          <ToolPayload label={entry.outcome.isError ? 'исход: ошибка' : 'исход'} value={entry.outcome.content} />
+          <span className="kind dim">outcome without a call</span>
+          <ToolPayload label={entry.outcome.isError ? 'outcome: error' : 'outcome'} value={entry.outcome.content} />
         </div>
       );
     case 'result':
@@ -104,7 +104,7 @@ function TranscriptEntryRow({ entry }: { readonly entry: TranscriptEntry }): JSX
 function TruncatedNote({ stream }: { readonly stream: RawStream }): JSX.Element | null {
   if (stream.truncatedFrom === undefined) return null;
   return (
-    <div className="truncated">показан последний 1 МБ из {fmtBytes(stream.bytes)} — начало обрезано</div>
+    <div className="truncated">showing the last 1 MB of {fmtBytes(stream.bytes)} — the beginning is cut off</div>
   );
 }
 
@@ -114,9 +114,9 @@ function StreamBlock({ name, stream }: { readonly name: string; readonly stream:
       <div className="kind">{name}</div>
       <TruncatedNote stream={stream} />
       {!stream.exists ? (
-        <p className="empty">файла нет</p>
+        <p className="dim small">no file</p>
       ) : stream.text === '' && stream.bytes === 0 ? (
-        <p className="empty">{name} пуст</p>
+        <p className="dim small">{name} is empty</p>
       ) : (
         <pre>{stream.text}</pre>
       )}
@@ -249,8 +249,8 @@ export function StepOutput({
 
   return (
     <div className="step-output">
-      <Button className="mono" onClick={() => void toggle()}>
-        вывод шага {open ? '▾' : '▸'}
+      <Button variant="outline" size="sm" className="mono" onClick={() => void toggle()}>
+        step output {open ? '▾' : '▸'}
       </Button>
       {!open ? null : (
         <div className="step-output-body">
@@ -259,18 +259,24 @@ export function StepOutput({
               {attempts.map((value) => (
                 <Button
                   key={value}
+                  variant="outline"
+                  size="sm"
                   className={value === attempt ? 'active' : undefined}
                   disabled={value === attempt}
                   onClick={() => void switchAttempt(value)}
                 >
-                  попытка {value}
+                  attempt {value}
                 </Button>
               ))}
             </div>
           ) : null}
 
-          {error !== undefined ? <p className="error">{error}</p> : null}
-          {error === undefined && !loaded ? <p className="empty">Загрузка…</p> : null}
+          {error !== undefined ? (
+            <Alert variant="destructive">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          ) : null}
+          {error === undefined && !loaded ? <EmptyState title="Loading…" /> : null}
           {/*
             Пустой перечень попыток — каталога шага ещё нет. Но `stdout.log`
             заводится в первый же миг шага, и у только что стартовавшего
@@ -281,7 +287,7 @@ export function StepOutput({
           {error === undefined &&
           loaded &&
           (attempts.length === 0 || (kind === 'agent' && entries.length === 0)) ? (
-            <p className="empty">Вывода пока нет.</p>
+            <EmptyState title="No output yet" description="The step has not written anything so far." />
           ) : null}
 
           {loaded && entries.length > 0 && kind === 'agent' ? (

@@ -14,7 +14,7 @@ export const DialogContent = forwardRef<HTMLDivElement, ComponentPropsWithoutRef
         <DialogPrimitive.Overlay className="sc-dialog-overlay" />
         <DialogPrimitive.Content ref={ref} className={cn('sc-dialog-content', className)} {...props}>
           {children}
-          <DialogPrimitive.Close className="sc-dialog-close" aria-label="Закрыть">
+          <DialogPrimitive.Close className="sc-dialog-close" aria-label="Close">
             ×
           </DialogPrimitive.Close>
         </DialogPrimitive.Content>

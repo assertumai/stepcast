@@ -175,7 +175,7 @@ describe('ui-routes: навигация и подсветка из действ�
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
       assert.match(markup, /dashboard/);
-      assert.match(markup, /не знаком действующему составу/);
+      assert.match(markup, /is unknown to the active composition/);
     } finally {
       restoreWindow();
       restoreFetch();
@@ -191,7 +191,7 @@ describe('ui-routes: навигация и подсветка из действ�
       const diagnostics = await kernel.settle();
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
-      assert.match(markup, /Действующих маршрутов нет/);
+      assert.match(markup, /No active routes/);
       assert.match(markup, /routes\.yml/);
     } finally {
       restoreWindow();
@@ -282,7 +282,7 @@ describe('ui-routes: навигация и подсветка из действ�
       // Тот же хост, каким виджет показан на экране виджетов: до загрузки
       // модуля он рисует свою карточку, и это отличает его от причины отказа.
       assert.match(markup, /widget-card/);
-      assert.doesNotMatch(markup, /не найден в действующем составе/);
+      assert.doesNotMatch(markup, /is not in the active composition/);
     } finally {
       restoreWindow();
       restoreFetch();
@@ -299,7 +299,7 @@ describe('ui-routes: навигация и подсветка из действ�
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
       assert.match(markup, /screen-runs/);
-      assert.match(markup, /не найден в действующем составе/);
+      assert.match(markup, /is not in the active composition/);
     } finally {
       restoreWindow();
       restoreFetch();
@@ -342,7 +342,7 @@ describe('ui-routes: навигация и подсветка из действ�
       const diagnostics = await kernel.settle();
       assert.doesNotMatch(
         renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />),
-        /Адрес не разобран/,
+        /No route matches this address/,
       );
 
       // Пользователь выключил маршрут страницы прогона: демон прислал таблицу
@@ -350,7 +350,7 @@ describe('ui-routes: навигация и подсветка из действ�
       source.emit('routes', { routes: [RUNS_ROUTE] });
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
-      assert.match(markup, /Адрес не разобран/);
+      assert.match(markup, /No route matches this address/);
       assert.match(markup, /\/runs\/42/);
     } finally {
       restoreWindow();
@@ -373,8 +373,8 @@ describe('ui-routes: навигация и подсветка из действ�
       const diagnostics = await kernel.settle();
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
-      assert.match(markup, /Адрес не разобран/);
-      assert.match(markup, /Стартовая страница не объявлена/);
+      assert.match(markup, /No route matches this address/);
+      assert.match(markup, /No start page/);
     } finally {
       restoreWindow();
       restoreFetch();
@@ -404,7 +404,7 @@ describe('ui-routes: навигация и подсветка из действ�
       const diagnostics = await kernel.settle();
 
       const markup = renderToStaticMarkup(<KernelFrame kernel={kernel} diagnostics={diagnostics} />);
-      assert.match(markup, /Таблица маршрутов не пересобран/);
+      assert.match(markup, /Route table was not rebuilt/);
       assert.match(markup, /занят маршрутами a и b/);
     } finally {
       restoreWindow();
@@ -435,6 +435,6 @@ describe('ui-routes: ссылка на цель без маршрута', () => 
     );
     assert.doesNotMatch(withoutRoute, /<a /);
     assert.match(withoutRoute, /прогон 42/);
-    assert.match(withoutRoute, /ни один действующий маршрут не ведёт к цели screen:screen-run/);
+    assert.match(withoutRoute, /no active route leads to target screen:screen-run/);
   });
 });

@@ -61,8 +61,8 @@ export function trimPartialUtf8(buffer: Buffer, side: FileSide): Buffer {
  */
 export function resolveJournalPath(runDir: string, requested: string): string {
   if (isAbsolute(requested)) {
-    throw new StepcastError('Путь к файлу журнала должен быть относительным', {
-      hint: 'Абсолютные пути не принимаются',
+    throw new StepcastError('Journal file path must be relative', {
+      hint: 'Absolute paths are not accepted',
     });
   }
 
@@ -72,8 +72,8 @@ export function resolveJournalPath(runDir: string, requested: string): string {
   // Сравнение с разделителем на конце: иначе каталог-сосед с общим префиксом
   // (`<run>-other`) прошёл бы проверку как вложенный.
   if (target !== root && !target.startsWith(root + sep)) {
-    throw new StepcastError('Путь ведёт за пределы каталога прогона', {
-      hint: 'Витрина отдаёт только файлы внутри прогона',
+    throw new StepcastError('Path leads outside the run directory', {
+      hint: 'The dashboard serves only files inside the run',
     });
   }
 

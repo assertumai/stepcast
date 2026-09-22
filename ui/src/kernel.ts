@@ -69,11 +69,11 @@ const RESERVED_SERVICE_RE = /^service "([^"]+)" has been registered at <([^>]*)>
  * объявлении слота.
  */
 const KERNEL_SERVICE_NAMES: Readonly<Record<string, string>> = {
-  [SLOTS_SERVICE_NAME]: 'реестр слотов',
-  [LIVE_SERVICE_NAME]: 'живые данные витрины',
-  [SCREENS_SERVICE_NAME]: 'состав экранов витрины',
-  [ROUTES_SERVICE_NAME]: 'таблица маршрутов витрины',
-  [PLUGINS_SERVICE_NAME]: 'состав браузерных строк',
+  [SLOTS_SERVICE_NAME]: 'slot registry',
+  [LIVE_SERVICE_NAME]: 'live dashboard data',
+  [SCREENS_SERVICE_NAME]: 'dashboard screen composition',
+  [ROUTES_SERVICE_NAME]: 'dashboard route table',
+  [PLUGINS_SERVICE_NAME]: 'browser row composition',
 };
 
 function translateKernelNameConflict(
@@ -92,7 +92,7 @@ function translateKernelNameConflict(
     // Имя сервиса ядра — не слот, и приписывать отказу слот `root` значило бы
     // назвать в диагностике то, к чему отказ отношения не имеет.
     slot: undefined,
-    message: `Имя сервиса ${name} занято: оно принадлежит ядру (${belongs})`,
+    message: `Service name ${name} is taken: it belongs to the kernel (${belongs})`,
   };
 }
 
@@ -115,14 +115,14 @@ export interface Diagnostic {
 function rejectionMessage(rejected: RejectedContribution): string {
   if (rejected.reason === 'kind-mismatch') {
     return (
-      `Слот ${rejected.slotName}: вклад плагина ${rejected.owner} отвергнут — ` +
-      `слот объявлен видом ${rejected.kind}, а вклад внесён как ${rejected.contributedKind}`
+      `Slot ${rejected.slotName}: contribution from plugin ${rejected.owner} rejected — ` +
+      `the slot is declared with kind ${rejected.kind}, but the contribution came as ${rejected.contributedKind}`
     );
   }
-  const keyed = rejected.key === undefined ? '' : ` с ключом ${rejected.key}`;
+  const keyed = rejected.key === undefined ? '' : ` with key ${rejected.key}`;
   return (
-    `Слот ${rejected.slotName}${keyed}: вклад плагина ${rejected.owners[1]} отвергнут — ` +
-    `место уже занял ${rejected.owners[0]}`
+    `Slot ${rejected.slotName}${keyed}: contribution from plugin ${rejected.owners[1]} rejected — ` +
+    `the place is already taken by ${rejected.owners[0]}`
   );
 }
 
@@ -161,7 +161,7 @@ async function collectDiagnostics(ctx: Context): Promise<readonly Diagnostic[]> 
       kind: 'unresolved',
       plugin: unresolved.plugin,
       slot: names.join(', '),
-      message: `Плагин ${unresolved.plugin} ждёт слот ${names.join(', ')}, которого не объявил ни один из загруженных плагинов`,
+      message: `Plugin ${unresolved.plugin} is waiting for slot ${names.join(', ')}, which none of the loaded plugins declared`,
     });
   }
 

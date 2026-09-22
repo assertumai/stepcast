@@ -1,0 +1,23 @@
+/*
+ * Экран «Маршруты»: полоса причины над перечнем, таблица на компонентах
+ * библиотеки, форма правки карточкой. Сетка таблицы и колонка источников
+ * остаются на прежних классах `.routes-*` из `styles.css`.
+ */
+.routes-notice { margin-bottom: 1rem; }
+.routes-notice-line { margin: .15rem 0 0; }
+.routes-notice-line:first-child { margin-top: 0; }
+.routes-notice code { font-family: var(--mono); }
+
+.routes-plain-list { margin: 0; padding-left: 1.2rem; font-size: .88rem; }
+.routes-plain-list code { font-family: var(--mono); }
+
+.routes-empty { margin: .5rem 0 1rem; }
+
+.routes-menu-cell { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+
+/* Карточка формы: колонка полей, подпись над полем. */
+.routes-form-card { margin-top: 1.2rem; max-width: 36rem; }
+.routes-field { display: flex; flex-direction: column; gap: .25rem; }
+.routes-field .sc-input, .routes-field .sc-select-trigger { width: 100%; }
+.routes-field-inline { display: flex; gap: .6rem; align-items: center; }
+.routes-form-actions { display: flex; gap: .6rem; align-items: center; margin-top: .4rem; }

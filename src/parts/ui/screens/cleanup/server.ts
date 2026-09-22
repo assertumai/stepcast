@@ -30,7 +30,7 @@ const handleSelectUsageRecords: ApiHandler = (req, res, env) => {
 
   for (const trait of url.searchParams.getAll('trait')) {
     if (!KNOWN_USAGE_RECORD_TRAITS.has(trait)) {
-      sendJson(res, 400, { error: `Неизвестный признак отбора: ${trait}`, hint: 'Допустимые признаки: failed' });
+      sendJson(res, 400, { error: `Unknown selection trait: ${trait}`, hint: 'Allowed traits: failed' });
       return;
     }
     traits.failed = true;
@@ -41,7 +41,7 @@ const handleSelectUsageRecords: ApiHandler = (req, res, env) => {
     try {
       traits.olderThanMs = parseDuration(olderThan, 'older-than');
     } catch (error) {
-      const message = isStepcastError(error) ? error.message : 'Не удалось разобрать срок';
+      const message = isStepcastError(error) ? error.message : 'Could not parse the age';
       sendJson(res, 400, { error: message });
       return;
     }
@@ -49,7 +49,7 @@ const handleSelectUsageRecords: ApiHandler = (req, res, env) => {
 
   const project = url.searchParams.get('project');
   if (project !== null && !isSafeSegment(project)) {
-    sendJson(res, 400, { error: 'Ключ проекта должен быть одним сегментом раскладки' });
+    sendJson(res, 400, { error: 'Project key must be a single layout segment' });
     return;
   }
 
@@ -82,7 +82,7 @@ const handleDeleteUsageRecords: ApiHandler = async (req, res, env) => {
   try {
     body = await readBody(req);
   } catch {
-    sendJson(res, 413, { error: 'Тело запроса слишком велико' });
+    sendJson(res, 413, { error: 'Request body is too large' });
     return;
   }
 
@@ -90,18 +90,18 @@ const handleDeleteUsageRecords: ApiHandler = async (req, res, env) => {
   try {
     parsed = JSON.parse(body === '' ? '{}' : body);
   } catch {
-    sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
+    sendJson(res, 400, { error: 'Request body is not valid JSON' });
     return;
   }
 
   const list = (parsed as { records?: unknown }).records;
   if (!Array.isArray(list) || list.some((item) => typeof item !== 'string')) {
-    sendJson(res, 400, { error: 'Тело запроса должно нести список адресов: { "records": string[] }' });
+    sendJson(res, 400, { error: 'Request body must carry an address list: { "records": string[] }' });
     return;
   }
 
   if (list.length > MAX_USAGE_RECORD_ADDRESSES) {
-    sendJson(res, 413, { error: `Список адресов превышает предел в ${MAX_USAGE_RECORD_ADDRESSES}` });
+    sendJson(res, 413, { error: `The address list exceeds the limit of ${MAX_USAGE_RECORD_ADDRESSES}` });
     return;
   }
 
@@ -109,7 +109,7 @@ const handleDeleteUsageRecords: ApiHandler = async (req, res, env) => {
   for (const value of list as string[]) {
     const address = parseRunAddress(value);
     if (address === undefined) {
-      sendJson(res, 400, { error: `Адрес записи должен иметь вид <проект>/<прогон>: ${value}` });
+      sendJson(res, 400, { error: `Record address must look like <project>/<run>: ${value}` });
       return;
     }
     addresses.push(`${address.key}/${address.runId}`);

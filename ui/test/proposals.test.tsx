@@ -31,7 +31,7 @@ function record(overrides: Partial<ProposalApiRecord> = {}): ProposalApiRecord {
 }
 
 function overviewWith(records: readonly ProposalApiRecord[], mode: 'queue' | 'direct' = 'queue'): ProposalsOverview {
-  return { projects: [{ projectKey: 'proj', mode, records, invalid: [] }] };
+  return { projects: [{ projectKey: 'proj', projectPath: '/home/me/proj', mode, records, invalid: [] }] };
 }
 
 describe('ui-proposals: группировка по прогону', () => {
@@ -73,53 +73,67 @@ describe('ui-proposals: диф', () => {
 });
 
 describe('ui-proposals: экран — статический рендер', () => {
-  it('пустая очередь — сообщение, а не пустая таблица', () => {
+  it('проект без записей не показывается — вместо перечня хэшей одно пустое состояние с объяснением', () => {
     const html = renderToStaticMarkup(<Proposals overview={overviewWith([])} navigate={() => {}} />);
-    assert.match(html, /Очередь пуста/);
+    assert.match(html, /No proposals yet/);
+    assert.doesNotMatch(html, />proj</);
+  });
+
+  it('проект подписан последним сегментом пути, полный путь рядом', () => {
+    const html = renderToStaticMarkup(<Proposals overview={overviewWith([record()])} navigate={() => {}} />);
+    assert.match(html, />proj</);
+    assert.match(html, /\/home\/me\/proj/);
+  });
+
+  it('шапка объясняет, что это и как сюда попадают записи', () => {
+    const html = renderToStaticMarkup(<Proposals overview={overviewWith([record()])} navigate={() => {}} />);
+    assert.match(html, /stepcast propose/);
+    assert.match(html, /Nothing is written until you accept/);
   });
 
   it('открытая запись показана дифом, причиной и обеими кнопками', () => {
     const overview = overviewWith([record({ reason: 'имя ушло из таблицы' })]);
     const html = renderToStaticMarkup(<Proposals overview={overview} navigate={() => {}} />);
     assert.match(html, /имя ушло из таблицы/);
-    assert.match(html, />принять</);
-    assert.match(html, />отклонить</);
+    assert.match(html, />Accept</);
+    assert.match(html, />Reject</);
     assert.match(html, /diff-line/);
   });
 
   it('решённая запись свёрнута — без дифа и без кнопок', () => {
     const overview = overviewWith([record({ state: 'accepted', decidedAt: '2026-09-12T18:00:00.000Z' })]);
     const html = renderToStaticMarkup(<Proposals overview={overview} navigate={() => {}} />);
-    assert.doesNotMatch(html, />принять</);
+    assert.doesNotMatch(html, />Accept</);
     assert.doesNotMatch(html, /diff-line/);
-    assert.match(html, /решено/);
+    assert.match(html, /Resolved \(1\)/);
+    assert.match(html, />accepted</);
   });
 
   it('запись, поставленная вручную, идёт в группе «вручную»', () => {
     const overview = overviewWith([record({ origin: {} })]);
     const html = renderToStaticMarkup(<Proposals overview={overview} navigate={() => {}} />);
-    assert.match(html, /вручную/);
+    assert.match(html, /proposed manually/);
   });
 
   it('запись прогона показана ссылкой прогона', () => {
     const overview = overviewWith([record({ origin: { run: 'a1b2' } })]);
     const html = renderToStaticMarkup(<Proposals overview={overview} navigate={() => {}} />);
-    assert.match(html, /прогон a1b2/);
+    assert.match(html, /run a1b2/);
   });
 
   it('режим direct виден на экране', () => {
     const html = renderToStaticMarkup(<Proposals overview={overviewWith([record()], 'direct')} navigate={() => {}} />);
-    assert.match(html, /прямая запись/);
+    assert.match(html, /direct write/);
   });
 
-  it('режим queue назван «очередь»', () => {
+  it('режим queue назван queue', () => {
     const html = renderToStaticMarkup(<Proposals overview={overviewWith([record()], 'queue')} navigate={() => {}} />);
-    assert.match(html, />очередь</);
+    assert.match(html, />queue</);
   });
 
   it('undefined вместо обзора — загрузка, не отказ', () => {
     const html = renderToStaticMarkup(<Proposals overview={undefined} navigate={() => {}} />);
-    assert.match(html, /Загрузка/);
+    assert.match(html, /Loading/);
   });
 });
 
@@ -134,12 +148,12 @@ describe('ui-proposals: отказ решения локален', () => {
       />,
     );
     assert.match(html, /файл изменился с момента предложения/);
-    assert.match(html, />принять</);
-    assert.match(html, />отклонить</);
+    assert.match(html, />Accept</);
+    assert.match(html, />Reject</);
   });
 
-  it('без отказа — ни одной строки notice error', () => {
+  it('без отказа — ни одной полосы отказа', () => {
     const html = renderToStaticMarkup(<ProposalActions projectKey="proj" record={record()} onDecided={() => {}} />);
-    assert.doesNotMatch(html, /notice error/);
+    assert.doesNotMatch(html, /sc-alert--destructive/);
   });
 });

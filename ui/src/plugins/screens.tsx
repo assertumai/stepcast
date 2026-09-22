@@ -29,7 +29,7 @@ interface ScreensResponse {
 async function fetchScreens(): Promise<ScreensResponse> {
   const response = await fetch('/api/screens');
   const data = (await response.json()) as ScreensResponse & { error?: string };
-  if (!response.ok) throw new Error(data.error ?? `Демон ответил ${response.status}`);
+  if (!response.ok) throw new Error(data.error ?? `Daemon responded ${response.status}`);
   return data;
 }
 
@@ -67,7 +67,7 @@ export default function screens(ctx: Context): void {
     .catch((error: Error) => {
       // Отказ самого запроса (демон не отвечает) не должен погасить каркас:
       // он рисуется независимо от состава, а причина хотя бы попадёт в консоль.
-      console.error(`[stepcast] не удалось получить состав экранов: ${error.message}`);
+      console.error(`[stepcast] failed to fetch screen composition: ${error.message}`);
     });
 
   let lastScreens: ScreensResponse | undefined;

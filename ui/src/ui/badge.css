@@ -1,0 +1,20 @@
+.sc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: .25rem;
+  font-size: .72rem;
+  font-weight: 500;
+  line-height: 1.3;
+  padding: .1rem .5rem;
+  border-radius: 99px;
+  border: 1px solid var(--border);
+  color: var(--muted-foreground);
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.sc-badge--default { background: var(--primary); border-color: var(--primary); color: var(--primary-foreground); }
+.sc-badge--secondary { background: var(--secondary); border-color: var(--secondary); color: var(--secondary-foreground); }
+.sc-badge--outline { background: transparent; }
+.sc-badge--destructive { color: var(--status-failed); border-color: var(--status-failed); }
+.sc-badge--success { color: var(--status-success); border-color: var(--status-success); }
+.sc-badge--running { color: var(--status-running); border-color: var(--status-running); }

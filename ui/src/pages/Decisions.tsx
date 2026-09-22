@@ -4,6 +4,26 @@ import { decideRun, fetchRun, type AwaitingDecision, type Overview, type RunOver
 import { fmtTime } from '../format';
 import { TargetLink } from '../routeLink';
 import { RUN_TARGET } from '../screens/run';
+import {
+  Alert,
+  AlertDescription,
+  Button,
+  EmptyState,
+  Input,
+  PageHeader,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@stepcast/ui';
+import './decisions.css';
 
 /**
  * Экран «Решения» (`user-decision-steps`, design.md решение 11): таблица
@@ -100,8 +120,10 @@ function RowActions({ row, navigate }: { readonly row: Row; readonly navigate: (
     <div className="decision-actions">
       <div className="decision-buttons">
         {Object.entries(row.awaiting.outcomes).map(([name, spec]) => (
-          <button
+          <Button
             key={name}
+            variant="outline"
+            size="sm"
             disabled={busy}
             onClick={() => {
               if (spec.effect === 'reject') {
@@ -117,44 +139,58 @@ function RowActions({ row, navigate }: { readonly row: Row; readonly navigate: (
             }}
           >
             {spec.label ?? name}
-          </button>
+          </Button>
         ))}
-        <TargetLink target={RUN_TARGET} params={{ projectKey: row.projectKey, runId: row.run.runId }} navigate={navigate}>
-          открыть прогон
+        <TargetLink
+          target={RUN_TARGET}
+          params={{ projectKey: row.projectKey, runId: row.run.runId }}
+          navigate={navigate}
+          className="decision-run-link small"
+        >
+          open run
         </TargetLink>
       </div>
 
       {showReject === undefined ? null : (
         <div className="decision-form">
-          <input
+          <Input
             type="text"
-            placeholder="причина отклонения"
+            placeholder="rejection reason"
+            aria-label="Rejection reason"
             value={reason}
             onChange={(event) => setReason(event.target.value)}
           />
-          <button disabled={busy || !canSubmit(reason)} onClick={() => submit(showReject, { reason })}>
-            отклонить
-          </button>
+          <Button variant="destructive" size="sm" disabled={busy || !canSubmit(reason)} onClick={() => submit(showReject, { reason })}>
+            reject
+          </Button>
         </div>
       )}
 
       {showRestart === undefined ? null : (
         <div className="decision-form">
-          <select value={restartFrom} onChange={(event) => setRestartFrom(event.target.value)}>
-            <option value="">— выбрать шаг —</option>
-            {candidates.map((candidate) => (
-              <option key={candidate.address} value={candidate.address}>
-                {candidate.label}
-              </option>
-            ))}
-          </select>
-          <button disabled={busy || !canSubmit(restartFrom)} onClick={() => submit(showRestart, { from: restartFrom })}>
-            перезапустить
-          </button>
+          <Select value={restartFrom} onValueChange={setRestartFrom}>
+            <SelectTrigger aria-label="Restart from step" className="decision-step-select">
+              <SelectValue placeholder="— choose a step —" />
+            </SelectTrigger>
+            <SelectContent>
+              {candidates.map((candidate) => (
+                <SelectItem key={candidate.address} value={candidate.address}>
+                  {candidate.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Button size="sm" disabled={busy || !canSubmit(restartFrom)} onClick={() => submit(showRestart, { from: restartFrom })}>
+            restart
+          </Button>
         </div>
       )}
 
-      {error === undefined ? null : <p className="notice error">{error}</p>}
+      {error === undefined ? null : (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
     </div>
   );
 }
@@ -168,46 +204,65 @@ export function Decisions({
 }): JSX.Element {
   const list = rows(overview);
 
+  const header = (
+    <PageHeader
+      title="Decisions"
+      description="Runs paused at a step that waits for a human answer; pick one of the outcomes the step declared, or open the run for context."
+    />
+  );
+
   if (list.length === 0) {
-    return <p className="note dim">Ни один прогон решения не ждёт.</p>;
+    return (
+      <>
+        {header}
+        <EmptyState title="Nothing to decide" description="No run is waiting for a decision." />
+      </>
+    );
   }
 
   return (
-    <table className="decisions-table">
-      <thead>
-        <tr>
-          <th>проект</th>
-          <th>пайплайн</th>
-          <th>прогон</th>
-          <th>работа/шаг</th>
-          <th>вопрос</th>
-          <th>срок</th>
-          <th>действия</th>
-        </tr>
-      </thead>
-      <tbody>
-        {list.map((row) => (
-          <tr key={`${row.projectKey}/${row.run.runId}/${row.awaiting.wait_id}`}>
-            <td>{row.projectKey}</td>
-            <td>{row.run.pipeline || 'без имени'}</td>
-            <td>{row.run.shortId}</td>
-            <td>
-              {row.awaiting.job}/{row.awaiting.step}
-              {row.run.abandoned ? (
-                <div className="badge">
-                  процесс не отвечает — решение применится при возобновлении:{' '}
-                  <code>stepcast resume {row.run.shortId} --from {row.awaiting.job}/{row.awaiting.step}</code>
-                </div>
-              ) : null}
-            </td>
-            <td>{row.awaiting.prompt ?? ''}</td>
-            <td>{row.awaiting.deadline === undefined ? '—' : fmtTime(row.awaiting.deadline)}</td>
-            <td>
-              <RowActions row={row} navigate={navigate} />
-            </td>
-          </tr>
-        ))}
-      </tbody>
-    </table>
+    <>
+      {header}
+      <Table className="decisions-table">
+        <TableHeader>
+          <TableRow>
+            <TableHead>Project</TableHead>
+            <TableHead>Pipeline</TableHead>
+            <TableHead>Run</TableHead>
+            <TableHead>Job / step</TableHead>
+            <TableHead>Question</TableHead>
+            <TableHead>Deadline</TableHead>
+            <TableHead>Actions</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {list.map((row) => (
+            <TableRow key={`${row.projectKey}/${row.run.runId}/${row.awaiting.wait_id}`}>
+              <TableCell className="mono small">{row.projectKey}</TableCell>
+              <TableCell>{row.run.pipeline || 'unnamed'}</TableCell>
+              <TableCell className="mono small">{row.run.shortId}</TableCell>
+              <TableCell>
+                <span className="mono small">
+                  {row.awaiting.job}/{row.awaiting.step}
+                </span>
+                {row.run.abandoned ? (
+                  <Alert variant="warning" className="decision-abandoned">
+                    <AlertDescription>
+                      process is not responding — the decision applies on resume:{' '}
+                      <code>stepcast resume {row.run.shortId} --from {row.awaiting.job}/{row.awaiting.step}</code>
+                    </AlertDescription>
+                  </Alert>
+                ) : null}
+              </TableCell>
+              <TableCell>{row.awaiting.prompt ?? ''}</TableCell>
+              <TableCell className="small dim">{row.awaiting.deadline === undefined ? '—' : fmtTime(row.awaiting.deadline)}</TableCell>
+              <TableCell>
+                <RowActions row={row} navigate={navigate} />
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </>
   );
 }

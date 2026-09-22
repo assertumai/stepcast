@@ -5,7 +5,7 @@ import { parseDocument } from 'yaml';
 import { z } from 'zod';
 
 import codexPlugin from '../backends/codex/index.js';
-import { describeSource } from '../pipeline/config/merge.js';
+import { describeSource, type Source } from '../pipeline/config/merge.js';
 import type { ModelTiers } from '../pipeline/config/modelTiers.js';
 import type { ResolvedConfig } from '../pipeline/config/resolve.js';
 import { ModelNameSchema, ModelTierSchema, RawConfigSchema } from '../pipeline/config/schema.js';
@@ -57,9 +57,20 @@ export function globalConfigPath(home: string = homedir()): string {
   return join(home, '.stepcast', 'config.yml');
 }
 
+/**
+ * Происхождение значения словами витрины — по-английски, в отличие от
+ * `describeSource`, чей текст печатает CLI (`stepcast config`) и держат его
+ * тесты: файл и плагин называются так же, встроенное умолчание и флаг — своими
+ * словами.
+ */
+export function describeSettingSource(source: Source | undefined): string {
+  if (source === undefined || source.kind === 'builtin') return 'built-in default';
+  if (source.kind === 'flag') return `${source.name} (flag)`;
+  return describeSource(source);
+}
+
 function valueOf(resolved: ResolvedConfig, path: string, value: string | undefined): SettingsValue {
-  const source = resolved.provenance.get(path);
-  return { value, source: source === undefined ? 'встроенное умолчание' : describeSource(source) };
+  return { value, source: describeSettingSource(resolved.provenance.get(path)) };
 }
 
 /**
@@ -83,9 +94,9 @@ export async function readSettings(home: string = homedir(), kernelCache?: Kerne
   // Отдать его значения за настройки значило бы показать правдоподобные и
   // неверные — и на них же проверить правку, которая пишется в настоящий файл.
   if (fallback) {
-    throw new StepcastError(`Настройки не читаются: ${buildError ?? 'конфигурация не собирается'}`, {
+    throw new StepcastError(`Settings cannot be read: ${buildError ?? 'the configuration does not build'}`, {
       file: globalConfigPath(home),
-      hint: 'Почините файлы, из которых собирается состав плагинов, — витрина покажет ту же причину полосой над экраном',
+      hint: 'Fix the files the plugin composition is built from — the dashboard shows the same reason in the bar above the screen',
     });
   }
   const { config } = resolved;
@@ -136,20 +147,20 @@ export async function writeSettings(
   const parsedPatch = SettingsPatchSchema.safeParse(input);
   if (!parsedPatch.success) {
     const issue = parsedPatch.error.issues[0]!;
-    throw new StepcastError(`Некорректная правка настроек ${issue.path.join('.')}: ${issue.message}`);
+    throw new StepcastError(`Invalid settings patch ${issue.path.join('.')}: ${issue.message}`);
   }
   const patch = parsedPatch.data;
   const current = await readSettings(home, kernelCache);
   const known = new Map(current.backends.map((backend) => [backend.name, backend]));
   for (const name of Object.keys(patch.backends ?? {})) {
-    if (!known.has(name)) throw new StepcastError(`Неизвестный агент ${name}`);
+    if (!known.has(name)) throw new StepcastError(`Unknown agent ${name}`);
   }
   if (patch.agent !== undefined) {
     const backend = known.get(patch.agent);
-    if (backend === undefined) throw new StepcastError(`Неизвестный агент ${patch.agent}`);
-    if (!backend.enabled) throw new StepcastError(`Агент ${patch.agent} выключен`);
+    if (backend === undefined) throw new StepcastError(`Unknown agent ${patch.agent}`);
+    if (!backend.enabled) throw new StepcastError(`Agent ${patch.agent} is disabled`);
     if (!backend.available && !(patch.agent === 'codex' && patch.connectCodex === true)) {
-      throw new StepcastError(`Агент ${patch.agent} не подключён: сначала подключите его плагин`);
+      throw new StepcastError(`Agent ${patch.agent} is not connected: connect its plugin first`);
     }
   }
 
@@ -188,7 +199,7 @@ export async function writeSettings(
   const next = document.toString();
   const parsed = RawConfigSchema.safeParse(parseDocument(next).toJS() ?? {});
   if (!parsed.success) {
-    throw new StepcastError(`Правка не проходит схему конфигурации: ${parsed.error.issues[0]?.message ?? 'неизвестная ошибка'}`, { file });
+    throw new StepcastError(`The patch does not pass the configuration schema: ${parsed.error.issues[0]?.message ?? 'unknown error'}`, { file });
   }
 
   mkdirSync(dirname(file), { recursive: true });

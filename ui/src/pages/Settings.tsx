@@ -1,6 +1,26 @@
 import { useEffect, useState, type JSX } from 'react';
 
 import { fetchPipelines, fetchSettings, saveSettings, type PipelineView, type Settings as SettingsData } from '../api';
+import {
+  Alert,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  EmptyState,
+  Input,
+  Label,
+  PageHeader,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@stepcast/ui';
+import './settings.css';
 
 /** Четыре числа для области действия `defaults.model`, посчитанные по известным витрине пайплайнам. */
 interface ModelScope {
@@ -93,8 +113,22 @@ export function Settings(): JSX.Element {
       .catch(() => setPipelines(null));
   }, []);
 
-  if (error !== undefined && settings === undefined) return <p className="error">{error}</p>;
-  if (settings === undefined) return <p className="empty">Загрузка…</p>;
+  if (error !== undefined && settings === undefined) {
+    return (
+      <>
+        <PageHeader title="Settings" description="Default agent and model for every project." />
+        <Alert variant="destructive">{error}</Alert>
+      </>
+    );
+  }
+  if (settings === undefined) {
+    return (
+      <>
+        <PageHeader title="Settings" description="Default agent and model for every project." />
+        <EmptyState title="Loading…" />
+      </>
+    );
+  }
 
   const dirty = agent !== (settings.agent.value ?? '') || model !== (settings.model.value ?? '');
 
@@ -119,141 +153,154 @@ export function Settings(): JSX.Element {
 
   return (
     <>
-      <h1>Настройки</h1>
+      <PageHeader
+        title="Settings"
+        description="Default agent and model for every project; changes are written to the global config file named on the card."
+      />
 
-      <div className="card">
-        <div className="card-head">
-          <span className="card-title">По умолчанию для всех проектов</span>
-          <span className="mono small dim">{settings.file}</span>
-        </div>
-
-        <div className="field">
-          <label className="label" htmlFor="settings-agent">
-            агент
-          </label>
-          <div className="field-body">
-            <select
-              id="settings-agent"
-              value={agent}
-              onChange={(event) => setAgent(event.target.value)}
-            >
-              {/* Пустой пункт нужен, только пока значения нет: выбрать «ничего»
-                  нельзя — `defaults.agent` снятию не подлежит. */}
-              {settings.agent.value === undefined ? <option value="">не задан</option> : null}
-              {enabled.map((backend) => (
-                <option key={backend.name} value={backend.name}>
-                  {backend.name}
-                </option>
-              ))}
-            </select>
-            <span className="small dim">{settings.agent.source}</span>
-          </div>
-        </div>
-
-        <div className="field">
-          <label className="label" htmlFor="settings-model">
-            модель
-          </label>
-          <div className="field-body">
-            <input
-              id="settings-model"
-              className="mono"
-              value={model}
-              placeholder={chosen?.defaultModel ?? 'модель бэкенда'}
-              onChange={(event) => setModel(event.target.value)}
-            />
-            <span className="small dim">
-              {settings.model.value === undefined
-                ? `не задано — шаг без своей модели получит модель бэкенда${chosen?.defaultModel === undefined ? '' : `: ${chosen.defaultModel}`}`
-                : settings.model.source}
-            </span>
-          </div>
-        </div>
-
-        <div className="field">
-          <span className="label" />
-          <div className="field-body">
-            <p className="note dim">
-              Значение применяется только к шагам, которые не объявили модель сами — ни в самом
-              шаге, ни в работе, ни в умолчаниях пайплайна.{' '}
-              {pipelines === undefined ? (
-                'Область действия ещё считается…'
-              ) : pipelines === null ? (
-                'Пайплайнов не известно — область действия посчитать нечем.'
-              ) : (
-                (() => {
-                  const scope = scopeOf(pipelines, settings.file);
-                  return (
-                    <>
-                      В известных витрине пайплайнах затронет шагов <b>{scope.affected}</b>, не
-                      затронет — они уже объявили модель сами — <b>{scope.unaffected}</b>
-                      {scope.overridden === 0 ? null : (
-                        <>
-                          ; ещё <b>{scope.overridden}</b> берут модель из файла ближе этого —
-                          проектного или плагинного, — и правка отсюда их не изменит
-                        </>
-                      )}
-                      {scope.unparsed === 0 ? null : (
-                        <>
-                          ; не разобрано пайплайнов <b>{scope.unparsed}</b>, их шаги не сосчитаны
-                        </>
-                      )}
-                      .
-                    </>
-                  );
-                })()
-              )}
-            </p>
-          </div>
-        </div>
-
-        <div className="field">
-          <span className="label" />
-          <div className="field-body">
-            <button disabled={!dirty || saving} onClick={submit}>
-              {saving ? 'сохранение…' : 'сохранить'}
-            </button>
-            {dirty ? (
-              <button
-                className="plain"
-                disabled={saving}
-                onClick={() => {
-                  adopt(settings);
-                  setSaved(false);
-                }}
-              >
-                отменить правку
-              </button>
-            ) : null}
-            {saved && !dirty ? <span className="small dim">записано</span> : null}
-          </div>
-        </div>
-
-        {error === undefined ? null : <p className="error">{error}</p>}
-      </div>
-
-      <h2 className="project">бэкенды</h2>
-      <div className="card">
-        {settings.backends.length === 0 ? (
-          <p className="note dim">Бэкендов не объявлено.</p>
-        ) : (
-          settings.backends.map((backend) => (
-            <div key={backend.name} className="job">
-              <div className="job-head">
-                <span className="job-name">{backend.name}</span>
-                {backend.enabled ? null : <span className="badge">выключен</span>}
-                {backend.name === settings.agent.value ? (
-                  <span className="badge success">по умолчанию</span>
-                ) : null}
-              </div>
-              <div className="ctx">$ {backend.command}</div>
-              {backend.defaultModel === undefined ? null : (
-                <div className="ctx">модель бэкенда: {backend.defaultModel}</div>
-              )}
+      <Card className="settings-card">
+        <CardHeader>
+          <CardTitle>Defaults for all projects</CardTitle>
+          <CardDescription className="mono">{settings.file}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="field">
+            <Label className="label" htmlFor="settings-agent">
+              agent
+            </Label>
+            <div className="field-body">
+              {/* Пустого пункта в списке нет: выбрать «ничего» нельзя —
+                  `defaults.agent` снятию не подлежит. Пока значения нет, поле
+                  показывает подсказку вместо выбранного. */}
+              <Select value={agent} onValueChange={setAgent}>
+                <SelectTrigger id="settings-agent" className="settings-agent" aria-label="Agent">
+                  <SelectValue placeholder="not set" />
+                </SelectTrigger>
+                <SelectContent>
+                  {enabled.map((backend) => (
+                    <SelectItem key={backend.name} value={backend.name}>
+                      {backend.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="small dim">{settings.agent.source}</span>
             </div>
-          ))
-        )}
-      </div>
+          </div>
+
+          <div className="field">
+            <Label className="label" htmlFor="settings-model">
+              model
+            </Label>
+            <div className="field-body">
+              <Input
+                id="settings-model"
+                className="mono"
+                value={model}
+                placeholder={chosen?.defaultModel ?? 'backend model'}
+                onChange={(event) => setModel(event.target.value)}
+              />
+              <span className="small dim">
+                {settings.model.value === undefined
+                  ? `not set — a step without its own model gets the backend model${chosen?.defaultModel === undefined ? '' : `: ${chosen.defaultModel}`}`
+                  : settings.model.source}
+              </span>
+            </div>
+          </div>
+
+          <div className="field">
+            <span className="label" />
+            <div className="field-body">
+              <p className="note dim">
+                The value applies only to steps that do not declare a model themselves — neither in the
+                step, nor in the job, nor in the pipeline defaults.{' '}
+                {pipelines === undefined ? (
+                  'The scope is still being counted…'
+                ) : pipelines === null ? (
+                  'No pipelines are known — there is nothing to count the scope from.'
+                ) : (
+                  (() => {
+                    const scope = scopeOf(pipelines, settings.file);
+                    return (
+                      <>
+                        Across the pipelines known to the dashboard it affects <b>{scope.affected}</b> step(s)
+                        and leaves <b>{scope.unaffected}</b> alone — they already declare a model
+                        {scope.overridden === 0 ? null : (
+                          <>
+                            ; <b>{scope.overridden}</b> more take the model from a closer file — the project
+                            or a plugin — and editing here does not change them
+                          </>
+                        )}
+                        {scope.unparsed === 0 ? null : (
+                          <>
+                            ; <b>{scope.unparsed}</b> pipeline(s) could not be parsed, their steps are not counted
+                          </>
+                        )}
+                        .
+                      </>
+                    );
+                  })()
+                )}
+              </p>
+            </div>
+          </div>
+
+          <div className="field">
+            <span className="label" />
+            <div className="field-body">
+              <Button disabled={!dirty || saving} onClick={submit}>
+                {saving ? 'Saving…' : 'Save'}
+              </Button>
+              {dirty ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={saving}
+                  onClick={() => {
+                    adopt(settings);
+                    setSaved(false);
+                  }}
+                >
+                  Discard changes
+                </Button>
+              ) : null}
+              {saved && !dirty ? <span className="small dim">saved</span> : null}
+            </div>
+          </div>
+
+          {error === undefined ? null : (
+            <Alert variant="destructive" className="settings-error">
+              {error}
+            </Alert>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="settings-card">
+        <CardHeader>
+          <CardTitle>Backends</CardTitle>
+          <CardDescription>Agent CLIs the daemon knows; the default one is marked.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {settings.backends.length === 0 ? (
+            <EmptyState title="No backends declared" />
+          ) : (
+            settings.backends.map((backend) => (
+              <div key={backend.name} className="job">
+                <div className="job-head">
+                  <span className="job-name">{backend.name}</span>
+                  {backend.enabled ? null : <Badge variant="secondary">disabled</Badge>}
+                  {backend.name === settings.agent.value ? <Badge variant="success">default</Badge> : null}
+                </div>
+                <div className="ctx">$ {backend.command}</div>
+                {backend.defaultModel === undefined ? null : (
+                  <div className="ctx">backend model: {backend.defaultModel}</div>
+                )}
+              </div>
+            ))
+          )}
+        </CardContent>
+      </Card>
     </>
   );
 }

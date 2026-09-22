@@ -16,6 +16,28 @@ import {
   type UsageRecordSelection,
 } from '../api';
 import { fmtBytes, fmtDuration, fmtTime } from '../format';
+import {
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  Input,
+  Label,
+  PageHeader,
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+  statusBadgeVariant,
+} from '@stepcast/ui';
+import './cleanup.css';
 
 /**
  * Уборка: две отдельные цели, и один запрос не смешивает их (design.md
@@ -32,23 +54,31 @@ import { fmtBytes, fmtDuration, fmtTime } from '../format';
  */
 
 const TRAITS: readonly { readonly id: CleanupTrait; readonly title: string; readonly hint: string }[] = [
-  { id: 'abandoned', title: 'оборванные', hint: 'состояние осталось running, а процесс мёртв' },
-  { id: 'failed', title: 'отказавшие', hint: 'failed, canceled, budget_exceeded' },
+  { id: 'abandoned', title: 'abandoned', hint: 'state still says running, but the process is dead' },
+  { id: 'failed', title: 'failed', hint: 'failed, canceled, budget_exceeded' },
 ];
 
 const OUTCOME_TITLE: Readonly<Record<string, string>> = {
-  removed: 'удалён',
-  skipped_missing: 'уже исчез',
-  skipped_alive: 'идёт — не тронут',
-  failed: 'не удалось',
+  removed: 'removed',
+  skipped_missing: 'already gone',
+  skipped_alive: 'running — left alone',
+  failed: 'failed',
 };
 
 /** Судьба записи хранилища у прогона: третий исход — «записи и не было». */
 const STATS_TITLE: Readonly<Record<StatsOutcome, string>> = {
-  kept: 'сохранена',
-  removed: 'снята',
-  missing: 'записи не было',
+  kept: 'kept',
+  removed: 'removed',
+  missing: 'no record',
 };
+
+/**
+ * Значение пункта «все проекты» в выпадающем списке: у Radix пункт с пустой
+ * строкой запрещён, а вернуться к «всем» после выбора проекта нужно уметь —
+ * поэтому пустой фильтр представлен своим ключом, который наружу уходит
+ * пустой строкой, как и раньше.
+ */
+const ALL_PROJECTS = '__all__';
 
 /** Прогон в адресе `<проект>/<прогон>`: на экране проекта достаточно один раз. */
 function runIdOf(address: string): string {
@@ -60,12 +90,12 @@ function Candidate({ run }: { readonly run: RunCandidate }): JSX.Element {
     <div className="run-row" title={run.address}>
       <span className="run-id">{runIdOf(run.address)}</span>
       <span className="marks">
-        {run.unreadable ? <span className="badge">не читается</span> : null}
-        {run.hasUsageRecord ? null : <span className="badge">записи нет</span>}
+        {run.unreadable ? <Badge>unreadable</Badge> : null}
+        {run.hasUsageRecord ? null : <Badge>no record</Badge>}
       </span>
       <span className="small dim mono">{fmtBytes(run.sizeBytes)}</span>
       <span className="small dim">{run.endedAt === undefined ? '—' : fmtTime(run.endedAt)}</span>
-      <span className="small dim mono">{fmtDuration(run.ageMs)} назад</span>
+      <span className="small dim mono">{fmtDuration(run.ageMs)} ago</span>
     </div>
   );
 }
@@ -81,11 +111,11 @@ function RecordCandidate({ record }: { readonly record: UsageRecordCandidate }):
     <div className="run-row" title={record.address}>
       <span className="run-id">{runIdOf(record.address)}</span>
       <span className="marks">
-        <span className={`badge ${record.status}`}>{record.status}</span>
+        <Badge variant={statusBadgeVariant(record.status)}>{record.status}</Badge>
       </span>
       <span />
       <span className="small dim">{fmtTime(record.endedAt)}</span>
-      <span className="small dim mono">{fmtDuration(record.ageMs)} назад</span>
+      <span className="small dim mono">{fmtDuration(record.ageMs)} ago</span>
     </div>
   );
 }
@@ -118,34 +148,42 @@ function AgeAndProjectFields({
   return (
     <>
       <div className="field">
-        <label className="label" htmlFor={ageId}>
-          старше
-        </label>
+        <Label className="label" htmlFor={ageId}>
+          older than
+        </Label>
         <div className="field-body">
-          <input
+          <Input
             id={ageId}
-            className="mono narrow"
+            className="mono cleanup-age"
             value={olderThan}
             placeholder="7d, 12h, 30m"
             onChange={(event) => onOlderThan(event.target.value)}
           />
-          <span className="small dim">пусто — без ограничения по сроку</span>
+          <span className="small dim">empty — no age limit</span>
         </div>
       </div>
 
       <div className="field">
-        <label className="label" htmlFor={projectId}>
-          проект
-        </label>
+        <Label className="label" htmlFor={projectId}>
+          project
+        </Label>
         <div className="field-body">
-          <select id={projectId} value={project} onChange={(event) => onProject(event.target.value)}>
-            <option value="">все проекты</option>
-            {projects.map((item) => (
-              <option key={item.key} value={item.key}>
-                {item.path ?? item.key}
-              </option>
-            ))}
-          </select>
+          <Select
+            value={project === '' ? ALL_PROJECTS : project}
+            onValueChange={(value) => onProject(value === ALL_PROJECTS ? '' : value)}
+          >
+            <SelectTrigger id={projectId} className="cleanup-project" aria-label="Project">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_PROJECTS}>All projects</SelectItem>
+              {projects.map((item) => (
+                <SelectItem key={item.key} value={item.key}>
+                  {item.path ?? item.key}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
     </>
@@ -213,156 +251,163 @@ function FilesSection({
   const recordCount = selection?.runs.filter((run) => run.hasUsageRecord).length ?? 0;
 
   return (
-    <div className="card">
-      <div className="card-head">
-        <span className="card-title">Файлы прогонов</span>
-        <span className="small dim">признаки объединяются по «или»</span>
-      </div>
-
-      <div className="field">
-        <span className="label">признак</span>
-        <div className="field-body wrap">
-          {TRAITS.map((trait) => (
-            <label key={trait.id} className="check" title={trait.hint}>
-              <input type="checkbox" checked={traits.includes(trait.id)} onChange={() => toggle(trait.id)} />
-              {trait.title}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <AgeAndProjectFields
-        idPrefix="files"
-        olderThan={olderThan}
-        onOlderThan={(value) => {
-          setOlderThan(value);
-          setSelection(undefined);
-          setSummary(undefined);
-        }}
-        project={project}
-        onProject={(value) => {
-          setProject(value);
-          setSelection(undefined);
-          setSummary(undefined);
-        }}
-        projects={projects}
-      />
-
-      <div className="field">
-        <span className="label" />
-        <div className="field-body">
-          <button disabled={busy || nothingAsked} onClick={runSelect}>
-            {busy && selection === undefined ? 'отбор…' : 'показать отбор'}
-          </button>
-          {nothingAsked ? (
-            <span className="small dim">
-              выберите признак или срок: отбор без условий удалил бы всё подряд
-            </span>
-          ) : null}
-        </div>
-      </div>
-
-      {error === undefined ? null : <p className="error">{error}</p>}
-
-      {selection === undefined ? null : (
-        <>
-          <div className="card-head">
-            <span className="card-title">
-              К удалению: {selection.count} · {fmtBytes(selection.totalBytes)}
-              {selection.count === 0 ? '' : ` · записей хранилища: ${recordCount}`}
-            </span>
-          </div>
-
-          {/* Прогоны, которых отбор не назвал и проверить не смог: у отбора по
-              сроку таких нет — срок берёт их по времени каталога, и они уже в
-              списке (`uncheckedCount` в `src/parts/pipeline/run/cleanup.ts`). */}
-          {selection.uncheckedCount === 0 ? null : (
-            <p className="note dim">
-              Ещё {selection.uncheckedCount} прогон(ов) сюда не попали — журнал не читается, статус
-              проверить не удалось. Признак о них ничего не говорит; отбираются они сроком (поле
-              «старше»).
-            </p>
-          )}
-
-          {selection.count === 0 ? (
-            <p className="note dim">Под условия не подошёл ни один прогон. Ничего не удалено.</p>
-          ) : (
-            <>
-              <div className="run-list cleanup-list">
-                {selection.runs.map((run) => (
-                  <Candidate key={run.address} run={run} />
-                ))}
-              </div>
-              <p className="note dim">
-                Удаление снимает только файлы: сводка расхода {recordCount === selection.count
-                  ? 'каждого прогона сохранится'
-                  : `${recordCount} из ${selection.count} уже сохранена и сохранится дальше`}
-                {' '}
-                в истории.
-              </p>
-              <div className="field">
-                <span className="label" />
-                <div className="field-body">
-                  <button className="danger" disabled={busy} onClick={() => confirm('keep')}>
-                    {busy ? 'удаление…' : `удалить файлы ${selection.count} и освободить ${fmtBytes(selection.totalBytes)}`}
-                  </button>
-                  <button className="plain" disabled={busy} onClick={() => setSelection(undefined)}>
-                    отменить
-                  </button>
-                </div>
-              </div>
-              <div className="field">
-                <span className="label" />
-                <div className="field-body">
-                  <label className="check" title="Разрушительно: сводку расхода этих прогонов будет неоткуда взять">
-                    <input type="checkbox" checked={dropStats} onChange={(event) => setDropStats(event.target.checked)} />
-                    {/* Уйдут записи, а не прогоны: снятие ничего не дописывает,
-                        и у прогона без записи уносить нечего. */}
-                    вместе со статистикой ({recordCount} записей)
-                  </label>
-                  <button className="danger" disabled={busy || !dropStats} onClick={() => confirm('drop')}>
-                    удалить файлы и статистику
-                  </button>
-                </div>
-              </div>
-            </>
-          )}
-        </>
-      )}
-
-      {summary === undefined ? null : (
-        <>
-          <div className="card-head">
-            <span className="card-title">Освобождено {fmtBytes(summary.freedBytes)}</span>
-            <span className="small dim">
-              удалено {summary.outcomes.filter((item) => item.outcome === 'removed').length} из{' '}
-              {summary.outcomes.length}
-            </span>
-          </div>
-          <div className="run-list outcome-list">
-            {summary.outcomes.map((item) => (
-              <div key={item.address} className="run-row" title={item.address}>
-                <span className="run-id">{runIdOf(item.address)}</span>
-                <span className="marks">
-                  <span className={item.outcome === 'removed' ? 'badge success' : 'badge'}>
-                    файлы: {OUTCOME_TITLE[item.outcome] ?? item.outcome}
-                  </span>
-                  {item.stats === undefined ? null : (
-                    <span className={item.stats === 'kept' ? 'badge success' : 'badge'}>
-                      статистика: {STATS_TITLE[item.stats]}
-                    </span>
-                  )}
-                </span>
-                <span className="small dim">{item.reason ?? ''}</span>
-                <span className="small dim mono">
-                  {item.sizeBytes === undefined ? '' : fmtBytes(item.sizeBytes)}
-                </span>
-              </div>
+    <Card className="cleanup-card">
+      <CardHeader>
+        <CardTitle>Run files</CardTitle>
+        <CardDescription>traits combine with “or”</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="field">
+          <span className="label">trait</span>
+          <div className="field-body wrap">
+            {TRAITS.map((trait) => (
+              <label key={trait.id} className="check" title={trait.hint}>
+                <input type="checkbox" checked={traits.includes(trait.id)} onChange={() => toggle(trait.id)} />
+                {trait.title}
+              </label>
             ))}
           </div>
-        </>
-      )}
-    </div>
+        </div>
+
+        <AgeAndProjectFields
+          idPrefix="files"
+          olderThan={olderThan}
+          onOlderThan={(value) => {
+            setOlderThan(value);
+            setSelection(undefined);
+            setSummary(undefined);
+          }}
+          project={project}
+          onProject={(value) => {
+            setProject(value);
+            setSelection(undefined);
+            setSummary(undefined);
+          }}
+          projects={projects}
+        />
+
+        <div className="field">
+          <span className="label" />
+          <div className="field-body">
+            <Button disabled={busy || nothingAsked} onClick={runSelect}>
+              {busy && selection === undefined ? 'Selecting…' : 'Show selection'}
+            </Button>
+            {nothingAsked ? (
+              <span className="small dim">
+                pick a trait or an age: a selection without conditions would delete everything
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        {error === undefined ? null : (
+          <Alert variant="destructive" className="cleanup-subhead">
+            {error}
+          </Alert>
+        )}
+
+        {selection === undefined ? null : (
+          <>
+            <CardHeader className="cleanup-subhead">
+              <CardTitle>
+                To delete: {selection.count} · {fmtBytes(selection.totalBytes)}
+                {selection.count === 0 ? '' : ` · usage records: ${recordCount}`}
+              </CardTitle>
+            </CardHeader>
+
+            {/* Прогоны, которых отбор не назвал и проверить не смог: у отбора по
+                сроку таких нет — срок берёт их по времени каталога, и они уже в
+                списке (`uncheckedCount` в `src/parts/pipeline/run/cleanup.ts`). */}
+            {selection.uncheckedCount === 0 ? null : (
+              <p className="note dim">
+                {selection.uncheckedCount} more run(s) are not listed — the journal is unreadable and the
+                status could not be checked. Traits say nothing about them; they are selected by age (the
+                “older than” field).
+              </p>
+            )}
+
+            {selection.count === 0 ? (
+              <p className="note dim">No run matches the conditions. Nothing was deleted.</p>
+            ) : (
+              <>
+                <div className="run-list cleanup-list">
+                  {selection.runs.map((run) => (
+                    <Candidate key={run.address} run={run} />
+                  ))}
+                </div>
+                <p className="note dim">
+                  Deleting removes files only: the usage summary of{' '}
+                  {recordCount === selection.count
+                    ? 'every run stays'
+                    : `${recordCount} of ${selection.count} is already stored and stays`}{' '}
+                  in history.
+                </p>
+                <div className="field">
+                  <span className="label" />
+                  <div className="field-body">
+                    <Button variant="destructive" disabled={busy} onClick={() => confirm('keep')}>
+                      {busy
+                        ? 'Deleting…'
+                        : `Delete ${selection.count} run files and free ${fmtBytes(selection.totalBytes)}`}
+                    </Button>
+                    <Button variant="ghost" size="sm" disabled={busy} onClick={() => setSelection(undefined)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+                <div className="field">
+                  <span className="label" />
+                  <div className="field-body">
+                    <label className="check" title="Destructive: the usage summary of these runs will be gone for good">
+                      <input type="checkbox" checked={dropStats} onChange={(event) => setDropStats(event.target.checked)} />
+                      {/* Уйдут записи, а не прогоны: снятие ничего не дописывает,
+                          и у прогона без записи уносить нечего. */}
+                      together with usage statistics ({recordCount} records)
+                    </label>
+                    <Button variant="destructive" disabled={busy || !dropStats} onClick={() => confirm('drop')}>
+                      Delete files and statistics
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
+          </>
+        )}
+
+        {summary === undefined ? null : (
+          <>
+            <CardHeader className="cleanup-subhead">
+              <CardTitle>Freed {fmtBytes(summary.freedBytes)}</CardTitle>
+              <CardDescription>
+                removed {summary.outcomes.filter((item) => item.outcome === 'removed').length} of{' '}
+                {summary.outcomes.length}
+              </CardDescription>
+            </CardHeader>
+            <div className="run-list outcome-list">
+              {summary.outcomes.map((item) => (
+                <div key={item.address} className="run-row" title={item.address}>
+                  <span className="run-id">{runIdOf(item.address)}</span>
+                  <span className="marks">
+                    <Badge variant={item.outcome === 'removed' ? 'success' : 'outline'}>
+                      files: {OUTCOME_TITLE[item.outcome] ?? item.outcome}
+                    </Badge>
+                    {item.stats === undefined ? null : (
+                      <Badge variant={item.stats === 'kept' ? 'success' : 'outline'}>
+                        statistics: {STATS_TITLE[item.stats]}
+                      </Badge>
+                    )}
+                  </span>
+                  <span className="small dim">{item.reason ?? ''}</span>
+                  <span className="small dim mono">
+                    {item.sizeBytes === undefined ? '' : fmtBytes(item.sizeBytes)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -414,114 +459,119 @@ function StatsSection({
   const nothingAsked = !failed && olderThan === '' && project === '';
 
   return (
-    <div className="card">
-      <div className="card-head">
-        <span className="card-title">Записи хранилища расхода</span>
-        <span className="small dim">снимает сводку, файлов прогонов не касается</span>
-      </div>
-
-      <div className="field">
-        <span className="label">признак</span>
-        <div className="field-body wrap">
-          <label className="check" title="failed, canceled, budget_exceeded">
-            <input
-              type="checkbox"
-              checked={failed}
-              onChange={() => {
-                setFailed((value) => !value);
-                setSelection(undefined);
-                setSummary(undefined);
-              }}
-            />
-            отказавшие
-          </label>
-        </div>
-      </div>
-
-      <AgeAndProjectFields
-        idPrefix="stats"
-        olderThan={olderThan}
-        onOlderThan={(value) => {
-          setOlderThan(value);
-          setSelection(undefined);
-          setSummary(undefined);
-        }}
-        project={project}
-        onProject={(value) => {
-          setProject(value);
-          setSelection(undefined);
-          setSummary(undefined);
-        }}
-        projects={projects}
-      />
-
-      <div className="field">
-        <span className="label" />
-        <div className="field-body">
-          <button disabled={busy || nothingAsked} onClick={runSelect}>
-            {busy && selection === undefined ? 'отбор…' : 'показать отбор'}
-          </button>
-          {nothingAsked ? (
-            <span className="small dim">
-              выберите признак, срок или проект: отбор без условий не снимает ни одной записи
-            </span>
-          ) : null}
-        </div>
-      </div>
-
-      {error === undefined ? null : <p className="error">{error}</p>}
-
-      {selection === undefined ? null : (
-        <>
-          <div className="card-head">
-            <span className="card-title">К снятию: {selection.count} записей</span>
+    <Card className="cleanup-card">
+      <CardHeader>
+        <CardTitle>Usage records</CardTitle>
+        <CardDescription>removes the usage summary; run files are untouched</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="field">
+          <span className="label">trait</span>
+          <div className="field-body wrap">
+            <label className="check" title="failed, canceled, budget_exceeded">
+              <input
+                type="checkbox"
+                checked={failed}
+                onChange={() => {
+                  setFailed((value) => !value);
+                  setSelection(undefined);
+                  setSummary(undefined);
+                }}
+              />
+              failed
+            </label>
           </div>
+        </div>
 
-          {selection.count === 0 ? (
-            <p className="note dim">Под условия не подошла ни одна запись. Ничего не снято.</p>
-          ) : (
-            <>
-              <div className="run-list cleanup-list">
-                {selection.records.map((record) => (
-                  <RecordCandidate key={record.address} record={record} />
-                ))}
-              </div>
-              <div className="field">
-                <span className="label" />
-                <div className="field-body">
-                  <button className="danger" disabled={busy} onClick={confirm}>
-                    {busy ? 'снятие…' : `снять ${selection.count} записей`}
-                  </button>
-                  <button className="plain" disabled={busy} onClick={() => setSelection(undefined)}>
-                    отменить
-                  </button>
+        <AgeAndProjectFields
+          idPrefix="stats"
+          olderThan={olderThan}
+          onOlderThan={(value) => {
+            setOlderThan(value);
+            setSelection(undefined);
+            setSummary(undefined);
+          }}
+          project={project}
+          onProject={(value) => {
+            setProject(value);
+            setSelection(undefined);
+            setSummary(undefined);
+          }}
+          projects={projects}
+        />
+
+        <div className="field">
+          <span className="label" />
+          <div className="field-body">
+            <Button disabled={busy || nothingAsked} onClick={runSelect}>
+              {busy && selection === undefined ? 'Selecting…' : 'Show selection'}
+            </Button>
+            {nothingAsked ? (
+              <span className="small dim">
+                pick a trait, an age or a project: a selection without conditions removes no records
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        {error === undefined ? null : (
+          <Alert variant="destructive" className="cleanup-subhead">
+            {error}
+          </Alert>
+        )}
+
+        {selection === undefined ? null : (
+          <>
+            <CardHeader className="cleanup-subhead">
+              <CardTitle>To remove: {selection.count} records</CardTitle>
+            </CardHeader>
+
+            {selection.count === 0 ? (
+              <p className="note dim">No record matches the conditions. Nothing was removed.</p>
+            ) : (
+              <>
+                <div className="run-list cleanup-list">
+                  {selection.records.map((record) => (
+                    <RecordCandidate key={record.address} record={record} />
+                  ))}
                 </div>
-              </div>
-            </>
-          )}
-        </>
-      )}
+                <div className="field">
+                  <span className="label" />
+                  <div className="field-body">
+                    <Button variant="destructive" disabled={busy} onClick={confirm}>
+                      {busy ? 'Removing…' : `Remove ${selection.count} records`}
+                    </Button>
+                    <Button variant="ghost" size="sm" disabled={busy} onClick={() => setSelection(undefined)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              </>
+            )}
+          </>
+        )}
 
-      {summary === undefined ? null : (
-        <>
-          <div className="card-head">
-            <span className="card-title">Снято записей: {summary.removed}</span>
-          </div>
-          <div className="run-list outcome-list">
-            {summary.outcomes.map((item) => (
-              <div key={item.address} className="run-row" title={item.address}>
-                <span className="run-id">{runIdOf(item.address)}</span>
-                <span className="marks">
-                  <span className={item.outcome === 'removed' ? 'badge success' : 'badge'}>
-                    {OUTCOME_TITLE[item.outcome] ?? item.outcome}
+        {summary === undefined ? null : (
+          <>
+            <CardHeader className="cleanup-subhead">
+              <CardTitle>Records removed: {summary.removed}</CardTitle>
+            </CardHeader>
+            <div className="run-list outcome-list">
+              {summary.outcomes.map((item) => (
+                <div key={item.address} className="run-row" title={item.address}>
+                  <span className="run-id">{runIdOf(item.address)}</span>
+                  <span className="marks">
+                    <Badge variant={item.outcome === 'removed' ? 'success' : 'outline'}>
+                      {OUTCOME_TITLE[item.outcome] ?? item.outcome}
+                    </Badge>
                   </span>
-                </span>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -530,7 +580,17 @@ export function Cleanup({ overview }: { readonly overview: Overview | undefined 
 
   return (
     <>
-      <h1>Уборка</h1>
+      <PageHeader
+        title="Cleanup"
+        description="Free disk space by deleting run files, or trim the usage history by removing its records; every deletion is previewed first and applies only to the rows you saw."
+      />
+      <Alert className="cleanup-intro">
+        <AlertTitle>Vanished projects are cleaned up on their own</AlertTitle>
+        <AlertDescription>
+          Projects whose directory no longer exists are forgotten automatically when the daemon starts: their
+          run directories and usage records are removed.
+        </AlertDescription>
+      </Alert>
       <FilesSection projects={projects} />
       <StatsSection projects={projects} />
     </>

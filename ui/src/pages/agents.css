@@ -1,0 +1,18 @@
+.agent-settings { border: 0; padding: 0; margin: 0; min-width: 0; }
+.agent-note { margin: 0 0 1rem; max-width: 64rem; }
+.agent-note code { font-family: var(--mono); }
+.agent-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 470px), 1fr)); gap: 1rem; }
+.agent-card { margin-bottom: 0; min-width: 0; }
+.agent-card-head { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+.agent-field { display: flex; gap: .6rem; align-items: flex-start; margin-top: .6rem; }
+.agent-field:first-child { margin-top: 0; }
+.agent-field-label { flex: 0 0 7.5rem; padding-top: .25rem; }
+.agent-field-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .25rem; }
+.agent-field-row { display: flex; gap: .5rem; align-items: center; min-width: 0; }
+.agent-field-row .sc-combobox { flex: 1; }
+.agent-select { min-width: 12rem; }
+.agent-actions { display: flex; align-items: center; gap: .8rem; flex-wrap: wrap; padding: 1rem 0; }
+@media (max-width: 44rem) {
+  .agent-field { flex-wrap: wrap; }
+  .agent-field-label { flex-basis: 100%; }
+}

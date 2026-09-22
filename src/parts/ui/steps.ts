@@ -104,14 +104,14 @@ function readManifestEntry(
   try {
     text = readFileSync(manifestPath, 'utf8');
   } catch (error) {
-    return { ...base, error: `не удалось прочитать файл: ${(error as Error).message}` };
+    return { ...base, error: `could not read the file: ${(error as Error).message}` };
   }
 
   let raw: unknown;
   try {
     raw = parseYaml(text);
   } catch (error) {
-    return { ...base, error: `документ не разбирается как YAML: ${(error as Error).message}` };
+    return { ...base, error: `document is not valid YAML: ${(error as Error).message}` };
   }
 
   const parsed = StepManifestSchema.safeParse(raw);
@@ -122,7 +122,7 @@ function readManifestEntry(
 
   const doc = parsed.data;
   if (doc.name !== name) {
-    return { ...base, error: `манифест объявляет name: ${doc.name}, а каталог называется ${name}` };
+    return { ...base, error: `manifest declares name: ${doc.name}, but the directory is named ${name}` };
   }
 
   return {

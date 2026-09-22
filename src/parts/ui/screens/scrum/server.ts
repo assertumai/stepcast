@@ -43,7 +43,7 @@ const PostBodySchema = z
   .object({
     project: z.string().min(1),
     slug: z.string().min(1),
-    column: z.string().regex(STATUS_PATTERN, 'колонка названа не словом статуса'),
+    column: z.string().regex(STATUS_PATTERN, 'column is not a status word'),
     /**
      * Слаг пункта, перед которым встать в колонке-получателе. Отсутствие
      * значит «в конец»: доска шлёт положение, посчитанное по своей колонке, и
@@ -71,7 +71,7 @@ const handleMove: ApiHandler = async (req, res, env) => {
   try {
     body = await readBody(req);
   } catch {
-    sendJson(res, 413, { error: 'Тело запроса слишком велико' });
+    sendJson(res, 413, { error: 'Request body is too large' });
     return;
   }
 
@@ -79,14 +79,14 @@ const handleMove: ApiHandler = async (req, res, env) => {
   try {
     raw = JSON.parse(body === '' ? '{}' : body) as unknown;
   } catch {
-    sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
+    sendJson(res, 400, { error: 'Request body is not valid JSON' });
     return;
   }
 
   const parsed = PostBodySchema.safeParse(raw);
   if (!parsed.success) {
     sendJson(res, 400, {
-      error: `Тело запроса не соответствует формату: ${parsed.error.issues[0]?.message ?? 'project, slug, column и необязательный before'}`,
+      error: `Request body does not match the format: ${parsed.error.issues[0]?.message ?? 'project, slug, column and optional before'}`,
     });
     return;
   }
@@ -99,14 +99,14 @@ const handleMove: ApiHandler = async (req, res, env) => {
   // его и двигали.
   if (column === 'in_progress') {
     sendJson(res, 400, {
-      error: 'В работу пункт переводит запуск пайплайна (backlog pick), а не перенос на доске',
+      error: 'An item is moved into progress by launching a pipeline (backlog pick), not by dragging it on the board',
     });
     return;
   }
 
   const project = listProjects(env.runsRoot).find((entry) => entry.key === projectKey);
   if (project?.path === undefined) {
-    sendJson(res, 400, { error: `Проект ${projectKey} неизвестен указателю projects.json` });
+    sendJson(res, 400, { error: `Project ${projectKey} is unknown to the projects.json index` });
     return;
   }
 
@@ -117,7 +117,7 @@ const handleMove: ApiHandler = async (req, res, env) => {
     // Писать статус, под который на доске нет колонки, доска не вправе: пункт
     // пропал бы из колонок на глазах у того, кто его бросил.
     if (!readBoardColumns(project.path).some((entry) => entry.id === column) || !isDroppable(column)) {
-      sendJson(res, 400, { error: `Колонки ${column} на доске проекта нет (${BOARD_FILE})` });
+      sendJson(res, 400, { error: `Column ${column} does not exist on the project board (${BOARD_FILE})` });
       return;
     }
 
@@ -127,7 +127,7 @@ const handleMove: ApiHandler = async (req, res, env) => {
     const inTasks = holdsSlug(tasksFile, tasksText, slug);
     const inArchive = holdsSlug(archiveFile, archiveText, slug);
     if (!inTasks && !inArchive) {
-      sendJson(res, 404, { error: `Пункт ${slug} не найден ни в ${TASKS_FILE}, ни в ${ARCHIVE_FILE}` });
+      sendJson(res, 404, { error: `Item ${slug} not found in ${TASKS_FILE} or ${ARCHIVE_FILE}` });
       return;
     }
 
@@ -156,7 +156,7 @@ const handleMove: ApiHandler = async (req, res, env) => {
       sendJson(res, 400, { error: error.message, ...(error.at === undefined ? {} : { at: error.at }) });
       return;
     }
-    sendJson(res, 500, { error: `Не удалось перенести пункт: ${(error as Error).message}` });
+    sendJson(res, 500, { error: `Could not move the item: ${(error as Error).message}` });
     return;
   }
 
@@ -212,7 +212,7 @@ const handleEdit: ApiHandler = async (req, res, env) => {
   try {
     body = await readBody(req);
   } catch {
-    sendJson(res, 413, { error: 'Тело запроса слишком велико' });
+    sendJson(res, 413, { error: 'Request body is too large' });
     return;
   }
 
@@ -220,14 +220,14 @@ const handleEdit: ApiHandler = async (req, res, env) => {
   try {
     raw = JSON.parse(body === '' ? '{}' : body) as unknown;
   } catch {
-    sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
+    sendJson(res, 400, { error: 'Request body is not valid JSON' });
     return;
   }
 
   const parsed = EditBodySchema.safeParse(raw);
   if (!parsed.success) {
     sendJson(res, 400, {
-      error: `Тело запроса не соответствует формату: ${parsed.error.issues[0]?.message ?? 'project, slug и fields'}`,
+      error: `Request body does not match the format: ${parsed.error.issues[0]?.message ?? 'project, slug and fields'}`,
     });
     return;
   }
@@ -236,7 +236,7 @@ const handleEdit: ApiHandler = async (req, res, env) => {
 
   const project = listProjects(env.runsRoot).find((entry) => entry.key === projectKey);
   if (project?.path === undefined) {
-    sendJson(res, 400, { error: `Проект ${projectKey} неизвестен указателю projects.json` });
+    sendJson(res, 400, { error: `Project ${projectKey} is unknown to the projects.json index` });
     return;
   }
 
@@ -251,14 +251,14 @@ const handleEdit: ApiHandler = async (req, res, env) => {
       continue;
     }
     if ((REQUIRED_FIELDS as readonly string[]).includes(name)) {
-      sendJson(res, 400, { error: `Поле «${name}» обязательно и не может быть пустым` });
+      sendJson(res, 400, { error: `Field “${name}” is required and cannot be empty` });
       return;
     }
     remove.push(name);
   }
 
   if (Object.keys(set).length === 0 && remove.length === 0) {
-    sendJson(res, 400, { error: 'Не названо ни одного поля к правке' });
+    sendJson(res, 400, { error: 'No fields to edit were named' });
     return;
   }
 
@@ -270,7 +270,7 @@ const handleEdit: ApiHandler = async (req, res, env) => {
     const file = holdsSlug(tasksFile, tasksText, slug) ? tasksFile : archiveFile;
     const text = file === tasksFile ? tasksText : readOrEmpty(archiveFile);
     if (!holdsSlug(file, text, slug)) {
-      sendJson(res, 404, { error: `Пункт ${slug} не найден ни в ${TASKS_FILE}, ни в ${ARCHIVE_FILE}` });
+      sendJson(res, 404, { error: `Item ${slug} not found in ${TASKS_FILE} or ${ARCHIVE_FILE}` });
       return;
     }
 
@@ -284,7 +284,7 @@ const handleEdit: ApiHandler = async (req, res, env) => {
       sendJson(res, 400, { error: error.message, ...(error.at === undefined ? {} : { at: error.at }) });
       return;
     }
-    sendJson(res, 500, { error: `Не удалось записать пункт: ${(error as Error).message}` });
+    sendJson(res, 500, { error: `Could not write the item: ${(error as Error).message}` });
     return;
   }
 
@@ -295,7 +295,7 @@ const AddColumnBodySchema = z
   .object({
     project: z.string().min(1),
     /** Статус, под который заводится колонка. */
-    id: z.string().regex(STATUS_PATTERN, 'статус должен быть словом из строчных латинских букв, цифр и _'),
+    id: z.string().regex(STATUS_PATTERN, 'status must be a word of lowercase latin letters, digits and _'),
     title: z.string().trim().optional(),
     /** Место в раскладке: 0 — самая левая, длина раскладки — самая правая. */
     index: z.number().int().min(0),
@@ -314,7 +314,7 @@ const handleAddColumn: ApiHandler = async (req, res, env) => {
   try {
     body = await readBody(req);
   } catch {
-    sendJson(res, 413, { error: 'Тело запроса слишком велико' });
+    sendJson(res, 413, { error: 'Request body is too large' });
     return;
   }
 
@@ -322,14 +322,14 @@ const handleAddColumn: ApiHandler = async (req, res, env) => {
   try {
     raw = JSON.parse(body === '' ? '{}' : body) as unknown;
   } catch {
-    sendJson(res, 400, { error: 'Тело запроса не разбирается как JSON' });
+    sendJson(res, 400, { error: 'Request body is not valid JSON' });
     return;
   }
 
   const parsed = AddColumnBodySchema.safeParse(raw);
   if (!parsed.success) {
     sendJson(res, 400, {
-      error: `Тело запроса не соответствует формату: ${parsed.error.issues[0]?.message ?? 'project, id, index и необязательный title'}`,
+      error: `Request body does not match the format: ${parsed.error.issues[0]?.message ?? 'project, id, index and optional title'}`,
     });
     return;
   }
@@ -338,7 +338,7 @@ const handleAddColumn: ApiHandler = async (req, res, env) => {
 
   const project = listProjects(env.runsRoot).find((entry) => entry.key === projectKey);
   if (project?.path === undefined) {
-    sendJson(res, 400, { error: `Проект ${projectKey} неизвестен указателю projects.json` });
+    sendJson(res, 400, { error: `Project ${projectKey} is unknown to the projects.json index` });
     return;
   }
 
@@ -349,7 +349,7 @@ const handleAddColumn: ApiHandler = async (req, res, env) => {
       index,
     );
     if (typeof next === 'string') {
-      sendJson(res, 400, { error: `Колонка не добавлена: ${next}` });
+      sendJson(res, 400, { error: `Column not added: ${next}` });
       return;
     }
     writeBoardColumns(project.path, next);
@@ -358,7 +358,7 @@ const handleAddColumn: ApiHandler = async (req, res, env) => {
       sendJson(res, 400, { error: error.message });
       return;
     }
-    sendJson(res, 500, { error: `Не удалось записать колонки доски: ${(error as Error).message}` });
+    sendJson(res, 500, { error: `Could not write the board columns: ${(error as Error).message}` });
     return;
   }
 

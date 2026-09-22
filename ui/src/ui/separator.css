@@ -1,0 +1,19 @@
+.sc-separator { flex: none; background: var(--border); }
+.sc-separator--horizontal { height: 1px; width: 100%; }
+.sc-separator--vertical { width: 1px; align-self: stretch; }
+.sc-separator--labeled {
+  background: none;
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  height: auto;
+}
+.sc-separator--labeled::before,
+.sc-separator--labeled::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+.sc-separator-label {
+  font-size: .7rem;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}

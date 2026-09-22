@@ -32,6 +32,17 @@ import {
   TabsContent,
   TabsList,
   TabsTrigger,
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  Badge,
+  Combobox,
+  EmptyState,
+  Label,
+  PageHeader,
+  Separator,
+  Switch,
+  statusBadgeVariant,
 } from '@stepcast/ui';
 
 /**
@@ -148,6 +159,61 @@ describe('ui-components: каждый компонент отрисовывае�
       </Select>,
     );
     assert.match(markup, /<button/);
+  });
+});
+
+describe('ui-components: новые примитивы отрисовываются', () => {
+  it('Badge — вариант по статусу', () => {
+    assert.equal(statusBadgeVariant('running'), 'running');
+    assert.equal(statusBadgeVariant('success'), 'success');
+    assert.equal(statusBadgeVariant('budget_exceeded'), 'destructive');
+    assert.equal(statusBadgeVariant('pending'), 'outline');
+    const markup = renderToStaticMarkup(<Badge variant={statusBadgeVariant('failed')}>failed</Badge>);
+    assert.match(markup, /sc-badge--destructive/);
+    assert.match(markup, /failed/);
+  });
+
+  it('Label, Separator, Switch, Alert', () => {
+    const markup = renderToStaticMarkup(
+      <>
+        <Label htmlFor="x">Model</Label>
+        <Separator label="System" />
+        <Switch checked={true} onCheckedChange={() => {}} />
+        <Alert variant="destructive">
+          <AlertTitle>Failed</AlertTitle>
+          <AlertDescription>reason</AlertDescription>
+        </Alert>
+      </>,
+    );
+    assert.match(markup, /<label[^>]*for="x"/);
+    assert.match(markup, /role="separator"/);
+    assert.match(markup, /System/);
+    assert.match(markup, /role="switch"[^>]*aria-checked="true"/);
+    assert.match(markup, /role="alert"/);
+    assert.match(markup, /reason/);
+  });
+
+  it('PageHeader и EmptyState', () => {
+    const markup = renderToStaticMarkup(
+      <>
+        <PageHeader title="Runs" description="Every run" actions={<Button>New</Button>} />
+        <EmptyState title="No runs yet" description="Start one from the CLI" />
+      </>,
+    );
+    assert.match(markup, /<h1[^>]*>Runs<\/h1>/);
+    assert.match(markup, /Every run/);
+    assert.match(markup, /New/);
+    assert.match(markup, /No runs yet/);
+  });
+
+  it('Combobox — закрытый список показывает подпись выбранного, свободный ввод — само значение', () => {
+    const options = [{ value: 'sonnet', label: 'Sonnet 5' }, { value: 'opus', label: 'Opus 5' }];
+    const closed = renderToStaticMarkup(<Combobox value="opus" options={options} onChange={() => {}} />);
+    assert.match(closed, /role="combobox"/);
+    assert.match(closed, /value="Opus 5"/);
+    assert.doesNotMatch(closed, /role="listbox"/);
+    const custom = renderToStaticMarkup(<Combobox allowCustom value="my-model" options={options} onChange={() => {}} />);
+    assert.match(custom, /value="my-model"/);
   });
 });
 
