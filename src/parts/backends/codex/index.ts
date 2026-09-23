@@ -1,5 +1,6 @@
 import { defineBackend, definePipelinePlugin } from '../../pipeline/surface.js';
 import { createCodexAdapter } from './adapter.js';
+import { codexModelDiscovery } from './models.js';
 
 /**
  * Плагин Codex: `plugins: [stepcast/backends/codex]`.
@@ -16,6 +17,7 @@ const plugin = definePipelinePlugin({
   backends: {
     codex: defineBackend({
       create: (config) => createCodexAdapter(config),
+      models: codexModelDiscovery,
       defaults: {
         command: 'codex',
         default_model: 'gpt-5.6-terra',
@@ -34,3 +36,4 @@ const plugin = definePipelinePlugin({
 
 export default plugin;
 export { createCodexAdapter, SANDBOX_MODES } from './adapter.js';
+export { codexModelDiscovery, parseCodexModelCatalog } from './models.js';

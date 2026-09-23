@@ -184,12 +184,22 @@ export interface BackendAdapter {
   parseLine(line: string): BackendEvent;
 }
 
+/** Один уровень effort, который CLI объявил для конкретной модели. */
+export interface BackendEffort {
+  readonly name: string;
+  readonly description?: string;
+}
+
 /** Одна модель, которую CLI назвал сам, — подсказка странице, а не перечень допустимого. */
 export interface BackendModel {
   /** Имя, которое уйдёт в `--model` / `-m` и ляжет в конфигурацию. */
   readonly name: string;
+  /** Человекочитаемое имя от CLI; сохраняется всё равно `name`. */
+  readonly label?: string;
   /** Пояснение от CLI, если оно было: показывается рядом, но не сохраняется. */
   readonly title?: string;
+  readonly defaultEffort?: string;
+  readonly efforts?: readonly BackendEffort[];
 }
 
 /** Ответ пробы перечисления моделей — то же, что отдаёт исполненный процесс. */

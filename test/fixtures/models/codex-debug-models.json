@@ -1,0 +1,50 @@
+{
+  "models": [
+    {
+      "slug": "gpt-6-sol",
+      "display_name": "GPT-6-Sol",
+      "description": "Workhorse model for coding and everyday work.",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Fast responses with lighter reasoning" },
+        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" }
+      ],
+      "visibility": "list",
+      "priority": 2,
+      "unknown_future_field": true
+    },
+    {
+      "slug": "gpt-6-astra",
+      "display_name": "GPT-6-Astra",
+      "description": "Frontier intelligence for the most demanding work.",
+      "default_reasoning_level": "low",
+      "supported_reasoning_levels": [
+        { "effort": "low", "description": "Fast responses with lighter reasoning" },
+        { "effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks" }
+      ],
+      "visibility": "list",
+      "priority": 1
+    },
+    {
+      "slug": "gpt-daybreak-red-latest",
+      "display_name": "Daybreak Red",
+      "description": "Internal model.",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [{ "effort": "high" }],
+      "visibility": "hide",
+      "priority": 10
+    },
+    {
+      "slug": "gpt-6-astra",
+      "display_name": "Duplicate",
+      "visibility": "list",
+      "priority": 99
+    },
+    {
+      "slug": " ",
+      "display_name": "Malformed",
+      "visibility": "list",
+      "priority": 3
+    }
+  ]
+}

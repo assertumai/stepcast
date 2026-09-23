@@ -4,7 +4,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
 
-import codexPlugin, { createCodexAdapter, SANDBOX_MODES } from '../src/parts/backends/codex/index.js';
+import codexPlugin, {
+  codexModelDiscovery,
+  createCodexAdapter,
+  SANDBOX_MODES,
+} from '../src/parts/backends/codex/index.js';
 import type { BackendConfig } from '../src/parts/pipeline/surface.js';
 import type { AgentInvocation, BackendAdapter, BackendEvent } from '../src/parts/pipeline/backend/types.js';
 import { discoverModels } from '../src/parts/pipeline/backend/models.js';
@@ -22,6 +26,7 @@ import { tempDir } from './tmp.js';
  * допустима ровно в одном качестве: заведомо битая.
  */
 const FIXTURES = fileURLToPath(new URL('../../test/fixtures/codex/', import.meta.url));
+const MODELS_FIXTURES = fileURLToPath(new URL('../../test/fixtures/models/', import.meta.url));
 
 function fixture(name: string): string[] {
   return readFileSync(join(FIXTURES, name), 'utf8').split('\n').filter((line) => line.trim() !== '');
@@ -397,24 +402,37 @@ describe('codex-backend: возможности и манифест плагин
     assert.equal(codexPlugin.backends?.codex?.create(CONFIG).name, 'codex');
   });
 
-  // Codex CLI не разрешено запускать ни в одной песочнице, где писался этот
-  // пункт очереди (design.md, решение 10; test/fixtures/models/README.md):
-  // настоящего вывода `codex --help` снять неоткуда, а сочинять его запрещено
-  // практикой каталога фикстур. Вклад codex поэтому пробы не объявляет вовсе
-  // — карточка на странице «Агенты» ведёт себя как до этого изменения.
-  it('вклад codex не объявляет перечисление моделей: CLI недоступен ни одной песочнице этого прогона', async () => {
-    assert.equal(codexPlugin.backends?.codex?.models, undefined);
+  it('вклад codex перечисляет видимые модели через `debug models` с effort-метаданными', () => {
+    assert.equal(codexPlugin.backends?.codex?.models, codexModelDiscovery);
+    assert.deepEqual(codexModelDiscovery.probe(CONFIG).command, ['codex', 'debug', 'models']);
 
-    const home = tempDir('codex-models-home-');
-    mkdirSync(join(home, '.stepcast'), { recursive: true });
-    const globalPath = join(home, '.stepcast', 'config.yml');
-    writeFileSync(globalPath, 'backends:\n  codex:\n    command: codex\n');
-    const { config } = resolveConfig({ cwd: home, home, globalPath, projectPath: null });
+    const stdout = readFileSync(join(MODELS_FIXTURES, 'codex-debug-models.json'), 'utf8');
+    assert.deepEqual(codexModelDiscovery.parse({ stdout, stderr: '', exitCode: 0 }), [
+      {
+        name: 'gpt-6-astra',
+        label: 'GPT-6-Astra',
+        title: 'Frontier intelligence for the most demanding work.',
+        defaultEffort: 'low',
+        efforts: [
+          { name: 'low', description: 'Fast responses with lighter reasoning' },
+          { name: 'medium', description: 'Balances speed and reasoning depth for everyday tasks' },
+        ],
+      },
+      {
+        name: 'gpt-6-sol',
+        label: 'GPT-6-Sol',
+        title: 'Workhorse model for coding and everyday work.',
+        defaultEffort: 'medium',
+        efforts: [
+          { name: 'low', description: 'Fast responses with lighter reasoning' },
+          { name: 'medium', description: 'Balances speed and reasoning depth for everyday tasks' },
+        ],
+      },
+    ]);
+  });
 
-    const kernel = createPipelineKernel();
-    kernel.ctx.backends.register('codex', codexPlugin.backends!.codex!);
-    const registry = registryFromKernel(kernel);
-    assert.deepEqual(await discoverModels('codex', config, registry), { status: 'unsupported' });
+  it('битый каталог codex не угадывается', () => {
+    assert.deepEqual(codexModelDiscovery.parse({ stdout: '{', stderr: '', exitCode: 0 }), []);
   });
 
   it('подпуть пакета ведёт на собранный модуль', () => {
