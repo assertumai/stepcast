@@ -29,7 +29,7 @@ import {
   type RawConfig,
 } from './schema.js';
 import { BUILTIN_CONFIG } from './defaults.js';
-import type { ModelTiers } from './modelTiers.js';
+import type { ModelTierSelection, ModelTiers } from './modelTiers.js';
 import {
   flatten,
   matchesKeyPattern,
@@ -102,6 +102,7 @@ export interface Config {
   readonly defaults: {
     readonly agent: string;
     readonly model: string | undefined;
+    readonly effort: string | undefined;
     readonly workspace: { readonly mode: 'cwd' | 'worktree' | 'copy'; readonly path?: string };
     readonly session: 'shared' | 'per_step';
     readonly concurrency: number;
@@ -558,7 +559,7 @@ function buildBackends(
       command,
       enabled: raw.enabled !== false,
       defaultModel: typeof raw.default_model === 'string' ? raw.default_model : undefined,
-      modelTiers: (raw.model_tiers as ModelTiers | undefined) ?? {},
+      modelTiers: normalizeModelTiers(raw.model_tiers),
       concurrency: typeof raw.concurrency === 'number' ? raw.concurrency : 1,
       cacheReadWeight: typeof raw.cache_read_weight === 'number' ? raw.cache_read_weight : 1,
       sessions: raw.sessions === true,
@@ -571,6 +572,16 @@ function buildBackends(
   }
 
   return out;
+}
+
+function normalizeModelTiers(raw: unknown): ModelTiers {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return {};
+  return Object.fromEntries(Object.entries(raw as Record<string, unknown>).map(([tier, value]) => {
+    const selection: ModelTierSelection = typeof value === 'string'
+      ? { model: value }
+      : value as ModelTierSelection;
+    return [tier, selection];
+  }));
 }
 
 /**
@@ -789,6 +800,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
   const workspaceMode = (values.get('defaults.workspace.mode') ?? 'cwd') as 'cwd' | 'worktree' | 'copy';
   const workspacePath = values.get('defaults.workspace.path');
   const model = values.get('defaults.model');
+  const effort = values.get('defaults.effort');
   const projectCheck = values.get('project.check');
   const projectTools = values.get('project.tools');
   const projectEditPaths = values.get('project.edit_paths');
@@ -832,6 +844,7 @@ export function resolveConfig(options: ResolveOptions): ResolvedConfig {
     defaults: {
       agent: requireString(values, 'defaults.agent'),
       model: typeof model === 'string' ? model : undefined,
+      effort: typeof effort === 'string' ? effort : undefined,
       workspace: {
         mode: workspaceMode,
         ...(typeof workspacePath === 'string' ? { path: workspacePath } : {}),

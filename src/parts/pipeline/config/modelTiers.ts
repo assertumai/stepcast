@@ -1,3 +1,9 @@
 export const MODEL_TIERS = ['max', 'deep', 'balance', 'fast', 'mini'] as const;
-export type ModelTier = (typeof MODEL_TIERS)[number];
-export type ModelTiers = Readonly<Partial<Record<ModelTier, string>>>;
+export type ModelTier = string;
+
+export interface ModelTierSelection {
+  readonly model: string;
+  readonly effort?: string;
+}
+
+export type ModelTiers = Readonly<Record<ModelTier, ModelTierSelection>>;

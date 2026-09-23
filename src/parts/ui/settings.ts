@@ -108,8 +108,8 @@ export async function readSettings(home: string = homedir(), kernelCache?: Kerne
     defaultModel: backend.defaultModel,
     defaultModelSource: valueOf(resolved, `backends.${name}.default_model`, backend.defaultModel).source,
     modelTiers: backend.modelTiers ?? {},
-    modelTierSources: Object.fromEntries(Object.entries(backend.modelTiers ?? {}).map(([tier, model]) => [
-      tier, valueOf(resolved, `backends.${name}.model_tiers.${tier}`, model).source,
+    modelTierSources: Object.fromEntries(Object.entries(backend.modelTiers ?? {}).map(([tier, selection]) => [
+      tier, valueOf(resolved, `backends.${name}.model_tiers.${tier}`, selection.model).source,
     ])),
   }));
 

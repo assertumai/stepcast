@@ -65,6 +65,17 @@ describe('stepcast-configuration', () => {
     assert.equal(describeSource(provenance.get('defaults.model')!), '--model (флаг)');
   });
 
+  it('defaults.effort разрешается независимо от модели', () => {
+    const box = sandbox({
+      global: 'defaults:\n  model: gpt-6-sol\n  effort: medium\n',
+      project: 'defaults:\n  effort: high\n',
+    });
+    const { config, provenance } = resolveIn(box);
+    assert.equal(config.defaults.model, 'gpt-6-sol');
+    assert.equal(config.defaults.effort, 'high');
+    assert.equal(describeSource(provenance.get('defaults.effort')!), box.projectPath);
+  });
+
   // Сценарий: «Конфигов нет»
   it('работает на встроенных умолчаниях, когда конфигов нет', () => {
     const box = sandbox({});

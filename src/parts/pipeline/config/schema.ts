@@ -2,17 +2,23 @@ import { isAbsolute } from 'node:path';
 
 import { z } from 'zod';
 
-import { MODEL_TIERS } from './modelTiers.js';
-
 // Схема документа `plugins.patch.yml` переехала в ядро (design.md изменения
 // `source-tree-microkernel-layout`, Решение 5): формат патча описывает дерево
 // строк, а не конфигурацию движка. Реэкспорт сохраняет прежних потребителей
 // этого модуля нетронутыми.
 export { PluginPatchRowSchema, PluginsPatchDocumentSchema, type PluginPatchRow, type PluginsPatchDocument } from '../../../kernel/tree/patch.js';
 
-export const ModelTierSchema = z.enum(MODEL_TIERS);
 export const ModelNameSchema = z.string().trim().min(1).regex(/\S/);
-export const ModelTiersSchema = z.partialRecord(ModelTierSchema, ModelNameSchema);
+export const EffortSchema = z.string().trim().min(1).regex(/\S/);
+export const ModelTierSchema = z.string().regex(
+  /^[a-z][a-z0-9_-]*$/,
+  'model tier must start with a lowercase letter and contain only lowercase letters, digits, hyphens, and underscores',
+);
+export const ModelTierSelectionSchema = z.union([
+  ModelNameSchema,
+  z.object({ model: ModelNameSchema, effort: EffortSchema.optional() }).strict(),
+]);
+export const ModelTiersSchema = z.record(ModelTierSchema, ModelTierSelectionSchema);
 
 /**
  * Схема конфигурации в «сыром» виде: величины ещё строки, всё необязательно,
@@ -43,6 +49,7 @@ export const RawDefaultsSchema = z
   .object({
     agent: z.string().optional(),
     model: z.string().optional(),
+    effort: EffortSchema.optional(),
     workspace: RawWorkspaceSchema.optional(),
     session: z.enum(['shared', 'per_step']).optional(),
     concurrency: z.number().int().positive().optional(),

@@ -41,6 +41,39 @@ function selection(yaml: string, configYaml = TIERS_CONFIG) {
 }
 
 describe('agent model tiers', () => {
+  it('normalizes legacy strings and custom object tiers in backend configuration', () => {
+    const project = makeProject({
+      '.stepcast/config.yml': `
+backends:
+  codex:
+    model_tiers:
+      balance: gpt-6-sol
+      review:
+        model: gpt-6-astra
+        effort: high
+`,
+    });
+    const { config } = resolveConfig({ cwd: project.root, home: project.home });
+    assert.deepEqual(config.backends.codex?.modelTiers, {
+      balance: { model: 'gpt-6-sol' },
+      review: { model: 'gpt-6-astra', effort: 'high' },
+    });
+  });
+
+  it('rejects malformed custom tier names and incomplete object selections', () => {
+    for (const modelTiers of [
+      'Review: gpt-6-sol',
+      '9fast: gpt-6-sol',
+      'review: { effort: high }',
+      'review: { model: gpt-6-sol, effort: " " }',
+    ]) {
+      assert.throws(
+        () => expand(JOB, `backends:\n  claude:\n    model_tiers:\n      ${modelTiers}\n`),
+        (error: unknown) => error instanceof StepcastError,
+      );
+    }
+  });
+
   it('uses the requested built-in Claude and bundled Codex defaults', () => {
     assert.equal(selection(JOB, '').model, 'sonnet');
     assert.equal(codexPlugin.backends?.codex?.defaults?.default_model, 'gpt-5.6-terra');
@@ -139,16 +172,16 @@ jobs:
     assert.deepEqual(result.pipeline.jobs.map((job) => asAgent(job.steps[0]!).model), ['claude-deep', 'codex-fast', 'site-model']);
   });
 
-  it('resolves tier parameters in reusable jobs and validates the result', () => {
+  it('resolves built-in and custom tier parameters in reusable jobs', () => {
     const files = { 'job.yml': 'kind: job\nparams:\n  tier:\n    type: string\n    required: true\nmodel_tier: ${params.tier}\nsteps:\n  - id: ask\n    prompt: hello\n' };
     const yaml = 'jobs:\n  work:\n    uses: ./job.yml\n    with:\n      tier: deep\n';
     assert.equal(asAgent(expand(yaml, TIERS_CONFIG, files).pipeline.jobs[0]!.steps[0]!).model, 'claude-deep');
-    assert.throws(() => expand(yaml.replace('tier: deep', 'tier: nope'), TIERS_CONFIG, files), /model_tier/);
+    assert.equal(asAgent(expand(yaml.replace('tier: deep', 'tier: nope'), TIERS_CONFIG, files).pipeline.jobs[0]!.steps[0]!).model, 'sonnet');
   });
 
-  it('rejects unknown tiers and malformed tier maps', () => {
-    assert.throws(() => expand(`model_tier: nope\n${JOB}`), /model_tier/);
-    assert.throws(() => expand(JOB, 'backends:\n  claude:\n    model_tiers:\n      typo: opus\n'), (error: unknown) => error instanceof StepcastError && (error.at ?? '').includes('model_tiers'));
+  it('accepts custom tiers and rejects malformed tier maps', () => {
+    assert.equal(selection(`model_tier: nope\n${JOB}`).model, 'sonnet');
+    assert.equal(selection(`model_tier: typo\n${JOB}`, 'backends:\n  claude:\n    model_tiers:\n      typo: opus\n').model, 'opus');
     assert.throws(() => expand(JOB, 'backends:\n  claude:\n    model_tiers:\n      deep: " "\n'), (error: unknown) => error instanceof StepcastError && (error.at ?? '').includes('model_tiers'));
   });
 

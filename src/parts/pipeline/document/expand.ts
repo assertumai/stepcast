@@ -1375,7 +1375,7 @@ function parseAgentStep(raw: RawStep, ctx: BuiltinStepParseContext): StepParseRe
   const agent = raw.agent ?? defaults.agent;
   const backend = config.backends[agent];
   const tier = parseModelTier(raw.model_tier, declaringFile, `${at}.model_tier`) ?? defaults.modelTier;
-  const tierModel = tier === undefined ? undefined : backend?.modelTiers?.[tier];
+  const tierModel = tier === undefined ? undefined : backend?.modelTiers?.[tier]?.model;
   const model = raw.model ?? defaults.model ?? tierModel ?? backend?.defaultModel;
 
   const modelOrigin: ModelOrigin =
