@@ -58,6 +58,7 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
       structuredOutput: config.structuredOutput,
       strictPermissions: config.strictPermissions,
       mcp: config.mcp,
+      effort: true,
       // Claude Code принимает `--session-id`: идентификатор заводит и
       // называет движок, не сам CLI.
       sessionIdSource: 'engine',
@@ -68,6 +69,7 @@ export function createClaudeAdapter(config: BackendConfig): BackendAdapter {
 
       const model = invocation.model ?? config.defaultModel;
       if (model !== undefined) command.push('--model', model);
+      if (invocation.effort !== undefined) command.push('--effort', invocation.effort);
 
       if (invocation.sessionId !== undefined && config.sessions) {
         command.push(invocation.resumeSession ? '--resume' : '--session-id', invocation.sessionId);

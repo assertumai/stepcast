@@ -559,6 +559,7 @@ export async function runPipeline(options: RunOptions): Promise<RunResult> {
   warnAboutDegradedBackends(context);
   requireStrictPermissionsSupport(context);
   requireMcpSupport(context);
+  requireEffortSupport(context);
 
   /**
    * Единственное место, где картина прогона попадает на диск: сводка
@@ -987,6 +988,23 @@ function requireMcpSupport(context: RunContext): void {
         {
           file: job.source,
           hint: `Включите backends.${step.agent}.mcp в конфигурации либо снимите объявление mcp`,
+        },
+      );
+    }
+  }
+}
+
+/** Явный effort нельзя молча потерять при передаче чужому backend-плагину. */
+function requireEffortSupport(context: RunContext): void {
+  for (const job of context.expanded.pipeline.jobs) {
+    for (const step of job.steps) {
+      if (step.kind !== 'agent' || step.effort === undefined) continue;
+      if (adapterOf(step.agent, context).capabilities.effort === true) continue;
+      throw new StepcastError(
+        `Бэкенд ${step.agent} не умеет применять effort, объявленный у шага ${job.id}/${step.id}`,
+        {
+          file: job.source,
+          hint: 'Снимите effort либо переведите шаг на бэкенд, объявляющий эту возможность',
         },
       );
     }

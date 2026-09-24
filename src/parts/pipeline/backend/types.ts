@@ -24,6 +24,8 @@ export interface BackendCapabilities {
    * молчаливое «нет» для чужого адаптера неотличимо от забытого поля.
    */
   readonly mcp: boolean;
+  /** Умеет передать reasoning effort выбранному агентскому CLI. */
+  readonly effort?: boolean;
   /**
    * Кто выдаёт идентификатор сессии. `'engine'` — движок заводит его до
    * запуска и передаёт бэкенду (Claude Code принимает `--session-id`).
@@ -42,6 +44,7 @@ export interface AgentInvocation {
   readonly prompt: string;
   readonly cwd: string;
   readonly model?: string;
+  readonly effort?: string;
   readonly sessionId?: string;
   /** true — продолжить существующую сессию, false — начать с этим идентификатором. */
   readonly resumeSession: boolean;

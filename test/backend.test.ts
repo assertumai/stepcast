@@ -96,6 +96,66 @@ describe('agent-backend: перечисление моделей claude', () => 
   });
 });
 
+describe('agent-backend: reasoning effort', () => {
+  it('Claude передаёт явный effort и не добавляет флаг без него', () => {
+    const explicit = createClaudeAdapter(BACKEND).launch({
+      prompt: 'p', cwd: '/tmp', effort: 'high', resumeSession: false,
+    });
+    assert.equal(explicit.command[explicit.command.indexOf('--effort') + 1], 'high');
+
+    const implicit = createClaudeAdapter(BACKEND).launch({ prompt: 'p', cwd: '/tmp', resumeSession: false });
+    assert.equal(implicit.command.includes('--effort'), false);
+    assert.equal(createClaudeAdapter(BACKEND).capabilities.effort, true);
+  });
+
+  it('не запускает backend без поддержки для шага с effective effort', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+effort: high
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+`,
+    });
+    const runsRoot = tempDir('runs-');
+    const backend = createFakeBackend({
+      capabilities: { effort: false },
+      lines: [resultLine({ text: 'готово' })],
+    });
+
+    await assert.rejects(
+      runPipeline({
+        expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+        config: { ...project.config, runs: { ...project.config.runs, root: runsRoot } },
+        projectRoot: project.root,
+        cwd: project.root,
+        adapterFor: () => backend.adapter,
+      }),
+      (error: Error) => /не умеет применять effort/.test(error.message) && /build\/ask/.test(error.message),
+    );
+    assert.equal(backend.invocations.length, 0);
+  });
+
+  it('передаёт effective effort из шага в invocation', async () => {
+    const dir = tempDir('backend-');
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'готово' })] });
+    await executeAgentStep({
+      step: makeAgentStep({ effort: 'high' }),
+      adapter: backend.adapter,
+      cwd: dir,
+      stepDir: dir,
+      sessions: createSessionRegistry(),
+      buildPrompt: () => 'промпт',
+      env: () => ({ PATH: process.env.PATH ?? '' }),
+    });
+    assert.equal(backend.invocations[0]?.effort, 'high');
+  });
+});
+
 describe('agent-backend: возможность жёсткого режима прав', () => {
   it('адаптер Claude читает возможность из конфигурации бэкенда', () => {
     assert.equal(createClaudeAdapter(BACKEND).capabilities.strictPermissions, true);

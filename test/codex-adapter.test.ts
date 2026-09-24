@@ -84,6 +84,19 @@ describe('codex-backend: сборка запуска', () => {
     assert.equal(fallback.command[fallback.command.indexOf('-m') + 1], 'gpt-5');
   });
 
+  it('передаёт effort локальным переопределением для новой и продолженной нити', () => {
+    const fresh = adapter.launch(invocation({ effort: 'high' }));
+    const resumed = adapter.launch(invocation({ effort: 'xhigh', sessionId: 'thread-1', resumeSession: true }));
+
+    assert.deepEqual(fresh.command.slice(fresh.command.indexOf('model_reasoning_effort="high"') - 1, fresh.command.indexOf('model_reasoning_effort="high"') + 1), [
+      '-c', 'model_reasoning_effort="high"',
+    ]);
+    assert.deepEqual(resumed.command.slice(resumed.command.indexOf('model_reasoning_effort="xhigh"') - 1, resumed.command.indexOf('model_reasoning_effort="xhigh"') + 1), [
+      '-c', 'model_reasoning_effort="xhigh"',
+    ]);
+    assert.equal(adapter.launch(invocation()).command.some((arg) => arg.startsWith('model_reasoning_effort=')), false);
+  });
+
   // Сценарий: «Продолжение нити»
   it('продолжение — форма resume с тем же набором флагов', () => {
     const launch = adapter.launch(
@@ -383,6 +396,7 @@ describe('codex-backend: возможности и манифест плагин
       structuredOutput: true,
       strictPermissions: false,
       mcp: false,
+      effort: true,
       sessionIdSource: 'backend',
     });
   });

@@ -226,6 +226,7 @@ export async function executeAgentStep(options: AgentStepOptions): Promise<Agent
         prompt,
         cwd: options.cwd,
         ...(resolvedModel === undefined ? {} : { model: resolvedModel }),
+        ...(step.effort === undefined ? {} : { effort: step.effort }),
         ...(adapter.capabilities.sessions && session.id !== undefined ? { sessionId: session.id } : {}),
         resumeSession: adapter.capabilities.sessions && session.resume,
         ...(step.outputSchemaPath === undefined

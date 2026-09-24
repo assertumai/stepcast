@@ -38,6 +38,7 @@ export function createCodexAdapter(config: BackendConfig): BackendAdapter {
       structuredOutput: config.structuredOutput,
       strictPermissions: config.strictPermissions,
       mcp: config.mcp,
+      effort: true,
       sessionIdSource: 'backend',
     },
 
@@ -60,6 +61,9 @@ export function createCodexAdapter(config: BackendConfig): BackendAdapter {
 
       const model = invocation.model ?? config.defaultModel;
       if (model !== undefined) command.push('-m', model);
+      if (invocation.effort !== undefined) {
+        command.push('-c', `model_reasoning_effort=${tomlString(invocation.effort)}`);
+      }
 
       if (invocation.outputSchemaPath !== undefined && config.structuredOutput) {
         command.push('--output-schema', invocation.outputSchemaPath);
