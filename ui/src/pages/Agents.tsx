@@ -1,6 +1,6 @@
 import { useEffect, useState, type JSX } from 'react';
 
-import { MODEL_TIERS, type ModelTier } from '../../../src/parts/pipeline/config/modelTiers';
+import { MODEL_TIERS, type ModelTier, type ModelTierSelection } from '../../../src/parts/pipeline/config/modelTiers';
 import {
   fetchModels, fetchSettings, saveSettings,
   type ModelOption, type ModelsForBackend, type ModelsResult, type Settings, type SettingsPatch,
@@ -15,6 +15,7 @@ import {
   CardHeader,
   CardTitle,
   Combobox,
+  Input,
   Label,
   PageHeader,
   Select,
@@ -26,7 +27,17 @@ import {
 } from '@stepcast/ui';
 import './agents.css';
 
-type AgentDraft = { defaultModel: string; modelTiers: Partial<Record<ModelTier, string>> };
+export type TierDraft = { model: string; effort: string };
+export type AgentDraft = { defaultModel: string; modelTiers: Record<ModelTier, TierDraft> };
+
+const TIER_NAME = /^[a-z][a-z0-9_-]*$/;
+
+export function orderedTierNames(names: readonly string[]): readonly string[] {
+  const custom = [...new Set(names.filter((name) => !(MODEL_TIERS as readonly string[]).includes(name)))].sort(
+    (left, right) => left.localeCompare(right),
+  );
+  return [...MODEL_TIERS, ...custom];
+}
 
 /**
  * Причина недоступности распознавания — словами, как её видит пользователь.
@@ -63,7 +74,16 @@ function withText(label: string, text: string, whenEmpty: string): string {
 export function modelOptions(listed: readonly ModelOption[], configured: readonly (string | undefined)[]): readonly ComboboxOption[] {
   const options: ComboboxOption[] = listed.map((option) => ({
     value: option.name,
-    ...(option.title === undefined ? {} : { description: option.title }),
+    ...(option.label === undefined ? {} : { label: option.label }),
+    ...(
+      option.title === undefined && option.defaultEffort === undefined
+        ? {}
+        : {
+            description: [option.title, option.defaultEffort === undefined ? undefined : `default effort: ${option.defaultEffort}`]
+              .filter((part): part is string => part !== undefined)
+              .join(' · '),
+          }
+    ),
   }));
   const seen = new Set(options.map((option) => option.value));
   for (const name of configured) {
@@ -73,6 +93,53 @@ export function modelOptions(listed: readonly ModelOption[], configured: readonl
     options.push({ value: trimmed, description: 'from configuration' });
   }
   return options;
+}
+
+export function effortOptions(
+  listed: readonly ModelOption[],
+  model: string,
+  configured: string | undefined,
+): readonly ComboboxOption[] {
+  const selected = listed.find((option) => option.name === model.trim());
+  const options: ComboboxOption[] = (selected?.efforts ?? []).map((effort) => ({
+    value: effort.name,
+    ...(effort.description === undefined ? {} : { description: effort.description }),
+  }));
+  const current = configured?.trim() ?? '';
+  if (current !== '' && !options.some((option) => option.value === current)) {
+    options.push({ value: current, description: 'from configuration' });
+  }
+  return options;
+}
+
+export function tierSelectionPatch(
+  original: ModelTierSelection | undefined,
+  draft: TierDraft,
+): { readonly model: string | null; readonly effort?: string | null } | undefined {
+  const model = draft.model.trim();
+  const effort = draft.effort.trim();
+  if (model === '') return original === undefined ? undefined : { model: null };
+  if (model === original?.model && effort === (original.effort ?? '')) return undefined;
+  return { model, effort: effort || null };
+}
+
+export function tierDraftProblem(
+  tierNames: readonly string[],
+  originalTierNames: readonly string[],
+  draft: Readonly<Record<string, AgentDraft>>,
+): string | undefined {
+  for (const tier of tierNames) {
+    for (const agent of Object.values(draft)) {
+      const selection = agent.modelTiers[tier];
+      if (selection !== undefined && selection.model.trim() === '' && selection.effort.trim() !== '') {
+        return `Tier ${tier} needs a model before effort can be set`;
+      }
+    }
+    if (!originalTierNames.includes(tier) && !Object.values(draft).some((agent) => agent.modelTiers[tier]?.model.trim())) {
+      return `New tier ${tier} needs a model for at least one agent`;
+    }
+  }
+  return undefined;
 }
 
 interface ModelFieldProps {
@@ -123,6 +190,11 @@ export function Agents(): JSX.Element {
   const [settings, setSettings] = useState<Settings>();
   const [draft, setDraft] = useState<Record<string, AgentDraft>>({});
   const [agent, setAgent] = useState('');
+  const [effort, setEffort] = useState('');
+  const [tierNames, setTierNames] = useState<readonly string[]>(MODEL_TIERS);
+  const [removedTiers, setRemovedTiers] = useState<readonly string[]>([]);
+  const [newTier, setNewTier] = useState('');
+  const [tierError, setTierError] = useState<string>();
   const [connectCodex, setConnectCodex] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -134,8 +206,17 @@ export function Agents(): JSX.Element {
   const adopt = (data: Settings): void => {
     setSettings(data);
     setAgent(data.agent.value ?? '');
+    setEffort(data.effort.value ?? '');
+    setTierNames(orderedTierNames(data.modelTiers));
+    setRemovedTiers([]);
+    setNewTier('');
+    setTierError(undefined);
     setDraft(Object.fromEntries(data.backends.map((backend) => [backend.name, {
-      defaultModel: backend.defaultModel ?? '', modelTiers: { ...backend.modelTiers },
+      defaultModel: backend.defaultModel ?? '',
+      modelTiers: Object.fromEntries(orderedTierNames(data.modelTiers).map((tier) => {
+        const selection = backend.modelTiers[tier];
+        return [tier, { model: selection?.model ?? '', effort: selection?.effort ?? '' }];
+      })),
     }])));
     setConnectCodex(false);
   };
@@ -189,9 +270,9 @@ export function Agents(): JSX.Element {
   const backendPatch: NonNullable<SettingsPatch['backends']> = Object.fromEntries(
     settings.backends.flatMap((backend) => {
       const next = draft[backend.name]!;
-      const modelTiers = Object.fromEntries(MODEL_TIERS.flatMap((tier) => {
-        const value = (next.modelTiers[tier] ?? '').trim();
-        return value === (backend.modelTiers[tier] ?? '') ? [] : [[tier, value || null]];
+      const modelTiers = Object.fromEntries(tierNames.flatMap((tier) => {
+        const change = tierSelectionPatch(backend.modelTiers[tier], next.modelTiers[tier] ?? { model: '', effort: '' });
+        return change === undefined ? [] : [[tier, change]];
       }));
       const defaultChanged = next.defaultModel.trim() !== (backend.defaultModel ?? '');
       if (!defaultChanged && Object.keys(modelTiers).length === 0) return [];
@@ -201,18 +282,62 @@ export function Agents(): JSX.Element {
       }]];
     }),
   );
-  const dirty = agent !== settings.agent.value || connectCodex || Object.keys(backendPatch).length > 0;
+  const effortChanged = effort.trim() !== (settings.effort.value ?? '');
+  const addedTiers = tierNames.filter((tier) => !settings.modelTiers.includes(tier));
+  const dirty = agent !== settings.agent.value || effortChanged || connectCodex || removedTiers.length > 0 ||
+    addedTiers.length > 0 || Object.keys(backendPatch).length > 0;
   const selected = settings.backends.find((backend) => backend.name === agent);
   const canSelect = selected?.enabled && (selected.available || (agent === 'codex' && connectCodex));
+  const draftProblem = tierDraftProblem(tierNames, settings.modelTiers, draft);
+  const selectedDiscovery = models?.backends[agent];
+  const selectedModels = selectedDiscovery?.status === 'ok' ? selectedDiscovery.models : [];
+  const selectedModel = settings.model.value ?? draft[agent]?.defaultModel ?? selected?.defaultModel ?? '';
+  const selectedModelDefaultEffort = selectedModels.find((option) => option.name === selectedModel)?.defaultEffort;
+  const globalEffortOptions = effortOptions(selectedModels, selectedModel, effort);
 
-  const updateModel = (name: string, value: string, tier?: ModelTier): void => {
+  const updateModel = (name: string, value: string, tier?: ModelTier, field: keyof TierDraft = 'model'): void => {
     setSaved(false);
     setDraft((previous) => {
       const current = previous[name]!;
       return { ...previous, [name]: tier === undefined
         ? { ...current, defaultModel: value }
-        : { ...current, modelTiers: { ...current.modelTiers, [tier]: value } } };
+        : {
+            ...current,
+            modelTiers: {
+              ...current.modelTiers,
+              [tier]: { ...(current.modelTiers[tier] ?? { model: '', effort: '' }), [field]: value },
+            },
+          } };
     });
+  };
+
+  const addTier = (): void => {
+    const name = newTier.trim();
+    if (!TIER_NAME.test(name)) {
+      setTierError('Use lowercase letters, digits, hyphens or underscores; start with a letter.');
+      return;
+    }
+    if (tierNames.includes(name)) {
+      setTierError(`Tier ${name} already exists.`);
+      return;
+    }
+    setTierNames(orderedTierNames([...tierNames, name]));
+    setRemovedTiers((current) => current.filter((tier) => tier !== name));
+    setDraft((previous) => Object.fromEntries(Object.entries(previous).map(([backend, value]) => [backend, {
+      ...value,
+      modelTiers: { ...value.modelTiers, [name]: value.modelTiers[name] ?? { model: '', effort: '' } },
+    }])));
+    setNewTier('');
+    setTierError(undefined);
+    setSaved(false);
+  };
+
+  const removeTier = (tier: string): void => {
+    setTierNames((current) => current.filter((name) => name !== tier));
+    if (settings.modelTiers.includes(tier)) {
+      setRemovedTiers((current) => [...new Set([...current, tier])]);
+    }
+    setSaved(false);
   };
 
   const submit = (): void => {
@@ -221,7 +346,9 @@ export function Agents(): JSX.Element {
     setError(undefined);
     saveSettings({
       ...(agent === settings.agent.value ? {} : { agent }),
+      ...(effortChanged ? { effort: effort.trim() || null } : {}),
       ...(connectCodex ? { connectCodex: true } : {}),
+      ...(removedTiers.length === 0 ? {} : { removeModelTiers: removedTiers }),
       ...(Object.keys(backendPatch).length === 0 ? {} : { backends: backendPatch }),
     }).then((data) => { adopt(data); setSaved(true); })
       .catch((failure: Error) => setError(failure.message))
@@ -274,6 +401,15 @@ export function Agents(): JSX.Element {
                 </div>
               </div>
             ) : null}
+            <ModelField
+              id="default-effort"
+              label="effort"
+              value={effort}
+              placeholder={selectedModelDefaultEffort === undefined ? 'model default' : `model default: ${selectedModelDefaultEffort}`}
+              sourceNote={`${settings.effort.source}. An empty field lets the selected model and CLI choose.`}
+              options={globalEffortOptions}
+              onChange={(value) => { setEffort(value); setSaved(false); }}
+            />
           </CardContent>
         </Card>
 
@@ -285,11 +421,43 @@ export function Agents(): JSX.Element {
         )}
 
         <p className="small dim agent-note">
-          <code>agent</code>, <code>model</code> and <code>model_tier</code> are inherited independently: step → job → pipeline → settings.
-          An explicit <code>model</code> wins over <code>model_tier</code>; an empty tier falls back to the agent’s default model.
+          <code>agent</code>, <code>model</code>, <code>effort</code> and <code>model_tier</code> are inherited independently: step → job → pipeline → settings.
+          A tier selects its model and optional effort together. An explicit <code>model</code> disconnects the tier effort; an explicit <code>effort</code> wins.
           The dropdown lists what the agent’s CLI reports and is not exhaustive — a typed name is saved as is.
           Lists are read once and kept while the daemon runs; after installing an agent or changing its command, reload them.
         </p>
+
+        <Card className="tier-manager">
+          <CardHeader>
+            <CardTitle>Shared tiers</CardTitle>
+            <CardDescription>
+              One ordered set is shown for every agent. A custom tier may be mapped for only the agents that need it.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="tier-list">
+              {tierNames.map((tier) => (
+                <span className="tier-chip" key={tier}>
+                  <Badge variant={(MODEL_TIERS as readonly string[]).includes(tier) ? 'secondary' : 'default'}>{tier}</Badge>
+                  {(MODEL_TIERS as readonly string[]).includes(tier) ? null : (
+                    <Button variant="ghost" size="sm" onClick={() => removeTier(tier)} aria-label={`Remove tier ${tier}`}>Remove</Button>
+                  )}
+                </span>
+              ))}
+            </div>
+            <div className="tier-add">
+              <Input
+                value={newTier}
+                placeholder="review"
+                aria-label="New tier name"
+                onChange={(event) => { setNewTier(event.target.value); setTierError(undefined); }}
+                onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); addTier(); } }}
+              />
+              <Button type="button" variant="outline" onClick={addTier}>Add tier</Button>
+            </div>
+            {tierError === undefined ? null : <span className="small tier-error">{tierError}</span>}
+          </CardContent>
+        </Card>
 
         <div className="agent-cards">
           {settings.backends.map((backend) => {
@@ -302,7 +470,7 @@ export function Agents(): JSX.Element {
             const options = modelOptions(listed, [
               backend.defaultModel,
               current.defaultModel,
-              ...MODEL_TIERS.map((tier) => backend.modelTiers[tier]),
+              ...tierNames.map((tier) => backend.modelTiers[tier]?.model),
             ]);
 
             return (
@@ -326,18 +494,32 @@ export function Agents(): JSX.Element {
                     options={options}
                     onChange={(value) => updateModel(backend.name, value)}
                   />
-                  {MODEL_TIERS.map((tier) => (
-                    <ModelField
-                      key={tier}
-                      id={`agent-${backend.name}-${tier}`}
-                      label={tier}
-                      value={current.modelTiers[tier] ?? ''}
-                      placeholder={current.defaultModel.trim() || 'default model'}
-                      sourceNote={backend.modelTierSources[tier] ?? 'not set — falls back to the default model'}
-                      options={options}
-                      onChange={(value) => updateModel(backend.name, value, tier)}
-                    />
-                  ))}
+                  {tierNames.map((tier) => {
+                    const selection = current.modelTiers[tier] ?? { model: '', effort: '' };
+                    const listedModel = listed.find((option) => option.name === selection.model.trim());
+                    return (
+                      <div className="tier-config" key={tier}>
+                        <ModelField
+                          id={`agent-${backend.name}-${tier}-model`}
+                          label={`${tier} model`}
+                          value={selection.model}
+                          placeholder={current.defaultModel.trim() || 'default model'}
+                          sourceNote={backend.modelTierSources[tier] ?? 'not set — falls back to the default model'}
+                          options={options}
+                          onChange={(value) => updateModel(backend.name, value, tier, 'model')}
+                        />
+                        <ModelField
+                          id={`agent-${backend.name}-${tier}-effort`}
+                          label="effort"
+                          value={selection.effort}
+                          placeholder={listedModel?.defaultEffort === undefined ? 'model default' : `model default: ${listedModel.defaultEffort}`}
+                          sourceNote={backend.modelTierEffortSources[tier] ?? 'not set — the selected model chooses its default'}
+                          options={effortOptions(listed, selection.model, selection.effort)}
+                          onChange={(value) => updateModel(backend.name, value, tier, 'effort')}
+                        />
+                      </div>
+                    );
+                  })}
                 </CardContent>
               </Card>
             );
@@ -345,10 +527,11 @@ export function Agents(): JSX.Element {
         </div>
 
         <div className="agent-actions">
-          <Button disabled={!dirty || !canSelect} onClick={submit}>{saving ? 'Saving…' : 'Save'}</Button>
+          <Button disabled={!dirty || !canSelect || draftProblem !== undefined} onClick={submit}>{saving ? 'Saving…' : 'Save'}</Button>
           {dirty ? <Button variant="ghost" size="sm" onClick={() => { adopt(settings); setSaved(false); setError(undefined); }}>Discard changes</Button> : null}
           {saved && !dirty ? <span role="status" className="small dim">Saved</span> : null}
         </div>
+        {draftProblem === undefined ? null : <Alert variant="warning">{draftProblem}</Alert>}
         {error === undefined ? null : <Alert variant="destructive">{error}</Alert>}
       </fieldset>
     </>

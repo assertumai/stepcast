@@ -4,6 +4,14 @@
 .agent-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 470px), 1fr)); gap: 1rem; }
 .agent-card { margin-bottom: 0; min-width: 0; }
 .agent-card-head { display: flex; gap: .6rem; align-items: center; flex-wrap: wrap; }
+.tier-manager { margin-bottom: 1rem; }
+.tier-list { display: flex; gap: .45rem; align-items: center; flex-wrap: wrap; }
+.tier-chip { display: inline-flex; gap: .15rem; align-items: center; }
+.tier-chip .sc-button { min-height: 1.65rem; padding: 0 .35rem; }
+.tier-add { display: flex; gap: .5rem; align-items: center; max-width: 25rem; margin-top: .8rem; }
+.tier-add .sc-input { flex: 1; }
+.tier-error { display: block; color: var(--destructive); margin-top: .35rem; }
+.tier-config { border-top: 1px solid var(--border); margin-top: .8rem; padding-top: .2rem; }
 .agent-field { display: flex; gap: .6rem; align-items: flex-start; margin-top: .6rem; }
 .agent-field:first-child { margin-top: 0; }
 .agent-field-label { flex: 0 0 7.5rem; padding-top: .25rem; }
@@ -15,4 +23,5 @@
 @media (max-width: 44rem) {
   .agent-field { flex-wrap: wrap; }
   .agent-field-label { flex-basis: 100%; }
+  .tier-add { align-items: stretch; flex-direction: column; }
 }
