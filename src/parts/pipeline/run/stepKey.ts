@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 
 import type { Step } from '../document/model.js';
+import { normalizePackagePaths, portableForm, type PackagePathForm } from '../document/packagePaths.js';
 
 /**
  * Ключ шага отвечает на один вопрос: остаётся ли прошлый успех шага
@@ -23,6 +24,12 @@ export interface StepKeyInput {
   readonly backendCommand: string | undefined;
   /** Выходы работ выше по графу на момент исполнения этого шага. */
   readonly upstream: readonly { readonly job: string; readonly value: unknown }[];
+  /**
+   * Форма путей поставки в хешируемом шаге. По умолчанию — переносимая
+   * (`stepcast-package:<путь>#sha256:<отпечаток>`) от корня пакета движка;
+   * `lockHash` обязан быть посчитан в той же форме.
+   */
+  readonly packagePaths?: PackagePathForm;
 }
 
 /**
@@ -62,8 +69,14 @@ export function upstreamForKey(
  * ключа): смена поведения вклада при той же версии не инвалидирует успешный
  * шаг, а версия плагина видна в манифесте прогона (design.md, риски).
  */
+/**
+ * Пути ресурсов поставки — схема `stepcast:<имя>`, обёртка, встроенный скрипт
+ * или шаг — входят в ключ по имени и отпечатку содержимого, а не абсолютным
+ * путём выпуска (`document/packagePaths.ts`): смена выпуска при неизменной
+ * схеме ключ не меняет, правка содержимого схемы — меняет.
+ */
 export function computeStepKey(input: StepKeyInput): string {
-  const { step } = input;
+  const step = normalizePackagePaths(input.step, input.packagePaths ?? portableForm());
 
   return createHash('sha256')
     .update(

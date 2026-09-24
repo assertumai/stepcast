@@ -4,6 +4,7 @@ import { stringify } from 'yaml';
 
 import { formatDuration, formatTokens } from '../../../kernel/units.js';
 import type { Budget, Job, Pipeline, PipelinePublication, Step, Triggers, Workspace } from './model.js';
+import { normalizePackagePaths, portableForm, type PackagePathForm } from './packagePaths.js';
 
 /**
  * Сериализация раскрытого пайплайна в `pipeline.lock.yml`.
@@ -219,11 +220,16 @@ export function serializeLock(pipeline: Pipeline): string {
  * работ, плюс определение именно этой. Ключ шага держится на нём, а не на
  * хеше всего пайплайна, — иначе правка файла одной работы меняла бы ключи
  * шагов всех остальных, чьи определения не менялись.
+ *
+ * Пути ресурсов поставки (`stepcast:<имя>` схем, обёртки, встроенных
+ * скриптов и шагов) входят в хеш переносимой формой — именем и отпечатком
+ * содержимого, а не абсолютным путём выпуска (`packagePaths.ts`): иначе новый
+ * выпуск движка менял бы хеш каждой работы, ссылающейся на поставку.
  */
-export function jobLockHash(pipeline: Pipeline, job: Job): string {
+export function jobLockHash(pipeline: Pipeline, job: Job, form: PackagePathForm = portableForm()): string {
   const { jobs: _jobs, ...shared } = pipelineToPlain(pipeline);
   return createHash('sha256')
-    .update(JSON.stringify({ shared, job: jobToPlain(job) }))
+    .update(JSON.stringify(normalizePackagePaths({ shared, job: jobToPlain(job) }, form)))
     .digest('hex')
     .slice(0, 16);
 }

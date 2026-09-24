@@ -23,6 +23,7 @@ import type { Registry } from '../../../kernel/registry.js';
 import { buildGraph, executionOrder, upstreamOutputs, type Graph } from '../domain/graph.js';
 import { declaredInheritance } from './inherit.js';
 import { computeStepKey, upstreamForKey } from './stepKey.js';
+import { legacyPackageRoots, legacyStepKeys } from './legacyKey.js';
 
 /**
  * План переиспользования: что взять из прошлого прогона, что переисполнить и
@@ -302,6 +303,11 @@ export function buildResumePlan(requested: BuildPlanOptions): ResumePlan {
   // ними можно сравнить сегодняшнее условие пропущенной работы.
   const sourceConditions = new Map(readLockJobs(source.paths.lock).map((item) => [item.id, item.if]));
   const sameInputs = sameValues(pipeline.inputs, source.status.inputs);
+  // Корни выпусков, которыми исполнялся исходный прогон: нужны только шагу,
+  // чей ключ не сошёлся, и читаются из замка один раз на план.
+  let legacyRootsCache: readonly string[] | undefined;
+  const legacyRoots = (): readonly string[] =>
+    (legacyRootsCache ??= legacyPackageRoots(source.paths.lock));
 
   for (const job of order) {
     workspaceModeByJob.set(job.id, job.workspace.mode);
@@ -381,6 +387,7 @@ export function buildResumePlan(requested: BuildPlanOptions): ResumePlan {
         changed,
         producedAfter: producedFrom.get(address) ?? EMPTY_SET,
         outputUnrecoverable,
+        legacyRoots,
       });
 
       for (const path of outcome.ignoredEdits ?? []) ignoredEdits.add(path);
@@ -750,6 +757,8 @@ interface ReasonOptions {
   /** Пути, произведённые этим шагом и всеми шагами после него в источнике. */
   readonly producedAfter: ReadonlySet<string>;
   readonly outputUnrecoverable: boolean;
+  /** Корни пакета прежних выпусков из замка исходного прогона — считаются по требованию. */
+  readonly legacyRoots: () => readonly string[];
 }
 
 interface ReasonOutcome {
@@ -773,6 +782,7 @@ function invalidationReason(input: ReasonOptions): ReasonOutcome {
     changed,
     producedAfter,
     outputUnrecoverable,
+    legacyRoots,
   } = input;
 
   if (previous === undefined) return { reason: 'в прошлом прогоне шага не было' };
@@ -802,16 +812,21 @@ function invalidationReason(input: ReasonOptions): ReasonOutcome {
   // ключа после этого означает изменение самого шага, а не состояния вокруг.
   // Хеш определения — только этой работы: правка файла другой не должна
   // задевать её ключ.
-  const key = computeStepKey({
-    lockHash: jobLockHash(options.expanded.pipeline, job),
+  const keyInput = {
     jobId: job.id,
     step,
     inputsFingerprint: previous.inputs_fingerprint,
     backendCommand:
       step.kind === 'agent' ? options.config.backends[step.agent]?.command : undefined,
     upstream: upstreamForKey(upstream),
-  });
-  const keyChanged = key !== previous.key;
+  };
+  const key = computeStepKey({ ...keyInput, lockHash: jobLockHash(options.expanded.pipeline, job) });
+  // Запись прежнего выпуска несёт ключ от абсолютных путей поставки — он
+  // сверяется ключом, посчитанным «по-старому» от корня того выпуска, при
+  // совпавшем содержимом ресурсов (`legacyKey.ts`).
+  const keyChanged =
+    key !== previous.key &&
+    !legacyStepKeys(options.expanded.pipeline, job, keyInput, legacyRoots()).includes(previous.key);
 
   if (isAbove) {
     // Ключ шага проверяется и выше точки: `--from` берёт на себя решение о
