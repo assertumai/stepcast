@@ -6,9 +6,9 @@ import { z } from 'zod';
 
 import codexPlugin from '../backends/codex/index.js';
 import { describeSource, type Source } from '../pipeline/config/merge.js';
-import type { ModelTiers } from '../pipeline/config/modelTiers.js';
+import { MODEL_TIERS, type ModelTiers } from '../pipeline/config/modelTiers.js';
 import type { ResolvedConfig } from '../pipeline/config/resolve.js';
-import { ModelNameSchema, ModelTierSchema, RawConfigSchema } from '../pipeline/config/schema.js';
+import { EffortSchema, ModelNameSchema, ModelTierSchema, RawConfigSchema } from '../pipeline/config/schema.js';
 import { StepcastError } from '../../kernel/errors.js';
 import { currentDaemonKernel } from './daemon/kernel.js';
 import type { KernelCache } from './pipelines.js';
@@ -28,25 +28,36 @@ export interface BackendView {
   readonly defaultModelSource: string;
   readonly modelTiers: ModelTiers;
   readonly modelTierSources: Readonly<Record<string, string>>;
+  readonly modelTierEffortSources: Readonly<Record<string, string>>;
 }
 
 export interface Settings {
   readonly agent: SettingsValue;
   /** Старое общее переопределение модели сохраняется для совместимости. */
   readonly model: SettingsValue;
+  readonly effort: SettingsValue;
+  /** Общие семантические имена tier: встроенные, затем кастомные по алфавиту. */
+  readonly modelTiers: readonly string[];
   readonly backends: readonly BackendView[];
   readonly file: string;
 }
 
+const TierPatchSchema = z.object({
+  model: ModelNameSchema.nullable(),
+  effort: EffortSchema.nullable().optional(),
+}).strict();
+
 const BackendPatchSchema = z.object({
   defaultModel: ModelNameSchema.nullable().optional(),
-  modelTiers: z.partialRecord(ModelTierSchema, ModelNameSchema.nullable()).optional(),
+  modelTiers: z.record(ModelTierSchema, TierPatchSchema).optional(),
 }).strict();
 
 const SettingsPatchSchema = z.object({
   agent: ModelNameSchema.optional(),
   model: z.string().trim().nullable().optional(),
+  effort: EffortSchema.nullable().optional(),
   backends: z.record(z.string(), BackendPatchSchema).optional(),
+  removeModelTiers: z.array(ModelTierSchema).optional(),
   /** Явное подключение адаптера из поставки, без установки внешнего пакета. */
   connectCodex: z.literal(true).optional(),
 }).strict();
@@ -71,6 +82,20 @@ export function describeSettingSource(source: Source | undefined): string {
 
 function valueOf(resolved: ResolvedConfig, path: string, value: string | undefined): SettingsValue {
   return { value, source: describeSettingSource(resolved.provenance.get(path)) };
+}
+
+function tierSource(resolved: ResolvedConfig, base: string, leaf: 'model' | 'effort'): string {
+  return describeSettingSource(resolved.provenance.get(`${base}.${leaf}`) ?? resolved.provenance.get(base));
+}
+
+function sharedModelTiers(backends: readonly BackendView[]): readonly string[] {
+  const custom = new Set<string>();
+  for (const backend of backends) {
+    for (const tier of Object.keys(backend.modelTiers)) {
+      if (!(MODEL_TIERS as readonly string[]).includes(tier)) custom.add(tier);
+    }
+  }
+  return [...MODEL_TIERS, ...[...custom].sort((left, right) => left.localeCompare(right))];
 }
 
 /**
@@ -108,9 +133,16 @@ export async function readSettings(home: string = homedir(), kernelCache?: Kerne
     defaultModel: backend.defaultModel,
     defaultModelSource: valueOf(resolved, `backends.${name}.default_model`, backend.defaultModel).source,
     modelTiers: backend.modelTiers ?? {},
-    modelTierSources: Object.fromEntries(Object.entries(backend.modelTiers ?? {}).map(([tier, selection]) => [
-      tier, valueOf(resolved, `backends.${name}.model_tiers.${tier}`, selection.model).source,
-    ])),
+    modelTierSources: Object.fromEntries(Object.keys(backend.modelTiers ?? {}).map((tier) => {
+      const base = `backends.${name}.model_tiers.${tier}`;
+      return [tier, tierSource(resolved, base, 'model')];
+    })),
+    modelTierEffortSources: Object.fromEntries(Object.entries(backend.modelTiers ?? {})
+      .filter(([, selection]) => selection.effort !== undefined)
+      .map(([tier]) => {
+        const base = `backends.${name}.model_tiers.${tier}`;
+        return [tier, tierSource(resolved, base, 'effort')];
+      })),
   }));
 
   // Codex поставляется как opt-in плагин: карточка видна и до подключения,
@@ -119,7 +151,7 @@ export async function readSettings(home: string = homedir(), kernelCache?: Kerne
     backends.push({
       name: 'codex', command: 'codex', enabled: true, available: false,
       defaultModel: codexPlugin.backends!.codex!.defaults!.default_model,
-      defaultModelSource: 'plugin:codex', modelTiers: {}, modelTierSources: {},
+      defaultModelSource: 'plugin:codex', modelTiers: {}, modelTierSources: {}, modelTierEffortSources: {},
     });
   } else {
     const codex = backends.find((backend) => backend.name === 'codex')!;
@@ -134,6 +166,8 @@ export async function readSettings(home: string = homedir(), kernelCache?: Kerne
   return {
     agent: valueOf(resolved, 'defaults.agent', config.defaults.agent),
     model: valueOf(resolved, 'defaults.model', config.defaults.model),
+    effort: valueOf(resolved, 'defaults.effort', config.defaults.effort),
+    modelTiers: sharedModelTiers(backends),
     backends, file: globalConfigPath(home),
   };
 }
@@ -163,6 +197,11 @@ export async function writeSettings(
       throw new StepcastError(`Agent ${patch.agent} is not connected: connect its plugin first`);
     }
   }
+  for (const tier of patch.removeModelTiers ?? []) {
+    if ((MODEL_TIERS as readonly string[]).includes(tier)) {
+      throw new StepcastError(`Cannot remove built-in tier ${tier}`);
+    }
+  }
 
   const file = globalConfigPath(home);
   let text = '';
@@ -184,15 +223,32 @@ export async function writeSettings(
     if (patch.model === null || patch.model === '') document.deleteIn(['defaults', 'model']);
     else document.setIn(['defaults', 'model'], patch.model);
   }
+  if (patch.effort !== undefined) {
+    if (patch.effort === null) document.deleteIn(['defaults', 'effort']);
+    else document.setIn(['defaults', 'effort'], patch.effort);
+  }
   for (const [name, backend] of Object.entries(patch.backends ?? {})) {
     const path = ['backends', name];
     if (backend.defaultModel !== undefined) {
       if (backend.defaultModel === null) document.deleteIn([...path, 'default_model']);
       else document.setIn([...path, 'default_model'], backend.defaultModel);
     }
-    for (const [tier, model] of Object.entries(backend.modelTiers ?? {})) {
-      if (model === null) document.deleteIn([...path, 'model_tiers', tier]);
-      else document.setIn([...path, 'model_tiers', tier], model);
+    for (const [tier, selection] of Object.entries(backend.modelTiers ?? {})) {
+      if (selection.model === null) document.deleteIn([...path, 'model_tiers', tier]);
+      else if (selection.effort === undefined || selection.effort === null) {
+        document.setIn([...path, 'model_tiers', tier], selection.model);
+      } else {
+        document.setIn([...path, 'model_tiers', tier], {
+          model: selection.model,
+          effort: selection.effort,
+        });
+      }
+    }
+  }
+  const documentBackends = (document.toJS() as { backends?: Record<string, unknown> } | null)?.backends ?? {};
+  for (const tier of patch.removeModelTiers ?? []) {
+    for (const name of new Set([...Object.keys(documentBackends), ...current.backends.map((backend) => backend.name)])) {
+      document.deleteIn(['backends', name, 'model_tiers', tier]);
     }
   }
 

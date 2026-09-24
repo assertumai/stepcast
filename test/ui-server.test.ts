@@ -2058,6 +2058,8 @@ describe('ui-dashboard: настройки дефолтов', () => {
     assert.equal(pick(settings.json, 'agent', 'value'), 'claude');
     assert.equal(pick(settings.json, 'agent', 'source'), 'built-in default');
     assert.equal(pick(settings.json, 'model', 'value'), undefined);
+    assert.equal(pick(settings.json, 'effort', 'value'), undefined);
+    assert.deepEqual(pick(settings.json, 'modelTiers'), ['max', 'deep', 'balance', 'fast', 'mini']);
     assert.equal(settings.json.file, join(home, '.stepcast', 'config.yml'));
     assert.equal(
       (pick(settings.json, 'backends') as Array<{ name: string }>).some(
@@ -3718,7 +3720,7 @@ describe('ui-dashboard: вывод шага', () => {
 });
 
 describe('ui-dashboard: конфигурация агентов и tier', () => {
-  it('сохраняет модели каждого агента и подключает поставляемый Codex', async (t) => {
+  it('сохраняет модели и effort каждого агента и подключает поставляемый Codex', async (t) => {
     const { runsRoot, home } = makeJournalBed();
     const server = await startServer(t, { runsRoot, home });
     const file = join(home, '.stepcast', 'config.yml');
@@ -3726,31 +3728,59 @@ describe('ui-dashboard: конфигурация агентов и tier', () => 
     const saved = await sendJson(server, {
       method: 'PUT', path: '/api/settings',
       body: JSON.stringify({
-        agent: 'codex', connectCodex: true,
+        agent: 'codex', effort: 'medium', connectCodex: true,
         backends: {
-          claude: { defaultModel: 'opus', modelTiers: { deep: 'opus', mini: 'haiku' } },
-          codex: { defaultModel: 'gpt-5.6-terra', modelTiers: { deep: 'codex-deep' } },
+          claude: {
+            defaultModel: 'opus',
+            modelTiers: { deep: { model: 'opus', effort: 'high' }, mini: { model: 'haiku' } },
+          },
+          codex: { defaultModel: 'gpt-5.6-terra', modelTiers: { review: { model: 'codex-review', effort: 'xhigh' } } },
         },
       }),
     });
     assert.equal(saved.code, 200, JSON.stringify(saved.json));
-    const backends = saved.json.backends as Array<{ name: string; defaultModel: string; modelTiers: Record<string, string>; available: boolean }>;
+    const backends = saved.json.backends as Array<{ name: string; defaultModel: string; modelTiers: Record<string, { model: string; effort?: string }>; available: boolean }>;
     assert.equal(backends.find((b) => b.name === 'claude')?.defaultModel, 'opus');
-    assert.equal(backends.find((b) => b.name === 'codex')?.modelTiers.deep, 'codex-deep');
+    assert.deepEqual(backends.find((b) => b.name === 'claude')?.modelTiers.deep, { model: 'opus', effort: 'high' });
+    assert.deepEqual(backends.find((b) => b.name === 'codex')?.modelTiers.review, { model: 'codex-review', effort: 'xhigh' });
     assert.equal(backends.find((b) => b.name === 'codex')?.available, true);
     assert.equal(pick(saved.json, 'agent', 'value'), 'codex');
+    assert.equal(pick(saved.json, 'effort', 'value'), 'medium');
+    assert.deepEqual(pick(saved.json, 'modelTiers'), ['max', 'deep', 'balance', 'fast', 'mini', 'review']);
     assert.match(readFileSync(file, 'utf8'), /# сохранить комментарий/);
     assert.match(readFileSync(file, 'utf8'), /stepcast\/backends\/codex/);
+    assert.match(readFileSync(file, 'utf8'), /mini: haiku/);
+    assert.match(readFileSync(file, 'utf8'), /effort: high/);
 
     const cleared = await sendJson(server, {
       method: 'PUT', path: '/api/settings',
-      body: JSON.stringify({ backends: { claude: { defaultModel: null, modelTiers: { deep: null } } } }),
+      body: JSON.stringify({
+        effort: null,
+        removeModelTiers: ['review'],
+        backends: { claude: { defaultModel: null, modelTiers: { deep: { model: null } } } },
+      }),
     });
     assert.equal(cleared.code, 200);
     const claude = (cleared.json.backends as typeof backends).find((b) => b.name === 'claude');
     assert.equal(claude?.defaultModel, 'sonnet');
     assert.equal(claude?.modelTiers.deep, undefined);
-    assert.equal(claude?.modelTiers.mini, 'haiku');
+    assert.deepEqual(claude?.modelTiers.mini, { model: 'haiku' });
+    assert.equal(pick(cleared.json, 'effort', 'value'), undefined);
+    assert.deepEqual(pick(cleared.json, 'modelTiers'), ['max', 'deep', 'balance', 'fast', 'mini']);
+    assert.doesNotMatch(readFileSync(file, 'utf8'), /review:/);
+  });
+
+  it('не удаляет встроенный tier и не меняет файл при отказе', async (t) => {
+    const { runsRoot, home } = makeJournalBed();
+    const server = await startServer(t, { runsRoot, home });
+    const file = join(home, '.stepcast', 'config.yml');
+    const before = readFileSync(file, 'utf8');
+    const result = await sendJson(server, {
+      method: 'PUT', path: '/api/settings', body: JSON.stringify({ removeModelTiers: ['deep'] }),
+    });
+    assert.equal(result.code, 400);
+    assert.match(String(result.json.error), /built-in tier deep/);
+    assert.equal(readFileSync(file, 'utf8'), before);
   });
 
   it('отклоняет неправильные правки целиком, не меняя файл', async (t) => {
@@ -3759,7 +3789,7 @@ describe('ui-dashboard: конфигурация агентов и tier', () => 
     const file = join(home, '.stepcast', 'config.yml');
     const before = readFileSync(file, 'utf8');
     for (const patch of [
-      null, [], { backends: { claude: { modelTiers: { typo: 'opus' } } } },
+      null, [], { backends: { claude: { modelTiers: { Review: { model: 'opus' } } } } },
       { backends: { claude: { modelTiers: { deep: 123 } } } },
       { backends: { claude: { defaultModel: '   ' } } },
       { backends: { missing: { defaultModel: 'x' } } }, { agent: 'codex' },

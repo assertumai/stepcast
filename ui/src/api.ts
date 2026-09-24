@@ -666,11 +666,14 @@ export interface BackendView {
   readonly defaultModelSource: string;
   readonly modelTiers: ModelTiers;
   readonly modelTierSources: Readonly<Record<string, string>>;
+  readonly modelTierEffortSources: Readonly<Record<string, string>>;
 }
 
 export interface Settings {
   readonly agent: SettingsValue;
   readonly model: SettingsValue;
+  readonly effort: SettingsValue;
+  readonly modelTiers: readonly string[];
   readonly backends: readonly BackendView[];
   /** Файл, в который витрина пишет. Пользователь должен знать, что правит. */
   readonly file: string;
@@ -679,7 +682,10 @@ export interface Settings {
 /** Одна модель, названная CLI, — подсказка, а не перечень допустимого. */
 export interface ModelOption {
   readonly name: string;
+  readonly label?: string;
   readonly title?: string;
+  readonly defaultEffort?: string;
+  readonly efforts?: readonly { readonly name: string; readonly description?: string }[];
 }
 
 /**
@@ -707,11 +713,18 @@ export interface SettingsPatch {
   readonly connectCodex?: true;
   readonly backends?: Readonly<Record<string, {
     readonly defaultModel?: string | null;
-    readonly modelTiers?: Readonly<Partial<Record<ModelTier, string | null>>>;
+    readonly modelTiers?: Readonly<Record<ModelTier, {
+      readonly model: string | null;
+      readonly effort?: string | null;
+    }>>;
   }>>;
   readonly agent?: string;
   /** `null` — снять значение и вернуться к модели бэкенда. */
   readonly model?: string | null;
+  /** `null` — не передавать effort и оставить выбор модели/CLI. */
+  readonly effort?: string | null;
+  /** Кастомные tier удаляются из карт всех агентов одной записью. */
+  readonly removeModelTiers?: readonly string[];
 }
 
 /** Признак отбора прогонов к уборке. Имена — те же, что принимает демон. */
