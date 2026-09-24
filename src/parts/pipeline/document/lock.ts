@@ -150,6 +150,7 @@ function stepToPlain(step: Step): Record<string, unknown> {
     ...common,
     agent: step.agent,
     ...(step.model === undefined ? {} : { model: step.model }),
+    ...(step.effort === undefined ? {} : { effort: step.effort }),
     session: step.session,
     // Промпт кладётся целиком: без него по локу нельзя понять, что уйдёт агенту.
     prompt: step.prompt,

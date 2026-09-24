@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   CheckCommandSchema,
+  EffortSchema,
   ModelTierSchema,
   RawKnowledgeSchema,
   RawSpecSchema,
@@ -27,9 +28,10 @@ const count = z.union([z.string(), z.number()]);
 const SelectionShape = {
   agent: z.string().optional(),
   model: z.string().optional(),
+  effort: EffortSchema.optional(),
   model_tier: z.union([
     ModelTierSchema,
-    z.string().regex(/^\$\{[^}]+\}$/, 'model_tier: ожидается max, deep, balance, fast, mini или подстановка'),
+    z.string().regex(/^\$\{[^}]+\}$/, 'model_tier: ожидается имя tier или подстановка'),
   ]).optional(),
 };
 
@@ -259,6 +261,7 @@ export const BUILTIN_STEP_KIND_KEY_OWNERS: Readonly<Record<string, readonly stri
   prompt: ['agent'],
   agent: ['agent'],
   model: ['agent'],
+  effort: ['agent'],
   model_tier: ['agent'],
   session: ['agent'],
   permissions: ['agent'],

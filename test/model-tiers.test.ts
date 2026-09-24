@@ -27,6 +27,23 @@ backends:
       mini: codex-mini
 `;
 
+const EFFORT_CONFIG = `
+defaults:
+  effort: medium
+`;
+
+const TIER_EFFORT_CONFIG = `
+backends:
+  claude:
+    model_tiers:
+      deep:
+        model: claude-deep
+        effort: high
+      review:
+        model: claude-review
+        effort: xhigh
+`;
+
 function expand(yaml: string, configYaml = TIERS_CONFIG, files: Record<string, string> = {}) {
   const project = makeProject({ 'pipeline.yml': yaml, '.stepcast/config.yml': configYaml, ...files });
   const { config } = resolveConfig({ cwd: project.root, home: project.home });
@@ -130,6 +147,64 @@ jobs:
     assert.equal(selection(`model_tier: deep\n${JOB}`, `${TIERS_CONFIG}\ndefaults:\n  model: legacy\n`).model, 'legacy');
   });
 
+  it('selects model and effort together from a tier bundle', () => {
+    const step = selection(`model_tier: deep\n${JOB}`, TIER_EFFORT_CONFIG);
+    assert.equal(step.model, 'claude-deep');
+    assert.equal(step.effort, 'high');
+  });
+
+  it('does not keep tier effort when an explicit model overrides the tier', () => {
+    const step = selection(`model_tier: deep\nmodel: explicit\n${JOB}`, TIER_EFFORT_CONFIG);
+    assert.equal(step.model, 'explicit');
+    assert.equal(step.effort, undefined);
+  });
+
+  it('lets an explicit effort override the selected tier effort', () => {
+    const step = selection(`model_tier: deep\neffort: low\n${JOB}`, TIER_EFFORT_CONFIG);
+    assert.equal(step.model, 'claude-deep');
+    assert.equal(step.effort, 'low');
+  });
+
+  it('inherits effort independently through config, pipeline, job and step', () => {
+    const { pipeline, effortOrigins } = expand(`
+effort: high
+jobs:
+  inherited:
+    steps:
+      - id: pipeline
+        prompt: hello
+  overridden:
+    effort: low
+    steps:
+      - id: job
+        prompt: hello
+      - id: step
+        effort: xhigh
+        prompt: hello
+`, EFFORT_CONFIG);
+    assert.deepEqual(pipeline.jobs.flatMap((job) => job.steps.map((raw) => asAgent(raw).effort)), ['high', 'low', 'xhigh']);
+    assert.deepEqual(effortOrigins.get('inherited/pipeline'), { layer: 'pipeline' });
+    assert.deepEqual(effortOrigins.get('overridden/job'), { layer: 'job' });
+    assert.deepEqual(effortOrigins.get('overridden/step'), { layer: 'step' });
+
+    const configStep = selection(JOB, EFFORT_CONFIG);
+    assert.equal(configStep.effort, 'medium');
+  });
+
+  it('identifies tier effort provenance', () => {
+    const { effortOrigins } = expand(`model_tier: deep\n${JOB}`, `
+backends:
+  claude:
+    model_tiers:
+      deep:
+        model: claude-deep
+        effort: high
+`);
+    assert.deepEqual(effortOrigins.get('work/ask'), {
+      layer: 'tier', backend: 'claude', tier: 'deep', tierLayer: 'pipeline',
+    });
+  });
+
   it('job and step models override their parents and identify their origin', () => {
     const { pipeline, modelOrigins } = expand(`
 model: pipeline-model
@@ -193,5 +268,14 @@ jobs:
     const fromTier = expandPipeline(opts).pipeline;
     project.write('pipeline.yml', `model: claude-deep\n${JOB}`);
     assert.equal(serializeLock(fromTier), serializeLock(expandPipeline(opts).pipeline));
+  });
+
+  it('includes effective effort in the executable lock', () => {
+    const project = makeProject({ 'pipeline.yml': `effort: low\n${JOB}`, '.stepcast/config.yml': '' });
+    const { config } = resolveConfig({ cwd: project.root, home: project.home });
+    const opts = { pipelinePath: project.path('pipeline.yml'), config };
+    const low = serializeLock(expandPipeline(opts).pipeline);
+    project.write('pipeline.yml', `effort: high\n${JOB}`);
+    assert.notEqual(low, serializeLock(expandPipeline(opts).pipeline));
   });
 });

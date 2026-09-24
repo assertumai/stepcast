@@ -186,6 +186,8 @@ export interface AgentStep extends StepCommon {
   readonly kind: 'agent';
   readonly agent: string;
   readonly model?: string;
+  /** Уровень reasoning effort, передаваемый агентскому CLI. */
+  readonly effort?: string;
   /** Псевдоним сессии. Шаги с одинаковым псевдонимом продолжают один диалог. */
   readonly session: string;
   /** Текст промпта, уже прочитанный из файла и раскрытый. */
@@ -539,6 +541,15 @@ export type ModelOrigin =
   | { readonly layer: 'backend'; readonly backend: string }
   | { readonly layer: 'none' };
 
+/** Звено цепочки, давшее reasoning effort агентского шага. */
+export type EffortOrigin =
+  | { readonly layer: 'step' }
+  | { readonly layer: 'job' }
+  | { readonly layer: 'tier'; readonly backend: string; readonly tier: ModelTier; readonly tierLayer: 'pipeline' | 'job' | 'step' }
+  | { readonly layer: 'pipeline' }
+  | { readonly layer: 'config' }
+  | { readonly layer: 'none' };
+
 export interface ExpandedPipeline {
   readonly pipeline: Pipeline;
   readonly substitutions: SubstitutionMap;
@@ -549,6 +560,8 @@ export interface ExpandedPipeline {
    * переиспользование шагов всех прошлых прогонов при первом же `resume`.
    */
   readonly modelOrigins: ReadonlyMap<string, ModelOrigin>;
+  /** Слой reasoning effort каждого агентского шага, ключ — `<job>/<step>`. */
+  readonly effortOrigins: ReadonlyMap<string, EffortOrigin>;
 }
 
 /** Файлы, из которых собрано определение прогона: пайплайн и работы. */

@@ -64,6 +64,7 @@ import type {
   ContextEntry,
   ContextUpstream,
   ExpandedPipeline,
+  EffortOrigin,
   Job,
   KnowledgeDeclaration,
   McpServers,
@@ -908,7 +909,7 @@ function parseModelTier(value: unknown, file: string, at: string): ModelTier | u
   const parsed = ModelTierSchema.safeParse(value);
   if (!parsed.success) {
     throw new StepcastError(`Недопустимый model_tier: ${String(value)}`, {
-      file, at, hint: 'Допустимы max, deep, balance, fast, mini',
+      file, at, hint: 'Ожидается имя tier: строчные буквы, цифры, `_` или `-`',
     });
   }
   return parsed.data;
@@ -1156,6 +1157,8 @@ interface StepDefaults {
    * законно прийти с разных слоёв.
    */
   readonly modelLayer: 'job' | 'pipeline' | 'config' | undefined;
+  readonly effort: string | undefined;
+  readonly effortLayer: 'job' | 'pipeline' | 'config' | undefined;
   readonly modelTier: ModelTier | undefined;
   readonly tierLayer: 'pipeline' | 'job';
   readonly timeoutMs: number;
@@ -1190,7 +1193,11 @@ interface BuiltinStepParseContext {
   readonly stepRoots: ScriptRoots;
 }
 
-type StepParseResult = { readonly step: Step; readonly modelOrigin?: ModelOrigin };
+type StepParseResult = {
+  readonly step: Step;
+  readonly modelOrigin?: ModelOrigin;
+  readonly effortOrigin?: EffortOrigin;
+};
 
 function buildStepCommon(
   raw: RawStep,
@@ -1375,8 +1382,11 @@ function parseAgentStep(raw: RawStep, ctx: BuiltinStepParseContext): StepParseRe
   const agent = raw.agent ?? defaults.agent;
   const backend = config.backends[agent];
   const tier = parseModelTier(raw.model_tier, declaringFile, `${at}.model_tier`) ?? defaults.modelTier;
-  const tierModel = tier === undefined ? undefined : backend?.modelTiers?.[tier]?.model;
+  const tierSelection = tier === undefined ? undefined : backend?.modelTiers?.[tier];
+  const tierModel = tierSelection?.model;
   const model = raw.model ?? defaults.model ?? tierModel ?? backend?.defaultModel;
+  const selectedTierBundle = raw.model === undefined && defaults.model === undefined && tierModel !== undefined;
+  const effort = raw.effort ?? defaults.effort ?? (selectedTierBundle ? tierSelection?.effort : undefined);
 
   const modelOrigin: ModelOrigin =
     raw.model !== undefined
@@ -1393,12 +1403,25 @@ function parseAgentStep(raw: RawStep, ctx: BuiltinStepParseContext): StepParseRe
             ? { layer: 'backend', backend: agent }
             : { layer: 'none' };
 
+  const effortOrigin: EffortOrigin =
+    raw.effort !== undefined
+      ? { layer: 'step' }
+      : defaults.effortLayer !== undefined
+        ? { layer: defaults.effortLayer }
+        : selectedTierBundle && tierSelection?.effort !== undefined && tier !== undefined
+          ? {
+              layer: 'tier', backend: agent, tier,
+              tierLayer: raw.model_tier !== undefined ? 'step' : defaults.tierLayer,
+            }
+          : { layer: 'none' };
+
   return {
     step: {
       ...common,
       kind: 'agent',
       agent,
       ...(model === undefined ? {} : { model }),
+      ...(effort === undefined ? {} : { effort }),
       // Псевдоним сессии: явный побеждает всегда, иначе одна общая на работу
       // либо своя на каждый шаг — по режиму работы.
       session: raw.session ?? (defaults.sessionMode === 'shared' ? 'default' : raw.id),
@@ -1425,6 +1448,7 @@ function parseAgentStep(raw: RawStep, ctx: BuiltinStepParseContext): StepParseRe
           : { mcp: defaults.mcp }),
     },
     modelOrigin,
+    effortOrigin,
   };
 }
 
@@ -1975,6 +1999,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   const defaultSession = doc.defaults?.session ?? config.defaults.session;
   const defaultAgent = doc.agent ?? doc.defaults?.agent ?? config.defaults.agent;
   const defaultModel = doc.model ?? doc.defaults?.model ?? config.defaults.model;
+  const defaultEffort = doc.effort ?? doc.defaults?.effort ?? config.defaults.effort;
   const defaultModelTier = parseModelTier(
     doc.model_tier ?? doc.defaults?.model_tier, pipelinePath,
     doc.model_tier !== undefined ? 'model_tier' : 'defaults.model_tier',
@@ -1984,6 +2009,8 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   // законно объявляют одну и ту же модель, и слои должны остаться различимы.
   const defaultModelLayer: 'pipeline' | 'config' | undefined =
     doc.model !== undefined || doc.defaults?.model !== undefined ? 'pipeline' : config.defaults.model !== undefined ? 'config' : undefined;
+  const defaultEffortLayer: 'pipeline' | 'config' | undefined =
+    doc.effort !== undefined || doc.defaults?.effort !== undefined ? 'pipeline' : config.defaults.effort !== undefined ? 'config' : undefined;
 
   // Объявление пайплайна — верхний из трёх уровней (design.md, решение 2):
   // разбирается один раз здесь, а не в цикле работ, чтобы работы, его не
@@ -1993,6 +2020,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
 
   const jobs: Job[] = [];
   const modelOrigins = new Map<string, ModelOrigin>();
+  const effortOrigins = new Map<string, EffortOrigin>();
 
   for (const [id, entryRaw] of Object.entries(document.jobs)) {
     const at = `jobs.${id}`;
@@ -2084,6 +2112,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         {
           ...(entry.agent === undefined ? {} : { agent: entry.agent }),
           ...(entry.model === undefined ? {} : { model: entry.model }),
+          ...(entry.effort === undefined ? {} : { effort: entry.effort }),
           ...(entry.model_tier === undefined ? {} : { model_tier: entry.model_tier }),
           ...(entry.description === undefined ? {} : { description: entry.description }),
           ...(entry.session === undefined ? {} : { session: entry.session }),
@@ -2270,6 +2299,8 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
             agent: (body.agent as string | undefined) ?? defaultAgent,
             model: (body.model as string | undefined) ?? defaultModel,
             modelLayer: body.model !== undefined ? 'job' : defaultModelLayer,
+            effort: (body.effort as string | undefined) ?? defaultEffort,
+            effortLayer: body.effort !== undefined ? 'job' : defaultEffortLayer,
             modelTier: jobModelTier ?? defaultModelTier,
             tierLayer: jobModelTier !== undefined ? 'job' : 'pipeline',
             timeoutMs: config.defaults.stepTimeoutMs,
@@ -2286,6 +2317,9 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
         );
         if (expanded.modelOrigin !== undefined) {
           modelOrigins.set(`${id}/${expanded.step.id}`, expanded.modelOrigin);
+        }
+        if (expanded.effortOrigin !== undefined) {
+          effortOrigins.set(`${id}/${expanded.step.id}`, expanded.effortOrigin);
         }
         return expanded.step;
       }),
@@ -2343,5 +2377,5 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
     jobs,
   };
 
-  return { pipeline, substitutions, modelOrigins };
+  return { pipeline, substitutions, modelOrigins, effortOrigins };
 }
