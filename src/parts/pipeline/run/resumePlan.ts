@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { relative } from 'node:path';
+import { join, relative } from 'node:path';
 
 import {
   createAnchorer,
@@ -12,7 +12,7 @@ import {
 import type { Config } from '../config/resolve.js';
 import { StepcastError } from '../../../kernel/errors.js';
 import { withTempDir } from '../../../kernel/fs/tempDir.js';
-import type { RunPaths } from './journal/paths.js';
+import { stepDir, type RunPaths } from './journal/paths.js';
 import { readManifest, readStatus } from './journal/reader.js';
 import type { JobRecord, RunManifest, RunStatus, StepRecord } from './journal/schema.js';
 import { expandPipeline } from '../document/expand.js';
@@ -259,7 +259,8 @@ export interface BuildPlanOptions {
   readonly canAdoptWorkspace?: (job: JobRecord, step: StepRecord) => boolean;
 }
 
-export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
+export function buildResumePlan(requested: BuildPlanOptions): ResumePlan {
+  const options = withLoopBases(requested);
   const { expanded, source, from, cwd } = options;
   const { pipeline } = expanded;
 
@@ -1074,6 +1075,54 @@ function jobVerdict(job: string, steps: readonly StepPlan[], sourceRunId: string
  * начало и конец. Без этого нельзя ни заметить, что результат шага правили
  * руками, ни восстановить ровно его, не трогая остального дерева.
  */
+/**
+ * Дерево перед первой итерацией — для шагов работ с циклом `until`.
+ *
+ * Состояние прогона хранит запись шага только последней итерации, и её
+ * `tree_before` — дерево после предыдущей итерации. Произведённое шагом за
+ * весь цикл — разница от дерева перед первой итерацией до `tree_id`
+ * последней; без этого возобновление восстанавливало лишь пути последней
+ * итерации и теряло правки остальных (заход 7594f2: восемь итераций
+ * реализации, в дерево вернулись пять файлов из пятидесяти четырёх).
+ * Запись первой итерации читается из журнала исходного прогона; нет её —
+ * шаг остаётся со своим `tree_before`, как прежде.
+ */
+export function loopTreeBefore(source: SourceRun): ReadonlyMap<StepRecord, string> {
+  const bases = new Map<StepRecord, string>();
+  for (const job of source.status.jobs) {
+    if ((job.iterations ?? 1) <= 1) continue;
+    for (const step of job.steps) {
+      const file = join(stepDir(source.paths, job.id, step.index, step.id, 1), 'step.json');
+      if (!existsSync(file)) continue;
+      try {
+        const first = JSON.parse(readFileSync(file, 'utf8')) as { tree_before?: unknown };
+        if (typeof first.tree_before === 'string') bases.set(step, first.tree_before);
+      } catch {
+        // Испорченная запись первой итерации — не повод отказать возобновлению.
+      }
+    }
+  }
+  return bases;
+}
+
+/**
+ * Изменённые пути шага работы с циклом — от дерева перед первой итерацией
+ * (см. [loopTreeBefore]); для остальных шагов функция та же.
+ */
+function withLoopBases(options: BuildPlanOptions): BuildPlanOptions {
+  const produced = options.producedPaths;
+  if (produced === undefined) return options;
+  const bases = loopTreeBefore(options.source);
+  if (bases.size === 0) return options;
+  return {
+    ...options,
+    producedPaths: (step) => {
+      const base = bases.get(step);
+      return produced(base === undefined ? step : { ...step, tree_before: base });
+    },
+  };
+}
+
 export function producedBy(
   anchorer: TreeAnchorer,
   step: StepRecord,

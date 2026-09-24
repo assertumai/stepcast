@@ -3308,3 +3308,72 @@ jobs:
     assert.equal(decisions(plan)['lane/work'], 'rerun', 'работа, которую условие теперь пускает, меняет всё ниже');
   });
 });
+
+describe('run-resume: работа с циклом until возвращает правки всех итераций', () => {
+  // Заход 7594f2 пайплайна measure-improvement: реализация прошла гейт на
+  // восьмой итерации, возобновление с candidate1 переиспользовало её, но в
+  // дерево вернулись только пути последней итерации — состояние прогона
+  // хранит запись шага одной (последней) итерации, и её tree_before — дерево
+  // после седьмой. Проверка цикла на таком дереве не проходила.
+  const LOOP_PIPELINE = `
+version: 1
+kind: pipeline
+name: цикл-возобновления
+workspace:
+  mode: worktree
+jobs:
+  нулевая:
+    session: per_step
+    inputs: [сырьё.txt]
+    workspace:
+      mode: cwd
+    steps:
+      - id: сверяет
+        run: [echo, начало]
+        expect: [{ exit_code: 0 }]
+  цикл:
+    session: per_step
+    inputs: [сырьё.txt]
+    until:
+      max_iterations: 3
+      check:
+        - cmd: test -f итерация-3.txt
+    steps:
+      - id: пишет
+        run: [sh, -c, 'n=$(ls итерация-*.txt 2>/dev/null | wc -l | tr -d " "); printf "%s\\n" "$n" > "итерация-$((n + 1)).txt"']
+        expect: [{ exit_code: 0 }]
+  после:
+    needs: [цикл]
+    session: per_step
+    steps:
+      - id: проверяет
+        run: [sh, -c, 'test -f итерация-1.txt && test -f итерация-2.txt && test -f итерация-3.txt && test -f маркер.txt']
+        expect: [{ exit_code: 0 }]
+`;
+
+  it('восстанавливает пути всех итераций, а не только последней', async () => {
+    const b = bed({ 'сырьё.txt': 'вход', 'stepcast.yml': LOOP_PIPELINE }, { git: true });
+
+    const first = await firstRun(b);
+    assert.equal(first.status, 'failed', 'последней работе не хватает маркера');
+    const loop = readStatus(first.journal.paths).jobs.find((job) => job.id === 'цикл');
+    assert.equal(loop?.iterations, 3);
+
+    b.project.write('маркер.txt', 'есть');
+    execFileSync('git', ['-C', b.project.root, 'add', '-A'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    execFileSync('git', ['-C', b.project.root, 'commit', '--quiet', '-m', 'маркер'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    const plan = planFor(b, first, 'после');
+    assert.equal(decisions(plan)['цикл/пишет'], 'reuse');
+    assert.deepEqual(
+      plan.restoreWorkspace.find((item) => item.job === 'цикл')?.paths,
+      ['итерация-1.txt', 'итерация-2.txt', 'итерация-3.txt'],
+      'произведённое циклом — от дерева перед первой итерацией',
+    );
+
+    const second = await resume(b, first, 'после');
+    assert.equal(second.status, 'success');
+  });
+});
