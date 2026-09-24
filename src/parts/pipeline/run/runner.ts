@@ -1843,6 +1843,16 @@ async function runJobSteps(
     const stepDirPath = journal.prepareStep(job.id, step.index, step.id, iteration);
 
     const planned = planFor(context, job.id, step.id);
+    if (planned?.decision.kind === 'skip') {
+      // План перенёс пропуск из исходного прогона и на этом основании
+      // переиспользует работы ниже. Раз работа всё же исполняется, её условие
+      // посчиталось иначе, чем обещал план, — исполнить её сейчас значило бы
+      // оставить ниже переиспользованным то, что опиралось на её отсутствие.
+      return {
+        status: 'failed',
+        reason: `план возобновления считал работу ${job.id} пропущенной условием, как в прошлом прогоне, а условие выполнилось — возобновите без переноса пропуска: stepcast resume --from ${job.id}`,
+      };
+    }
     if (planned?.decision.kind === 'reuse') {
       const reused: StepRecord = {
         ...planned.decision.record,

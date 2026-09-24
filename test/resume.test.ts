@@ -3221,3 +3221,90 @@ jobs:
     );
   });
 });
+
+describe('run-resume: работа, пропущенная условием', () => {
+  // Воспроизводит заход be0edd пайплайна measure-improvement: работы образцов
+  // базы пропущены своим `if`, ниже — длинная цепочка, а упала последняя
+  // работа. Пропущенная работа не оставляет записей шагов, и план считал её
+  // «шага в прошлом прогоне не было» → переисполнение → каскад на всё ниже.
+  const SKIPPED = `
+version: 1
+kind: pipeline
+name: пропуск-условием
+jobs:
+  stand:
+    session: per_step
+    inputs: [flags.json]
+    output: { from: plan }
+    steps:
+      - id: plan
+        run: [sh, -c, 'echo "{\\"base\\": false}"']
+        output_schema: ./flags.json
+        expect: [{ exit_code: 0 }]
+  base:
+    needs: [stand]
+    session: per_step
+    inputs: [flags.json]
+    if: "jobs.stand.output.base == true"
+    steps:
+      - id: build
+        run: [sh, -c, 'echo base >> след.txt']
+        expect: [{ exit_code: 0 }]
+  lane:
+    needs: [stand, base]
+    on: always
+    session: per_step
+    inputs: [flags.json]
+    if: "jobs.stand.status == 'success'"
+    steps:
+      - id: work
+        run: [sh, -c, 'echo lane >> след.txt']
+        expect: [{ exit_code: 0 }]
+  finish:
+    needs: [lane]
+    session: per_step
+    steps:
+      - id: check
+        run: [sh, -c, 'test -f маркер.txt']
+        expect: [{ exit_code: 0 }]
+`;
+  const FLAGS = '{"type":"object","required":["base"],"properties":{"base":{"type":"boolean"}}}';
+
+  it('переиспользует работы ниже пропущенной, если её условие считается так же', async () => {
+    const b = bed({ 'flags.json': FLAGS, 'stepcast.yml': SKIPPED });
+    const first = await firstRun(b);
+    assert.equal(first.status, 'failed', 'finish падает: маркера нет');
+    const base = readStatus(first.journal.paths).jobs.find((job) => job.id === 'base');
+    assert.equal(base?.status, 'skipped');
+    assert.equal(base?.skip, 'condition');
+
+    b.project.write('маркер.txt', 'есть');
+
+    for (const from of [undefined, 'finish']) {
+      const plan = planFor(b, first, from);
+      assert.deepEqual(
+        decisions(plan),
+        { 'stand/plan': 'reuse', 'base/build': 'skip', 'lane/work': 'reuse', 'finish/check': 'rerun' },
+        `--from ${from ?? '(нет)'}: пропущенная условием работа не должна переисполнять цепочку ниже`,
+      );
+    }
+
+    const second = await resume(b, first, 'finish');
+    assert.equal(second.status, 'success');
+    const jobs = readStatus(second.journal.paths).jobs;
+    assert.equal(jobs.find((job) => job.id === 'base')?.status, 'skipped', 'условие по-прежнему ложно');
+    const reused = steps(second).filter((step) => step.reused_from !== undefined).map((step) => step.id);
+    assert.deepEqual(reused.sort(), ['plan', 'work']);
+  });
+
+  it('не считает работу пропущенной по-прежнему, если её условие изменилось', async () => {
+    const b = bed({ 'flags.json': FLAGS, 'stepcast.yml': SKIPPED });
+    const first = await firstRun(b);
+    assert.equal(first.status, 'failed');
+
+    b.project.write('stepcast.yml', SKIPPED.replace('jobs.stand.output.base == true', 'jobs.stand.output.base == false'));
+    const plan = planFor(b, first);
+    assert.equal(decisions(plan)['base/build'], 'rerun');
+    assert.equal(decisions(plan)['lane/work'], 'rerun', 'работа, которую условие теперь пускает, меняет всё ниже');
+  });
+});

@@ -16,6 +16,7 @@ import type { RunPaths } from './journal/paths.js';
 import { readManifest, readStatus } from './journal/reader.js';
 import type { JobRecord, RunManifest, RunStatus, StepRecord } from './journal/schema.js';
 import { expandPipeline } from '../document/expand.js';
+import { readLockJobs } from '../document/lockRead.js';
 import { jobLockHash } from '../document/lock.js';
 import { definitionFiles, type ExpandedPipeline, type Job, type Pipeline, type Step } from '../document/model.js';
 import type { Registry } from '../../../kernel/registry.js';
@@ -47,6 +48,16 @@ export type StepDecision =
    * (`carried_from`) и для выдержки о прерывании.
    */
   | { readonly kind: 'continue'; readonly record: StepRecord; readonly sessionId: string }
+  /**
+   * Работа в исходном прогоне была пропущена своим `if`, и план ждёт того же:
+   * всё выше неё переиспользуется, входы прогона и само условие те же, значит
+   * условие считается над теми же значениями. Шагов у неё не было, и
+   * переисполнять нечего — но и каскада пересчёта она не порождает.
+   * Исполнитель по-прежнему вычисляет `if` сам; если условие вопреки плану
+   * выполнится, шаг с этим решением отказывает, а не исполняется поверх
+   * переиспользованного ниже (`runner.ts`).
+   */
+  | { readonly kind: 'skip'; readonly reason: string }
   | { readonly kind: 'rerun'; readonly reason: string };
 
 export interface StepPlan {
@@ -286,10 +297,45 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
   // объявления получила бы и пустой `upstream`, и невидимый каскад. Точка
   // `--from` отмечается по ходу того же прохода.
   let reachedFrom = false;
+  // Условия работ исходного прогона — как они записаны в его локе: только с
+  // ними можно сравнить сегодняшнее условие пропущенной работы.
+  const sourceConditions = new Map(readLockJobs(source.paths.lock).map((item) => [item.id, item.if]));
+  const sameInputs = sameValues(pipeline.inputs, source.status.inputs);
 
   for (const job of order) {
     workspaceModeByJob.set(job.id, job.workspace.mode);
     const record = source.status.jobs.find((item) => item.id === job.id);
+
+    // Работа, которую исходный прогон пропустил её собственным `if`, записей
+    // шагов не оставляет. Без этой ветки каждый её шаг получал «в прошлом
+    // прогоне шага не было» → переисполнение → каскад на всё ниже по графу, и
+    // возобновление после упавшего хвоста переделывало всю цепочку (заход
+    // be0edd пайплайна measure-improvement: 36 минут реализации заново).
+    //
+    // Пропуск переносится, только если условие обязано посчитаться так же:
+    // выше по порядку исполнения ничего не переисполняется (выходы и статусы
+    // работ, которые читает `if`, — те же), входы прогона те же, и текст
+    // условия не менялся. Точка `--from` на самой работе — явная просьба её
+    // исполнить, и тогда пропуск не переносится.
+    if (
+      record?.status === 'skipped' &&
+      record.skip === 'condition' &&
+      record.steps.length === 0 &&
+      poisoned === undefined &&
+      sameInputs &&
+      job.if !== undefined &&
+      sourceConditions.get(job.id) === job.if &&
+      from?.job !== job.id
+    ) {
+      for (const step of job.steps) {
+        steps.push({
+          job: job.id,
+          step: step.id,
+          decision: { kind: 'skip', reason: `пропущена условием, как в прошлом прогоне (${job.if})` },
+        });
+      }
+      continue;
+    }
     // Работа объявила выход, и артефакт исходного прогона недоступен —
     // удалён уборкой или испорчен. Переиспользовать её значило бы отдать
     // нижележащим `${jobs.<id>.output.*}`, разрешающийся в ничто.
@@ -502,6 +548,15 @@ export function buildResumePlan(options: BuildPlanOptions): ResumePlan {
     ...(failureNoteJob === undefined ? {} : { failureNoteJob }),
     adoptWorkspace: coarsenedResult.adoptWorkspace,
   };
+}
+
+/** Совпадают ли значения входов: порядок ключей не важен. */
+function sameValues(
+  left: Readonly<Record<string, unknown>>,
+  right: Readonly<Record<string, unknown>>,
+): boolean {
+  const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])];
+  return keys.every((key) => left[key] === right[key]);
 }
 
 /**
@@ -927,7 +982,9 @@ export function describePlan(plan: ResumePlan): string[] {
           ? `  ${address}  переиспользуется из ${plan.sourceRunId.slice(-6)}`
           : item.decision.kind === 'continue'
             ? `  ${address}  продолжает сессию оборванного прогона ${plan.sourceRunId.slice(-6)}`
-            : `  ${address}  переисполняется — ${item.decision.reason}`,
+            : item.decision.kind === 'skip'
+              ? `  ${address}  пропускается — ${item.decision.reason}`
+              : `  ${address}  переисполняется — ${item.decision.reason}`,
       );
     }
   }
@@ -991,6 +1048,10 @@ function canAdoptWorkspace(
 function jobVerdict(job: string, steps: readonly StepPlan[], sourceRunId: string): string {
   if (steps.every((item) => item.decision.kind === 'reuse')) {
     return `${job}  переиспользуется из ${sourceRunId.slice(-6)}`;
+  }
+
+  if (steps.every((item) => item.decision.kind === 'skip')) {
+    return `${job}  пропускается условием, как в прогоне ${sourceRunId.slice(-6)}`;
   }
 
   const continuing = steps.find((item) => item.decision.kind === 'continue');
