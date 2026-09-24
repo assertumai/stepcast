@@ -445,6 +445,21 @@ describe('codex-backend: возможности и манифест плагин
     assert.deepEqual(codexModelDiscovery.parse({ stdout: '{', stderr: '', exitCode: 0 }), []);
   });
 
+  it('невалидные необязательные метаданные не скрывают видимую модель', () => {
+    const stdout = JSON.stringify({ models: [{
+      slug: 'future-model',
+      display_name: 7,
+      description: {},
+      default_reasoning_level: false,
+      supported_reasoning_levels: [null, { effort: '' }, { effort: 'high', description: 1 }],
+      visibility: 'list',
+      priority: 'first',
+    }] });
+    assert.deepEqual(codexModelDiscovery.parse({ stdout, stderr: '', exitCode: 0 }), [
+      { name: 'future-model', efforts: [{ name: 'high' }] },
+    ]);
+  });
+
   it('подпуть пакета ведёт на собранный модуль', () => {
     const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8')) as {
       exports: Record<string, string>;

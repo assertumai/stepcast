@@ -140,6 +140,36 @@ jobs:
     assert.equal(backend.invocations.length, 0);
   });
 
+  it('считает отсутствующую capability effort неподдерживаемой', async () => {
+    const project = makeProject({
+      'stepcast.yml': `
+kind: pipeline
+name: p
+effort: high
+jobs:
+  build:
+    steps:
+      - id: ask
+        prompt: сделай
+`,
+    });
+    const backend = createFakeBackend({ lines: [resultLine({ text: 'готово' })] });
+    const { effort: _effort, ...capabilities } = backend.adapter.capabilities;
+    const legacyAdapter: BackendAdapter = { ...backend.adapter, capabilities };
+
+    await assert.rejects(
+      runPipeline({
+        expanded: expandPipeline({ pipelinePath: project.path('stepcast.yml'), config: project.config }),
+        config: project.config,
+        projectRoot: project.root,
+        cwd: project.root,
+        adapterFor: () => legacyAdapter,
+      }),
+      /не умеет применять effort/,
+    );
+    assert.equal(backend.invocations.length, 0);
+  });
+
   it('передаёт effective effort из шага в invocation', async () => {
     const dir = tempDir('backend-');
     const backend = createFakeBackend({ lines: [resultLine({ text: 'готово' })] });

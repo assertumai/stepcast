@@ -289,6 +289,15 @@ export type PipelineModelOrigin =
   | { readonly layer: 'backend'; readonly backend: string }
   | { readonly layer: 'none' };
 
+/** Слой, из которого пришёл действующий reasoning effort шага. */
+export type PipelineEffortOrigin =
+  | { readonly layer: 'step' }
+  | { readonly layer: 'job' }
+  | { readonly layer: 'tier'; readonly backend: string; readonly tier: string; readonly tierLayer: 'pipeline' | 'job' | 'step' }
+  | { readonly layer: 'pipeline' }
+  | { readonly layer: 'config'; readonly file: string }
+  | { readonly layer: 'none' };
+
 export interface PipelineStepView {
   readonly id: string;
   readonly kind: 'agent' | 'run' | 'script' | 'plugin';
@@ -297,6 +306,9 @@ export interface PipelineStepView {
   readonly model?: string;
   /** Слой, давший `model`, — только у агентских шагов. */
   readonly modelOrigin?: PipelineModelOrigin;
+  /** Effective reasoning effort и слой, который его дал. */
+  readonly effort?: string;
+  readonly effortOrigin?: PipelineEffortOrigin;
   readonly command?: string;
   /** Путь скрипта, объявленный в документе, — у шага script. */
   readonly scriptPath?: string;

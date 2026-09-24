@@ -165,6 +165,35 @@ jobs:
     assert.equal(step.effort, 'low');
   });
 
+  it('rejects empty effort produced by pipeline input interpolation', () => {
+    assert.throws(() => expand(`
+inputs:
+  level: { type: string, default: "   " }
+effort: \${inputs.level}
+${JOB}`), (error: unknown) =>
+      error instanceof StepcastError && /effort/.test(error.message) && error.at === 'effort');
+  });
+
+  it('rejects empty effort produced by reusable-job parameter interpolation', () => {
+    const files = {
+      'job.yml': `kind: job
+params:
+  level: { type: string, required: true }
+effort: \${params.level}
+steps:
+  - id: ask
+    prompt: hello
+`,
+    };
+    assert.throws(() => expand(`jobs:
+  work:
+    uses: ./job.yml
+    with:
+      level: " "
+`, TIERS_CONFIG, files), (error: unknown) =>
+      error instanceof StepcastError && /effort/.test(error.message) && error.at === 'jobs.work.effort');
+  });
+
   it('inherits effort independently through config, pipeline, job and step', () => {
     const { pipeline, effortOrigins } = expand(`
 effort: high

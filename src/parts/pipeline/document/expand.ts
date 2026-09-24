@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, extname, isAbsolute, join, posix, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { ModelTierSchema } from '../config/schema.js';
+import { EffortSchema, ModelTierSchema } from '../config/schema.js';
 import type { ModelTier } from '../config/modelTiers.js';
 import type { Config, RunnerConfig } from '../config/resolve.js';
 import { Ajv2020 } from 'ajv/dist/2020.js';
@@ -915,6 +915,18 @@ function parseModelTier(value: unknown, file: string, at: string): ModelTier | u
   return parsed.data;
 }
 
+/** Повторная проверка после подстановок: исходная схема видит только `${…}`. */
+function parseEffort(value: unknown, file: string, at: string): string | undefined {
+  if (value === undefined) return undefined;
+  const parsed = EffortSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new StepcastError(`Недопустимый effort: ${String(value)}`, {
+      file, at, hint: 'Ожидается непустая строка',
+    });
+  }
+  return parsed.data;
+}
+
 /**
  * Найти файл скрипта: явный путь (`./`, `../`, абсолютный) разрешается от
  * файла объявления и слоёв не касается; голое имя ищется слоями — проектный,
@@ -1386,7 +1398,8 @@ function parseAgentStep(raw: RawStep, ctx: BuiltinStepParseContext): StepParseRe
   const tierModel = tierSelection?.model;
   const model = raw.model ?? defaults.model ?? tierModel ?? backend?.defaultModel;
   const selectedTierBundle = raw.model === undefined && defaults.model === undefined && tierModel !== undefined;
-  const effort = raw.effort ?? defaults.effort ?? (selectedTierBundle ? tierSelection?.effort : undefined);
+  const stepEffort = parseEffort(raw.effort, declaringFile, `${at}.effort`);
+  const effort = stepEffort ?? defaults.effort ?? (selectedTierBundle ? tierSelection?.effort : undefined);
 
   const modelOrigin: ModelOrigin =
     raw.model !== undefined
@@ -1999,7 +2012,12 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
   const defaultSession = doc.defaults?.session ?? config.defaults.session;
   const defaultAgent = doc.agent ?? doc.defaults?.agent ?? config.defaults.agent;
   const defaultModel = doc.model ?? doc.defaults?.model ?? config.defaults.model;
-  const defaultEffort = doc.effort ?? doc.defaults?.effort ?? config.defaults.effort;
+  const pipelineEffort = parseEffort(
+    doc.effort ?? doc.defaults?.effort,
+    pipelinePath,
+    doc.effort !== undefined ? 'effort' : 'defaults.effort',
+  );
+  const defaultEffort = pipelineEffort ?? config.defaults.effort;
   const defaultModelTier = parseModelTier(
     doc.model_tier ?? doc.defaults?.model_tier, pipelinePath,
     doc.model_tier !== undefined ? 'model_tier' : 'defaults.model_tier',
@@ -2162,6 +2180,11 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
       'uses' in entry && entry.model_tier !== undefined ? pipelinePath : declaringFile,
       `${at}.model_tier`,
     );
+    const jobEffort = parseEffort(
+      body.effort,
+      'uses' in entry && entry.effort !== undefined ? pipelinePath : declaringFile,
+      `${at}.effort`,
+    );
     const sessionMode = (body.session as 'shared' | 'per_step' | undefined) ?? defaultSession;
     // Слияние, а не замена: работа обычно переопределяет только `inherit`
     // (или только `path`), а режим объявлен один раз на пайплайне. Полная
@@ -2299,7 +2322,7 @@ export function expandPipeline(options: ExpandOptions): ExpandedPipeline {
             agent: (body.agent as string | undefined) ?? defaultAgent,
             model: (body.model as string | undefined) ?? defaultModel,
             modelLayer: body.model !== undefined ? 'job' : defaultModelLayer,
-            effort: (body.effort as string | undefined) ?? defaultEffort,
+            effort: jobEffort ?? defaultEffort,
             effortLayer: body.effort !== undefined ? 'job' : defaultEffortLayer,
             modelTier: jobModelTier ?? defaultModelTier,
             tierLayer: jobModelTier !== undefined ? 'job' : 'pipeline',

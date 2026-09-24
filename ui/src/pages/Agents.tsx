@@ -112,6 +112,17 @@ export function effortOptions(
   return options;
 }
 
+/** Значение не входит в перечень, который CLI сообщил для выбранной модели. */
+export function isCustomValue(value: string, knownValues: readonly string[]): boolean {
+  const trimmed = value.trim();
+  return trimmed !== '' && !knownValues.includes(trimmed);
+}
+
+/** Доступ к пользовательским именам tier без наследования свойств Object.prototype. */
+function ownValue<T>(record: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
+}
+
 export function tierSelectionPatch(
   original: ModelTierSelection | undefined,
   draft: TierDraft,
@@ -130,12 +141,13 @@ export function tierDraftProblem(
 ): string | undefined {
   for (const tier of tierNames) {
     for (const agent of Object.values(draft)) {
-      const selection = agent.modelTiers[tier];
+      const selection = ownValue(agent.modelTiers, tier);
       if (selection !== undefined && selection.model.trim() === '' && selection.effort.trim() !== '') {
         return `Tier ${tier} needs a model before effort can be set`;
       }
     }
-    if (!originalTierNames.includes(tier) && !Object.values(draft).some((agent) => agent.modelTiers[tier]?.model.trim())) {
+    if (!originalTierNames.includes(tier) &&
+      !Object.values(draft).some((agent) => ownValue(agent.modelTiers, tier)?.model.trim())) {
       return `New tier ${tier} needs a model for at least one agent`;
     }
   }
@@ -149,6 +161,7 @@ interface ModelFieldProps {
   readonly placeholder: string;
   readonly sourceNote: string;
   readonly options: readonly ComboboxOption[];
+  readonly knownValues?: readonly string[];
   readonly onChange: (value: string) => void;
 }
 
@@ -158,9 +171,9 @@ interface ModelFieldProps {
  * значило бы сделать распознавание хуже свободного ввода (решение 8).
  * Набранное имя вне списка — обычное состояние, отмеченное бейджем `custom`.
  */
-function ModelField({ id, label, value, placeholder, sourceNote, options, onChange }: ModelFieldProps): JSX.Element {
+function ModelField({ id, label, value, placeholder, sourceNote, options, knownValues, onChange }: ModelFieldProps): JSX.Element {
   const trimmed = value.trim();
-  const custom = trimmed !== '' && !options.some((option) => option.value === trimmed);
+  const custom = isCustomValue(trimmed, knownValues ?? options.map((option) => option.value));
 
   return (
     <div className="agent-field">
@@ -214,7 +227,7 @@ export function Agents(): JSX.Element {
     setDraft(Object.fromEntries(data.backends.map((backend) => [backend.name, {
       defaultModel: backend.defaultModel ?? '',
       modelTiers: Object.fromEntries(orderedTierNames(data.modelTiers).map((tier) => {
-        const selection = backend.modelTiers[tier];
+        const selection = ownValue(backend.modelTiers, tier);
         return [tier, { model: selection?.model ?? '', effort: selection?.effort ?? '' }];
       })),
     }])));
@@ -271,7 +284,10 @@ export function Agents(): JSX.Element {
     settings.backends.flatMap((backend) => {
       const next = draft[backend.name]!;
       const modelTiers = Object.fromEntries(tierNames.flatMap((tier) => {
-        const change = tierSelectionPatch(backend.modelTiers[tier], next.modelTiers[tier] ?? { model: '', effort: '' });
+        const change = tierSelectionPatch(
+          ownValue(backend.modelTiers, tier),
+          ownValue(next.modelTiers, tier) ?? { model: '', effort: '' },
+        );
         return change === undefined ? [] : [[tier, change]];
       }));
       const defaultChanged = next.defaultModel.trim() !== (backend.defaultModel ?? '');
@@ -305,7 +321,7 @@ export function Agents(): JSX.Element {
             ...current,
             modelTiers: {
               ...current.modelTiers,
-              [tier]: { ...(current.modelTiers[tier] ?? { model: '', effort: '' }), [field]: value },
+              [tier]: { ...(ownValue(current.modelTiers, tier) ?? { model: '', effort: '' }), [field]: value },
             },
           } };
     });
@@ -325,7 +341,7 @@ export function Agents(): JSX.Element {
     setRemovedTiers((current) => current.filter((tier) => tier !== name));
     setDraft((previous) => Object.fromEntries(Object.entries(previous).map(([backend, value]) => [backend, {
       ...value,
-      modelTiers: { ...value.modelTiers, [name]: value.modelTiers[name] ?? { model: '', effort: '' } },
+      modelTiers: { ...value.modelTiers, [name]: ownValue(value.modelTiers, name) ?? { model: '', effort: '' } },
     }])));
     setNewTier('');
     setTierError(undefined);
@@ -408,6 +424,7 @@ export function Agents(): JSX.Element {
               placeholder={selectedModelDefaultEffort === undefined ? 'model default' : `model default: ${selectedModelDefaultEffort}`}
               sourceNote={`${settings.effort.source}. An empty field lets the selected model and CLI choose.`}
               options={globalEffortOptions}
+              knownValues={selectedModels.find((option) => option.name === selectedModel)?.efforts?.map((item) => item.name) ?? []}
               onChange={(value) => { setEffort(value); setSaved(false); }}
             />
           </CardContent>
@@ -470,7 +487,7 @@ export function Agents(): JSX.Element {
             const options = modelOptions(listed, [
               backend.defaultModel,
               current.defaultModel,
-              ...tierNames.map((tier) => backend.modelTiers[tier]?.model),
+              ...tierNames.map((tier) => ownValue(backend.modelTiers, tier)?.model),
             ]);
 
             return (
@@ -492,10 +509,11 @@ export function Agents(): JSX.Element {
                     placeholder="agent’s built-in model"
                     sourceNote={`${backend.defaultModelSource}. An empty field removes the override.`}
                     options={options}
+                    knownValues={listed.map((option) => option.name)}
                     onChange={(value) => updateModel(backend.name, value)}
                   />
                   {tierNames.map((tier) => {
-                    const selection = current.modelTiers[tier] ?? { model: '', effort: '' };
+                    const selection = ownValue(current.modelTiers, tier) ?? { model: '', effort: '' };
                     const listedModel = listed.find((option) => option.name === selection.model.trim());
                     return (
                       <div className="tier-config" key={tier}>
@@ -504,8 +522,9 @@ export function Agents(): JSX.Element {
                           label={`${tier} model`}
                           value={selection.model}
                           placeholder={current.defaultModel.trim() || 'default model'}
-                          sourceNote={backend.modelTierSources[tier] ?? 'not set — falls back to the default model'}
+                          sourceNote={ownValue(backend.modelTierSources, tier) ?? 'not set — falls back to the default model'}
                           options={options}
+                          knownValues={listed.map((option) => option.name)}
                           onChange={(value) => updateModel(backend.name, value, tier, 'model')}
                         />
                         <ModelField
@@ -513,8 +532,9 @@ export function Agents(): JSX.Element {
                           label="effort"
                           value={selection.effort}
                           placeholder={listedModel?.defaultEffort === undefined ? 'model default' : `model default: ${listedModel.defaultEffort}`}
-                          sourceNote={backend.modelTierEffortSources[tier] ?? 'not set — the selected model chooses its default'}
+                          sourceNote={ownValue(backend.modelTierEffortSources, tier) ?? 'not set — the selected model chooses its default'}
                           options={effortOptions(listed, selection.model, selection.effort)}
+                          knownValues={listedModel?.efforts?.map((item) => item.name) ?? []}
                           onChange={(value) => updateModel(backend.name, value, tier, 'effort')}
                         />
                       </div>

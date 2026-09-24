@@ -19,6 +19,7 @@ import { lastPathSegment, unknownPathLabel } from '../../../src/parts/ui/runsVie
 import {
   fetchPipelines,
   type Overview,
+  type PipelineEffortOrigin,
   type PipelineJobView,
   type PipelineModelOrigin,
   type PipelineView,
@@ -85,6 +86,23 @@ function modelOriginLabel(origin: PipelineModelOrigin): string {
   }
 }
 
+function effortOriginLabel(origin: PipelineEffortOrigin): string {
+  switch (origin.layer) {
+    case 'job':
+      return 'job effort';
+    case 'tier':
+      return `tier ${origin.tier} effort (${origin.tierLayer}, ${origin.backend})`;
+    case 'step':
+      return 'effort declared by the step';
+    case 'pipeline':
+      return 'pipeline effort';
+    case 'config':
+      return `effort settings · ${origin.file}`;
+    case 'none':
+      return 'model default effort';
+  }
+}
+
 function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
   return (
     <div className="job">
@@ -118,6 +136,7 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
               <span className="kind">
                 {step.agent}
                 {step.model === undefined ? '' : ` · ${step.model}`}
+                {step.effort === undefined ? '' : ` · effort ${step.effort}`}
               </span>
             )}
             {step.scriptRunner === undefined ? null : <span className="kind">{step.scriptRunner}</span>}
@@ -129,6 +148,9 @@ function JobCard({ job }: { readonly job: PipelineJobView }): JSX.Element {
             )}
             {step.modelOrigin === undefined ? null : (
               <span className="kind dim model-origin">{modelOriginLabel(step.modelOrigin)}</span>
+            )}
+            {step.effortOrigin === undefined ? null : (
+              <span className="kind dim model-origin">{effortOriginLabel(step.effortOrigin)}</span>
             )}
           </div>
           {step.command === undefined ? null : <div className="ctx">$ {step.command}</div>}

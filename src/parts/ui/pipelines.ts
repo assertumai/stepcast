@@ -12,7 +12,7 @@ import type { BuiltinRow, LoadOptions } from '../../kernel/load.js';
 import type { Kernel } from '../../kernel/kernel.js';
 import { kernelFromRegistry, registryFromKernel, type Registry } from '../../kernel/registry.js';
 import type { TreeRow } from '../../kernel/tree/tree.js';
-import type { Job, ModelOrigin, Pipeline } from '../pipeline/document/model.js';
+import type { EffortOrigin, Job, ModelOrigin, Pipeline } from '../pipeline/document/model.js';
 import { hasStepExecutor } from '../pipeline/contract.js';
 import { layoutJobs, type JobGraph } from './graph.js';
 import { paramViews, type StepParamView } from './steps.js';
@@ -47,6 +47,15 @@ export type PipelineModelOrigin =
   | { readonly layer: 'backend'; readonly backend: string }
   | { readonly layer: 'none' };
 
+/** Слой, из которого пришёл reasoning effort шага. */
+export type PipelineEffortOrigin =
+  | { readonly layer: 'step' }
+  | { readonly layer: 'job' }
+  | { readonly layer: 'tier'; readonly backend: string; readonly tier: string; readonly tierLayer: 'pipeline' | 'job' | 'step' }
+  | { readonly layer: 'pipeline' }
+  | { readonly layer: 'config'; readonly file: string }
+  | { readonly layer: 'none' };
+
 export interface PipelineStepView {
   readonly id: string;
   readonly kind: 'agent' | 'run' | 'script' | 'plugin';
@@ -56,6 +65,9 @@ export interface PipelineStepView {
   readonly model?: string;
   /** Слой, давший `model`, — только у агентских шагов. */
   readonly modelOrigin?: PipelineModelOrigin;
+  /** Действующий reasoning effort и слой, который его дал. */
+  readonly effort?: string;
+  readonly effortOrigin?: PipelineEffortOrigin;
   readonly command?: string;
   /** Путь скрипта, объявленный в документе, — у шага script. */
   readonly scriptPath?: string;
@@ -189,10 +201,28 @@ function toModelOriginView(
   return { layer: 'config', file: modelConfigFile };
 }
 
+function toEffortOriginView(
+  origin: EffortOrigin | undefined,
+  effortConfigFile: string | undefined,
+  at: string,
+): PipelineEffortOrigin {
+  const hint = 'This is an inconsistency inside the daemon: restart `stepcast up` and report it';
+  if (origin === undefined) {
+    throw new StepcastError('Resolution did not name the layer that supplied the step effort', { at, hint });
+  }
+  if (origin.layer !== 'config') return origin;
+  if (effortConfigFile === undefined) {
+    throw new StepcastError('The step effort came from settings, but the file that set it is unknown', { at, hint });
+  }
+  return { layer: 'config', file: effortConfigFile };
+}
+
 function toJobView(
   job: Job,
   modelOrigins: ReadonlyMap<string, ModelOrigin>,
   modelConfigFile: string | undefined,
+  effortOrigins: ReadonlyMap<string, EffortOrigin>,
+  effortConfigFile: string | undefined,
   registry: Registry,
 ): PipelineJobView {
   return {
@@ -207,11 +237,21 @@ function toJobView(
       kind: step.kind,
       ...(step.kind === 'agent' ? { agent: step.agent } : {}),
       ...(step.kind === 'agent' && step.model !== undefined ? { model: step.model } : {}),
+      ...(step.kind === 'agent' && step.effort !== undefined ? { effort: step.effort } : {}),
       ...(step.kind === 'agent'
         ? {
             modelOrigin: toModelOriginView(
               modelOrigins.get(`${job.id}/${step.id}`),
               modelConfigFile,
+              `jobs.${job.id}.steps.${step.id}`,
+            ),
+          }
+        : {}),
+      ...(step.kind === 'agent'
+        ? {
+            effortOrigin: toEffortOriginView(
+              effortOrigins.get(`${job.id}/${step.id}`),
+              effortConfigFile,
               `jobs.${job.id}.steps.${step.id}`,
             ),
           }
@@ -272,9 +312,12 @@ function toView(
   pipeline: Pipeline,
   modelOrigins: ReadonlyMap<string, ModelOrigin>,
   modelConfigFile: string | undefined,
+  effortOrigins: ReadonlyMap<string, EffortOrigin>,
+  effortConfigFile: string | undefined,
   registry: Registry,
 ): PipelineView {
-  const jobs = pipeline.jobs.map((job) => toJobView(job, modelOrigins, modelConfigFile, registry));
+  const jobs = pipeline.jobs.map((job) =>
+    toJobView(job, modelOrigins, modelConfigFile, effortOrigins, effortConfigFile, registry));
   return {
     projectKey,
     projectPath,
@@ -354,11 +397,15 @@ function readPipeline(
   config: Config,
   registry: Registry,
   modelConfigFile: string | undefined,
+  effortConfigFile: string | undefined,
 ): PipelineView {
   const file = relative(projectPath, absolute).replace(/\\/g, '/');
   try {
-    const { pipeline, modelOrigins } = expandPipeline({ pipelinePath: absolute, config, registry });
-    return toView(projectKey, projectPath, file, pipeline, modelOrigins, modelConfigFile, registry);
+    const { pipeline, modelOrigins, effortOrigins } = expandPipeline({ pipelinePath: absolute, config, registry });
+    return toView(
+      projectKey, projectPath, file, pipeline,
+      modelOrigins, modelConfigFile, effortOrigins, effortConfigFile, registry,
+    );
   } catch (error) {
     return errorView(projectKey, projectPath, file, toFailure(error, projectPath));
   }
@@ -371,6 +418,8 @@ interface ProjectOverrides {
   readonly backends: Config['backends'];
   /** Файл, победивший в `defaults.model` этого проекта — для слоя `config` на карточке шага. */
   readonly modelConfigFile: string | undefined;
+  /** Файл, победивший в `defaults.effort` этого проекта. */
+  readonly effortConfigFile: string | undefined;
   /**
    * Реестр вкладов этого проекта: без него плагинный предикат отклоняется
    * разбором как неизвестный ключ, а умолчание плагинного бэкенда не доезжает
@@ -599,12 +648,14 @@ async function projectSection(
   const options = { cwd: projectPath, ...(home === undefined ? {} : { home }) };
   const { resolved, registry } = await resolveWithCachedKernel(projectPath, options, projectPath, kernelCache);
 
-  const source = resolved.provenance.get('defaults.model');
+  const modelSource = resolved.provenance.get('defaults.model');
+  const effortSource = resolved.provenance.get('defaults.effort');
   return {
     project: resolved.config.project,
     defaults: resolved.config.defaults,
     backends: resolved.config.backends,
-    modelConfigFile: source === undefined ? undefined : describeSource(source),
+    modelConfigFile: modelSource === undefined ? undefined : describeSource(modelSource),
+    effortConfigFile: effortSource === undefined ? undefined : describeSource(effortSource),
     registry,
   };
 }
@@ -646,6 +697,7 @@ export async function buildPipelines(
     let forProject: Config | undefined;
     let registry: Registry | undefined;
     let modelConfigFile: string | undefined;
+    let effortConfigFile: string | undefined;
     let failure: Failure | undefined;
     try {
       const overrides = await projectSection(project.path, options.home, options.kernelCache);
@@ -657,6 +709,7 @@ export async function buildPipelines(
       };
       registry = overrides.registry;
       modelConfigFile = overrides.modelConfigFile;
+      effortConfigFile = overrides.effortConfigFile;
     } catch (error) {
       failure = toFailure(error, project.path);
     }
@@ -670,7 +723,10 @@ export async function buildPipelines(
               relative(project.path, file).replace(/\\/g, '/'),
               failure ?? { error: 'Project configuration cannot be read' },
             )
-          : readPipeline(project.key, project.path, file, forProject, registry, modelConfigFile),
+          : readPipeline(
+              project.key, project.path, file, forProject, registry,
+              modelConfigFile, effortConfigFile,
+            ),
       );
     }
   }

@@ -3235,6 +3235,86 @@ jobs:
   });
 });
 
+describe('ui-dashboard: слой effort шага', () => {
+  it('показывает effective effort и слой pipeline', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), `version: 1
+kind: pipeline
+name: demo
+effort: high
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+    const response = await fetchJson(server, '/api/pipelines');
+    const step = pick(response.json, 'pipelines', 0, 'jobs', 0, 'steps', 0);
+    assert.equal(pick(step, 'effort'), 'high');
+    assert.deepEqual(pick(step, 'effortOrigin'), { layer: 'pipeline' });
+  });
+
+  it('называет файл settings для config effort и none при отсутствии', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), `version: 1
+kind: pipeline
+name: demo
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`);
+    const configFile = join(home, '.stepcast', 'config.yml');
+    writeFileSync(configFile, `runs:\n  root: ${runsRoot}\ndefaults:\n  effort: medium\n`);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+    let response = await fetchJson(server, '/api/pipelines');
+    let step = pick(response.json, 'pipelines', 0, 'jobs', 0, 'steps', 0);
+    assert.equal(pick(step, 'effort'), 'medium');
+    assert.deepEqual(pick(step, 'effortOrigin'), { layer: 'config', file: configFile });
+    writeFileSync(configFile, `runs:\n  root: ${runsRoot}\n`);
+    response = await fetchJson(server, '/api/pipelines');
+    step = pick(response.json, 'pipelines', 0, 'jobs', 0, 'steps', 0);
+    assert.equal(pick(step, 'effort'), undefined);
+    assert.deepEqual(pick(step, 'effortOrigin'), { layer: 'none' });
+  });
+
+  it('показывает tier provenance вместе с effective effort', async (t) => {
+    const { runsRoot, projectRoot, home } = makeJournalBed();
+    seedRun(runsRoot, projectRoot, { runId: 'a' });
+    writeFileSync(join(projectRoot, 'stepcast.yml'), `version: 1
+kind: pipeline
+name: demo
+model_tier: review
+jobs:
+  ask:
+    steps:
+      - id: a
+        prompt: спроси
+`);
+    writeFileSync(join(home, '.stepcast', 'config.yml'), `runs:
+  root: ${runsRoot}
+backends:
+  claude:
+    model_tiers:
+      review: { model: opus, effort: high }
+`);
+    const { config } = resolveConfig({ cwd: home, home, projectPath: null });
+    const server = await startServer(t, { runsRoot, config, home });
+    const response = await fetchJson(server, '/api/pipelines');
+    const step = pick(response.json, 'pipelines', 0, 'jobs', 0, 'steps', 0);
+    assert.equal(pick(step, 'effort'), 'high');
+    assert.deepEqual(pick(step, 'effortOrigin'), {
+      layer: 'tier', backend: 'claude', tier: 'review', tierLayer: 'pipeline',
+    });
+  });
+});
+
 describe('ui-dashboard: расход поперёк прогонов', () => {
   // Сценарий: «Агрегат приходит одним ответом»
   it('GET /api/usage без параметра отдаёт весь период наблюдений, с days=7 — неделю', async (t) => {

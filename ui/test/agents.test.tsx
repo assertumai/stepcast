@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 
 import {
   effortOptions,
+  isCustomValue,
   modelOptions,
   orderedTierNames,
   tierDraftProblem,
@@ -46,6 +47,8 @@ describe('ui-agents: варианты поля модели', () => {
     assert.deepEqual(effortOptions([], 'custom-model', 'high'), [
       { value: 'high', description: 'from configuration' },
     ]);
+    assert.equal(isCustomValue('max', ['low', 'high']), true);
+    assert.equal(isCustomValue('high', ['low', 'high']), false);
   });
 });
 
@@ -77,6 +80,13 @@ describe('ui-agents: общие tier', () => {
       ...empty,
       claude: { defaultModel: '', modelTiers: { review: { model: '', effort: 'high' } } },
     }) ?? '', /model/);
+  });
+
+  it('допустимое имя constructor не читает Object.prototype как черновик tier', () => {
+    const draft = {
+      claude: { defaultModel: '', modelTiers: {} },
+    };
+    assert.match(tierDraftProblem(['constructor'], [], draft) ?? '', /at least one agent/);
   });
 });
 
