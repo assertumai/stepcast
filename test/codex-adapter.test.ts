@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it } from 'node:test';
@@ -11,13 +11,9 @@ import codexPlugin, {
 } from '../src/parts/backends/codex/index.js';
 import type { BackendConfig } from '../src/parts/pipeline/surface.js';
 import type { AgentInvocation, BackendAdapter, BackendEvent } from '../src/parts/pipeline/backend/types.js';
-import { discoverModels } from '../src/parts/pipeline/backend/models.js';
-import { resolveConfig } from '../src/parts/pipeline/config/resolve.js';
 import { createSessionRegistry, executeAgentStep } from '../src/parts/pipeline/run/exec/agentStep.js';
 import { StepcastError } from '../src/kernel/errors.js';
-import { registryFromKernel } from '../src/kernel/registry.js';
 import type { AgentStep } from '../src/parts/pipeline/document/model.js';
-import { createPipelineKernel } from './helpers.js';
 import { tempDir } from './tmp.js';
 
 /**

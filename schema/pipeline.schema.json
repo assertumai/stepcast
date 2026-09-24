@@ -17,17 +17,16 @@
     "model": {
       "type": "string"
     },
+    "effort": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
     "model_tier": {
       "anyOf": [
         {
           "type": "string",
-          "enum": [
-            "max",
-            "deep",
-            "balance",
-            "fast",
-            "mini"
-          ]
+          "pattern": "^[a-z][a-z0-9_-]*$"
         },
         {
           "type": "string",
@@ -433,17 +432,16 @@
         "model": {
           "type": "string"
         },
+        "effort": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
         "model_tier": {
           "anyOf": [
             {
               "type": "string",
-              "enum": [
-                "max",
-                "deep",
-                "balance",
-                "fast",
-                "mini"
-              ]
+              "pattern": "^[a-z][a-z0-9_-]*$"
             },
             {
               "type": "string",
@@ -617,17 +615,16 @@
               "model": {
                 "type": "string"
               },
+              "effort": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
               "model_tier": {
                 "anyOf": [
                   {
                     "type": "string",
-                    "enum": [
-                      "max",
-                      "deep",
-                      "balance",
-                      "fast",
-                      "mini"
-                    ]
+                    "pattern": "^[a-z][a-z0-9_-]*$"
                   },
                   {
                     "type": "string",
@@ -972,17 +969,16 @@
               "model": {
                 "type": "string"
               },
+              "effort": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
               "model_tier": {
                 "anyOf": [
                   {
                     "type": "string",
-                    "enum": [
-                      "max",
-                      "deep",
-                      "balance",
-                      "fast",
-                      "mini"
-                    ]
+                    "pattern": "^[a-z][a-z0-9_-]*$"
                   },
                   {
                     "type": "string",
@@ -1878,17 +1874,16 @@
                         "model": {
                           "type": "string"
                         },
+                        "effort": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "\\S"
+                        },
                         "model_tier": {
                           "anyOf": [
                             {
                               "type": "string",
-                              "enum": [
-                                "max",
-                                "deep",
-                                "balance",
-                                "fast",
-                                "mini"
-                              ]
+                              "pattern": "^[a-z][a-z0-9_-]*$"
                             },
                             {
                               "type": "string",

@@ -1,11 +1,11 @@
 import type {
   BackendEffort,
+  BackendConfig,
   BackendModel,
+  LaunchSpec,
   ModelDiscovery,
   ProbeOutput,
-} from '../../pipeline/backend/types.js';
-import type { BackendConfig } from '../../pipeline/config/resolve.js';
-import type { LaunchSpec } from '../../pipeline/backend/types.js';
+} from '../../pipeline/surface.js';
 
 interface CatalogModel {
   readonly slug: string;

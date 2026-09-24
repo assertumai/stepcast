@@ -64,6 +64,7 @@ export type {
   AgentInvocation,
   BackendAdapter,
   BackendCapabilities,
+  BackendEffort,
   BackendEvent,
   BackendModel,
   BackendRefusal,

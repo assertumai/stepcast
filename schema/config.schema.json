@@ -39,6 +39,11 @@
         "model": {
           "type": "string"
         },
+        "effort": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
         "workspace": {
           "type": "object",
           "properties": {
@@ -235,18 +240,35 @@
             "type": "object",
             "propertyNames": {
               "type": "string",
-              "enum": [
-                "max",
-                "deep",
-                "balance",
-                "fast",
-                "mini"
-              ]
+              "pattern": "^[a-z][a-z0-9_-]*$"
             },
             "additionalProperties": {
-              "type": "string",
-              "minLength": 1,
-              "pattern": "\\S"
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "model": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    "effort": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    }
+                  },
+                  "required": [
+                    "model"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
             }
           },
           "concurrency": {

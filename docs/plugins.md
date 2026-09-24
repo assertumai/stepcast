@@ -93,7 +93,7 @@ plugins:
 | `LintSite`, `DecisionEffect`, `DecisionOutcome`, `StepKindDecisionRequest`, `StepKindDecisionResult`, `StepKindDecisions` | `stepcast/pipeline`  |
 | `PredicateRegistrar`, `StepKindRegistrar`                          | `stepcast/pipeline`  |
 | доменные поля контекста (`ctx.backends`, `ctx.predicates`, `ctx.steps`) | `stepcast/pipeline` (`PipelineContext`, `pipelineContext(ctx)`) |
-| `BackendAdapter`, `BackendEvent`, `BackendModel`, `BackendRefusal`, `BackendRefusalClass`, `LaunchSpec`, `AgentInvocation`, `ModelDiscovery`, `ProbeOutput`, `PermissionDenial`, `BackendCapabilities` | `stepcast/pipeline` |
+| `BackendAdapter`, `BackendEvent`, `BackendModel`, `BackendEffort`, `BackendRefusal`, `BackendRefusalClass`, `LaunchSpec`, `AgentInvocation`, `ModelDiscovery`, `ProbeOutput`, `PermissionDenial`, `BackendCapabilities` | `stepcast/pipeline` |
 | `describeRefusal`, `emptyUsage`, `mergeUsage`, `sumUsage`          | `stepcast/pipeline`  |
 | `effectivePermissions`, `Permissions`, `McpServer`, `McpServers`   | `stepcast/pipeline`  |
 | `EvaluationInput`, `PredicateResult`, `Usage`                      | `stepcast/pipeline`  |
@@ -467,8 +467,15 @@ export default definePipelinePlugin({
 `create(config)` получает действующую запись `backends.<имя>` и возвращает
 адаптер того же контракта, что и встроенный `claude`: `launch` собирает
 запуск, `parseLine` разбирает строку потока, `capabilities` объявляет
-поддержку сессий, структурированного вывода и жёсткого режима прав. Флаги
+поддержку сессий, структурированного вывода, жёсткого режима прав, MCP и
+reasoning effort. Флаги
 конкретного CLI живут здесь и только здесь.
+
+`capabilities.effort === true` означает, что адаптер принимает
+`AgentInvocation.effort` и передаёт значение своему CLI. Поле пока
+необязательное ради исходной совместимости со старыми плагинами, но отсутствие
+трактуется как «не умеет»: pipeline с действующим `effort` откажет до первой
+работы, а не запустится с молча потерянной настройкой.
 
 `capabilities.sessionIdSource` называет, кто заводит идентификатор сессии:
 `'engine'` — движок заводит его до запуска и передаёт бэкенду, как принимает
@@ -522,10 +529,22 @@ models: {
   },
   parse(output) {
     // output: { stdout, stderr, exitCode }
-    return [{ name: 'sonnet' }, { name: 'opus', title: 'Claude Opus' }];
+    return [{ name: 'sonnet' }, {
+      name: 'opus',
+      label: 'Claude Opus',
+      title: 'Most capable model',
+      defaultEffort: 'medium',
+      efforts: [{ name: 'low' }, { name: 'high', description: 'More reasoning' }],
+    }];
   },
 },
 ```
+
+`name` — сохраняемое значение. Остальные поля необязательны и служат только
+подсказками UI: `label` — подпись, `title` — описание, `defaultEffort` — default
+модели, `efforts` — поддерживаемые уровни с необязательными пояснениями.
+Stepcast не использует каталог как allow-list и не отвергает кастомные модели
+или effort.
 
 `probe(config)` только **описывает** запуск — той же формой `LaunchSpec`, что
 и `launch()`, — и ничего не исполняет. Пробу ведёт движок, тем же надзираемым
